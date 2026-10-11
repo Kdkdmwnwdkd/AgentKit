@@ -228,6 +228,7 @@ fun AutomationScreen(vm: ChatViewModel, onBack: () -> Unit) {
     val notificationGranted by vm.notificationGranted.collectAsStateWithLifecycle()
     val usageGranted by vm.usageGranted.collectAsStateWithLifecycle()
     val deviceContext by vm.deviceContext.collectAsStateWithLifecycle()
+    val skillInfos by vm.skillInfos.collectAsStateWithLifecycle()
     val ctx = LocalContext.current
 
     // 进入本页时刷新权限授予状态，反映用户在系统设置里的最新操作
@@ -352,6 +353,62 @@ fun AutomationScreen(vm: ChatViewModel, onBack: () -> Unit) {
                             deviceContext.recentNotifications.forEach { n ->
                                 Text("• $n", style = MaterialTheme.typography.bodySmall)
                             }
+                        }
+                    }
+                }
+            }
+
+            // L6 技能中心：把 L5 的全局能力门与安全策略可视化，让安全策略「看得见」
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("技能中心（Skills）", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        "应用内置安全策略：远程/导入来源默认禁止脚本执行，且能力上限收紧，防止技能越权操控手机。",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    if (skillInfos.isEmpty()) {
+                        Text("暂无已安装技能。", style = MaterialTheme.typography.bodySmall)
+                    } else {
+                        skillInfos.forEach { skill ->
+                            val trustColor = when (skill.trust.lowercase()) {
+                                "remote" -> MaterialTheme.colorScheme.error
+                                "imported" -> MaterialTheme.colorScheme.tertiary
+                                else -> MaterialTheme.colorScheme.primary
+                            }
+                            Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(skill.name, style = MaterialTheme.typography.labelLarge)
+                                    Spacer(Modifier.width(8.dp))
+                                    Surface(
+                                        color = trustColor.copy(alpha = 0.15f),
+                                        shape = RoundedCornerShape(6.dp)
+                                    ) {
+                                        Text(
+                                            skill.trust.uppercase(),
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = trustColor,
+                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                        )
+                                    }
+                                }
+                                if (skill.description.isNotBlank()) {
+                                    Text(skill.description, style = MaterialTheme.typography.bodySmall)
+                                }
+                                Text(
+                                    "形态：${if (skill.isScript) "脚本(main.js)" else "提示词"} · 允许脚本：${if (skill.allowScript) "是" else "否"} · 能力上限：${skill.maxCapability}",
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                                if (skill.tools.isNotEmpty()) {
+                                    skill.tools.forEach { t ->
+                                        Text(
+                                            "• ${t.name} [${t.capability}] ${if (t.allowed) "放行" else "拦截"}",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = if (t.allowed) LocalContentColor.current else MaterialTheme.colorScheme.error
+                                        )
+                                    }
+                                }
+                            }
+                            Spacer(Modifier.height(8.dp))
                         }
                     }
                 }

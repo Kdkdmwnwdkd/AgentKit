@@ -39,6 +39,9 @@ import com.example.agentkit.skill.RhinoJsEngine
 import com.example.agentkit.skill.SkillExecutor
 import com.example.agentkit.skill.SkillLoader
 import com.example.agentkit.skill.createUseSkillTool
+import com.example.agentkit.skill.CapabilityRegistry
+import com.example.agentkit.skill.policyFor
+import com.example.agentkit.skill.checkCapabilityGate
 import com.example.agentkit.tools.ClipboardTool
 import com.example.agentkit.tools.HttpRequestTool
 import com.example.agentkit.tools.NotificationTool
@@ -49,6 +52,25 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import java.io.File
+
+/** 单个技能向 UI 暴露的「工具-能力」明细。 */
+data class SkillToolInfo(
+    val name: String,
+    val capability: String,
+    val allowed: Boolean
+)
+
+/** UI 用技能信息（含 L5 安全策略摘要）：技能中心卡片直接消费。 */
+data class SkillUiInfo(
+    val id: String,
+    val name: String,
+    val description: String,
+    val trust: String,
+    val isScript: Boolean,
+    val allowScript: Boolean,
+    val maxCapability: String,
+    val tools: List<SkillToolInfo>
+)
 
 /** UI 渲染用的消息项（与核心层 ChatMessage 解耦）。 */
 sealed interface UiItem {
@@ -99,6 +121,30 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
 
     /** 扫描已安装 Skill（assets/skills）；为空则不打 use_skill 工具。 */
     private val skills = SkillLoader.loadAll(app)
+
+    /** UI 用技能信息（含安全策略摘要）：让 L5 全局能力门「看得见」。 */
+    private val _skillInfos = MutableStateFlow(
+        skills.map { sk ->
+            val policy = policyFor(sk.trust)
+            SkillUiInfo(
+                id = sk.id,
+                name = sk.name,
+                description = sk.description ?: "",
+                trust = sk.trust,
+                isScript = sk.entry != null,
+                allowScript = policy.allowScript,
+                maxCapability = policy.maxCapability.name,
+                tools = sk.tools.map { t ->
+                    SkillToolInfo(
+                        name = t,
+                        capability = CapabilityRegistry.cap(t).name,
+                        allowed = checkCapabilityGate(t, sk.trust) == null
+                    )
+                }
+            )
+        }
+    )
+    val skillInfos: StateFlow<List<SkillUiInfo>> = _skillInfos.asStateFlow()
 
     private val registry = ToolRegistry().apply {
         register(HttpRequestTool())
