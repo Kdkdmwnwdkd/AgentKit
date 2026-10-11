@@ -67,7 +67,11 @@ data class ToolCall(
  */
 sealed interface ChatMessage
 data class SystemMessage(val content: String) : ChatMessage
-data class UserMessage(val content: String) : ChatMessage
+data class UserMessage(
+    val content: String,
+    /** 视觉模型图片（data URL 列表），作为多模态内容附在消息里发给 LLM。 */
+    val images: List<String> = emptyList()
+) : ChatMessage
 data class AssistantMessage(
     val content: String,
     val toolCalls: List<ToolCall> = emptyList()

@@ -8,10 +8,12 @@ import android.provider.Settings
 import androidx.lifecycle.viewModelScope
 import com.example.agentkit.automation.AutomationBridge
 import com.example.agentkit.automation.AutomationPrefs
+import com.example.agentkit.automation.ScreenshotBridge
 import com.example.agentkit.automation.UiClickTool
 import com.example.agentkit.automation.UiInputTool
 import com.example.agentkit.automation.UiKeyTool
 import com.example.agentkit.automation.UiLongPressTool
+import com.example.agentkit.automation.UiScreenshotTool
 import com.example.agentkit.automation.UiSwipeTool
 import com.example.agentkit.automation.UiTapTool
 import com.example.agentkit.automation.UiTreeTool
@@ -66,6 +68,10 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private val _serviceConnected = MutableStateFlow(AutomationBridge.service != null)
     val serviceConnected: StateFlow<Boolean> = _serviceConnected.asStateFlow()
 
+    /** 屏幕捕获状态：供自动化页反映是否正在捕获。 */
+    private val _capturing = MutableStateFlow(ScreenshotBridge.isCapturing)
+    val capturing: StateFlow<Boolean> = _capturing.asStateFlow()
+
     /** 扫描已安装 Skill（assets/skills）；为空则不打 use_skill 工具。 */
     private val skills = SkillLoader.loadAll(app)
 
@@ -83,6 +89,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         register(UiInputTool())
         register(UiKeyTool())
         register(UiClickTool())
+        // 截图视觉（L2）：喂给视觉模型“看”屏幕
+        register(UiScreenshotTool(workspace))
     }
 
     /** JS 执行引擎（Rhino，纯 Java 无需 NDK）；初始化失败则降级为仅 prompt 形态。 */
@@ -118,6 +126,23 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     fun openAccessibilitySettings(ctx: Context) {
         val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         ctx.startActivity(intent)
+    }
+
+    /** 屏幕捕获：缓存 MediaProjection 授权结果（来自系统授权回调）。 */
+    fun setScreenCapturePermission(resultCode: Int, data: android.content.Intent?) {
+        ScreenshotBridge.setPermission(resultCode, data)
+    }
+
+    /** 屏幕捕获：启动前台服务开始截屏（需先 setScreenCapturePermission）。 */
+    fun startScreenCapture(ctx: Context) {
+        ScreenshotBridge.startService(ctx)
+        _capturing.value = true
+    }
+
+    /** 屏幕捕获：停止前台服务。 */
+    fun stopScreenCapture(ctx: Context) {
+        ScreenshotBridge.stopService(ctx)
+        _capturing.value = false
     }
 
     private val _messages = MutableStateFlow<List<UiItem>>(emptyList())

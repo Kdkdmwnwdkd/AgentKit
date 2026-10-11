@@ -85,5 +85,11 @@
                 android:resource="@xml/agent_accessibility_config" />
         </service>
 
+        <!-- 屏幕捕获前台服务（L2 截图视觉）：Android 14 要求 foregroundServiceType=mediaProjection -->
+        <service
+            android:name=".automation.ScreenCaptureService"
+            android:exported="false"
+            android:foregroundServiceType="mediaProjection" />
+
     </application>
 </manifest>

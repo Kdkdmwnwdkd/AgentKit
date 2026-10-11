@@ -141,7 +141,25 @@ class OpenAIClient(
     private fun toApiMessage(msg: ChatMessage): JsonObject = buildJsonObject {
         when (msg) {
             is SystemMessage -> { put("role", "system"); put("content", msg.content) }
-            is UserMessage -> { put("role", "user"); put("content", msg.content) }
+            is UserMessage -> {
+                put("role", "user")
+                if (msg.images.isEmpty()) {
+                    put("content", msg.content)
+                } else {
+                    // 多模态：content 改为 part 数组，文本 + image_url 交替
+                    putJsonArray("content") {
+                        if (msg.content.isNotBlank()) {
+                            addJsonObject { put("type", "text"); put("text", msg.content) }
+                        }
+                        msg.images.forEach { url ->
+                            addJsonObject {
+                                put("type", "image_url")
+                                putJsonObject("image_url") { put("url", url) }
+                            }
+                        }
+                    }
+                }
+            }
             is AssistantMessage -> {
                 put("role", "assistant")
                 if (msg.content.isNotBlank()) put("content", msg.content)

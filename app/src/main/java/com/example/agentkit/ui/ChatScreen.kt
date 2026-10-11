@@ -13,7 +13,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import android.app.Activity
+import android.content.Context
+import android.media.projection.MediaProjectionManager
 import com.example.agentkit.skill.ModelConfig
 
 @Composable
@@ -179,7 +184,16 @@ fun ModelConfigScreen(vm: ChatViewModel, onBack: () -> Unit) {
 fun AutomationScreen(vm: ChatViewModel, onBack: () -> Unit) {
     val enabled by vm.automationEnabled.collectAsStateWithLifecycle()
     val connected by vm.serviceConnected.collectAsStateWithLifecycle()
+    val capturing by vm.capturing.collectAsStateWithLifecycle()
     val ctx = LocalContext.current
+
+    // 屏幕捕获授权：调起系统“是否允许截取屏幕”弹窗
+    val captureLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { res ->
+        if (res.resultCode == Activity.RESULT_OK && res.data != null) {
+            vm.setScreenCapturePermission(res.resultCode, res.data)
+            vm.startScreenCapture(ctx)
+        }
+    }
 
     Scaffold(
         topBar = {
@@ -200,6 +214,7 @@ fun AutomationScreen(vm: ChatViewModel, onBack: () -> Unit) {
                         if (connected) "✅ 无障碍服务已连接" else "⚠️ 无障碍服务未连接（需在系统设置中开启 AgentKit 自动化）"
                     )
                     Text(if (enabled) "✅ 自动化总开关：开" else "⛔ 自动化总开关：关")
+                    Text(if (capturing) "✅ 屏幕捕获中（视觉模型可读取画面）" else "⛔ 屏幕捕获未开启")
                 }
             }
 
@@ -213,9 +228,32 @@ fun AutomationScreen(vm: ChatViewModel, onBack: () -> Unit) {
                 modifier = Modifier.fillMaxWidth()
             ) { Text("前往系统设置开启无障碍服务") }
 
+            // L2 截图视觉：开启后 Agent 可“看”屏幕
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("屏幕捕获（截图视觉）", style = MaterialTheme.typography.titleMedium)
+                    Text("开启后，Agent 可通过 ui_screenshot 截取屏幕并“看见”图标/图片/验证码等 UI 树无法描述的内容。")
+                    if (!capturing) {
+                        Button(
+                            onClick = {
+                                val mpm = ctx.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+                                captureLauncher.launch(mpm.createScreenCaptureIntent())
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) { Text("开始屏幕捕获（授权录屏）") }
+                    } else {
+                        Button(
+                            onClick = { vm.stopScreenCapture(ctx) },
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = ButtonDefaults.outlinedButtonColors()
+                        ) { Text("停止捕获") }
+                    }
+                }
+            }
+
             Text(
-                "可用工具：ui_tree（读取界面）、ui_tap / ui_long_press / ui_swipe（手势）、ui_input（输入文本）、ui_key（home/back/recent）、ui_click（按文本或 ID 点击）。\n" +
-                    "在对话里直接说“打开设置并点击某某”“在搜索框输入xxx”即可让 Agent 操作手机。",
+                "可用工具：ui_tree（读取界面）、ui_tap / ui_long_press / ui_swipe（手势）、ui_input（输入文本）、ui_key（home/back/recent）、ui_click（按文本或 ID 点击）、ui_screenshot（截取屏幕给视觉模型看）。\n" +
+                    "在对话里直接说“打开设置并点击某某”“截个屏看看现在是什么界面”即可让 Agent 操作手机。",
                 style = MaterialTheme.typography.bodySmall
             )
         }

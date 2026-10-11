@@ -3,6 +3,7 @@ package com.example.agentkit.core
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import com.example.agentkit.core.ToolPart
 
 const val DEFAULT_SYSTEM_PROMPT = """你是一个运行在 Android 设备上的本地 AI 助手。
 你可以使用一组工具来完成任务。当完成任务需要信息或操作时，先调用相应工具，再基于工具结果给出最终回答。
@@ -48,13 +49,18 @@ class AgentLoop(
             if (resp.toolCalls.isEmpty()) return messages
 
             // 并行执行本轮工具调用（受 maxParallelTools 限流）
+            val stepImages = mutableListOf<String>()
             val results = coroutineScope {
                 resp.toolCalls
                     .take(maxParallelTools)
-                    .map { call -> async { executeCall(call) } }
+                    .map { call -> async { executeCall(call, stepImages) } }
                     .awaitAll()
             }
             messages.addAll(results)
+            // 若本轮有工具返回图片（如 ui_screenshot），附到下一轮对话让视觉模型“看见”
+            if (stepImages.isNotEmpty()) {
+                messages.add(UserMessage("请看下面由工具返回的画面：", stepImages.toList()))
+            }
             checkpoint?.invoke(messages)
             maybeCompact(messages)
         }
@@ -63,8 +69,9 @@ class AgentLoop(
         return messages
     }
 
-    /** 单步执行：未知工具、审批拒绝、异常都包装成 ToolMessage 进入历史。 */
-    private suspend fun executeCall(call: ToolCall): ToolMessage {
+    /** 单步执行：未知工具、审批拒绝、异常都包装成 ToolMessage 进入历史。
+     * 若工具返回图片（ToolPart.Image），其 url 收集到 [images] 供回灌视觉模型。 */
+    private suspend fun executeCall(call: ToolCall, images: MutableList<String>): ToolMessage {
         val tool = registry.get(call.name)
             ?: return ToolMessage(call.id, call.name, call.arguments, "未知工具：${call.name}", isError = true)
 
@@ -75,7 +82,13 @@ class AgentLoop(
                 return ToolMessage(call.id, call.name, call.arguments, "用户拒绝了该危险操作", isError = true)
             }
         }
-        return registry.execute(call)
+        return try {
+            val result = tool.execute(call.arguments)
+            result.parts.filterIsInstance<ToolPart.Image>().forEach { images.add(it.url) }
+            ToolMessage(call.id, tool.name, call.arguments, result.content, result.isError)
+        } catch (e: Throwable) {
+            ToolMessage(call.id, call.name, call.arguments, "工具执行异常：${e.message}", isError = true)
+        }
     }
 
     /** 供应商瞬时失败重试（协议/鉴权错误等不可重试错误仍会快速失败）。 */
