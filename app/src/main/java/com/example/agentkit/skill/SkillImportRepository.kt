@@ -37,9 +37,6 @@ class ImportedSkillRepository(private val context: Context) {
     /** 解析用（容忍未知字段，兼容各版本 skill.json）。 */
     private val json = Json { ignoreUnknownKeys = true }
 
-    /** 写回用（prettyPrint，便于人工审阅）。 */
-    private val prettyJson = Json { ignoreUnknownKeys = true; prettyPrint = true }
-
     /**
      * 扫描 filesDir/skills/imported/<id>/skill.json，反序列化为技能清单列表。
      * @param app 当前 Context（与构造入参同源，保持与 SkillLoader 一致的调用形态）。
@@ -175,6 +172,13 @@ class ImportedSkillRepository(private val context: Context) {
     }
 
     companion object {
+        /**
+         * 写回用（prettyPrint，便于人工审阅）。
+         * 定义在 companion 作用域，使静态的 [demoZipBytes] 与实例方法
+         * [writeTrust] / [setScriptAuthorization] 可共用同一实例。
+         */
+        private val prettyJson = Json { ignoreUnknownKeys = true; prettyPrint = true }
+
         /**
          * 生成一个示例技能的 zip 字节（纯提示词形态、无 entry，便于无网络演示）。
          * 含 skill.json（id=com.example.demo.greet、name=示例·打招呼、trust=imported）与 SKILL.md。
