@@ -25,10 +25,10 @@ private fun notReady(): ToolResult =
     )
 
 /** 在主线程调用服务方法，并把 Boolean 成败转成 ToolResult。 */
-private inline fun runOnService(
+private suspend fun runOnService(
     okMsg: String,
     failMsg: String,
-    block: (AgentAccessibilityService) -> Boolean
+    block: suspend (AgentAccessibilityService) -> Boolean
 ): ToolResult {
     val svc = AutomationBridge.service
     if (!AutomationBridge.isReady() || svc == null) return notReady()

@@ -1,6 +1,7 @@
 package com.example.agentkit.automation
 
 import android.accessibilityservice.AccessibilityService
+import android.accessibilityservice.GestureDescription
 import android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_BACK
 import android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_HOME
 import android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_RECENTS
