@@ -80,10 +80,10 @@ class RhinoJsEngine : JsEngine {
                         .map { it.javaClass.name }
                         .filterNot { name -> BLOCKED_CLASS_PREFIXES.any { p -> name.startsWith(p) } }
                         .toSet() + SkillRuntimeBridge::class.java.name
-                    cx.classShutter = ClassShutter { className ->
+                    cx.setClassShutter(ClassShutter { className ->
                         className in injectedClasses ||
                             !BLOCKED_CLASS_PREFIXES.any { p -> className.startsWith(p) }
-                    }
+                    })
                     val scope = cx.initStandardObjects()
                     for ((k, v) in bindings) scope.put(k, scope, org.mozilla.javascript.Context.javaToJS(v, scope))
                     // 包成函数表达式：(source)；若求值结果是个函数，则注入 (input, agent) 调用
