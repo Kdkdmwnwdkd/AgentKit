@@ -1,0 +1,199 @@
+package com.example.agentkit.skill
+
+import android.content.Context
+import com.example.agentkit.core.AgentTool
+import com.example.agentkit.core.JsonSchema
+import com.example.agentkit.core.ToolResult
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonPrimitive
+
+/** 注入系统提示时，单技能指令的最大字节数（对齐 Coomi 的 MAX_SKILL_CONTEXT_BYTES=64KB）。 */
+const val MAX_SKILL_CONTEXT_BYTES = 64 * 1024
+
+/**
+ * Skill 清单 frontmatter：对应一个 Skill 目录下的 skill.json。
+ * 第一阶段只负责「解析 + use_skill 按需加载 + 工具白名单」，脚本执行（main.js）放到第二阶段。
+ *
+ * 元数据字段（keywords/file_types/tool_requirements/risks）借鉴 Coomi 的 Skill 元数据，
+ * 用于下面的 [SkillRouter] 智能打分路由，而非把全部技能一股脑塞进系统提示。
+ */
+@Serializable
+data class SkillManifest(
+    val id: String,
+    val name: String,
+    val version: String,
+    val description: String? = null,
+    val prompt: String? = null,
+    val tools: List<String> = emptyList(),
+    val entry: String? = null,
+    val permissions: List<String> = emptyList(),
+    val keywords: List<String> = emptyList(),
+    val file_types: List<String> = emptyList(),
+    val tool_requirements: List<String> = emptyList(),
+    val risks: List<String> = emptyList()
+)
+
+/**
+ * 项目（Project）= 一组 Skill + 工具白名单 + 模型配置 + 工作目录。
+ * 切换 Project，Agent 的行为、可用工具、模型完全不同——正好对应「不同场景」。
+ */
+data class Project(
+    val id: String,
+    val name: String,
+    val skillIds: List<String> = emptyList(),
+    val toolWhitelist: List<String>? = null, // null 表示不限制
+    val modelConfig: ModelConfig,
+    val workingDir: String
+)
+
+@Serializable
+data class ModelConfig(
+    val baseUrl: String = "https://api.openai.com/v1",
+    val apiKey: String = "",
+    val model: String = "gpt-4o-mini"
+)
+
+/** 路由上下文：根据本次请求的特征给 Skill 打分（Coomi SkillRouter 思路，净室重写）。 */
+data class SkillRouteContext(
+    val query: String = "",
+    val attachments: List<String> = emptyList(),
+    val expectedTools: List<String> = emptyList(),
+    val fileTypes: List<String> = emptyList(),
+    val networkAllowed: Boolean = true,
+    val destructiveAllowed: Boolean = true
+)
+
+/**
+ * Skill 路由器：扫描已安装 Skill 的元数据，根据路由上下文打分，
+ * 返回最匹配的候选列表，供 [buildSkillSystemPrompt] 只列出相关技能。
+ */
+class SkillRouter(private val skills: List<SkillManifest>) {
+    fun route(ctx: SkillRouteContext): List<SkillManifest> =
+        skills.map { it to score(it, ctx) }
+            .filter { it.second > 0 }
+            .sortedByDescending { it.second }
+            .map { it.first }
+
+    private fun score(skill: SkillManifest, ctx: SkillRouteContext): Int {
+        var s = 0
+        val q = ctx.query.lowercase()
+        skill.keywords.forEach { if (it.lowercase() in q) s += 3 }
+        skill.description?.lowercase()?.takeIf { q.isNotBlank() }?.let { if (it.contains(q)) s += 2 }
+        ctx.fileTypes.forEach { if (it in skill.file_types) s += 2 }
+        ctx.expectedTools.forEach { if (it in skill.tool_requirements) s += 2 }
+        if (!ctx.networkAllowed && "network" in skill.risks) s -= 10
+        if (!ctx.destructiveAllowed && "destructive" in skill.risks) s -= 10
+        return s
+    }
+}
+
+/** 注入系统提示：列出可用 Skill（XML 包裹，escapeXml 防注入，对齐 RikkaHub 的 use_skill 思路）。 */
+fun buildSkillSystemPrompt(skills: List<SkillManifest>): String {
+    if (skills.isEmpty()) return ""
+    return buildString {
+        appendLine("**已启用的技能（Skills）**")
+        appendLine("当用户需求匹配下列技能时，调用 use_skill 加载其指令。")
+        appendLine("<available_skills>")
+        skills.forEach { sk ->
+            appendLine("  <skill>")
+            appendLine("    <name>${sk.name.escapeXml()}</name>")
+            appendLine("    <description>${(sk.description ?: "").take(MAX_SKILL_CONTEXT_BYTES).escapeXml()}</description>")
+            appendLine("  </skill>")
+        }
+        appendLine("</available_skills>")
+    }
+}
+
+/**
+ * 构造单一 use_skill 工具（RikkaHub 思路）：不是每个 skill 一个工具，而是统一一个
+ * use_skill(name, path) 工具，模型按需调用以加载某 skill 的指令或执行其脚本。
+ * 通过 [systemPrompt] 自动把可用技能列表注入系统提示（由 AgentLoop 合并）。
+ *
+ * @param skills 已启用的技能清单
+ * @param executor Skill 执行器：prompt 形态返回指令正文，script 形态执行 main.js
+ */
+fun createUseSkillTool(
+    skills: List<SkillManifest>,
+    executor: SkillExecutor
+): AgentTool {
+    val byName = skills.associateBy { it.name }
+    return object : AgentTool {
+        override val name = "use_skill"
+        override val description =
+            "加载并应用某个技能以获取专用指令或执行其脚本能力。当用户需求匹配某个可用技能时调用。"
+        override val systemPrompt: String get() = buildSkillSystemPrompt(skills)
+
+        override val parameters = JsonSchema.objectSchema(
+            JsonSchema.prop("name", "string", "要使用的技能名称"),
+            JsonSchema.prop(
+                "path", "string",
+                "技能目录内相对文件路径（可选）。省略则读取默认指令；仅可使用技能指令中给出的链接路径，不要猜测"
+            )
+        )
+
+        override suspend fun execute(args: JsonObject): ToolResult {
+            val name = args["name"]?.jsonPrimitive?.contentOrNull
+                ?: return ToolResult("缺少 name", isError = true)
+            val skill = byName[name] ?: byName[name.escapeXml()]
+                ?: return ToolResult(
+                    "未找到技能：$name。可用：${byName.keys.joinToString()}",
+                    isError = true
+                )
+            // 把模型传入的 name/path 等参数整包 JSON 透传给脚本作为 input
+            val text = executor.runSkill(skill, args.toString()).text
+            return ToolResult(text.take(MAX_SKILL_CONTEXT_BYTES))
+        }
+    }
+}
+
+private fun String.escapeXml(): String = buildString(length) {
+    for (c in this@escapeXml) {
+        when (c) {
+            '&' -> append("&amp;")
+            '<' -> append("&lt;")
+            '>' -> append("&gt;")
+            else -> append(c)
+        }
+    }
+}
+
+/** 从 assets/skills/<id>/skill.json 扫描已安装的 Skill 清单（Android 数据层）。 */
+object SkillLoader {
+    private val json = Json { ignoreUnknownKeys = true }
+
+    fun loadAll(context: Context): List<SkillManifest> {
+        val out = mutableListOf<SkillManifest>()
+        runCatching {
+            val roots = context.assets.list("skills") ?: return@runCatching
+            for (id in roots) {
+                val text = context.assets.open("skills/$id/skill.json")
+                    .bufferedReader().use { it.readText() }
+                out += json.decodeFromString<SkillManifest>(text)
+            }
+        }
+        return out
+    }
+
+    /** 读取技能指令正文：优先 SKILL.md，其次 prompt.md，再次 skill.json 的 prompt 字段。 */
+    fun readSkillBody(context: Context, skill: SkillManifest): String {
+        for (fileName in listOf("SKILL.md", "prompt.md")) {
+            runCatching {
+                context.assets.open("skills/${skill.id}/$fileName")
+                    .bufferedReader().use { it.readText() }
+            }.getOrNull()?.let { return it }
+        }
+        return skill.prompt ?: ""
+    }
+
+    /** 读取技能脚本源码：assets/skills/<id>/<entry>。无 entry 或读不到时返回 null（回退 prompt 形态）。 */
+    fun readEntry(context: Context, skill: SkillManifest): String? {
+        val entry = skill.entry ?: return null
+        return runCatching {
+            context.assets.open("skills/${skill.id}/$entry")
+                .bufferedReader().use { it.readText() }
+        }.getOrNull()
+    }
+}
