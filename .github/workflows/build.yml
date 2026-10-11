@@ -25,11 +25,13 @@ jobs:
           curl -sSL https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -o /tmp/cmdtools.zip
           unzip -q /tmp/cmdtools.zip -d "$SDK/cmdline-tools"
           mv "$SDK/cmdline-tools/cmdline-tools" "$SDK/cmdline-tools/latest"
-          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
-          echo "$SDK/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
-          echo "$SDK/platform-tools" >> "$GITHUB_PATH"
+          # 注意：追加 $GITHUB_PATH 对同一 step 内不生效，必须显式 export PATH
+          export ANDROID_HOME=$SDK
+          export PATH="$SDK/cmdline-tools/latest/bin:$PATH"
           yes | sdkmanager --licenses >/dev/null
           sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
+          echo "$SDK/platform-tools" >> "$GITHUB_PATH"
 
       - name: Point local.properties to SDK
         run: echo "sdk.dir=$ANDROID_HOME" > local.properties
