@@ -3,6 +3,7 @@ package com.example.agentkit.ui
 import android.app.Application
 import android.app.AppOpsManager
 import android.content.Context
+import android.net.Uri
 import android.content.Intent
 import android.content.ComponentName
 import android.provider.Settings
@@ -71,6 +72,8 @@ data class SkillUiInfo(
     val name: String,
     val description: String,
     val trust: String,
+    /** 是否来自「导入」来源（filesDir/skills/imported），决定能否授权/卸载。 */
+    val isImported: Boolean,
     val isScript: Boolean,
     val allowScript: Boolean,
     val maxCapability: String,
@@ -156,6 +159,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
             name = sk.name,
             description = sk.description ?: "",
             trust = sk.trust,
+            isImported = sk.id in importedIds,
             isScript = sk.entry != null,
             allowScript = policy.allowScript,
             maxCapability = policy.maxCapability.name,
@@ -368,20 +372,54 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** 卸载指定技能（仅导入来源）。 */
+    /**
+     * 从 SAF 选择的 Uri 导入 zip：文件读取放 Dispatchers.IO，绝不在主线程读字节。
+     * @param uri 来自 ActivityResultContracts.GetContent() 的内容 Uri。
+     */
+    fun importFromUri(uri: Uri) {
+        viewModelScope.launch {
+            val result = runCatching {
+                val bytes = withContext(Dispatchers.IO) {
+                    app.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                        ?: throw IllegalArgumentException("无法读取所选文件")
+                }
+                importRepo.installZip(bytes).getOrThrow()
+            }
+            if (result.isFailure) {
+                _importStatus.value = "⚠️ 导入失败：${result.exceptionOrNull()?.message ?: "未知错误"}"
+                return@launch
+            }
+            reloadSkills()
+            _importStatus.value = "✅ 已导入：${result.getOrThrow()}"
+        }
+    }
+
+    /** 卸载指定技能（仅导入来源）；失败时给出明确提示，不谎报成功。 */
     fun uninstallSkill(id: String) {
         viewModelScope.launch {
-            importRepo.uninstall(id)
+            val ok = importRepo.uninstall(id)
+            if (!ok) {
+                _importStatus.value = "⚠️ 卸载失败：$id"
+                return@launch
+            }
             reloadSkills()
             _importStatus.value = "🗑️ 已卸载：$id"
         }
     }
 
-    /** 设置某技能的脚本授权（allow=true 回写 packaged，否则 imported）。 */
+    /**
+     * 设置某技能的脚本授权（allow=true → 运行时 packaged，false → imported）。
+     * 授权状态由仓库落 SharedPreferences，不再改写 skill.json。
+     */
     fun setScriptAuthorization(id: String, allow: Boolean) {
         viewModelScope.launch {
-            importRepo.setScriptAuthorization(id, allow)
+            val ok = importRepo.setScriptAuthorization(id, allow)
+            if (!ok) {
+                _importStatus.value = "⚠️ 操作失败：$id"
+                return@launch
+            }
             reloadSkills()
+            _importStatus.value = if (allow) "✅ 已授权脚本：$id" else "✅ 已撤销脚本授权：$id"
         }
     }
 

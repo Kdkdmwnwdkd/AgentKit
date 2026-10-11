@@ -236,13 +236,11 @@ fun AutomationScreen(vm: ChatViewModel, onBack: () -> Unit) {
     var showImportDialog by remember { mutableStateOf(false) }
     var importUrl by remember { mutableStateOf("") }
     var authTarget by remember { mutableStateOf<SkillUiInfo?>(null) }
+    var uninstallTarget by remember { mutableStateOf<SkillUiInfo?>(null) }
 
-    // 从本机选择 .zip 文件（SAF）
+    // 从本机选择 .zip 文件（SAF）：只把 Uri 交给 ViewModel，由其切到 IO 线程读字节
     val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
-        uri?.let {
-            val bytes = ctx.contentResolver.openInputStream(it)?.use { s -> s.readBytes() }
-            bytes?.let { vm.importFromFile(bytes) }
-        }
+        uri?.let { vm.importFromUri(it) }
     }
 
     // 进入本页时刷新权限授予状态，反映用户在系统设置里的最新操作
@@ -425,16 +423,28 @@ fun AutomationScreen(vm: ChatViewModel, onBack: () -> Unit) {
                                         )
                                     }
                                 }
-                                if (skill.trust.lowercase() == "imported") {
+                                // 按「来源」而非 trust 显示操作：授权后仍可撤销，避免一次授权不可逆
+                                if (skill.isImported) {
                                     Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Text(
-                                            "允许脚本执行",
-                                            style = MaterialTheme.typography.bodySmall,
-                                            modifier = Modifier.weight(1f)
-                                        )
-                                        Button(onClick = { authTarget = skill }) { Text("授权脚本") }
+                                        if (skill.trust.lowercase() == "imported") {
+                                            Text(
+                                                "允许脚本执行",
+                                                style = MaterialTheme.typography.bodySmall,
+                                                modifier = Modifier.weight(1f)
+                                            )
+                                            Button(onClick = { authTarget = skill }) { Text("授权脚本") }
+                                        } else {
+                                            Text(
+                                                "已授权脚本执行",
+                                                style = MaterialTheme.typography.bodySmall,
+                                                modifier = Modifier.weight(1f)
+                                            )
+                                            Button(onClick = { vm.setScriptAuthorization(skill.id, false) }) {
+                                                Text("撤销授权")
+                                            }
+                                        }
                                         Spacer(Modifier.width(8.dp))
-                                        Button(onClick = { vm.uninstallSkill(skill.id) }) { Text("卸载") }
+                                        Button(onClick = { uninstallTarget = skill }) { Text("卸载") }
                                     }
                                 }
                             }
@@ -511,6 +521,26 @@ fun AutomationScreen(vm: ChatViewModel, onBack: () -> Unit) {
                     },
                     dismissButton = {
                         TextButton(onClick = { authTarget = null }) { Text("取消") }
+                    }
+                )
+            }
+
+            // L7 卸载技能二次确认 Dialog
+            if (uninstallTarget != null) {
+                AlertDialog(
+                    onDismissRequest = { uninstallTarget = null },
+                    title = { Text("卸载技能") },
+                    text = {
+                        Text("确认卸载「${uninstallTarget?.name ?: ""}」？该技能目录将被删除，且脚本授权一并撤销。")
+                    },
+                    confirmButton = {
+                        Button(onClick = {
+                            uninstallTarget?.let { vm.uninstallSkill(it.id) }
+                            uninstallTarget = null
+                        }) { Text("确认卸载") }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { uninstallTarget = null }) { Text("取消") }
                     }
                 )
             }

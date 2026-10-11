@@ -22,10 +22,14 @@ import java.util.zip.ZipOutputStream
  * 使其落入 L5 安全内核的收紧策略（禁脚本 + 能力上限 PRIVILEGED）。
  *
  * 关键安全约束：
- *  - **强制降权**：导入即把 trust 写为 imported（用户此前已授权写回 packaged 的技能，其 trust
- *    已是 packaged，保留，不降级——避免「授权后被重新导入又掉回 imported」）。
+ *  - **强制降权 + 授权外置**：导入即无条件把磁盘 skill.json 的 trust 写成 imported；
+ *    zip 自带的 trust 声明（如 "packaged"）一律不采信。运行时信任等级**唯一**由本地
+ *    SharedPreferences 授权状态（[authorizedIds]）决定，重新导入/卸载都会撤销授权（fail-safe）。
+ *  - **id 白名单**：技能 id 必须匹配 [A-Za-z0-9._-]+，且其目录 canonicalPath 必须落在
+ *    imported 根目录之下，防越界写。
  *  - **防 Zip Slip**：解压前校验每个 entry 名称不含 ".."，且解压目标文件的 canonicalPath 必须
- *    落在目标目录 canonicalPath 之下，否则抛异常。
+ *    落在目标目录 canonicalPath + 分隔符之下，否则抛异常。
+ *  - **防 zip bomb**：条目数与累计解压字节设上限，超限抛 SecurityException。
  *  - **失败回滚**：installZip 任何异常都用 runCatching 包裹，失败时删除可能创建的半残目录。
  */
 class ImportedSkillRepository(private val context: Context) {
@@ -38,18 +42,47 @@ class ImportedSkillRepository(private val context: Context) {
     private val json = Json { ignoreUnknownKeys = true }
 
     /**
+     * 脚本授权状态持久化（**不写进 skill.json**）。
+     * 只有本仓库能读写，第三方 zip 无法通过自带 manifest 篡改授权状态。
+     */
+    private val prefs by lazy {
+        context.getSharedPreferences("imported_skill_auth", Context.MODE_PRIVATE)
+    }
+
+    /** 已授权执行脚本的导入技能 id 集合（来自 SharedPreferences，只读副本）。 */
+    private fun authorizedIds(): Set<String> =
+        prefs.getStringSet("authorized", emptySet<String>()) ?: emptySet<String>()
+
+    /**
+     * 写入/撤销某技能的脚本授权。
+     * 注意：必须构造**新的** Set 实例再 put，不能直接修改 [getStringSet] 返回的对象。
+     */
+    private fun setAuthorized(id: String, allow: Boolean) {
+        val s = authorizedIds().toMutableSet()
+        if (allow) s.add(id) else s.remove(id)
+        prefs.edit().putStringSet("authorized", s).apply()
+    }
+
+    /**
      * 扫描 filesDir/skills/imported/<id>/skill.json，反序列化为技能清单列表。
+     *
+     * **无条件覆盖 trust**：以目录名为 id，命中 [authorizedIds] 才是 packaged，否则一律 imported。
+     * 这是防绕过的关键——zip 自带 skill.json 里声明的 trust 完全不参与判定。
+     *
      * @param app 当前 Context（与构造入参同源，保持与 SkillLoader 一致的调用形态）。
      */
     fun loadImported(app: Context): List<SkillManifest> {
         val out = mutableListOf<SkillManifest>()
         val root = File(app.filesDir, "skills/imported")
         val ids = runCatching { root.list()?.toList() }.getOrNull() ?: return out
+        val authorized = authorizedIds()
         for (id in ids) {
             val file = File(root, "$id/skill.json")
             if (!file.isFile) continue
             runCatching {
-                out += json.decodeFromString<SkillManifest>(file.readText())
+                val manifest = json.decodeFromString<SkillManifest>(file.readText())
+                // 目录名即 id（与卸载/授权操作用的 id 一致）；trust 只认本地授权状态
+                out += manifest.copy(trust = if (id in authorized) "packaged" else "imported")
             }
         }
         return out
@@ -69,21 +102,29 @@ class ImportedSkillRepository(private val context: Context) {
             val id = json.decodeFromString<SkillManifest>(skillJsonText).id
             if (id.isBlank()) throw IllegalArgumentException("skill.json 的 id 为空")
 
-            destDir = File(baseDir, id)
-            // 幂等：已有则先清空，支持重新导入
-            if (destDir!!.exists()) destDir!!.deleteRecursively()
+            // id 白名单校验 + 目录越界校验：只允许 [A-Za-z0-9._-]，且必须落在 imported 根目录下
+            require(id.matches(Regex("[A-Za-z0-9._-]+"))) { "非法技能 id：$id" }
+            val target = File(baseDir, id)
+            require(target.canonicalPath.startsWith(baseDir.canonicalPath + File.separator)) {
+                "非法技能 id：$id"
+            }
 
-            // 第二遍：整包解压（带 Zip Slip 防护）
-            extractZipAll(zipBytes, destDir!!)
+            destDir = target
+            // 幂等：已有则先清空，支持重新导入
+            if (target.exists()) target.deleteRecursively()
+
+            // 第二遍：整包解压（带 Zip Slip / zip bomb 防护）
+            extractZipAll(zipBytes, target)
 
             // 反序列化校验 name 非空
-            val manifest = json.decodeFromString<SkillManifest>(File(destDir!!, "skill.json").readText())
+            val manifest = json.decodeFromString<SkillManifest>(File(target, "skill.json").readText())
             if (manifest.name.isBlank()) throw IllegalArgumentException("skill.json 的 name 为空")
 
-            // 强制降权：仅当用户此前未显式授权（trust 非 packaged）时回写为 imported
-            if (manifest.trust.lowercase() != "packaged") {
-                writeTrust(destDir!!, "imported")
-            }
+            // 强制降权（无条件）：磁盘 trust 恒为 imported，zip 自带的 trust 一律不采信。
+            // 运行时信任等级只由 SharedPreferences 授权状态决定。
+            writeTrust(target, "imported")
+            // fail-safe：重新导入视为新来源，撤销既有授权，需用户重新显式授权。
+            setAuthorized(id, false)
             id
         }
         // 失败回滚：删除可能创建的半残目录
@@ -93,30 +134,25 @@ class ImportedSkillRepository(private val context: Context) {
         return result
     }
 
-    /** 卸载指定技能：删除 filesDir/skills/imported/<id> 整目录。 */
+    /** 卸载指定技能：删除 filesDir/skills/imported/<id> 整目录，并撤销其授权。 */
     fun uninstall(id: String): Boolean {
         val dir = File(baseDir, id)
         if (!dir.exists()) return false
-        return dir.deleteRecursively()
+        val ok = dir.deleteRecursively()
+        // 卸载即撤销授权，避免同 id 再次导入时继承旧的授权状态（fail-safe）
+        if (ok) setAuthorized(id, false)
+        return ok
     }
 
     /**
-     * 改写 skill.json 里 trust 字段：allow=true → "packaged"（授权脚本），allow=false → "imported"。
-     * @return 是否成功写回。
+     * 设置某技能的脚本授权（仅写 SharedPreferences，**不改 skill.json**）。
+     * @param allow true 授权（运行时 trust=packaged），false 撤销（运行时 trust=imported）。
+     * @return 是否成功（技能目录不存在则 false）。
      */
     fun setScriptAuthorization(id: String, allow: Boolean): Boolean {
-        val file = File(File(baseDir, id), "skill.json")
-        if (!file.isFile) return false
-        return runCatching {
-            val obj = json.parseToJsonElement(file.readText()) as JsonObject
-            val newObj = buildJsonObject {
-                for ((k, v) in obj) {
-                    if (k == "trust") put(k, JsonPrimitive(if (allow) "packaged" else "imported"))
-                    else put(k, v)
-                }
-            }
-            file.writeText(prettyJson.encodeToString(JsonObject.serializer(), newObj))
-        }.isSuccess
+        if (!File(baseDir, id).exists()) return false
+        setAuthorized(id, allow)
+        return true
     }
 
     /** 把 skill.json 的 trust 字段重写为 [trust]（prettyPrint 写回）。 */
@@ -146,12 +182,20 @@ class ImportedSkillRepository(private val context: Context) {
         return null
     }
 
-    /** 把 zip 整体解压到 destDir，带 Zip Slip 防护。 */
+    /** 把 zip 整体解压到 destDir，带 Zip Slip 与 zip bomb 防护。 */
     private fun extractZipAll(zipBytes: ByteArray, destDir: File) {
-        val canonicalDest = destDir.canonicalPath
+        // 补上分隔符，避免 /a/b 与 /a/bc 的前缀误判
+        val canonicalDest = destDir.canonicalPath + File.separator
+        var entryCount = 0
+        var totalBytes = 0L
         ZipInputStream(ByteArrayInputStream(zipBytes)).use { zis ->
             var entry = zis.nextEntry
             while (entry != null) {
+                entryCount++
+                // 0) zip bomb 防护：条目数 / 累计解压字节上限
+                if (entryCount > MAX_ZIP_ENTRIES) {
+                    throw SecurityException("zip 条目数超过上限 $MAX_ZIP_ENTRIES，疑似 zip bomb")
+                }
                 if (!entry.isDirectory) {
                     // 1) 名称含 ".." 直接拒绝（路径穿越特征）
                     if (entry.name.contains("..")) {
@@ -163,7 +207,11 @@ class ImportedSkillRepository(private val context: Context) {
                         throw SecurityException("检测到 Zip Slip 越界写入：${entry.name}")
                     }
                     outFile.parentFile?.mkdirs()
-                    outFile.outputStream().use { os -> zis.copyTo(os) }
+                    // copyTo 返回实际拷贝字节数，累加用于 zip bomb 检测
+                    totalBytes += outFile.outputStream().use { os -> zis.copyTo(os) }
+                    if (totalBytes > MAX_ZIP_BYTES) {
+                        throw SecurityException("解压后体积超过上限 ${MAX_ZIP_BYTES / 1024 / 1024}MB，疑似 zip bomb")
+                    }
                 }
                 zis.closeEntry()
                 entry = zis.nextEntry
@@ -172,6 +220,12 @@ class ImportedSkillRepository(private val context: Context) {
     }
 
     companion object {
+        /** zip bomb 防护：单个技能包的条目数上限。 */
+        private const val MAX_ZIP_ENTRIES = 500
+
+        /** zip bomb 防护：单个技能包解压后累计字节上限（8MB）。 */
+        private const val MAX_ZIP_BYTES = 8L * 1024 * 1024
+
         /**
          * 写回用（prettyPrint，便于人工审阅）。
          * 定义在 companion 作用域，使静态的 [demoZipBytes] 与实例方法
