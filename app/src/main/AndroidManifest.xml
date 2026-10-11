@@ -91,5 +91,16 @@
             android:exported="false"
             android:foregroundServiceType="mediaProjection" />
 
+        <!-- 通知监听服务（L3 感知层）：系统级服务，需在“通知访问权限”中手动授予 -->
+        <service
+            android:name=".automation.AgentNotificationListener"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE"
+            android:exported="false"
+            android:label="AgentKit 通知监听">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
+
     </application>
 </manifest>

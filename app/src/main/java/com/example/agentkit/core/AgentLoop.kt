@@ -84,8 +84,9 @@ class AgentLoop(
         }
         return try {
             val result = tool.execute(call.arguments)
-            result.parts.filterIsInstance<ToolPart.Image>().forEach { images.add(it.url) }
-            ToolMessage(call.id, tool.name, call.arguments, result.content, result.isError)
+            val imgUrls = result.parts.filterIsInstance<ToolPart.Image>().map { it.url }
+            images.addAll(imgUrls)
+            ToolMessage(call.id, tool.name, call.arguments, result.content, result.isError, imgUrls)
         } catch (e: Throwable) {
             ToolMessage(call.id, call.name, call.arguments, "工具执行异常：${e.message}", isError = true)
         }

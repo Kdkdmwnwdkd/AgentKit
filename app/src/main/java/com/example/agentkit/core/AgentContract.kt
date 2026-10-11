@@ -83,7 +83,9 @@ data class ToolMessage(
     val name: String = "",
     val arguments: JsonObject = JsonObject(emptyMap()),
     val content: String,
-    val isError: Boolean = false
+    val isError: Boolean = false,
+    /** 工具返回的图片（data URL 列表），供 UI 直接渲染（如 ui_screenshot 截图）。 */
+    val images: List<String> = emptyList()
 ) : ChatMessage
 
 /**

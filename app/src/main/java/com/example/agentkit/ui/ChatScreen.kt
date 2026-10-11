@@ -1,5 +1,10 @@
 package com.example.agentkit.ui
 
+import android.content.Intent
+import android.graphics.BitmapFactory
+import android.provider.Settings
+import android.util.Base64
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -11,6 +16,9 @@ import androidx.compose.material3.LocalContentColor
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -20,6 +28,8 @@ import android.app.Activity
 import android.content.Context
 import android.media.projection.MediaProjectionManager
 import com.example.agentkit.skill.ModelConfig
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 @Composable
 fun AppNav(vm: ChatViewModel) {
@@ -108,7 +118,29 @@ private fun MessageBubble(text: String, color: androidx.compose.ui.graphics.Colo
     }
 }
 
-/** 工具调用用折叠卡片展示：默认只显示工具名，点「详情」展开入参与结果。 */
+/** 把 data URL（base64）解码成可显示的位图，异步避免阻塞主线程。 */
+@Composable
+private fun DataImage(dataUrl: String) {
+    val bitmap by produceState<ImageBitmap?>(null, dataUrl) {
+        value = withContext(Dispatchers.IO) {
+            runCatching {
+                val comma = dataUrl.indexOf(',')
+                if (comma < 0 || !dataUrl.startsWith("data:image")) return@runCatching null
+                val bytes = Base64.decode(dataUrl.substring(comma + 1), Base64.DEFAULT)
+                BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
+            }.getOrNull()
+        }
+    }
+    bitmap?.let {
+        Image(
+            bitmap = it,
+            contentDescription = "工具返回的图片",
+            modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp))
+        )
+    }
+}
+
+/** 工具调用用折叠卡片展示：默认只显示工具名，点「详情」展开入参与结果；图片默认可见。 */
 @Composable
 private fun ToolCard(item: UiItem.Tool) {
     var expanded by remember { mutableStateOf(false) }
@@ -140,6 +172,13 @@ private fun ToolCard(item: UiItem.Tool) {
                         color = if (item.isError) MaterialTheme.colorScheme.error else LocalContentColor.current,
                         modifier = Modifier.fillMaxWidth()
                     )
+                }
+            }
+            // 工具返回的图片（如 ui_screenshot 截图）直接渲染在卡片内，默认可见
+            if (item.images.isNotEmpty()) {
+                Spacer(Modifier.height(8.dp))
+                Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    item.images.forEach { DataImage(it) }
                 }
             }
         }
@@ -185,7 +224,12 @@ fun AutomationScreen(vm: ChatViewModel, onBack: () -> Unit) {
     val enabled by vm.automationEnabled.collectAsStateWithLifecycle()
     val connected by vm.serviceConnected.collectAsStateWithLifecycle()
     val capturing by vm.capturing.collectAsStateWithLifecycle()
+    val notificationGranted by vm.notificationGranted.collectAsStateWithLifecycle()
+    val usageGranted by vm.usageGranted.collectAsStateWithLifecycle()
     val ctx = LocalContext.current
+
+    // 进入本页时刷新权限授予状态，反映用户在系统设置里的最新操作
+    LaunchedEffect(Unit) { vm.refreshGrants() }
 
     // 屏幕捕获授权：调起系统“是否允许截取屏幕”弹窗
     val captureLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { res ->
@@ -251,9 +295,46 @@ fun AutomationScreen(vm: ChatViewModel, onBack: () -> Unit) {
                 }
             }
 
+            // L3 感知层：通知监听 + 当前前台应用感知
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("设备感知（通知与当前应用）", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        if (notificationGranted) "✅ 通知访问已授权（可读取新消息/推送）"
+                        else "⚠️ 通知访问未授权（需在系统设置中开启）"
+                    )
+                    Text(
+                        if (usageGranted) "✅ 使用情况访问已授权（可读取当前前台应用）"
+                        else "⚠️ 使用情况访问未授权（需在系统设置中开启）"
+                    )
+                    if (!notificationGranted) {
+                        Button(
+                            onClick = {
+                                ctx.startActivity(
+                                    Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)
+                                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                )
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) { Text("开启通知访问权限") }
+                    }
+                    if (!usageGranted) {
+                        Button(
+                            onClick = {
+                                ctx.startActivity(
+                                    Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)
+                                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                )
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) { Text("开启使用情况访问权限") }
+                    }
+                }
+            }
+
             Text(
-                "可用工具：ui_tree（读取界面）、ui_tap / ui_long_press / ui_swipe（手势）、ui_input（输入文本）、ui_key（home/back/recent）、ui_click（按文本或 ID 点击）、ui_screenshot（截取屏幕给视觉模型看）。\n" +
-                    "在对话里直接说“打开设置并点击某某”“截个屏看看现在是什么界面”即可让 Agent 操作手机。",
+                "可用工具：ui_tree（读取界面）、ui_tap / ui_long_press / ui_swipe（手势）、ui_input（输入文本）、ui_key（home/back/recent）、ui_click（按文本或 ID 点击）、ui_screenshot（截取屏幕给视觉模型看）、device_notifications（读取最近通知）、device_foreground_app（读取当前前台应用）。\n" +
+                    "在对话里直接说“打开设置并点击某某”“截个屏看看现在是什么界面”“刚才有没有新消息”即可让 Agent 操作并感知手机。",
                 style = MaterialTheme.typography.bodySmall
             )
         }

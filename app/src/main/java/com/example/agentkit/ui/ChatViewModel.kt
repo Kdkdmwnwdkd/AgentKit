@@ -1,13 +1,17 @@
 package com.example.agentkit.ui
 
 import android.app.Application
-import androidx.lifecycle.AndroidViewModel
+import android.app.AppOpsManager
 import android.content.Context
 import android.content.Intent
 import android.provider.Settings
+import androidx.core.app.NotificationManagerCompat
+import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.agentkit.automation.AutomationBridge
 import com.example.agentkit.automation.AutomationPrefs
+import com.example.agentkit.automation.DeviceForegroundAppTool
+import com.example.agentkit.automation.DeviceNotificationsTool
 import com.example.agentkit.automation.ScreenshotBridge
 import com.example.agentkit.automation.UiClickTool
 import com.example.agentkit.automation.UiInputTool
@@ -47,7 +51,13 @@ import java.io.File
 sealed interface UiItem {
     data class User(val text: String) : UiItem
     data class Assistant(val text: String) : UiItem
-    data class Tool(val call: ToolCall, val result: String, val isError: Boolean) : UiItem
+    data class Tool(
+        val call: ToolCall,
+        val result: String,
+        val isError: Boolean,
+        /** 工具返回的图片（data URL 列表），如 ui_screenshot 截图，直接渲染在对话中。 */
+        val images: List<String> = emptyList()
+    ) : UiItem
 }
 
 /**
@@ -72,6 +82,14 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private val _capturing = MutableStateFlow(ScreenshotBridge.isCapturing)
     val capturing: StateFlow<Boolean> = _capturing.asStateFlow()
 
+    /** 通知访问权限是否已授予（供感知层卡片展示）。 */
+    private val _notificationGranted = MutableStateFlow(false)
+    val notificationGranted: StateFlow<Boolean> = _notificationGranted.asStateFlow()
+
+    /** 使用情况访问权限是否已授予（供感知层卡片展示）。 */
+    private val _usageGranted = MutableStateFlow(false)
+    val usageGranted: StateFlow<Boolean> = _usageGranted.asStateFlow()
+
     /** 扫描已安装 Skill（assets/skills）；为空则不打 use_skill 工具。 */
     private val skills = SkillLoader.loadAll(app)
 
@@ -91,6 +109,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         register(UiClickTool())
         // 截图视觉（L2）：喂给视觉模型“看”屏幕
         register(UiScreenshotTool(workspace))
+        // 设备感知（L3）：通知监听 + 当前前台应用
+        register(DeviceNotificationsTool())
+        register(DeviceForegroundAppTool(app))
     }
 
     /** JS 执行引擎（Rhino，纯 Java 无需 NDK）；初始化失败则降级为仅 prompt 形态。 */
@@ -113,6 +134,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         // 同步总开关到桥；并把服务连接变化回写到 UI 状态流
         AutomationBridge.enabled = automationPrefs.enabled
         AutomationBridge.onConnectionChanged = { connected -> _serviceConnected.value = connected }
+        refreshGrants()
     }
 
     /** 设置页：切换自动化总开关（同时持久化并同步到桥）。 */
@@ -143,6 +165,21 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     fun stopScreenCapture(ctx: Context) {
         ScreenshotBridge.stopService(ctx)
         _capturing.value = false
+    }
+
+    /** 刷新权限授予状态（进入自动化页时调用，反映用户在系统设置里的变更）。 */
+    fun refreshGrants() {
+        _notificationGranted.value = NotificationManagerCompat
+            .getNotificationListenerGrantedPackages()
+            .contains(app.packageName)
+        _usageGranted.value = try {
+            val appOps = app.getSystemService(Context.APP_OPS_SERVICE) as AppOpsManager
+            appOps.unsafeCheckOpNoThrow(
+                AppOpsManager.OPSTR_GET_USAGE_STATS,
+                android.os.Process.myUid(),
+                app.packageName
+            ) == AppOpsManager.MODE_ALLOWED
+        } catch (_: Throwable) { false }
     }
 
     private val _messages = MutableStateFlow<List<UiItem>>(emptyList())
@@ -182,7 +219,12 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val item = when (msg) {
             is UserMessage -> UiItem.User(msg.content)
             is AssistantMessage -> UiItem.Assistant(msg.content)
-            is ToolMessage -> UiItem.Tool(ToolCall(msg.id, msg.name, msg.arguments), msg.content, msg.isError)
+            is ToolMessage -> UiItem.Tool(
+                ToolCall(msg.id, msg.name, msg.arguments),
+                msg.content,
+                msg.isError,
+                msg.images
+            )
             else -> return
         }
         _messages.value = _messages.value + item
