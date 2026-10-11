@@ -38,7 +38,7 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.4")
 
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
-    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.1")
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.3")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     // Skill 脚本执行引擎（纯 Java，无需 NDK）；将来要换 QuickJS 只需替换 JsEngine 实现
     implementation("org.mozilla:rhino-runtime:1.7.14")
