@@ -11,6 +11,7 @@ import androidx.compose.material3.LocalContentColor
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.agentkit.skill.ModelConfig
@@ -18,13 +19,17 @@ import com.example.agentkit.skill.ModelConfig
 @Composable
 fun AppNav(vm: ChatViewModel) {
     var route by remember { mutableStateOf("chat") }
-    if (route == "chat") ChatScreen(vm) { route = "config" }
-    else ModelConfigScreen(vm) { route = "chat" }
+    when (route) {
+        "chat" -> ChatScreen(vm, { route = "config" }, { route = "automation" })
+        "config" -> ModelConfigScreen(vm) { route = "chat" }
+        "automation" -> AutomationScreen(vm) { route = "chat" }
+        else -> ChatScreen(vm, { route = "config" }, { route = "automation" })
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ChatScreen(vm: ChatViewModel, onOpenConfig: () -> Unit) {
+fun ChatScreen(vm: ChatViewModel, onOpenConfig: () -> Unit, onOpenAutomation: () -> Unit) {
     val messages by vm.messages.collectAsStateWithLifecycle()
     val input by vm.input.collectAsStateWithLifecycle()
     val running by vm.isRunning.collectAsStateWithLifecycle()
@@ -38,7 +43,10 @@ fun ChatScreen(vm: ChatViewModel, onOpenConfig: () -> Unit) {
         topBar = {
             TopAppBar(
                 title = { Text("AgentKit") },
-                actions = { TextButton(onClick = onOpenConfig) { Text("模型") } }
+                actions = {
+                    TextButton(onClick = onOpenAutomation) { Text("自动化") }
+                    TextButton(onClick = onOpenConfig) { Text("模型") }
+                }
             )
         },
         bottomBar = {
@@ -162,6 +170,54 @@ fun ModelConfigScreen(vm: ChatViewModel, onBack: () -> Unit) {
                 vm.updateConfig(ModelConfig(baseUrl, apiKey, model))
                 onBack()
             }) { Text("保存") }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun AutomationScreen(vm: ChatViewModel, onBack: () -> Unit) {
+    val enabled by vm.automationEnabled.collectAsStateWithLifecycle()
+    val connected by vm.serviceConnected.collectAsStateWithLifecycle()
+    val ctx = LocalContext.current
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("自动化") },
+                navigationIcon = { IconButton(onClick = onBack) { Text("←") } }
+            )
+        }
+    ) { padding ->
+        Column(
+            Modifier.fillMaxSize().padding(padding).padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("状态", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        if (connected) "✅ 无障碍服务已连接" else "⚠️ 无障碍服务未连接（需在系统设置中开启 AgentKit 自动化）"
+                    )
+                    Text(if (enabled) "✅ 自动化总开关：开" else "⛔ 自动化总开关：关")
+                }
+            }
+
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text("自动化总开关（开启后 Agent 才能操作手机）", Modifier.weight(1f))
+                Switch(checked = enabled, onCheckedChange = { vm.setAutomationEnabled(it) })
+            }
+
+            Button(
+                onClick = { vm.openAccessibilitySettings(ctx) },
+                modifier = Modifier.fillMaxWidth()
+            ) { Text("前往系统设置开启无障碍服务") }
+
+            Text(
+                "可用工具：ui_tree（读取界面）、ui_tap / ui_long_press / ui_swipe（手势）、ui_input（输入文本）、ui_key（home/back/recent）、ui_click（按文本或 ID 点击）。\n" +
+                    "在对话里直接说“打开设置并点击某某”“在搜索框输入xxx”即可让 Agent 操作手机。",
+                style = MaterialTheme.typography.bodySmall
+            )
         }
     }
 }

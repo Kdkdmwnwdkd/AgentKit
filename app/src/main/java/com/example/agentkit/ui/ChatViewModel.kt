@@ -2,7 +2,19 @@ package com.example.agentkit.ui
 
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
+import android.content.Context
+import android.content.Intent
+import android.provider.Settings
 import androidx.lifecycle.viewModelScope
+import com.example.agentkit.automation.AutomationBridge
+import com.example.agentkit.automation.AutomationPrefs
+import com.example.agentkit.automation.UiClickTool
+import com.example.agentkit.automation.UiInputTool
+import com.example.agentkit.automation.UiKeyTool
+import com.example.agentkit.automation.UiLongPressTool
+import com.example.agentkit.automation.UiSwipeTool
+import com.example.agentkit.automation.UiTapTool
+import com.example.agentkit.automation.UiTreeTool
 import com.example.agentkit.core.AgentLoop
 import com.example.agentkit.core.AssistantMessage
 import com.example.agentkit.core.ChatMessage
@@ -44,6 +56,16 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     private val workspace = File(app.filesDir, "agent_workspace")
 
+    /** 自动化总开关持久化。 */
+    private val automationPrefs = AutomationPrefs(app)
+
+    /** 自动化状态流：供设置页实时反映开关与服务连接情况。 */
+    private val _automationEnabled = MutableStateFlow(automationPrefs.enabled)
+    val automationEnabled: StateFlow<Boolean> = _automationEnabled.asStateFlow()
+
+    private val _serviceConnected = MutableStateFlow(AutomationBridge.service != null)
+    val serviceConnected: StateFlow<Boolean> = _serviceConnected.asStateFlow()
+
     /** 扫描已安装 Skill（assets/skills）；为空则不打 use_skill 工具。 */
     private val skills = SkillLoader.loadAll(app)
 
@@ -53,6 +75,14 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         register(WriteFileTool(workspace))
         register(ClipboardTool(app))
         register(NotificationTool(app))
+        // 手机自动化工具组（受总开关 + 无障碍服务连接双重保护）
+        register(UiTreeTool())
+        register(UiTapTool())
+        register(UiLongPressTool())
+        register(UiSwipeTool())
+        register(UiInputTool())
+        register(UiKeyTool())
+        register(UiClickTool())
     }
 
     /** JS 执行引擎（Rhino，纯 Java 无需 NDK）；初始化失败则降级为仅 prompt 形态。 */
@@ -72,6 +102,22 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             // use_skill 工具的 systemPrompt 会被 AgentLoop 自动拼进系统提示（利用工具自带提示特性）
             registry.register(createUseSkillTool(skills, skillExecutor))
         }
+        // 同步总开关到桥；并把服务连接变化回写到 UI 状态流
+        AutomationBridge.enabled = automationPrefs.enabled
+        AutomationBridge.onConnectionChanged = { connected -> _serviceConnected.value = connected }
+    }
+
+    /** 设置页：切换自动化总开关（同时持久化并同步到桥）。 */
+    fun setAutomationEnabled(v: Boolean) {
+        automationPrefs.enabled = v
+        AutomationBridge.enabled = v
+        _automationEnabled.value = v
+    }
+
+    /** 设置页：跳转系统无障碍设置页，引导用户开启本应用的服务。 */
+    fun openAccessibilitySettings(ctx: Context) {
+        val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        ctx.startActivity(intent)
     }
 
     private val _messages = MutableStateFlow<List<UiItem>>(emptyList())
