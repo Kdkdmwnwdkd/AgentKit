@@ -3,6 +3,7 @@ package com.example.agentkit.skill
 import com.example.agentkit.core.ToolCall
 import com.example.agentkit.core.ToolRegistry
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -76,7 +77,7 @@ class SkillRuntimeBridge(
         }
         val obj = toJsonObject(args) ?: return "⛔ 参数无法解析为对象：$args"
         val call = ToolCall("skill:${skill.id}:$name", name, obj)
-        return registry.execute(call).content
+        return runBlocking { registry.execute(call).content }
     }
 
     /** 读取工作区文件。脚本中：agent.readFile('notes.txt') */
@@ -97,7 +98,7 @@ class SkillRuntimeBridge(
     fun notify(title: String, text: String): String = tool("send_notification", mapOf("title" to title, "text" to text))
 
     /** 记录脚本运行日志（会随结果一并返回给模型，便于调试）。 */
-    fun log(msg: Any?): Unit = logs.appendLine(msg?.toString() ?: "null")
+    fun log(msg: Any?) { logs.appendLine(msg?.toString() ?: "null") }
 
     fun getLog(): String = logs.toString()
 }
@@ -123,7 +124,8 @@ class SkillExecutor(
         if (entry != null && jsEngine != null) {
             return runCatching {
                 val bridge = SkillRuntimeBridge(registry, skill, workspace)
-                val out = jsEngine.eval(entry, mapOf("input" to inputJson, "agent" to bridge))
+                val engine = jsEngine
+                val out = engine.eval(entry, mapOf("input" to inputJson, "agent" to bridge))
                 SkillRunResult(resultToString(out, bridge), true)
             }.getOrElse { e ->
                 SkillRunResult("⚠️ 技能脚本执行失败：${e.message}\n\n${readBody(skill)}", false)

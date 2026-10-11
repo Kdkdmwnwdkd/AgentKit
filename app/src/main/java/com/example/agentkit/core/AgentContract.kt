@@ -101,11 +101,12 @@ data class JsonSchema(
     )
 
     companion object {
-        fun prop(
-            type: String,
-            description: String,
-            enum: List<String>? = null
-        ): Pair<String, Property> = type to Property(type, description, enum)
+    fun prop(
+        name: String,
+        type: String,
+        description: String,
+        enum: List<String>? = null
+    ): Pair<String, Property> = name to Property(type, description, enum)
 
         fun objectSchema(
             vararg props: Pair<String, Property>,

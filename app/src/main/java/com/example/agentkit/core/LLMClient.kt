@@ -108,7 +108,7 @@ class OpenAIClient(
     }
 
     private fun buildRequest(bodyJson: JsonObject): Request {
-        val body = json.encodeToString(bodyJson).toRequestBody("application/json".toMediaType())
+        val body = bodyJson.toString().toRequestBody("application/json".toMediaType())
         val builder = Request.Builder()
             .url("${config.baseUrl.trimEnd('/')}/chat/completions")
             .addHeader("Authorization", "Bearer ${config.apiKey}")
@@ -148,12 +148,12 @@ class OpenAIClient(
                 if (msg.toolCalls.isNotEmpty()) {
                     putJsonArray("tool_calls") {
                         msg.toolCalls.forEach { call ->
-                            putJsonObject {
+                            addJsonObject {
                                 put("id", call.id)
                                 put("type", "function")
                                 putJsonObject("function") {
                                     put("name", call.name)
-                                    put("arguments", json.encodeToString(call.arguments))
+                                    put("arguments", call.arguments.toString())
                                 }
                             }
                         }

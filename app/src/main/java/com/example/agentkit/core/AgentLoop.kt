@@ -69,7 +69,8 @@ class AgentLoop(
             ?: return ToolMessage(call.id, call.name, call.arguments, "未知工具：${call.name}", isError = true)
 
         if (tool.needsApproval && approval != null) {
-            val allowed = runCatching { approval(tool, call.arguments) }.getOrDefault(false)
+            val approver = approval
+            val allowed = runCatching { approver(tool, call.arguments) }.getOrDefault(false)
             if (!allowed) {
                 return ToolMessage(call.id, call.name, call.arguments, "用户拒绝了该危险操作", isError = true)
             }
