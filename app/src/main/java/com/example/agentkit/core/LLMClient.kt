@@ -80,8 +80,10 @@ class OpenAIClient(
             if (!r.isSuccessful) {
                 // ⚠️ resp.body?.string() 只能读一次，必须先存变量再使用
                 val errBody = runCatching { r.body?.string() }.getOrDefault("") ?: ""
-                AgentLogger.httpError(r.code, errBody)
-                throw IOException("LLM 请求失败 ${r.code}：${errBody.take(300)}")
+                // 401/403 的响应体常回显 sk-xxx 或 token，落日志与抛出的异常文案都必须先脱敏
+                val safeBody = AgentLogger.sanitize(errBody)
+                AgentLogger.httpError(r.code, safeBody)
+                throw IOException("LLM 请求失败 ${r.code}：${safeBody.take(300)}")
             }
             val text = r.body!!.string()
             AgentLogger.llmResponse(

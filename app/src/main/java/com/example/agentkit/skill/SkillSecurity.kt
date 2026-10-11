@@ -44,9 +44,13 @@ object CapabilityRegistry {
         "clipboard" to Capability.PRIVILEGED,
         "send_notification" to Capability.PRIVILEGED,
         "write_file" to Capability.PRIVILEGED,
-        // —— L9 记忆库：写/删会改变长期状态，属于有副作用；只读检索是安全的 ——
-        "memory_write" to Capability.PRIVILEGED,
-        "memory_forget" to Capability.PRIVILEGED,
+        // —— L9 记忆库：写/删是 DANGEROUS ——
+        // memory_write / memory_forget 会永久改变长期人格状态（即使技能被卸载，写入的记忆仍残留，
+        // 等价于「持久投毒」）。imported 的能力上限恰好是 PRIVILEGED，若此处定 PRIVILEGED，
+        // 第三方导入技能就能随意写/删记忆。因此提升为 DANGEROUS，交给全局能力门拦住 imported/remote。
+        // 只读检索不改变状态，保持 SAFE。
+        "memory_write" to Capability.DANGEROUS,
+        "memory_forget" to Capability.DANGEROUS,
         "memory_search" to Capability.SAFE,
         "memory_list" to Capability.SAFE,
         // —— 安全：只读沙箱文件 ——

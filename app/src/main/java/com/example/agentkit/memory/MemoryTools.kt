@@ -46,8 +46,10 @@ class MemoryWriteTool(private val store: MemoryStore) : AgentTool {
                 ?.map { it.trim() }
                 ?.filter { it.isNotBlank() }
                 ?: emptyList()
+            // salience 上限压到 7：8–10 留给系统/用户手动标记的重要记忆，
+            // 否则模型（或被劫持的工具调用）能把恶意记忆置 10 使其永驻并稳定进提示词。
             val salience = args["salience"]?.jsonPrimitive?.contentOrNull?.trim()
-                ?.toIntOrNull()?.coerceIn(1, 10) ?: 5
+                ?.toIntOrNull()?.coerceIn(1, 7) ?: 5
 
             val item = store.add(content, kind, tags, salience)
             val tagText = if (item.tags.isEmpty()) "无" else item.tags.joinToString(",")

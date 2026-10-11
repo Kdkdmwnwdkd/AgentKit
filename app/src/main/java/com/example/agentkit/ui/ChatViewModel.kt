@@ -392,7 +392,9 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
             outcome.onSuccess { history -> history.forEach { append(it) } }
             outcome.onFailure {
                 AgentLogger.e("Chat", "运行失败", it)
-                _messages.value = _messages.value + UiItem.Assistant("⚠️ 出错了：${it.message}")
+                // 错误文案会直接渲染进聊天气泡（可被复制走），必须先脱敏再展示
+                val safeMsg = AgentLogger.sanitize(it.message ?: "未知错误")
+                _messages.value = _messages.value + UiItem.Assistant("⚠️ 出错了：$safeMsg")
             }
             // L9：把本轮对话沉淀成低权重 event 记忆，下次会话也能回忆起来
             val finalAnswer = outcome.getOrNull()

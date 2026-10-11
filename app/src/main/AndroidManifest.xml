@@ -56,7 +56,7 @@
     <uses-permission android:name="android.permission.RECEIVE_SMS" />
 
     <application
-        android:allowBackup="true"
+        android:allowBackup="false"
         android:label="AgentKit"
         android:supportsRtl="true"
         android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
