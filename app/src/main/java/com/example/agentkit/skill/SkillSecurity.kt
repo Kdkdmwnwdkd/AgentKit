@@ -44,6 +44,11 @@ object CapabilityRegistry {
         "clipboard" to Capability.PRIVILEGED,
         "send_notification" to Capability.PRIVILEGED,
         "write_file" to Capability.PRIVILEGED,
+        // —— L9 记忆库：写/删会改变长期状态，属于有副作用；只读检索是安全的 ——
+        "memory_write" to Capability.PRIVILEGED,
+        "memory_forget" to Capability.PRIVILEGED,
+        "memory_search" to Capability.SAFE,
+        "memory_list" to Capability.SAFE,
         // —— 安全：只读沙箱文件 ——
         "read_file" to Capability.SAFE,
     )

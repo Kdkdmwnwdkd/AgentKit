@@ -63,11 +63,34 @@ class OpenAIClient(
         }
 
         val request = buildRequest(requestJson)
-        http.newCall(request).execute().use { resp ->
-            if (!resp.isSuccessful) {
-                throw IOException("LLM 请求失败 ${resp.code}：${resp.body?.string()}")
+
+        // L8 日志：请求前记录（只记模型/消息数/工具数，绝不记 apiKey）
+        AgentLogger.llmRequest(config.model, messages.size, tools.size)
+        val startedAt = System.currentTimeMillis()
+
+        // 超时/DNS/连接失败都走 IOException，记下堆栈后原样抛出
+        val resp = try {
+            http.newCall(request).execute()
+        } catch (e: IOException) {
+            AgentLogger.e("LLM", "网络请求异常", e)
+            throw e
+        }
+
+        resp.use { r ->
+            if (!r.isSuccessful) {
+                // ⚠️ resp.body?.string() 只能读一次，必须先存变量再使用
+                val errBody = runCatching { r.body?.string() }.getOrDefault("") ?: ""
+                AgentLogger.httpError(r.code, errBody)
+                throw IOException("LLM 请求失败 ${r.code}：${errBody.take(300)}")
             }
-            parseResponse(resp.body!!.string())
+            val text = r.body!!.string()
+            AgentLogger.llmResponse(
+                config.model,
+                true,
+                System.currentTimeMillis() - startedAt,
+                "响应长度=${text.length}"
+            )
+            parseResponse(text)
         }
     }
 

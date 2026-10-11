@@ -26,6 +26,7 @@ import com.example.agentkit.automation.UiSwipeTool
 import com.example.agentkit.automation.UiTapTool
 import com.example.agentkit.automation.UiTreeTool
 import com.example.agentkit.core.AgentLoop
+import com.example.agentkit.core.AgentLogger
 import com.example.agentkit.core.AssistantMessage
 import com.example.agentkit.core.ChatMessage
 import com.example.agentkit.core.LLMConfig
@@ -45,6 +46,12 @@ import com.example.agentkit.skill.createUseSkillTool
 import com.example.agentkit.skill.CapabilityRegistry
 import com.example.agentkit.skill.policyFor
 import com.example.agentkit.skill.checkCapabilityGate
+import com.example.agentkit.memory.MemoryItem
+import com.example.agentkit.memory.MemoryStore
+import com.example.agentkit.memory.MemoryForgetTool
+import com.example.agentkit.memory.MemoryListTool
+import com.example.agentkit.memory.MemorySearchTool
+import com.example.agentkit.memory.MemoryWriteTool
 import com.example.agentkit.tools.ClipboardTool
 import com.example.agentkit.tools.HttpRequestTool
 import com.example.agentkit.tools.NotificationTool
@@ -173,6 +180,20 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         )
     }
 
+    /** L8 运行日志落盘目录：filesDir/logs/agent-<yyyyMMdd>.log（core 内部异步写盘）。 */
+    private val logDir = File(app.filesDir, "logs")
+
+    /** L9 记忆库：跨会话长期记忆，持久化到 filesDir/memory/memory.json。 */
+    private val memoryStore = MemoryStore(File(app.filesDir, "memory"))
+
+    /** L8 最近日志（格式化后的文本，最新的在前），供自动化页「运行日志」卡片展示。 */
+    private val _logs = MutableStateFlow<List<String>>(emptyList())
+    val logs: StateFlow<List<String>> = _logs.asStateFlow()
+
+    /** L9 记忆列表快照，随写入/检索/遗忘/清空刷新。 */
+    private val _memories = MutableStateFlow<List<MemoryItem>>(emptyList())
+    val memories: StateFlow<List<MemoryItem>> = _memories.asStateFlow()
+
     private val registry = ToolRegistry().apply {
         register(HttpRequestTool())
         register(ReadFileTool(workspace))
@@ -192,6 +213,11 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         // 设备感知（L3）：通知监听 + 当前前台应用
         register(DeviceNotificationsTool())
         register(DeviceForegroundAppTool(app))
+        // 记忆库（L9）：让 Agent 拥有跨会话长期记忆
+        register(MemoryWriteTool(memoryStore))
+        register(MemorySearchTool(memoryStore))
+        register(MemoryListTool(memoryStore))
+        register(MemoryForgetTool(memoryStore))
     }
 
     /** JS 执行引擎（Rhino，纯 Java 无需 NDK）；初始化失败则降级为仅 prompt 形态。 */
@@ -207,6 +233,8 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     )
 
     init {
+        // L8：日志目录就绪后才能记录后续任何一行
+        AgentLogger.init(logDir)
         if (skillsSnapshot.isNotEmpty()) {
             // use_skill 工具的 systemPrompt 会被 AgentLoop 自动拼进系统提示（利用工具自带提示特性）
             // 用 skillsProvider 动态感知导入/卸载/授权的技能变化
@@ -216,6 +244,9 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         AutomationBridge.enabled = automationPrefs.enabled
         AutomationBridge.onConnectionChanged = { connected -> _serviceConnected.value = connected }
         refreshGrants()
+        // L8/L9：首屏即有内容可看
+        refreshLogs()
+        refreshMemories()
     }
 
     /** 设置页：切换自动化总开关（同时持久化并同步到桥）。 */
@@ -284,26 +315,105 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         llmProvider = {
             OpenAIClient(LLMConfig(_config.value.baseUrl, _config.value.apiKey, _config.value.model))
         },
-        registry = registry
+        registry = registry,
+        // L9：每轮运行都把当前记忆摘要注入系统提示
+        memoryProvider = { memoryStore.summaryForPrompt(12, 1200) }
     )
 
     fun updateConfig(cfg: ModelConfig) { _config.value = cfg }
+
+    // —— L8 运行日志（日记）：出错可定位 ——
+
+    /** 拉取最近 200 条日志文本（最新的在前）刷新 UI。 */
+    fun refreshLogs() {
+        _logs.value = AgentLogger.recent(200).map { it.format() }
+    }
+
+    /** 清空日志（内存缓冲 + 当日文件），随后刷新列表。 */
+    fun clearLogs() {
+        AgentLogger.clear()
+        refreshLogs()
+    }
+
+    /** 导出日志全文，供用户复制到剪贴板排查问题。 */
+    fun exportLogs(): String = AgentLogger.snapshotText(500)
+
+    /** 当前日志文件绝对路径（卡片底部展示，方便 adb pull）。 */
+    fun logFilePath(): String = AgentLogger.currentLogFile()?.absolutePath ?: "（日志文件未就绪）"
+
+    // —— L9 记忆库：跨会话记忆 ——
+
+    /** 刷新记忆列表（最近 50 条，按更新时间倒序）。 */
+    fun refreshMemories() {
+        _memories.value = memoryStore.list(50)
+    }
+
+    /** 手动新增一条记忆（UI 直接录入，默认 note / 重要度 5）。 */
+    fun addMemory(content: String, kind: String, tags: List<String>) {
+        if (content.isBlank()) return
+        memoryStore.add(content.trim(), kind, tags, 5)
+        refreshMemories()
+    }
+
+    /** 关键词检索记忆；结果直接替换列表，便于查看命中情况。 */
+    fun searchMemory(query: String) {
+        _memories.value = if (query.isBlank()) memoryStore.list(50) else memoryStore.search(query.trim(), 20)
+    }
+
+    /** 遗忘指定记忆并重刷新列表。 */
+    fun forgetMemory(id: String) {
+        memoryStore.forget(id)
+        refreshMemories()
+    }
+
+    /** 清空全部记忆（UI 需二次确认）并重刷新列表。 */
+    fun clearMemory() {
+        memoryStore.clear()
+        refreshMemories()
+    }
+
+    /** 复用 importStatus 展示一次性提示（如“已复制到剪贴板”）。 */
+    fun setImportStatus(msg: String) { _importStatus.value = msg }
 
     fun send() {
         val text = input.value.trim()
         if (text.isBlank() || isRunning.value) return
         input.value = ""
         isRunning.value = true
+        AgentLogger.i("Chat", "用户发送：${text.take(120)}")
 
         // L4 主动感知：把当前设备上下文自动拼进用户输入，让模型“知道”手机在干什么
         val ctxPrompt = DeviceContextStore.snapshot().toPrompt()
         val fullInput = if (ctxPrompt.isBlank()) text else "$ctxPrompt\n\n用户当前请求：$text"
 
         viewModelScope.launch {
-            runCatching { loop.run(fullInput) }
-                .onSuccess { history -> history.forEach { append(it) } }
-                .onFailure { _messages.value = _messages.value + UiItem.Assistant("⚠️ 出错了：${it.message}") }
+            // 先拿到 Result，再在同一个挂起体里做后续 IO：Result.onSuccess 的 lambda 不是 suspend
+            val outcome = runCatching { loop.run(fullInput) }
+            outcome.onSuccess { history -> history.forEach { append(it) } }
+            outcome.onFailure {
+                AgentLogger.e("Chat", "运行失败", it)
+                _messages.value = _messages.value + UiItem.Assistant("⚠️ 出错了：${it.message}")
+            }
+            // L9：把本轮对话沉淀成低权重 event 记忆，下次会话也能回忆起来
+            val finalAnswer = outcome.getOrNull()
+                ?.filterIsInstance<AssistantMessage>()
+                ?.lastOrNull()?.content
+                .orEmpty()
+            if (finalAnswer.isNotBlank()) {
+                withContext(Dispatchers.IO) {
+                    runCatching {
+                        memoryStore.add(
+                            "用户请求：${text.take(80)}｜结果：${finalAnswer.take(120)}",
+                            "event",
+                            emptyList(),
+                            3
+                        )
+                    }
+                }
+                refreshMemories()
+            }
             isRunning.value = false
+            refreshLogs()
         }
     }
 

@@ -1,5 +1,7 @@
 package com.example.agentkit.ui
 
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Intent
 import android.graphics.BitmapFactory
 import android.provider.Settings
@@ -9,6 +11,8 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.*
@@ -20,6 +24,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -231,6 +236,13 @@ fun AutomationScreen(vm: ChatViewModel, onBack: () -> Unit) {
     val skillInfos by vm.skillInfos.collectAsStateWithLifecycle()
     val ctx = LocalContext.current
 
+    // L8 运行日志 / L9 记忆库状态
+    val logs by vm.logs.collectAsStateWithLifecycle()
+    val memories by vm.memories.collectAsStateWithLifecycle()
+    var memoryQuery by remember { mutableStateOf("") }
+    var memoryDraft by remember { mutableStateOf("") }
+    var showClearMemoryDialog by remember { mutableStateOf(false) }
+
     // L7 导入相关状态
     val importStatus by vm.importStatus.collectAsStateWithLifecycle()
     var showImportDialog by remember { mutableStateOf(false) }
@@ -243,8 +255,12 @@ fun AutomationScreen(vm: ChatViewModel, onBack: () -> Unit) {
         uri?.let { vm.importFromUri(it) }
     }
 
-    // 进入本页时刷新权限授予状态，反映用户在系统设置里的最新操作
-    LaunchedEffect(Unit) { vm.refreshGrants() }
+    // 进入本页时刷新权限授予状态，反映用户在系统设置里的最新操作；同时刷新日志与记忆
+    LaunchedEffect(Unit) {
+        vm.refreshGrants()
+        vm.refreshLogs()
+        vm.refreshMemories()
+    }
 
     // 屏幕捕获授权：调起系统“是否允许截取屏幕”弹窗
     val captureLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { res ->
@@ -263,7 +279,12 @@ fun AutomationScreen(vm: ChatViewModel, onBack: () -> Unit) {
         }
     ) { padding ->
         Column(
-            Modifier.fillMaxSize().padding(padding).padding(16.dp),
+            Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .padding(16.dp)
+                // 本页内容已很多，必须可滚动，否则新增卡片会被挤出屏幕
+                .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Card(Modifier.fillMaxWidth()) {
@@ -458,6 +479,129 @@ fun AutomationScreen(vm: ChatViewModel, onBack: () -> Unit) {
                 }
             }
 
+            // L8 运行日志（日记）：真机出错时唯一的现场证据来源
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("运行日志（日记）", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        "Agent 的每一步都会记在这里：LLM 请求/响应、工具调用与结果、HTTP 错误。" +
+                            "运行出错时在这里定位，可导出排查。",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(onClick = { vm.refreshLogs() }, modifier = Modifier.weight(1f)) { Text("刷新") }
+                        Button(
+                            onClick = {
+                                val text = vm.exportLogs()
+                                val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                cm.setPrimaryClip(ClipData.newPlainText("AgentKit日志", text))
+                                vm.setImportStatus("已复制到剪贴板（${text.length} 字符）")
+                            },
+                            modifier = Modifier.weight(1f)
+                        ) { Text("导出到剪贴板") }
+                        Button(
+                            onClick = { vm.clearLogs() },
+                            modifier = Modifier.weight(1f),
+                            colors = ButtonDefaults.outlinedButtonColors()
+                        ) { Text("清空") }
+                    }
+                    if (logs.isEmpty()) {
+                        Text("暂无日志。发一条消息或触发一次技能后，这里会实时显示。", style = MaterialTheme.typography.bodySmall)
+                    } else {
+                        // 已滚动容器内不使用 LazyColumn（嵌套滚动冲突），直接遍历渲染
+                        logs.take(20).forEach { line ->
+                            Text(
+                                line,
+                                style = MaterialTheme.typography.bodySmall,
+                                fontFamily = FontFamily.Monospace
+                            )
+                        }
+                    }
+                    Text("日志文件：${vm.logFilePath()}", style = MaterialTheme.typography.labelSmall)
+                }
+            }
+
+            // L9 记忆库：跨会话长期记忆，让 Agent “记得”用户的偏好与过往
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("记忆库（跨会话）", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        "当前展示 ${memories.size} 条。Agent 每次成功回答会自动沉淀一条 event 记忆；" +
+                            "也可在这里手动记录偏好或关键信息。",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        OutlinedTextField(
+                            value = memoryQuery,
+                            onValueChange = { memoryQuery = it },
+                            label = { Text("搜索记忆") },
+                            modifier = Modifier.weight(1f),
+                            singleLine = true
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Button(onClick = { vm.searchMemory(memoryQuery) }) { Text("搜索") }
+                    }
+                    if (memories.isEmpty()) {
+                        Text("暂无记忆。", style = MaterialTheme.typography.bodySmall)
+                    } else {
+                        memories.take(20).forEach { item ->
+                            Row(
+                                Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Surface(
+                                    color = MaterialTheme.colorScheme.tertiaryContainer,
+                                    shape = RoundedCornerShape(6.dp)
+                                ) {
+                                    Text(
+                                        item.kind,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                    )
+                                }
+                                Column(Modifier.weight(1f)) {
+                                    Text(item.content, style = MaterialTheme.typography.bodySmall)
+                                    if (item.tags.isNotEmpty()) {
+                                        Text(
+                                            "#${item.tags.joinToString(" #")} · 重要度 ${item.salience}",
+                                            style = MaterialTheme.typography.labelSmall
+                                        )
+                                    }
+                                }
+                                TextButton(onClick = { vm.forgetMemory(item.id) }) { Text("忘记") }
+                            }
+                        }
+                    }
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        OutlinedTextField(
+                            value = memoryDraft,
+                            onValueChange = { memoryDraft = it },
+                            label = { Text("手动记住一条") },
+                            modifier = Modifier.weight(1f),
+                            maxLines = 3
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Button(onClick = {
+                            vm.addMemory(memoryDraft, "note", emptyList())
+                            memoryDraft = ""
+                        }) { Text("记住") }
+                    }
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(
+                            onClick = { memoryQuery = ""; vm.refreshMemories() },
+                            modifier = Modifier.weight(1f),
+                            colors = ButtonDefaults.outlinedButtonColors()
+                        ) { Text("全部记忆") }
+                        Button(
+                            onClick = { showClearMemoryDialog = true },
+                            modifier = Modifier.weight(1f),
+                            colors = ButtonDefaults.outlinedButtonColors()
+                        ) { Text("清空记忆") }
+                    }
+                }
+            }
+
             Text(
                 "可用工具：ui_tree（读取界面）、ui_tap / ui_long_press / ui_swipe（手势）、ui_input（输入文本）、ui_key（home/back/recent）、ui_click（按文本或 ID 点击）、ui_screenshot（截取屏幕给视觉模型看）、device_notifications（读取最近通知）、device_foreground_app（读取当前前台应用）。\n" +
                     "在对话里直接说“打开设置并点击某某”“截个屏看看现在是什么界面”“刚才有没有新消息”即可让 Agent 操作并感知手机。",
@@ -541,6 +685,26 @@ fun AutomationScreen(vm: ChatViewModel, onBack: () -> Unit) {
                     },
                     dismissButton = {
                         TextButton(onClick = { uninstallTarget = null }) { Text("取消") }
+                    }
+                )
+            }
+
+            // L9 清空记忆库二次确认 Dialog（删了就没有了，必须拦一道）
+            if (showClearMemoryDialog) {
+                AlertDialog(
+                    onDismissRequest = { showClearMemoryDialog = false },
+                    title = { Text("清空记忆库") },
+                    text = {
+                        Text("确认清空全部记忆（${memories.size} 条）？Agent 将忘掉所有偏好与过往，且无法恢复。")
+                    },
+                    confirmButton = {
+                        Button(onClick = {
+                            vm.clearMemory()
+                            showClearMemoryDialog = false
+                        }) { Text("确认清空") }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { showClearMemoryDialog = false }) { Text("取消") }
                     }
                 )
             }
