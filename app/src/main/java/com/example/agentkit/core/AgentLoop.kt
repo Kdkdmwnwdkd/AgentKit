@@ -130,14 +130,41 @@ class AgentLoop(
         }
     }
 
-    /** 供应商瞬时失败重试（协议/鉴权错误等不可重试错误仍会快速失败）。 */
+    /**
+     * 供应商瞬时失败重试（429/5xx 与网络异常才重试）。
+     *
+     * 401/403/400 这类鉴权与参数错误重试多少次都不会变，必须一次性快速失败，
+     * 否则用户填错 Key 时会白等 providerRetry 次请求才看到报错。
+     */
     private suspend fun <T> callWithRetry(block: suspend () -> T): T {
         var last: Throwable? = null
-        repeat(providerRetry + 1) {
-            try { return block() } catch (e: Throwable) { last = e }
+        repeat(providerRetry + 1) { attempt ->
+            try {
+                return block()
+            } catch (e: Throwable) {
+                last = e
+                if (!isRetryable(e)) {
+                    AgentLogger.w(
+                        "LLM",
+                        "不可重试错误，快速失败（第 ${attempt + 1} 次尝试）：${e.message?.take(160)}"
+                    )
+                    throw e
+                }
+                AgentLogger.w(
+                    "LLM",
+                    "第 ${attempt + 1} 次调用失败，准备重试：${e.message?.take(160)}"
+                )
+            }
         }
         throw last ?: IllegalStateException("未知错误")
     }
+
+    /**
+     * 是否值得重试：[LlmHttpException] 自身决定（429/5xx 可重试，401/403/400 不可），
+     * 其余（超时、DNS、连接中断等网络 IO 异常）一律视为可重试。
+     */
+    private fun isRetryable(e: Throwable): Boolean =
+        (e as? LlmHttpException)?.retryable ?: true
 
     /** 把工具自带的 systemPrompt 片段拼进系统提示；启用记忆时再追加当前记忆摘要与使用引导。 */
     private fun buildSystemPrompt(): String {

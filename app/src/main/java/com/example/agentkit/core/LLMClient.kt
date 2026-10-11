@@ -26,6 +26,16 @@ data class LLMConfig(
 )
 
 /**
+ * LLM 请求失败（携带 HTTP 状态码）。
+ *
+ * [retryable] 表示是否值得重试：429/5xx 属瞬时问题可重试，
+ * 401/403/400 等鉴权/参数错误重试也无用，必须快速失败（避免用户白等 3 次重试）。
+ */
+class LlmHttpException(val code: Int, message: String) : java.io.IOException(message) {
+    val retryable: Boolean get() = code == 429 || code >= 500
+}
+
+/**
  * LLM 抽象：Agent 核心只依赖它。换供应商（OpenAI / 本地 llama.cpp / Claude）
  * 只需新增一个实现，AgentLoop 一行都不用改。
  */
@@ -83,7 +93,8 @@ class OpenAIClient(
                 // 401/403 的响应体常回显 sk-xxx 或 token，落日志与抛出的异常文案都必须先脱敏
                 val safeBody = AgentLogger.sanitize(errBody)
                 AgentLogger.httpError(r.code, safeBody)
-                throw IOException("LLM 请求失败 ${r.code}：${safeBody.take(300)}")
+                // 带上状态码抛出：上层据此判断是否值得重试、以及给用户什么文案
+                throw LlmHttpException(r.code, "LLM 请求失败 ${r.code}：${safeBody.take(300)}")
             }
             val text = r.body!!.string()
             AgentLogger.llmResponse(

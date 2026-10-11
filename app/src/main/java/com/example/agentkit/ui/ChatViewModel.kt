@@ -30,6 +30,7 @@ import com.example.agentkit.core.AgentLogger
 import com.example.agentkit.core.AgentTool
 import com.example.agentkit.core.AssistantMessage
 import com.example.agentkit.core.ChatMessage
+import com.example.agentkit.core.LlmHttpException
 import com.example.agentkit.core.LLMConfig
 import com.example.agentkit.core.OpenAIClient
 import com.example.agentkit.core.ToolCall
@@ -458,9 +459,8 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
             outcome.onSuccess { history -> history.forEach { append(it) } }
             outcome.onFailure {
                 AgentLogger.e("Chat", "运行失败", it)
-                // 错误文案会直接渲染进聊天气泡（可被复制走），必须先脱敏再展示
-                val safeMsg = AgentLogger.sanitize(it.message ?: "未知错误")
-                _messages.value = _messages.value + UiItem.Assistant("⚠️ 出错了：$safeMsg")
+                // 气泡面向用户：技术异常在此映射成可读文案（完整堆栈已在日志里落盘）
+                _messages.value = _messages.value + UiItem.Assistant(friendlyMessage(it))
             }
             // L9：把本轮对话沉淀成低权重 event 记忆，下次会话也能回忆起来
             val finalAnswer = outcome.getOrNull()
@@ -483,6 +483,43 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
             isRunning.value = false
             refreshLogs()
         }
+    }
+
+    /**
+     * 把底层技术异常翻译成面向用户的中文提示。
+     *
+     * 分级依据：[LlmHttpException] 的 HTTP 状态码决定（鉴权/参数类不可重试，直接给修复建议）；
+     * 其余 IOException 归为网络问题；兜底才回显脱敏后的原始消息，避免泄露 Key 与堆栈。
+     *
+     * @param e AgentLoop / LLMClient 抛出的原始异常。
+     * @return 可直接渲染进助手气泡的文案。
+     */
+    private fun friendlyMessage(e: Throwable): String {
+        // LlmHttpException 也是 IOException，必须先于网络分支判断
+        val http = e as? LlmHttpException
+        if (http != null) {
+            return when {
+                http.code == 401 || http.code == 403 ->
+                    "🔑 API Key 无效或已过期：请到「模型」页检查 Key 是否正确、是否还有额度"
+                http.code == 429 ->
+                    "⏳ 请求过于频繁（429）：请稍后再试"
+                http.code >= 500 ->
+                    "🔧 模型服务暂时不可用（服务端错误 ${http.code}）：请稍后重试"
+                http.code in 400..499 ->
+                    "⚠️ 请求被拒绝（${http.code}）：请检查 Base URL 与模型名是否填写正确"
+                else ->
+                    "⚠️ 请求失败（${http.code}）：${AgentLogger.sanitize(e.message ?: "未知错误")}"
+            }
+        }
+        if (e is java.net.UnknownHostException ||
+            e is java.net.SocketTimeoutException ||
+            e is java.net.ConnectException ||
+            e is java.io.IOException
+        ) {
+            return "📶 网络不可用或超时：请检查网络连接"
+        }
+        val raw = e.message?.let { AgentLogger.sanitize(it) }?.trim().orEmpty()
+        return if (raw.isBlank()) "⚠️ 出错了：未知错误" else "⚠️ 出错了：$raw"
     }
 
     private fun append(msg: ChatMessage) {
