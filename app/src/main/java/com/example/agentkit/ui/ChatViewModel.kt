@@ -38,6 +38,8 @@ import com.example.agentkit.skill.ModelConfig
 import com.example.agentkit.skill.RhinoJsEngine
 import com.example.agentkit.skill.SkillExecutor
 import com.example.agentkit.skill.SkillLoader
+import com.example.agentkit.skill.ImportedSkillRepository
+import com.example.agentkit.skill.SkillManifest
 import com.example.agentkit.skill.createUseSkillTool
 import com.example.agentkit.skill.CapabilityRegistry
 import com.example.agentkit.skill.policyFor
@@ -51,7 +53,10 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.io.File
+import java.net.URL
 
 /** 单个技能向 UI 暴露的「工具-能力」明细。 */
 data class SkillToolInfo(
@@ -119,32 +124,50 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     private val _deviceContext = MutableStateFlow(DeviceContextStore.snapshot())
     val deviceContext: StateFlow<DeviceContext> = _deviceContext.asStateFlow()
 
-    /** 扫描已安装 Skill（assets/skills）；为空则不打 use_skill 工具。 */
-    private val skills = SkillLoader.loadAll(app)
+    /** 导入技能仓库（L7）：从 URL / 本机 zip / 内置示例导入到 filesDir/skills/imported。 */
+    private val importRepo = ImportedSkillRepository(app)
+
+    /** 已导入技能 id 集合：用于按来源路由资源配置（imported 读 filesDir，否则读 assets）。 */
+    private var importedIds: Set<String> = emptySet()
+
+    /** 技能快照 = 内置（assets）+ 已导入（filesDir），随导入/卸载/授权动态刷新。 */
+    private var skillsSnapshot: List<SkillManifest> = buildInitialSkills()
+
+    /** 首次构建技能列表：合并 assets 内置技能与 filesDir 已导入技能。 */
+    private fun buildInitialSkills(): List<SkillManifest> {
+        val imported = importRepo.loadImported(app)
+        importedIds = imported.map { it.id }.toSet()
+        return SkillLoader.loadAll(app) + imported
+    }
 
     /** UI 用技能信息（含安全策略摘要）：让 L5 全局能力门「看得见」。 */
-    private val _skillInfos = MutableStateFlow(
-        skills.map { sk ->
-            val policy = policyFor(sk.trust)
-            SkillUiInfo(
-                id = sk.id,
-                name = sk.name,
-                description = sk.description ?: "",
-                trust = sk.trust,
-                isScript = sk.entry != null,
-                allowScript = policy.allowScript,
-                maxCapability = policy.maxCapability.name,
-                tools = sk.tools.map { t ->
-                    SkillToolInfo(
-                        name = t,
-                        capability = CapabilityRegistry.cap(t).name,
-                        allowed = checkCapabilityGate(t, sk.trust) == null
-                    )
-                }
-            )
-        }
-    )
+    private val _skillInfos = MutableStateFlow(computeSkillInfos())
     val skillInfos: StateFlow<List<SkillUiInfo>> = _skillInfos.asStateFlow()
+
+    /** 导入/卸载操作的状态提示（Toast 式文本）；reload 不改变它（保留上次提示）。 */
+    private val _importStatus = MutableStateFlow<String?>(null)
+    val importStatus: StateFlow<String?> = _importStatus.asStateFlow()
+
+    /** 由 skillsSnapshot 计算技能中心卡片数据（L5 安全策略摘要）。 */
+    private fun computeSkillInfos(): List<SkillUiInfo> = skillsSnapshot.map { sk ->
+        val policy = policyFor(sk.trust)
+        SkillUiInfo(
+            id = sk.id,
+            name = sk.name,
+            description = sk.description ?: "",
+            trust = sk.trust,
+            isScript = sk.entry != null,
+            allowScript = policy.allowScript,
+            maxCapability = policy.maxCapability.name,
+            tools = sk.tools.map { t ->
+                SkillToolInfo(
+                    name = t,
+                    capability = CapabilityRegistry.cap(t).name,
+                    allowed = checkCapabilityGate(t, sk.trust) == null
+                )
+            }
+        )
+    }
 
     private val registry = ToolRegistry().apply {
         register(HttpRequestTool())
@@ -175,14 +198,15 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         registry = registry,
         workspace = workspace,
         jsEngine = jsEngine,
-        readBody = { SkillLoader.readSkillBody(app, it) },
-        readEntry = { SkillLoader.readEntry(app, it) }
+        readBody = { sk -> if (sk.id in importedIds) SkillLoader.readImportedBody(app, sk) else SkillLoader.readSkillBody(app, sk) },
+        readEntry = { sk -> if (sk.id in importedIds) SkillLoader.readImportedEntry(app, sk) else SkillLoader.readEntry(app, sk) }
     )
 
     init {
-        if (skills.isNotEmpty()) {
+        if (skillsSnapshot.isNotEmpty()) {
             // use_skill 工具的 systemPrompt 会被 AgentLoop 自动拼进系统提示（利用工具自带提示特性）
-            registry.register(createUseSkillTool(skills, skillExecutor))
+            // 用 skillsProvider 动态感知导入/卸载/授权的技能变化
+            registry.register(createUseSkillTool({ skillsSnapshot }, skillExecutor))
         }
         // 同步总开关到桥；并把服务连接变化回写到 UI 状态流
         AutomationBridge.enabled = automationPrefs.enabled
@@ -292,5 +316,78 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
             else -> return
         }
         _messages.value = _messages.value + item
+    }
+
+    // —— L7 技能导入 / 卸载 / 授权 ——
+
+    /** 从 URL 下载 zip 并导入；网络 IO 放 Dispatchers.IO。 */
+    fun importFromUrl(url: String) {
+        viewModelScope.launch {
+            val result = runCatching {
+                val bytes = withContext(Dispatchers.IO) {
+                    URL(url).openStream().use { it.readBytes() }
+                }
+                importRepo.installZip(bytes).getOrThrow()
+            }
+            if (result.isFailure) {
+                _importStatus.value = "⚠️ 导入失败：${result.exceptionOrNull()?.message ?: "未知错误"}"
+                return@launch
+            }
+            reloadSkills()
+            _importStatus.value = "✅ 已导入：${result.getOrThrow()}"
+        }
+    }
+
+    /** 载入内置示例技能（无网络演示）。 */
+    fun importDemo() {
+        viewModelScope.launch {
+            val result = runCatching {
+                importRepo.installZip(ImportedSkillRepository.demoZipBytes()).getOrThrow()
+            }
+            if (result.isFailure) {
+                _importStatus.value = "⚠️ 导入失败：${result.exceptionOrNull()?.message ?: "未知错误"}"
+                return@launch
+            }
+            reloadSkills()
+            _importStatus.value = "✅ 已导入：${result.getOrThrow()}"
+        }
+    }
+
+    /** 从本机选择的 zip 文件字节导入。 */
+    fun importFromFile(bytes: ByteArray) {
+        viewModelScope.launch {
+            val result = runCatching {
+                importRepo.installZip(bytes).getOrThrow()
+            }
+            if (result.isFailure) {
+                _importStatus.value = "⚠️ 导入失败：${result.exceptionOrNull()?.message ?: "未知错误"}"
+                return@launch
+            }
+            reloadSkills()
+            _importStatus.value = "✅ 已导入：${result.getOrThrow()}"
+        }
+    }
+
+    /** 卸载指定技能（仅导入来源）。 */
+    fun uninstallSkill(id: String) {
+        viewModelScope.launch {
+            importRepo.uninstall(id)
+            reloadSkills()
+            _importStatus.value = "🗑️ 已卸载：$id"
+        }
+    }
+
+    /** 设置某技能的脚本授权（allow=true 回写 packaged，否则 imported）。 */
+    fun setScriptAuthorization(id: String, allow: Boolean) {
+        viewModelScope.launch {
+            importRepo.setScriptAuthorization(id, allow)
+            reloadSkills()
+        }
+    }
+
+    /** 重新加载技能快照并刷新 skillInfos；不改变 importStatus。 */
+    private fun reloadSkills() {
+        skillsSnapshot = buildInitialSkills()
+        _skillInfos.value = computeSkillInfos()
     }
 }

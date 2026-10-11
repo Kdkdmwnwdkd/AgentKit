@@ -2,6 +2,7 @@ package com.example.agentkit.skill
 
 import android.content.Context
 import com.example.agentkit.core.AgentTool
+import java.io.File
 import com.example.agentkit.core.JsonSchema
 import com.example.agentkit.core.ToolResult
 import kotlinx.serialization.Serializable
@@ -118,15 +119,14 @@ fun buildSkillSystemPrompt(skills: List<SkillManifest>): String {
  * @param executor Skill 执行器：prompt 形态返回指令正文，script 形态执行 main.js
  */
 fun createUseSkillTool(
-    skills: List<SkillManifest>,
+    skillsProvider: () -> List<SkillManifest>,
     executor: SkillExecutor
 ): AgentTool {
-    val byName = skills.associateBy { it.name }
     return object : AgentTool {
         override val name = "use_skill"
         override val description =
             "加载并应用某个技能以获取专用指令或执行其脚本能力。当用户需求匹配某个可用技能时调用。"
-        override val systemPrompt: String get() = buildSkillSystemPrompt(skills)
+        override val systemPrompt: String get() = buildSkillSystemPrompt(skillsProvider())
 
         override val parameters = JsonSchema.objectSchema(
             JsonSchema.prop("name", "string", "要使用的技能名称"),
@@ -137,6 +137,9 @@ fun createUseSkillTool(
         )
 
         override suspend fun execute(args: JsonObject): ToolResult {
+            // 每次调用动态拉取技能快照，使导入/卸载/授权实时生效
+            val skills = skillsProvider()
+            val byName = skills.associateBy { it.name }
             val name = args["name"]?.jsonPrimitive?.contentOrNull
                 ?: return ToolResult("缺少 name", isError = true)
             val skill = byName[name] ?: byName[name.escapeXml()]
@@ -197,5 +200,22 @@ object SkillLoader {
             context.assets.open("skills/${skill.id}/$entry")
                 .bufferedReader().use { it.readText() }
         }.getOrNull()
+    }
+
+    /** 读取导入技能指令正文：filesDir/skills/imported/<id>/ 下优先 SKILL.md，其次 prompt.md，最后 skill.json 的 prompt 字段。 */
+    fun readImportedBody(context: Context, skill: SkillManifest): String {
+        val dir = File(context.filesDir, "skills/imported/${skill.id}")
+        for (fileName in listOf("SKILL.md", "prompt.md")) {
+            val file = File(dir, fileName)
+            if (file.isFile) return file.readText()
+        }
+        return skill.prompt ?: ""
+    }
+
+    /** 读取导入技能脚本源码：filesDir/skills/imported/<id>/<entry>。无 entry 或读不到时回退 null（prompt 形态）。 */
+    fun readImportedEntry(context: Context, skill: SkillManifest): String? {
+        val entry = skill.entry ?: return null
+        val file = File(File(context.filesDir, "skills/imported/${skill.id}"), entry)
+        return if (file.isFile) file.readText() else null
     }
 }

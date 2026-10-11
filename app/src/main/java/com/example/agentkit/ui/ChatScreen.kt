@@ -231,6 +231,20 @@ fun AutomationScreen(vm: ChatViewModel, onBack: () -> Unit) {
     val skillInfos by vm.skillInfos.collectAsStateWithLifecycle()
     val ctx = LocalContext.current
 
+    // L7 导入相关状态
+    val importStatus by vm.importStatus.collectAsStateWithLifecycle()
+    var showImportDialog by remember { mutableStateOf(false) }
+    var importUrl by remember { mutableStateOf("") }
+    var authTarget by remember { mutableStateOf<SkillUiInfo?>(null) }
+
+    // 从本机选择 .zip 文件（SAF）
+    val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        uri?.let {
+            val bytes = ctx.contentResolver.openInputStream(it)?.use { s -> s.readBytes() }
+            bytes?.let { vm.importFromFile(bytes) }
+        }
+    }
+
     // 进入本页时刷新权限授予状态，反映用户在系统设置里的最新操作
     LaunchedEffect(Unit) { vm.refreshGrants() }
 
@@ -362,6 +376,10 @@ fun AutomationScreen(vm: ChatViewModel, onBack: () -> Unit) {
             Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("技能中心（Skills）", style = MaterialTheme.typography.titleMedium)
+                    Button(
+                        onClick = { showImportDialog = true },
+                        modifier = Modifier.fillMaxWidth()
+                    ) { Text("＋ 导入技能") }
                     Text(
                         "应用内置安全策略：远程/导入来源默认禁止脚本执行，且能力上限收紧，防止技能越权操控手机。",
                         style = MaterialTheme.typography.bodySmall
@@ -407,9 +425,25 @@ fun AutomationScreen(vm: ChatViewModel, onBack: () -> Unit) {
                                         )
                                     }
                                 }
+                                if (skill.trust.lowercase() == "imported") {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Text(
+                                            "允许脚本执行",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                        Button(onClick = { authTarget = skill }) { Text("授权脚本") }
+                                        Spacer(Modifier.width(8.dp))
+                                        Button(onClick = { vm.uninstallSkill(skill.id) }) { Text("卸载") }
+                                    }
+                                }
                             }
                             Spacer(Modifier.height(8.dp))
                         }
+                    }
+                    val status = importStatus
+                    if (status != null) {
+                        Text(status, style = MaterialTheme.typography.bodyMedium)
                     }
                 }
             }
@@ -419,6 +453,67 @@ fun AutomationScreen(vm: ChatViewModel, onBack: () -> Unit) {
                     "在对话里直接说“打开设置并点击某某”“截个屏看看现在是什么界面”“刚才有没有新消息”即可让 Agent 操作并感知手机。",
                 style = MaterialTheme.typography.bodySmall
             )
+
+            // L7 导入技能 Dialog
+            if (showImportDialog) {
+                AlertDialog(
+                    onDismissRequest = { showImportDialog = false },
+                    title = { Text("导入技能") },
+                    text = {
+                        Column {
+                            OutlinedTextField(
+                                value = importUrl,
+                                onValueChange = { importUrl = it },
+                                label = { Text("Zip 下载地址(URL)") },
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            Text(
+                                "支持从 URL 下载 zip，或从本机选择 .zip 文件，或载入内置示例。",
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                        }
+                    },
+                    confirmButton = {
+                        Column {
+                            Button(onClick = { vm.importFromUrl(importUrl); showImportDialog = false }) {
+                                Text("从 URL 导入")
+                            }
+                            Button(onClick = { importLauncher.launch("application/zip"); showImportDialog = false }) {
+                                Text("从本机选择文件")
+                            }
+                            Button(onClick = { vm.importDemo(); showImportDialog = false }) {
+                                Text("载入示例技能")
+                            }
+                        }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { showImportDialog = false }) { Text("取消") }
+                    }
+                )
+            }
+
+            // L7 授权脚本执行确认 Dialog
+            if (authTarget != null) {
+                AlertDialog(
+                    onDismissRequest = { authTarget = null },
+                    title = { Text("授权脚本执行") },
+                    text = {
+                        Text(
+                            "该技能来自导入来源，执行脚本(script 形态)可能调用高危工具操控手机。" +
+                                "确认授权后它将获得与内置技能同等的脚本执行权限。"
+                        )
+                    },
+                    confirmButton = {
+                        Button(onClick = {
+                            authTarget?.let { vm.setScriptAuthorization(it.id, true) }
+                            authTarget = null
+                        }) { Text("确认授权") }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { authTarget = null }) { Text("取消") }
+                    }
+                )
+            }
         }
     }
 }
