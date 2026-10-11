@@ -5,6 +5,5 @@
   "description": "当用户询问天气时使用 http_request 调用天气 API。",
   "prompt": "当用户问天气时，先用 http_request 调用 https://wttr.in/<城市>?format=j1 获取 JSON，再总结温度、天气与风速。",
   "tools": ["http_request"],
-  "entry": "main.js",
   "permissions": ["network"]
 }

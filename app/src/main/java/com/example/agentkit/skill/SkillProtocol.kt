@@ -33,7 +33,9 @@ data class SkillManifest(
     val keywords: List<String> = emptyList(),
     val file_types: List<String> = emptyList(),
     val tool_requirements: List<String> = emptyList(),
-    val risks: List<String> = emptyList()
+    val risks: List<String> = emptyList(),
+    /** 信任等级：packaged（打包可信，全开）/ imported（导入，禁脚本）/ remote（远程，仅安全能力）。默认 packaged。 */
+    val trust: String = "packaged"
 )
 
 /**

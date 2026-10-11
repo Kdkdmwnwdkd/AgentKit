@@ -72,9 +72,12 @@ class SkillRuntimeBridge(
 
     /** 调用已注册工具。脚本中：agent.tool('http_request', {...}) */
     fun tool(name: String, args: Any?): String {
+        // 第一道：manifest 白名单（skill 自证）
         if (skill.tools.isNotEmpty() && name !in skill.tools) {
             return "⛔ 技能「${skill.name}」无权使用工具 $name（白名单：${skill.tools.joinToString()}）"
         }
+        // 第二道：全局能力门（应用内置真相源，防「自证白名单」越权拿高危权限）
+        checkCapabilityGate(name, skill.trust)?.let { return it }
         val obj = toJsonObject(args) ?: return "⛔ 参数无法解析为对象：$args"
         val call = ToolCall("skill:${skill.id}:$name", name, obj)
         return runBlocking { registry.execute(call).content }
@@ -122,6 +125,13 @@ class SkillExecutor(
     suspend fun runSkill(skill: SkillManifest, inputJson: String): SkillRunResult {
         val entry = skill.entry?.let { readEntry(skill) }
         if (entry != null && jsEngine != null) {
+            // 非 PACKAGED 来源禁止执行脚本，强制回退提示词形态（契约化只读的核心约束）
+            if (!policyFor(skill.trust).allowScript) {
+                return SkillRunResult(
+                    "⚠️ 技能「${skill.name}」来源「${skill.trust}」不允许执行脚本，已回退为提示词模式。\n\n${readBody(skill)}",
+                    false
+                )
+            }
             return runCatching {
                 val bridge = SkillRuntimeBridge(registry, skill, workspace)
                 val engine = jsEngine!!
