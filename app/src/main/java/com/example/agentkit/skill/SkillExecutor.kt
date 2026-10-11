@@ -124,7 +124,7 @@ class SkillExecutor(
         if (entry != null && jsEngine != null) {
             return runCatching {
                 val bridge = SkillRuntimeBridge(registry, skill, workspace)
-                val engine = jsEngine
+                val engine = jsEngine!!
                 val out = engine.eval(entry, mapOf("input" to inputJson, "agent" to bridge))
                 SkillRunResult(resultToString(out, bridge), true)
             }.getOrElse { e ->
