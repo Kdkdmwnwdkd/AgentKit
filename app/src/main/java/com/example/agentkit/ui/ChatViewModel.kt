@@ -5,12 +5,12 @@ import android.app.AppOpsManager
 import android.content.Context
 import android.content.Intent
 import android.provider.Settings
-import androidx.core.app.NotificationManagerCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.agentkit.automation.AutomationBridge
 import com.example.agentkit.automation.AutomationPrefs
 import com.example.agentkit.automation.DeviceForegroundAppTool
+import com.example.agentkit.automation.AgentNotificationListener
 import com.example.agentkit.automation.DeviceNotificationsTool
 import com.example.agentkit.automation.ScreenshotBridge
 import com.example.agentkit.automation.UiClickTool
@@ -64,7 +64,7 @@ sealed interface UiItem {
  * UI 与业务的唯一桥梁：持有注册表、Agent 循环与配置，对外只暴露 StateFlow。
  * 业务规则（工具注册、循环策略、Skill 接入）都在这里组装，Compose 只负责渲染。
  */
-class ChatViewModel(app: Application) : AndroidViewModel(app) {
+class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
 
     private val workspace = File(app.filesDir, "agent_workspace")
 
@@ -169,9 +169,14 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     /** 刷新权限授予状态（进入自动化页时调用，反映用户在系统设置里的变更）。 */
     fun refreshGrants() {
-        _notificationGranted.value = NotificationManagerCompat
-            .getNotificationListenerGrantedPackages()
-            .contains(app.packageName)
+        // 通知监听权限：检查 enabled_notification_listeners 设置里是否包含本服务组件（免依赖、全版本可用）
+        val cn = ComponentName(app, AgentNotificationListener::class.java)
+        val enabledListeners = Settings.Secure.getString(app.contentResolver, "enabled_notification_listeners")
+        _notificationGranted.value = enabledListeners
+            ?.split(":")
+            ?.any { it.equals(cn.flattenToString(), ignoreCase = true) }
+            ?: false
+        // 使用情况访问权限：通过 AppOps 判断 PACKAGE_USAGE_STATS 是否已授予
         _usageGranted.value = try {
             val appOps = app.getSystemService(Context.APP_OPS_SERVICE) as AppOpsManager
             appOps.unsafeCheckOpNoThrow(
