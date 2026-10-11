@@ -1,0 +1,14 @@
+{
+  "id": "com.you.wordcount",
+  "name": "单词统计",
+  "version": "1.0.0",
+  "description": "统计工作目录中文本文件的单词数、行数、字符数。当用户想了解文件规模或做简单文本分析时调用。",
+  "prompt": "该技能读取文件并统计词数。配合 use_skill 调用，脚本会自动完成统计并返回 JSON 结果。",
+  "entry": "main.js",
+  "tools": ["read_file"],
+  "permissions": [],
+  "keywords": ["统计", "单词", "词数", "文本分析", "字数", "word", "count"],
+  "file_types": ["txt", "md", "text", "log"],
+  "tool_requirements": ["read_file"],
+  "risks": []
+}
