@@ -74,6 +74,8 @@ class UiTreeTool : AgentTool {
 /* ------------------------------------------------------------------ */
 class UiTapTool : AgentTool {
     override val name = "ui_tap"
+    /** 危险操作：真实点击屏幕，执行前必须弹窗经用户审批（L10）。 */
+    override val needsApproval = true
     override val description = "在屏幕坐标 (x, y) 处点击一次。坐标来自 ui_tree 的 bounds。"
     override val parameters = JsonSchema.objectSchema(
         JsonSchema.prop("x", "integer", "点击的 X 坐标（像素）"),
@@ -89,6 +91,8 @@ class UiTapTool : AgentTool {
 
 class UiLongPressTool : AgentTool {
     override val name = "ui_long_press"
+    /** 危险操作：真实长按屏幕，执行前必须弹窗经用户审批（L10）。 */
+    override val needsApproval = true
     override val description = "在屏幕坐标 (x, y) 处长按约 0.6 秒。坐标来自 ui_tree 的 bounds。"
     override val parameters = JsonSchema.objectSchema(
         JsonSchema.prop("x", "integer", "长按的 X 坐标（像素）"),
@@ -107,6 +111,8 @@ class UiLongPressTool : AgentTool {
 /* ------------------------------------------------------------------ */
 class UiSwipeTool : AgentTool {
     override val name = "ui_swipe"
+    /** 危险操作：真实滑动屏幕，执行前必须弹窗经用户审批（L10）。 */
+    override val needsApproval = true
     override val description =
         "从 (start_x, start_y) 滑动到 (end_x, end_y)。用于滚动列表、翻页、返回手势等。坐标来自 ui_tree 的 bounds。"
     override val parameters = JsonSchema.objectSchema(
@@ -135,6 +141,8 @@ class UiSwipeTool : AgentTool {
 /* ------------------------------------------------------------------ */
 class UiInputTool : AgentTool {
     override val name = "ui_input"
+    /** 危险操作：向当前焦点输入框写入文本，执行前必须弹窗经用户审批（L10）。 */
+    override val needsApproval = true
     override val description =
         "把文本写入当前获得焦点的输入框（如搜索框、聊天输入框）。调用前通常先 ui_tree 确认焦点在输入框，或先 ui_tap 点一下输入框。"
     override val parameters = JsonSchema.objectSchema(
@@ -152,6 +160,8 @@ class UiInputTool : AgentTool {
 /* ------------------------------------------------------------------ */
 class UiKeyTool : AgentTool {
     override val name = "ui_key"
+    /** 危险操作：执行 home/back/recent 系统按键，执行前必须弹窗经用户审批（L10）。 */
+    override val needsApproval = true
     override val description = "执行系统级按键动作。"
     override val parameters = JsonSchema.objectSchema(
         JsonSchema.prop("key", "string", "动作类型", enum = listOf("home", "back", "recent"))
@@ -168,6 +178,8 @@ class UiKeyTool : AgentTool {
 /* ------------------------------------------------------------------ */
 class UiClickTool : AgentTool {
     override val name = "ui_click"
+    /** 危险操作：按文本/ID 定位并点按元素，执行前必须弹窗经用户审批（L10）。 */
+    override val needsApproval = true
     override val description =
         "按「可见文本」或「resource-id 后缀」定位界面元素并点按，比 ui_tap 更语义化。至少提供 text 或 resource_id 之一。"
     override val parameters = JsonSchema.objectSchema(

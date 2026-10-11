@@ -54,6 +54,8 @@ fun ChatScreen(vm: ChatViewModel, onOpenConfig: () -> Unit, onOpenAutomation: ()
     val messages by vm.messages.collectAsStateWithLifecycle()
     val input by vm.input.collectAsStateWithLifecycle()
     val running by vm.isRunning.collectAsStateWithLifecycle()
+    // L10：危险工具（点击/输入/滑动/按键/截图）执行前在此弹窗征求用户同意
+    val pendingApproval by vm.pendingApproval.collectAsStateWithLifecycle()
     val listState = rememberLazyListState()
 
     LaunchedEffect(messages.size) {
@@ -96,7 +98,43 @@ fun ChatScreen(vm: ChatViewModel, onOpenConfig: () -> Unit, onOpenAutomation: ()
         ) {
             items(messages) { MessageRow(it) }
         }
+
+        // L10 审批弹窗：操作发生在对话过程中，因此在对话页弹出
+        val request = pendingApproval
+        if (request != null) {
+            ApprovalDialog(request, vm)
+        }
     }
+}
+
+/**
+ * L10 危险操作审批 Dialog：展示工具名与入参预览，三选一决策。
+ * 拒绝或关闭弹窗 → AgentLoop 收到「用户拒绝了该危险操作」并作为工具结果继续推理。
+ */
+@Composable
+private fun ApprovalDialog(request: ApprovalRequest, vm: ChatViewModel) {
+    AlertDialog(
+        onDismissRequest = { vm.denyApproval() },
+        title = { Text("确认危险操作") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text("Agent 请求操控手机执行：${request.toolName}")
+                Text(
+                    "参数预览：${request.argsPreview}",
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+        },
+        confirmButton = {
+            Column {
+                Button(onClick = { vm.approveOnce() }) { Text("允许一次") }
+                Button(onClick = { vm.approveAlways() }) { Text("本次会话始终允许") }
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = { vm.denyApproval() }) { Text("拒绝") }
+        }
+    )
 }
 
 @Composable

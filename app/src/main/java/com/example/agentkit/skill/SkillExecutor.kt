@@ -1,10 +1,13 @@
 package com.example.agentkit.skill
 
+import com.example.agentkit.core.AgentLogger
 import com.example.agentkit.core.ToolCall
 import com.example.agentkit.core.ToolRegistry
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
+import org.mozilla.javascript.ClassShutter
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonNull
@@ -31,30 +34,71 @@ interface JsEngine {
     fun close()
 }
 
+/** 脚本单次求值超时上限（毫秒）：超过即放弃脚本结果、回退提示词形态。 */
+private const val SCRIPT_TIMEOUT_MS = 10_000L
+
+/** 脚本一律禁止触碰的 Java 包名前缀：JDK（反射/IO/网络）、Rhino 自身、宿主 App 内部类。 */
+private val BLOCKED_CLASS_PREFIXES = arrayOf(
+    "java.",
+    "javax.",
+    "jdk.",
+    "sun.",
+    "org.mozilla.javascript.",
+    "com.example.agentkit."
+)
+
 /**
  * 基于 Mozilla Rhino 的 JS 引擎：纯 Java 实现，无需 NDK/原生库，可直接在 Android ART 上运行。
  * 选用它而非 QuickJS，是因为本工程可在无原生编译链的环境直接落地脚本能力；
  * 后续若需更小更快，可新增 QuickJsEngine 实现本接口、在 [SkillExecutor] 处替换即可。
+ *
+ * 沙箱加固（L11）：
+ *  1. ClassShutter 屏蔽上表中的包：脚本拿不到 Packages.java.net.Socket / Class.forName / 宿主内部类，
+ *     唯一出口是注入的 agent 桥（其工具调用受 manifest 白名单 + L5 全局能力门双重约束）。
+ *  2. optimizationLevel = -1（解释执行），为后续接入指令计数看门狗留口子。
+ *  3. withTimeoutOrNull(SCRIPT_TIMEOUT_MS) 超时看门狗。
+ *
+ * ⚠️ 超时语义说明：Rhino 1.7.14 **无法强制中断一个已经在跑的死循环求值线程**——
+ * 超时只会取消协程、让本函数立刻返回 null 放弃结果，Rhino 那个线程仍会继续空转（可能永不结束，
+ * 线程与 Context 都会泄漏）。所以这里的策略是「不等它」：由 [SkillExecutor.runSkill]
+ * 记 ERROR 日志并回退提示词形态，保证用户侧不会被卡死。
+ * 真正可强 kill 的中断需要后续换成 QuickJS（有原生中断钩子）才能做到。
  */
 class RhinoJsEngine : JsEngine {
-    override suspend fun eval(source: String, bindings: Map<String, Any?>): Any? = withContext(Dispatchers.Default) {
-        val cx = org.mozilla.javascript.Context.enter()
-        try {
-            cx.languageVersion = org.mozilla.javascript.Context.VERSION_ES6
-            val scope = cx.initStandardObjects()
-            for ((k, v) in bindings) scope.put(k, scope, org.mozilla.javascript.Context.javaToJS(v, scope))
-            // 包成函数表达式：(source)；若求值结果是个函数，则注入 (input, agent) 调用
-            val value = cx.evaluateString(scope, "($source)", "skill.js", 1, null)
-            if (value is org.mozilla.javascript.Function) {
-                val input = bindings["input"]
-                val agent = bindings["agent"]
-                return@withContext value.call(cx, scope, scope, arrayOf(input, agent))
+    override suspend fun eval(source: String, bindings: Map<String, Any?>): Any? =
+        withTimeoutOrNull(SCRIPT_TIMEOUT_MS) {
+            withContext(Dispatchers.Default) {
+                val cx = org.mozilla.javascript.Context.enter()
+                try {
+                    cx.languageVersion = org.mozilla.javascript.Context.VERSION_ES6
+                    cx.optimizationLevel = -1
+                    // 注入给脚本的宿主对象（agent 桥）必须放行：Rhino 在把 Java 对象包装进 JS 作用域时
+                    // 就会对它的类做 shutter 校验，一刀切屏蔽 com.example.agentkit.* 会让脚本形态彻底失效
+                    // （连 agent.http / agent.tool 都用不了）。因此这里只放行真正注入进来的那些类。
+                    val injectedClasses = bindings.values
+                        .filterNotNull()
+                        .map { it.javaClass.name }
+                        .filterNot { name -> BLOCKED_CLASS_PREFIXES.any { p -> name.startsWith(p) } }
+                        .toSet() + SkillRuntimeBridge::class.java.name
+                    cx.classShutter = ClassShutter { className ->
+                        className in injectedClasses ||
+                            !BLOCKED_CLASS_PREFIXES.any { p -> className.startsWith(p) }
+                    }
+                    val scope = cx.initStandardObjects()
+                    for ((k, v) in bindings) scope.put(k, scope, org.mozilla.javascript.Context.javaToJS(v, scope))
+                    // 包成函数表达式：(source)；若求值结果是个函数，则注入 (input, agent) 调用
+                    val value = cx.evaluateString(scope, "($source)", "skill.js", 1, null)
+                    if (value is org.mozilla.javascript.Function) {
+                        val input = bindings["input"]
+                        val agent = bindings["agent"]
+                        return@withContext value.call(cx, scope, scope, arrayOf(input, agent))
+                    }
+                    return@withContext value
+                } finally {
+                    org.mozilla.javascript.Context.exit()
+                }
             }
-            return@withContext value
-        } finally {
-            org.mozilla.javascript.Context.exit()
         }
-    }
 
     override fun close() {}
 }
@@ -136,6 +180,15 @@ class SkillExecutor(
                 val bridge = SkillRuntimeBridge(registry, skill, workspace)
                 val engine = jsEngine!!
                 val out = engine.eval(entry, mapOf("input" to inputJson, "agent" to bridge))
+                // eval 返回 null 即超时（看门狗放弃了这个脚本的结果）；
+                // 脚本显式 return null 也走同一分支，代价可接受——宁可回退提示词也不让用户干等。
+                if (out == null) {
+                    AgentLogger.e("Skill", "脚本执行超时：${skill.name}")
+                    return@runCatching SkillRunResult(
+                        "⚠️ 脚本执行超时（>10s），已回退为提示词模式。\n\n${readBody(skill)}",
+                        false
+                    )
+                }
                 SkillRunResult(resultToString(out, bridge), true)
             }.getOrElse { e ->
                 SkillRunResult("⚠️ 技能脚本执行失败：${e.message}\n\n${readBody(skill)}", false)

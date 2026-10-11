@@ -22,6 +22,8 @@ import java.io.File
  */
 class UiScreenshotTool(private val workspace: File) : AgentTool {
     override val name = "ui_screenshot"
+    /** 涉及屏幕内容采集，需用户知情后放行（L10）。 */
+    override val needsApproval = true
     override val description =
         "截取当前手机屏幕画面，并以图片形式返回。Agent 可据此“看见”屏幕内容（图标、图片、验证码、游戏画面等 UI 树无法描述的区域），用于理解界面、定位元素、判断状态。返回图片会自动附到下一轮对话供视觉模型分析。需要先在「自动化」页开启屏幕捕获授权。"
     override val systemPrompt =

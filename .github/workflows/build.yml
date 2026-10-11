@@ -8,6 +8,9 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    # 发布 Release（gh release create/upload）需要写仓库内容的权限
+    permissions:
+      contents: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -48,3 +51,16 @@ jobs:
           name: app-debug
           path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
+
+      # 额外把 APK 发到 latest Release，便于用 ghproxy 等加速镜像直链下载
+      - name: Publish APK to Release (latest)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="latest"
+          gh release delete "$TAG" --repo "${{ github.repository }}" --yes 2>/dev/null || true
+          gh release create "$TAG" app/build/outputs/apk/debug/*.apk \
+            --repo "${{ github.repository }}" \
+            --title "AgentKit latest (run ${{ github.run_number }})" \
+            --notes "commit ${{ github.sha }}" || \
+          gh release upload "$TAG" app/build/outputs/apk/debug/*.apk --repo "${{ github.repository }}" --clobber

@@ -27,12 +27,14 @@ import com.example.agentkit.automation.UiTapTool
 import com.example.agentkit.automation.UiTreeTool
 import com.example.agentkit.core.AgentLoop
 import com.example.agentkit.core.AgentLogger
+import com.example.agentkit.core.AgentTool
 import com.example.agentkit.core.AssistantMessage
 import com.example.agentkit.core.ChatMessage
 import com.example.agentkit.core.LLMConfig
 import com.example.agentkit.core.OpenAIClient
 import com.example.agentkit.core.ToolCall
 import com.example.agentkit.core.ToolMessage
+import com.example.agentkit.core.ToolApproval
 import com.example.agentkit.core.ToolRegistry
 import com.example.agentkit.core.UserMessage
 import com.example.agentkit.skill.JsEngine
@@ -57,12 +59,16 @@ import com.example.agentkit.tools.HttpRequestTool
 import com.example.agentkit.tools.NotificationTool
 import com.example.agentkit.tools.ReadFileTool
 import com.example.agentkit.tools.WriteFileTool
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.JsonObject
 import java.io.File
 import java.net.URL
 
@@ -99,6 +105,19 @@ sealed interface UiItem {
         val images: List<String> = emptyList()
     ) : UiItem
 }
+
+/**
+ * 一次待确认的危险工具调用（L10）：由 AgentLoop 发起、UI 弹窗、用户决策后回填。
+ *
+ * @param toolName 待执行的工具名（如 ui_tap）。
+ * @param argsPreview 入参预览（截断到 500 字符，避免超长参数撑爆 Dialog）。
+ * @param deferred UI 用它回复 AgentLoop：complete(true) 放行、complete(false) 拒绝。
+ */
+data class ApprovalRequest(
+    val toolName: String,
+    val argsPreview: String,
+    val deferred: CompletableDeferred<Boolean>
+)
 
 /**
  * UI 与业务的唯一桥梁：持有注册表、Agent 循环与配置，对外只暴露 StateFlow。
@@ -310,12 +329,59 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     val input = MutableStateFlow("")
     val isRunning = MutableStateFlow(false)
 
+    // —— L10 危险操作审批：Agent 想操控手机必须先过人 ——
+
+    /** 当前待用户确认的危险工具调用；非 null 时 UI 弹出审批 Dialog。 */
+    private val _pendingApproval = MutableStateFlow<ApprovalRequest?>(null)
+    val pendingApproval: StateFlow<ApprovalRequest?> = _pendingApproval.asStateFlow()
+
+    /** 本次会话内「始终允许」的工具名集合：仅存进程内存，App 重启即失效，避免长期授权漂移。 */
+    private val sessionAllowed = mutableSetOf<String>()
+
+    /** 审批互斥锁：并发工具调用时串行排队，保证同一时刻只有一个审批弹窗。 */
+    private val approvalMutex = Mutex()
+
+    /**
+     * 向用户征求一次危险操作授权，挂起直到用户决策。
+     * 已在本次会话「始终允许」过的工具直接放行，不再打扰用户。
+     */
+    private suspend fun requestApproval(tool: AgentTool, args: JsonObject): Boolean = approvalMutex.withLock {
+        if (tool.name in sessionAllowed) return@withLock true
+        val deferred = CompletableDeferred<Boolean>()
+        _pendingApproval.value = ApprovalRequest(tool.name, args.toString().take(500), deferred)
+        // finally 保证无论用户怎么关掉弹窗，pending 都会清空，不会残留卡住下一个工具
+        val ok = try { deferred.await() } finally { _pendingApproval.value = null }
+        AgentLogger.w("Approval", "${tool.name} ${if (ok) "允许" else "拒绝"}")
+        ok
+    }
+
+    /** 用户选择「允许一次」：仅放行当前这一次调用。 */
+    fun approveOnce() {
+        _pendingApproval.value?.deferred?.complete(true)
+    }
+
+    /** 用户选择「本次会话始终允许」：记入会话白名单后放行，后续同类调用不再弹窗。 */
+    fun approveAlways() {
+        val pending = _pendingApproval.value ?: return
+        sessionAllowed += pending.toolName
+        pending.deferred.complete(true)
+    }
+
+    /** 用户选择「拒绝」：AgentLoop 会把「用户拒绝了该危险操作」作为工具结果回填。 */
+    fun denyApproval() {
+        _pendingApproval.value?.deferred?.complete(false)
+    }
+
     // llmProvider 每次都按最新配置构造，支持运行时切换模型/Key
+    // L10：ui_tap / ui_input / ui_swipe / ui_key / ui_click / ui_screenshot 等危险工具执行前先问用户
+    private val approvalHandler: ToolApproval = { tool, args -> requestApproval(tool, args) }
+
     private val loop = AgentLoop(
         llmProvider = {
             OpenAIClient(LLMConfig(_config.value.baseUrl, _config.value.apiKey, _config.value.model))
         },
         registry = registry,
+        approval = approvalHandler,
         // L9：每轮运行都把当前记忆摘要注入系统提示
         memoryProvider = { memoryStore.summaryForPrompt(12, 1200) }
     )

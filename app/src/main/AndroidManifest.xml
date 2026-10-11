@@ -29,7 +29,7 @@
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.WRITE_SETTINGS" tools:ignore="ProtectedPermissions" />
     <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS" tools:ignore="ProtectedPermissions" />
-    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <!-- REQUEST_INSTALL_PACKAGES：代码中未实现（无静默安装能力），遵循最小权限原则移除；后续实现对应能力时再申请。 -->
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
@@ -41,18 +41,14 @@
     <!-- ===== L5 Shizuku / ADB 提权通道（需先安装 Shizuku 并授权） ===== -->
     <uses-permission android:name="moe.shizuku.manager.permission.API_V23" />
 
-    <!-- ===== L6 蓝牙 / 上下文感知 ===== -->
-    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
-    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
-    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
-    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
+    <!-- ===== L6 蓝牙 / 上下文感知 =====
+         BLUETOOTH / BLUETOOTH_ADMIN / BLUETOOTH_CONNECT / BLUETOOTH_SCAN：
+         代码中未实现任何蓝牙能力，遵循最小权限原则移除；后续实现对应能力时再申请。 -->
 
-    <!-- ===== L7 代理能力（高危，仅自用侧载包可用） ===== -->
-    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
-    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
-    <uses-permission android:name="android.permission.CALL_PHONE" />
-    <uses-permission android:name="android.permission.SEND_SMS" />
-    <uses-permission android:name="android.permission.READ_SMS" />
+    <!-- ===== L7 代理能力（高危，仅自用侧载包可用） =====
+         ACCESS_FINE_LOCATION / ACCESS_COARSE_LOCATION / CALL_PHONE / SEND_SMS / READ_SMS：
+         代码中均未实现（无拨号、无短信收发、无定位读取），遵循最小权限原则移除；
+         后续实现对应能力时再申请，并按危险等级接入 L10 审批闸门。 -->
     <uses-permission android:name="android.permission.RECEIVE_SMS" />
 
     <application
