@@ -27,6 +27,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import android.app.Activity
 import android.content.Context
 import android.media.projection.MediaProjectionManager
+import com.example.agentkit.automation.DeviceContext
 import com.example.agentkit.skill.ModelConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -226,6 +227,7 @@ fun AutomationScreen(vm: ChatViewModel, onBack: () -> Unit) {
     val capturing by vm.capturing.collectAsStateWithLifecycle()
     val notificationGranted by vm.notificationGranted.collectAsStateWithLifecycle()
     val usageGranted by vm.usageGranted.collectAsStateWithLifecycle()
+    val deviceContext by vm.deviceContext.collectAsStateWithLifecycle()
     val ctx = LocalContext.current
 
     // 进入本页时刷新权限授予状态，反映用户在系统设置里的最新操作
@@ -328,6 +330,29 @@ fun AutomationScreen(vm: ChatViewModel, onBack: () -> Unit) {
                             },
                             modifier = Modifier.fillMaxWidth()
                         ) { Text("开启使用情况访问权限") }
+                    }
+                }
+            }
+
+            // L4 主动感知：展示 Agent 实时感知到的设备上下文，发消息时自动注入对话
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("当前手机上下文（Agent 主动感知）", style = MaterialTheme.typography.titleMedium)
+                    if (deviceContext.isEmpty) {
+                        Text("暂无感知数据。开启无障碍服务后切换 App、或收到新通知，这里会实时显示；每次发消息时该上下文会自动注入给模型。")
+                    } else {
+                        if (deviceContext.foregroundPackage.isNotBlank()) {
+                            val fg = if (deviceContext.foregroundLabel.isNotBlank() && deviceContext.foregroundLabel != deviceContext.foregroundPackage)
+                                "${deviceContext.foregroundLabel} (${deviceContext.foregroundPackage})"
+                            else deviceContext.foregroundPackage
+                            Text("前台应用：$fg")
+                        }
+                        if (deviceContext.recentNotifications.isNotEmpty()) {
+                            Text("最近通知：", style = MaterialTheme.typography.labelMedium)
+                            deviceContext.recentNotifications.forEach { n ->
+                                Text("• $n", style = MaterialTheme.typography.bodySmall)
+                            }
+                        }
                     }
                 }
             }

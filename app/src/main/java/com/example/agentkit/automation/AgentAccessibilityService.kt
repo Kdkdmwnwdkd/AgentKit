@@ -35,7 +35,16 @@ class AgentAccessibilityService : AccessibilityService() {
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        // 被动查询模式：Agent 主动调方法读取/操作，不监听事件。
+        // L4 主动感知：仅在窗口切换/窗口集合变化时记录前台应用，避免高频噪声。
+        // 其余操作仍为 Agent 主动查询模式（被动监听仅用于喂 DeviceContextStore）。
+        event ?: return
+        when (event.eventType) {
+            AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED,
+            AccessibilityEvent.TYPE_WINDOWS_CHANGED -> {
+                val pkg = event.packageName?.toString().orEmpty()
+                if (pkg.isNotBlank()) DeviceContextStore.updateForeground(this, pkg)
+            }
+        }
     }
 
     override fun onInterrupt() {}

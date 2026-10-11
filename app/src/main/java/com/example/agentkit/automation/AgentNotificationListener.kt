@@ -57,6 +57,16 @@ class AgentNotificationListener : NotificationListenerService() {
                 key = sbn.key
             )
         )
+        // L4 主动感知：把通知摘要同步到设备上下文，供对话层自动注入
+        val label = try {
+            packageManager.getApplicationLabel(
+                packageManager.getApplicationInfo(sbn.packageName, 0)
+            ).toString()
+        } catch (_: Throwable) { sbn.packageName }
+        val body = if (title.isNotBlank()) {
+            if (text.isNotBlank()) "$title：$text" else title
+        } else text
+        DeviceContextStore.addNotification("$label - $body")
     }
 
     override fun onNotificationRemoved(sbn: StatusBarNotification?) {}

@@ -12,6 +12,8 @@ import com.example.agentkit.automation.AutomationBridge
 import com.example.agentkit.automation.AutomationPrefs
 import com.example.agentkit.automation.DeviceForegroundAppTool
 import com.example.agentkit.automation.AgentNotificationListener
+import com.example.agentkit.automation.DeviceContext
+import com.example.agentkit.automation.DeviceContextStore
 import com.example.agentkit.automation.DeviceNotificationsTool
 import com.example.agentkit.automation.ScreenshotBridge
 import com.example.agentkit.automation.UiClickTool
@@ -90,6 +92,10 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     /** 使用情况访问权限是否已授予（供感知层卡片展示）。 */
     private val _usageGranted = MutableStateFlow(false)
     val usageGranted: StateFlow<Boolean> = _usageGranted.asStateFlow()
+
+    /** 当前设备上下文快照（L4 主动感知）：供自动化页展示 Agent 实时感知到的手机状态。 */
+    private val _deviceContext = MutableStateFlow(DeviceContextStore.snapshot())
+    val deviceContext: StateFlow<DeviceContext> = _deviceContext.asStateFlow()
 
     /** 扫描已安装 Skill（assets/skills）；为空则不打 use_skill 工具。 */
     private val skills = SkillLoader.loadAll(app)
@@ -186,6 +192,8 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
                 app.packageName
             ) == AppOpsManager.MODE_ALLOWED
         } catch (_: Throwable) { false }
+        // L4 主动感知：刷新 UI 展示的设备上下文快照
+        _deviceContext.value = DeviceContextStore.snapshot()
     }
 
     private val _messages = MutableStateFlow<List<UiItem>>(emptyList())
@@ -213,8 +221,12 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         input.value = ""
         isRunning.value = true
 
+        // L4 主动感知：把当前设备上下文自动拼进用户输入，让模型“知道”手机在干什么
+        val ctxPrompt = DeviceContextStore.snapshot().toPrompt()
+        val fullInput = if (ctxPrompt.isBlank()) text else "$ctxPrompt\n\n用户当前请求：$text"
+
         viewModelScope.launch {
-            runCatching { loop.run(text) }
+            runCatching { loop.run(fullInput) }
                 .onSuccess { history -> history.forEach { append(it) } }
                 .onFailure { _messages.value = _messages.value + UiItem.Assistant("⚠️ 出错了：${it.message}") }
             isRunning.value = false
