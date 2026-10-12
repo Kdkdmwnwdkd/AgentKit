@@ -169,6 +169,29 @@ object AgentLogger {
         i("LLM", "→ 请求 model=$model messages=$msgCount tools=$toolCount")
     }
 
+    /**
+     * 记录本次请求实际使用的端点/模型/Key 指纹，让 401 能在日志里自证。
+     *
+     * 只记 head/tail/length 三段指纹，沿用 [sanitize] 的脱敏铁律：**绝不**记完整 Key。
+     * 当 Key 夹带了不可见字符（removedCount>0）时追加 ⚠️ 告警——这是本次 401 Bug 的
+     * 关键诊断信号：用户肉眼看不出的 NBSP/零宽字符，在这里被抓个正着。
+     *
+     * @param endpoint 实际发起请求的完整 URL（已拼接 /chat/completions）。
+     * @param model 实际使用的模型名。
+     * @param apiKey 用户原始 Key（只取指纹，不入日志全文）。
+     */
+    fun apiTrace(endpoint: String, model: String, apiKey: String) {
+        val insp = ConfigSanitizer.inspectKey(apiKey)
+        val finger = "key[len=${insp.length} head=${insp.head} tail=${insp.tail}]"
+        val msg = if (insp.removedCount > 0) {
+            "→ 端点 endpoint=$endpoint model=$model $finger " +
+                "⚠️ API Key 含 ${insp.removedCount} 个不可见字符（已自动清除，可能粘贴不完整/夹带空格）"
+        } else {
+            "→ 端点 endpoint=$endpoint model=$model $finger"
+        }
+        record(LogLevel.INFO, "LLM", msg)
+    }
+
     /** LLM 响应（含耗时与预览）。 */
     fun llmResponse(model: String, ok: Boolean, ms: Long, preview: String) {
         val level = if (ok) LogLevel.INFO else LogLevel.ERROR

@@ -75,7 +75,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.example.agentkit.skill.ModelConfig
+import com.example.agentkit.core.ConfigSanitizer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -624,6 +624,8 @@ fun ModelConfigScreen(vm: ChatViewModel, onBack: () -> Unit) {
     var baseUrl by remember { mutableStateOf(config.baseUrl) }
     var apiKey by remember { mutableStateOf(config.apiKey) }
     var model by remember { mutableStateOf(config.model) }
+    val testResult by vm.testResult.collectAsStateWithLifecycle()
+    val testing by vm.testing.collectAsStateWithLifecycle()
 
     Scaffold(
         topBar = {
@@ -663,6 +665,8 @@ fun ModelConfigScreen(vm: ChatViewModel, onBack: () -> Unit) {
                         label = { Text("API Key") },
                         singleLine = true
                     )
+                    // 实时自检行：在保存前就让用户肉眼发现「粘贴不全/夹带空格/零宽字符」
+                    KeySelfCheck(apiKey)
                     OutlinedTextField(
                         value = model,
                         onValueChange = { model = it },
@@ -673,11 +677,39 @@ fun ModelConfigScreen(vm: ChatViewModel, onBack: () -> Unit) {
                     )
                 }
             }
+            // 「测试连接」：用当前输入框的值（实时清洗后）发一次最小请求，结果落在下方卡片
+            val canTest = baseUrl.isNotBlank() && apiKey.isNotBlank()
+            OutlinedButton(
+                onClick = { vm.testConnection(baseUrl, apiKey, model) },
+                enabled = canTest && !testing,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                if (testing) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(18.dp),
+                        strokeWidth = 2.dp,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text("测试中…")
+                } else {
+                    Text("测试连接")
+                }
+            }
+            if (!canTest) {
+                Text(
+                    "填写 Base URL 与 API Key 后即可测试连接",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            testResult?.let { TestResultCard(it) }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 OutlinedButton(onClick = onBack, modifier = Modifier.weight(1f)) { Text("取消") }
                 Button(
                     onClick = {
-                        vm.updateConfig(ModelConfig(baseUrl.trim(), apiKey.trim(), model.trim()))
+                        // 保存时统一过 ConfigSanitizer：剔除不可见字符、规范化 URL，避免带着 \u00A0 落盘
+                        vm.updateConfig(ConfigSanitizer.sanitized(baseUrl, apiKey, model))
                         onBack()
                     },
                     modifier = Modifier.weight(1f)
@@ -699,6 +731,80 @@ fun ModelConfigScreen(vm: ChatViewModel, onBack: () -> Unit) {
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+            }
+        }
+    }
+}
+
+/**
+ * API Key 实时自检行：在保存前就把「粘贴不全/夹带不可见字符」暴露给用户。
+ *
+ * 显示「长度 N · sk-a…d38d」首尾指纹，并复用 [ConfigSanitizer.inspectKey] 统计被剔除的
+ * 不可见字符数；字符数异常（过短，多半粘贴不全）或含不可见字符时整行转 error 色并给出提示。
+ */
+@Composable
+private fun KeySelfCheck(rawKey: String) {
+    if (rawKey.isBlank()) return
+    val insp = remember(rawKey) { ConfigSanitizer.inspectKey(rawKey) }
+    val hasIssue = insp.hasIllegalChars || insp.length < 8
+    val tone = if (hasIssue) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Text(
+            "长度 ${insp.length} · ${insp.head}…${insp.tail}",
+            style = MaterialTheme.typography.labelSmall,
+            fontFamily = FontFamily.Monospace,
+            color = tone
+        )
+        if (insp.hasIllegalChars) {
+            Text(
+                "检测到 ${insp.removedCount} 个不可见字符（多为粘贴带入），保存时将自动清除",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.error
+            )
+        }
+    }
+}
+
+/**
+ * 「测试连接」结果卡片：展示 HTTP 状态码、请求端点、Key 指纹、响应体预览（已脱敏）。
+ * 成功绿色、失败红色，失败再补一句针对性建议，让用户不必再猜是 Key 还是端点的问题。
+ */
+@Composable
+private fun TestResultCard(result: TestResult) {
+    val tone = if (result.ok) AgentColors.success else MaterialTheme.colorScheme.error
+    Card(
+        shape = MaterialTheme.shapes.large,
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = androidx.compose.foundation.BorderStroke(1.dp, tone.copy(alpha = 0.4f))
+    ) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text(
+                if (result.ok) "✅ 连接正常" else "❌ ${result.code}",
+                style = MaterialTheme.typography.labelLarge,
+                color = tone
+            )
+            Text(
+                "端点：${result.endpoint}",
+                style = MaterialTheme.typography.bodySmall,
+                fontFamily = FontFamily.Monospace,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Text(
+                "Key 指纹：${result.fingerprint}",
+                style = MaterialTheme.typography.bodySmall,
+                fontFamily = FontFamily.Monospace,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            if (result.bodyPreview.isNotBlank()) {
+                Text(
+                    "响应：${result.bodyPreview}",
+                    style = MaterialTheme.typography.bodySmall,
+                    fontFamily = FontFamily.Monospace,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            if (result.suggestion.isNotBlank()) {
+                Text(result.suggestion, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
             }
         }
     }

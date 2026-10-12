@@ -27,6 +27,8 @@ import com.example.agentkit.automation.UiTapTool
 import com.example.agentkit.automation.UiTreeTool
 import com.example.agentkit.core.AgentLoop
 import com.example.agentkit.core.AgentLogger
+import com.example.agentkit.core.ConfigSanitizer
+import com.example.agentkit.core.ConfigStore
 import com.example.agentkit.core.AgentTool
 import com.example.agentkit.core.AssistantMessage
 import com.example.agentkit.core.ChatMessage
@@ -118,6 +120,22 @@ data class ApprovalRequest(
     val toolName: String,
     val argsPreview: String,
     val deferred: CompletableDeferred<Boolean>
+)
+
+/** 「测试连接」的诊断结果：配置页卡片直接消费。 */
+data class TestResult(
+    /** 是否连通（HTTP 2xx）。 */
+    val ok: Boolean,
+    /** HTTP 状态码；网络异常时为 -1。 */
+    val code: Int,
+    /** 实际发起请求的完整端点。 */
+    val endpoint: String,
+    /** Key 指纹：len=35 head=sk-a tail=d38d。 */
+    val fingerprint: String,
+    /** 响应体前 200 字（已脱敏）；异常时为异常文案。 */
+    val bodyPreview: String,
+    /** 针对状态码的修复建议（失败时有值）。 */
+    val suggestion: String = ""
 )
 
 /**
@@ -324,8 +342,20 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     private val _messages = MutableStateFlow<List<UiItem>>(emptyList())
     val messages: StateFlow<List<UiItem>> = _messages.asStateFlow()
 
-    private val _config = MutableStateFlow(ModelConfig())
+    /** 模型配置持久化：进程重启也能还原，避免「明明填过却退回默认值」的不一致。 */
+    private val configStore = ConfigStore(app)
+
+    /** 当前模型配置（已落盘，UI 直接消费）；初始化即从 ConfigStore 读取，而不是凭空默认值。 */
+    private val _config = MutableStateFlow(configStore.load())
     val config: StateFlow<ModelConfig> = _config.asStateFlow()
+
+    /** 「测试连接」结果流：配置页卡片消费，null 表示尚未测试。 */
+    private val _testResult = MutableStateFlow<TestResult?>(null)
+    val testResult: StateFlow<TestResult?> = _testResult.asStateFlow()
+
+    /** 是否正在测试连接：UI 用它给按钮显示加载态，避免重复点击。 */
+    private val _testing = MutableStateFlow(false)
+    val testing: StateFlow<Boolean> = _testing.asStateFlow()
 
     val input = MutableStateFlow("")
     val isRunning = MutableStateFlow(false)
@@ -387,7 +417,93 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         memoryProvider = { memoryStore.summaryForPrompt(12, 1200) }
     )
 
-    fun updateConfig(cfg: ModelConfig) { _config.value = cfg }
+    /**
+     * 更新模型配置：先过 [ConfigSanitizer] 清洗（剔除不可见字符/规范化 URL），
+     * 再落盘 + 更新内存状态流，保证「保存即生效、重启不丢失」。
+     */
+    fun updateConfig(cfg: ModelConfig) {
+        val clean = ConfigSanitizer.sanitized(cfg)
+        configStore.save(clean)
+        _config.value = clean
+    }
+
+    /** 由当前保存的 Key 生成「len=35 head=sk-a tail=d38d」指纹，供 401 气泡与测试卡片共用。 */
+    private fun keyFingerprint(apiKey: String): String {
+        val insp = ConfigSanitizer.inspectKey(apiKey)
+        return "len=${insp.length} head=${insp.head} tail=${insp.tail}"
+    }
+
+    /**
+     * 「测试连接」：用配置页当前输入框的值（先实时清洗）发起一次最小请求，
+     * 把连通性结果写入 [_testResult] 供卡片渲染。网络 IO 全部走 Dispatchers.IO，不阻塞主线程。
+     *
+     * 最小请求体：`messages=[{role:user,content:"ping"}]`、`max_tokens=1`、不带 tools，
+     * 既不污染对话历史，也几乎不产生 token 消耗。
+     *
+     * @param baseUrl 输入框当前的 Base URL（原始值）。
+     * @param apiKey 输入框当前的 API Key（原始值）。
+     * @param model 输入框当前的模型名（原始值）。
+     */
+    fun testConnection(baseUrl: String, apiKey: String, model: String) {
+        if (_testing.value) return
+        _testing.value = true
+        _testResult.value = null
+        viewModelScope.launch {
+            val cfg = ConfigSanitizer.sanitized(baseUrl, apiKey, model)
+            val endpoint = "${cfg.baseUrl.trimEnd('/')}/chat/completions"
+            val finger = keyFingerprint(cfg.apiKey)
+            val outcome = runCatching {
+                withContext(Dispatchers.IO) {
+                    OpenAIClient(LLMConfig(cfg.baseUrl, cfg.apiKey, cfg.model)).testPing()
+                }
+            }
+            _testResult.value = when {
+                outcome.isFailure -> {
+                    val t = outcome.exceptionOrNull()!!
+                    // 异常文案离开日志系统前先脱敏（防御：异常里可能夹带 url 中的 key 片段）
+                    val msg = (t.message?.let { AgentLogger.sanitize(it) } ?: "未知错误").take(200)
+                    TestResult(
+                        ok = false,
+                        code = -1,
+                        endpoint = endpoint,
+                        fingerprint = finger,
+                        bodyPreview = msg,
+                        suggestion = "无法连接：请检查网络、Base URL 是否可达（错误类型：${t::class.java.simpleName}）"
+                    )
+                }
+
+                else -> {
+                    val ping = outcome.getOrThrow()
+                    if (ping.code in 200..299) {
+                        TestResult(
+                            ok = true,
+                            code = ping.code,
+                            endpoint = endpoint,
+                            fingerprint = finger,
+                            bodyPreview = ping.bodyPreview
+                        )
+                    } else {
+                        // 失败分支给出针对性建议，让用户不必再猜是 Key 问题还是端点问题
+                        val suggestion = when (ping.code) {
+                            401, 403 -> "Key 无效/无权限：确认未夹带空格或零宽字符，且 Key 仍有额度与调用权限"
+                            429 -> "请求过快（429）：稍后再试"
+                            in 400..499 -> "客户端错误（${ping.code}）：检查模型名 / Base URL 是否正确"
+                            else -> "服务端错误（${ping.code}）：稍后重试"
+                        }
+                        TestResult(
+                            ok = false,
+                            code = ping.code,
+                            endpoint = endpoint,
+                            fingerprint = finger,
+                            bodyPreview = ping.bodyPreview,
+                            suggestion = suggestion
+                        )
+                    }
+                }
+            }
+            _testing.value = false
+        }
+    }
 
     // —— L8 运行日志（日记）：出错可定位 ——
 
@@ -499,8 +615,22 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         val http = e as? LlmHttpException
         if (http != null) {
             return when {
-                http.code == 401 || http.code == 403 ->
-                    "🔑 API Key 无效或已过期：请到「模型」页检查 Key 是否正确、是否还有额度"
+                http.code == 401 || http.code == 403 -> {
+                    // 401/403：在原有文案基础上，附上能直接定位的信息——服务端原始 message、
+                    // 实际请求端点、Key 指纹，让用户凭气泡就能判断是「Key 粘贴不全」还是「端点错了」，
+                    // 而不是再去翻日志。指纹只取 head/tail，绝不回显完整 Key。
+                    val endpoint = "${ConfigSanitizer.normalizeBaseUrl(_config.value.baseUrl)}/chat/completions"
+                    val finger = keyFingerprint(_config.value.apiKey)
+                    val serverMsg = http.serverBody.take(200)
+                    val extra = buildString {
+                        append("\n端点：$endpoint")
+                        append("\nKey 指纹：$finger")
+                        if (serverMsg.isNotBlank()) {
+                            append("\n服务端：${AgentLogger.sanitize(serverMsg)}")
+                        }
+                    }
+                    "🔑 API Key 无效或已过期（${http.code}）：请到「模型」页检查 Key 是否正确、是否还有额度$extra"
+                }
                 http.code == 429 ->
                     "⏳ 请求过于频繁（429）：请稍后再试"
                 http.code >= 500 ->

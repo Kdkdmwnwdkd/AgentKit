@@ -31,9 +31,15 @@ data class LLMConfig(
  * [retryable] 表示是否值得重试：429/5xx 属瞬时问题可重试，
  * 401/403/400 等鉴权/参数错误重试也无用，必须快速失败（避免用户白等 3 次重试）。
  */
-class LlmHttpException(val code: Int, message: String) : java.io.IOException(message) {
+class LlmHttpException(val code: Int, message: String, val serverBody: String = "") : java.io.IOException(message) {
     val retryable: Boolean get() = code == 429 || code >= 500
 }
+
+/**
+ * 「测试连接」最小探测的返回：状态码 + 响应体预览（已脱敏）。
+ * 仅用于诊断连通性，不进入对话。
+ */
+data class PingResult(val code: Int, val bodyPreview: String)
 
 /**
  * LLM 抽象：Agent 核心只依赖它。换供应商（OpenAI / 本地 llama.cpp / Claude）
@@ -61,7 +67,7 @@ class OpenAIClient(
         tools: List<AgentTool>
     ): AssistantMessage = withContext(Dispatchers.IO) {
         val requestJson = buildJsonObject {
-            put("model", config.model)
+            put("model", effectiveModel())
             putJsonArray("messages") { messages.forEach { add(toApiMessage(it)) } }
             if (tools.isNotEmpty()) {
                 put("tool_choice", "auto")
@@ -75,7 +81,9 @@ class OpenAIClient(
         val request = buildRequest(requestJson)
 
         // L8 日志：请求前记录（只记模型/消息数/工具数，绝不记 apiKey）
-        AgentLogger.llmRequest(config.model, messages.size, tools.size)
+        AgentLogger.llmRequest(effectiveModel(), messages.size, tools.size)
+        // 记录实际端点/模型/Key 指纹，让 401 能在日志里自证（含不可见字符告警）
+        AgentLogger.apiTrace(endpointUrl(), effectiveModel(), effectiveApiKey())
         val startedAt = System.currentTimeMillis()
 
         // 超时/DNS/连接失败都走 IOException，记下堆栈后原样抛出
@@ -94,11 +102,11 @@ class OpenAIClient(
                 val safeBody = AgentLogger.sanitize(errBody)
                 AgentLogger.httpError(r.code, safeBody)
                 // 带上状态码抛出：上层据此判断是否值得重试、以及给用户什么文案
-                throw LlmHttpException(r.code, "LLM 请求失败 ${r.code}：${safeBody.take(300)}")
+                throw LlmHttpException(r.code, "LLM 请求失败 ${r.code}：${safeBody.take(300)}", safeBody)
             }
             val text = r.body!!.string()
             AgentLogger.llmResponse(
-                config.model,
+                effectiveModel(),
                 true,
                 System.currentTimeMillis() - startedAt,
                 "响应长度=${text.length}"
@@ -112,7 +120,7 @@ class OpenAIClient(
         tools: List<AgentTool>
     ): Flow<String> = flow {
         val requestJson = buildJsonObject {
-            put("model", config.model)
+            put("model", effectiveModel())
             put("stream", true)
             putJsonArray("messages") { messages.forEach { add(toApiMessage(it)) } }
             if (tools.isNotEmpty()) {
@@ -122,6 +130,8 @@ class OpenAIClient(
             config.customBody.forEach { (k, v) -> put(k, v) }
         }
         val request = buildRequest(requestJson)
+        // 流式请求同样记录端点/指纹，保持诊断能力一致
+        AgentLogger.apiTrace(endpointUrl(), effectiveModel(), effectiveApiKey())
         http.newCall(request).execute().use { resp ->
             if (!resp.isSuccessful) {
                 throw IOException("LLM 流式请求失败 ${resp.code}")
@@ -143,14 +153,66 @@ class OpenAIClient(
         }
     }
 
+    // —— 防御性清洗：统一在此处把配置三元组洗一遍，供 buildRequest / apiTrace / testPing 复用 ——
+
+    /** 规范化后的 Base URL（去空白、去尾斜杠、剥掉误填的 /chat/completions 后缀）。 */
+    private fun effectiveBaseUrl(): String = ConfigSanitizer.normalizeBaseUrl(config.baseUrl)
+
+    /** 清洗后的 API Key（剔除一切非可打印 ASCII，含 NBSP/零宽/BOM）。 */
+    private fun effectiveApiKey(): String = ConfigSanitizer.cleanApiKey(config.apiKey)
+
+    /** 清洗后的模型名。 */
+    private fun effectiveModel(): String = ConfigSanitizer.cleanModel(config.model)
+
+    /** 实际拼出的请求端点（Base URL + /chat/completions）。 */
+    private fun endpointUrl(): String = "${effectiveBaseUrl().trimEnd('/')}/chat/completions"
+
     private fun buildRequest(bodyJson: JsonObject): Request {
+        // 防御性双保险：即便调用方忘了清洗，也不会带着 \u00A0 等不可见字符发请求
+        val baseUrl = ConfigSanitizer.normalizeBaseUrl(config.baseUrl)
+        val apiKey = ConfigSanitizer.cleanApiKey(config.apiKey)
         val body = bodyJson.toString().toRequestBody("application/json".toMediaType())
         val builder = Request.Builder()
-            .url("${config.baseUrl.trimEnd('/')}/chat/completions")
-            .addHeader("Authorization", "Bearer ${config.apiKey}")
+            .url("${baseUrl.trimEnd('/')}/chat/completions")
+            .addHeader("Authorization", "Bearer $apiKey")
             .addHeader("Content-Type", "application/json")
         config.customHeaders.forEach { (k, v) -> builder.addHeader(k, v) }
         return builder.post(body).build()
+    }
+
+    /**
+     * 最小连通性探测：发一条 [{role:user,content:"ping"}]、max_tokens=1、不带工具。
+     * 用于「测试连接」按钮，不污染对话历史，也几乎不产生 token 消耗。
+     *
+     * @return [PingResult] 状态码与响应体预览（均已脱敏处理）。
+     */
+    suspend fun testPing(): PingResult = withContext(Dispatchers.IO) {
+        val requestJson = buildJsonObject {
+            put("model", effectiveModel())
+            putJsonArray("messages") {
+                addJsonObject {
+                    put("role", "user")
+                    put("content", "ping")
+                }
+            }
+            put("max_tokens", 1)
+            put("temperature", 0.0)
+        }
+        val request = buildRequest(requestJson)
+        // 记录实际端点/模型/Key 指纹，让测试也能在日志里自证
+        AgentLogger.apiTrace(endpointUrl(), effectiveModel(), effectiveApiKey())
+        val resp = try {
+            http.newCall(request).execute()
+        } catch (e: IOException) {
+            AgentLogger.e("LLM", "测试连接网络异常", e)
+            throw e
+        }
+        resp.use { r ->
+            // 响应体可能回显 sk-xxx，必须先脱敏再截断
+            val body = runCatching { r.body?.string() }.getOrDefault("") ?: ""
+            val safe = AgentLogger.sanitize(body)
+            PingResult(code = r.code, bodyPreview = safe.take(200))
+        }
     }
 
     private fun parseResponse(text: String): AssistantMessage {
