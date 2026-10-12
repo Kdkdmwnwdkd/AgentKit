@@ -2,7 +2,9 @@ package com.example.agentkit.ui
 
 import android.graphics.BitmapFactory
 import android.util.Base64
+import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
@@ -804,7 +806,7 @@ private fun ToolCard(item: UiItem.Tool) {
                 }
             }
             if (expanded) {
-                EmbedBlock(label = "入参", text = item.call.arguments)
+                EmbedBlock(label = "入参", text = item.call.arguments.toString())
                 Spacer(Modifier.height(AgentSpacing.space2))
                 EmbedBlock(
                     label = "结果",

@@ -1,8 +1,8 @@
 package com.example.agentkit.ui
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.AnimationSpec
-import androidx.compose.animation.core.animateColorAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.snap
 import androidx.compose.foundation.background
@@ -53,6 +53,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -79,7 +80,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
  * @param title 顶栏标题（§6.5.4；「模型」项的页面标题是「模型配置」）。
  * @param icon 24dp 线性图标（1.5dp stroke 语汇，禁 emoji）。
  */
-internal enum class AppDest(
+enum class AppDest(
     val route: String,
     val label: String,
     val title: String,
