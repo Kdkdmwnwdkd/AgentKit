@@ -4,16 +4,45 @@ plugins {
     id("org.jetbrains.kotlin.plugin.serialization")
 }
 
+/**
+ * 本地构建（无 GITHUB_RUN_NUMBER 环境变量）时的 versionCode 回退值。
+ * 必须不小于项目历史最大 versionCode，防止本地包装机后因版本回退被系统拒绝覆盖安装。
+ */
+val LOCAL_FALLBACK_VERSION_CODE = 14
+
 android {
     namespace = "com.example.agentkit"
     compileSdk = 34
+
+    signingConfigs {
+        // 仓库内共享的固定 debug 签名：本地与 CI 用同一把钥匙，
+        // 保证不同机器/不同次构建产出的 APK 签名一致，可互相覆盖安装。
+        // 注意：这是 Android 官方标准 debug 证书（密码公开为 android），仅用于调试，不是发布签名。
+        getByName("debug") {
+            storeFile = file("debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
 
     defaultConfig {
         applicationId = "com.example.agentkit"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "0.1.0"
+        // 版本号每次构建自增：CI 上用 GITHUB_RUN_NUMBER（每次运行单调递增），
+        // 本地构建回退到 LOCAL_FALLBACK_VERSION_CODE 常量。
+        // 取 coerceAtLeast 兜底，确保 versionCode 永不小于历史值，否则 Android 拒绝覆盖安装。
+        val ciVersionCode = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: LOCAL_FALLBACK_VERSION_CODE
+        versionCode = ciVersionCode.coerceAtLeast(LOCAL_FALLBACK_VERSION_CODE)
+        versionName = "1.$ciVersionCode"
+    }
+
+    buildTypes {
+        getByName("debug") {
+            signingConfig = signingConfigs.getByName("debug")
+        }
+        // 不要动 release（本项目不产出 release 包）
     }
 
     buildFeatures { compose = true }
