@@ -26,14 +26,18 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.ContentCopy
+import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -79,6 +83,7 @@ fun ModelConfigScreen(vm: ChatViewModel, onBack: () -> Unit) {
 
     Column(Modifier.fillMaxWidth()) {
         PageTopBar(title = AppDest.MODEL.title)
+        LocalTabRefreshEffect(vm = vm, tab = tab)
         ModelPageTabs(
             selected = tab,
             onSelect = { tab = it }
@@ -129,10 +134,18 @@ fun ModelConfigScreen(vm: ChatViewModel, onBack: () -> Unit) {
                     onCancel = onBack
                 )
 
+                1 -> LocalModelsTab(vm = vm)
+
                 else -> PromptTab(config = config)
             }
         }
     }
+}
+
+/** 「本地模型」页签打开时刷新清单与加载状态（下载完成后回到前台也刷新）。 */
+@Composable
+private fun LocalTabRefreshEffect(vm: ChatViewModel, tab: Int) {
+    LaunchedEffect(tab) { if (tab == 1) vm.refreshLocalModels() }
 }
 
 /** 三家供应商的默认 Base URL / 模型名（切换供应商时预填用）。 */
@@ -146,6 +159,8 @@ private object ProviderDefaults {
     fun defaultModel(id: String): String = when (id) {
         "claude" -> "claude-sonnet-4-5"
         "gemini" -> "gemini-2.5-pro"
+        // 本地模式的模型由「本地模型」页签的 active 文件决定，这里只给个占位
+        "local-llama" -> ""
         else -> "gpt-4o-mini"
     }
 }
@@ -156,7 +171,7 @@ private object ProviderDefaults {
  */
 @Composable
 private fun ModelPageTabs(selected: Int, onSelect: (Int) -> Unit) {
-    val tabs = listOf("模型", "提示词")
+    val tabs = listOf("模型", "本地模型", "提示词")
     Row(
         Modifier
             .fillMaxWidth()
@@ -202,19 +217,32 @@ private fun ModelPageTabs(selected: Int, onSelect: (Int) -> Unit) {
 }
 
 /**
- * 供应商选择器（§6.8 模型 Tab 顶部）：三枚等高胶囊（48dp 触控，§6.0）。
+ * 供应商选择器（§6.8 模型 Tab 顶部）：2×2 等高胶囊（48dp 触控，§6.0）。
  *
- * 选中：primary 底 + on-primary 文字 w600；未选：透明底 + 1.5dp outline 描边 +
- * on-surface-variant 文字 w500。背景色 150ms 过渡（AkMotionFastColor），按压涟漪
- * 走 Surface 原生 onClick——与全 App 交互语言一致，无自绘按压态。
+ * 四家两行：上行云端三家，下行本地模型——本地是「另一种模式」而非第四家云端，
+ * 单独一行在语义上更诚实。选中：primary 底 + on-primary 文字 w600；未选：透明底 +
+ * 1.5dp outline 描边 + on-surface-variant 文字 w500。背景色 150ms 过渡（AkMotionFastColor）。
  */
 @Composable
 private fun ProviderSelector(selected: String, onSelect: (String) -> Unit) {
-    val providers = listOf(
+    val row1 = listOf(
         "openai" to "OpenAI 兼容",
         "claude" to "Claude",
         "gemini" to "Gemini"
     )
+    val row2 = listOf("local-llama" to "本地模型")
+    Column(verticalArrangement = Arrangement.spacedBy(AgentSpacing.space2)) {
+        ProviderRow(row1, selected, onSelect)
+        ProviderRow(row2, selected, onSelect)
+    }
+}
+
+@Composable
+private fun ProviderRow(
+    providers: List<Pair<String, String>>,
+    selected: String,
+    onSelect: (String) -> Unit
+) {
     Row(
         Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(AgentSpacing.space2)
@@ -247,6 +275,8 @@ private fun ProviderSelector(selected: String, onSelect: (String) -> Unit) {
                 }
             }
         }
+        // 单枚胶囊的行（本地模型）补一个不可见占位，保持左右边距与上行一致
+        if (providers.size == 1) Spacer(Modifier.weight(2f))
     }
 }
 
@@ -271,11 +301,13 @@ private fun ModelTab(
     val ctx = LocalContext.current
     var keyRevealed by rememberSaveable { mutableStateOf(false) }
 
-    val canTest = baseUrl.isNotBlank() && apiKey.isNotBlank()
+    // 本地模式没有端点/Key：测试按钮放行，字段区换成状态卡
+    val isLocal = providerId == "local-llama"
+    val canTest = isLocal || (baseUrl.isNotBlank() && apiKey.isNotBlank())
 
     AkSectionCard(
         title = "模型接入",
-        description = "三家供应商可切换：OpenAI 兼容端点（含 vLLM / Ollama / OneAPI）、" +
+        description = "三家云端供应商可切换：OpenAI 兼容端点（含 vLLM / Ollama / OneAPI）、" +
             "Claude Messages API、Gemini generateContent。" +
             "填错 Key 时对话页会直接提示「API Key 无效」，不会再反复重试。"
     ) {
@@ -287,41 +319,47 @@ private fun ModelTab(
         Spacer(Modifier.height(AgentSpacing.space2))
         ProviderSelector(selected = providerId, onSelect = onProviderChange)
         Spacer(Modifier.height(AgentSpacing.space3))
-        AkTextField(
-            value = baseUrl,
-            onValueChange = onBaseUrl,
-            label = "Base URL",
-            placeholder = ProviderDefaults.defaultUrl(providerId),
-            machine = true
-        )
-        Spacer(Modifier.height(AgentSpacing.space3))
-        // API Key：默认 masked，眼睛 IconButton（48dp 触控）切换明文
-        AkTextField(
-            value = apiKey,
-            onValueChange = onApiKey,
-            label = "API Key",
-            placeholder = "sk-…",
-            machine = true,
-            visualTransformation = if (keyRevealed) VisualTransformation.None
-            else PasswordVisualTransformation(),
-            trailing = {
-                AkCircleIconButton(
-                    icon = if (keyRevealed) Icons.Outlined.VisibilityOff else Icons.Outlined.Visibility,
-                    description = if (keyRevealed) "隐藏 Key" else "显示 Key",
-                    onClick = { keyRevealed = !keyRevealed },
-                    iconSize = 20.dp
-                )
-            }
-        )
-        KeySelfCheck(apiKey)
-        Spacer(Modifier.height(AgentSpacing.space3))
-        AkTextField(
-            value = model,
-            onValueChange = onModel,
-            label = "模型名",
-            placeholder = ProviderDefaults.defaultModel(providerId),
-            machine = true
-        )
+
+        if (isLocal) {
+            // 本地模式：端点/Key/模型名三个字段全部不适用，换成当前本地模型状态卡
+            LocalModeSummaryCard(vm = vm)
+        } else {
+            AkTextField(
+                value = baseUrl,
+                onValueChange = onBaseUrl,
+                label = "Base URL",
+                placeholder = ProviderDefaults.defaultUrl(providerId),
+                machine = true
+            )
+            Spacer(Modifier.height(AgentSpacing.space3))
+            // API Key：默认 masked，眼睛 IconButton（48dp 触控）切换明文
+            AkTextField(
+                value = apiKey,
+                onValueChange = onApiKey,
+                label = "API Key",
+                placeholder = "sk-…",
+                machine = true,
+                visualTransformation = if (keyRevealed) VisualTransformation.None
+                else PasswordVisualTransformation(),
+                trailing = {
+                    AkCircleIconButton(
+                        icon = if (keyRevealed) Icons.Outlined.VisibilityOff else Icons.Outlined.Visibility,
+                        description = if (keyRevealed) "隐藏 Key" else "显示 Key",
+                        onClick = { keyRevealed = !keyRevealed },
+                        iconSize = 20.dp
+                    )
+                }
+            )
+            KeySelfCheck(apiKey)
+            Spacer(Modifier.height(AgentSpacing.space3))
+            AkTextField(
+                value = model,
+                onValueChange = onModel,
+                label = "模型名",
+                placeholder = ProviderDefaults.defaultModel(providerId),
+                machine = true
+            )
+        }
     }
 
     TestConnectionButton(
@@ -356,6 +394,299 @@ private fun ModelTab(
             onClick = onSave,
             enabled = dirty,
             modifier = Modifier.weight(1f)
+        )
+    }
+}
+
+/**
+ * 「本地模型」页签（九步第 3 步）：本地 llama.cpp 推理的完整控制台。
+ *
+ * 四个分区：运行状态 → 已下载模型（选用/删除）→ 内置目录（下载）→ 推理参数。
+ * 所有状态都由 ChatViewModel 的 StateFlow 驱动，Composable 无副作用（除刷新 effect）。
+ */
+@Composable
+private fun LocalModelsTab(vm: ChatViewModel) {
+    val models by vm.localModels.collectAsStateWithLifecycle()
+    val active by vm.localActive.collectAsStateWithLifecycle()
+    val loaded by vm.localLoaded.collectAsStateWithLifecycle()
+    val downloading by vm.localDownloading.collectAsStateWithLifecycle()
+    val nCtx by vm.localNCtx.collectAsStateWithLifecycle()
+    val threads by vm.localThreads.collectAsStateWithLifecycle()
+    val maxTokens by vm.localMaxTokens.collectAsStateWithLifecycle()
+    val ctx = LocalContext.current
+    val catalog = remember(ctx) { com.example.agentkit.core.llm.local.GgufModelStore(ctx).catalog() }
+    var pendingDelete by remember { mutableStateOf<String?>(null) }
+
+    // —— 运行状态 ————————————————————————————————————————————
+    val nativeOk = remember { com.example.agentkit.core.llm.local.LlamaJni.ensureLoaded() }
+    AkSectionCard(
+        title = "运行状态",
+        description = "本地推理由 llama.cpp（b4600，MIT）驱动，模型常驻内存随用随聊；" +
+            "仅支持 arm64 真机，模拟器暂不可用。"
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            AkStatusDot(
+                if (nativeOk) LocalAkColors.success else MaterialTheme.colorScheme.error,
+                6.dp
+            )
+            Spacer(Modifier.width(7.dp))
+            Text(
+                text = if (nativeOk) "推理引擎就绪（arm64）" else "推理引擎不可用（当前设备 ABI 不支持）",
+                style = MaterialTheme.typography.labelLarge,
+                color = if (nativeOk) LocalAkColors.success else MaterialTheme.colorScheme.error
+            )
+        }
+        Spacer(Modifier.height(AgentSpacing.space3))
+        Text(
+            text = "当前模型：${active.ifBlank { "未选择" }}",
+            style = machineSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Text(
+            text = "内存状态：${if (loaded) "已加载（可立即对话）" else "未加载（首次对话时加载，约需数秒）"}",
+            style = machineSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        if (loaded) {
+            Spacer(Modifier.height(AgentSpacing.space3))
+            AkOutlinedButton(
+                text = "卸载模型（释放内存）",
+                onClick = { vm.unloadLocalModel() },
+                icon = Icons.Outlined.Delete
+            )
+        }
+    }
+
+    // —— 已下载模型 ——————————————————————————————————————————
+    AkSectionCard(
+        title = "已下载模型",
+        description = "点选即设为当前模型，下次对话生效。删除会同时清理文件。"
+    ) {
+        if (models.isEmpty()) {
+            Text(
+                text = "还没有模型。从下方「模型目录」下载一个（建议 1.5B 起步）。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        } else {
+            models.forEach { m ->
+                val isActive = m.fileName == active
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .clickable { vm.setActiveLocalModel(m.fileName) }
+                        .padding(vertical = AgentSpacing.space3, horizontal = AgentSpacing.space2),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    AkStatusDot(
+                        if (isActive) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.outlineVariant,
+                        8.dp
+                    )
+                    Spacer(Modifier.width(AgentSpacing.space3))
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            text = m.fileName,
+                            style = machineSmall,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            maxLines = 1
+                        )
+                        Text(
+                            text = "${m.sizeBytes / 1024 / 1024} MB" +
+                                if (isActive) " · 当前使用" else "",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    AkCircleIconButton(
+                        icon = Icons.Outlined.Delete,
+                        description = "删除 ${m.fileName}",
+                        onClick = { pendingDelete = m.fileName },
+                        iconSize = 20.dp
+                    )
+                }
+            }
+        }
+    }
+
+    // —— 模型目录 ————————————————————————————————————————————
+    AkSectionCard(
+        title = "模型目录",
+        description = "Q4_K_M 量化（体积/质量黄金分割点），均来自 HuggingFace 公开仓库。" +
+            "下载支持断点续传，中途退出下次继续。"
+    ) {
+        catalog.forEach { entry ->
+            val isDownloaded = models.any { it.fileName == entry.fileName }
+            val isDownloading = downloading?.first == entry.fileName
+            Column(Modifier.padding(vertical = AgentSpacing.space2)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            text = "${entry.displayName} · ${entry.paramSize}",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            text = "${entry.description} · 约 ${entry.approxBytes / 1024 / 1024} MB",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    when {
+                        isDownloading -> Text(
+                            text = "下载中…",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        isDownloaded -> Text(
+                            text = "已下载",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = LocalAkColors.success
+                        )
+                        else -> AkOutlinedButton(
+                            text = "下载",
+                            onClick = { vm.downloadLocalModel(entry) },
+                            icon = Icons.Outlined.Download,
+                            enabled = downloading == null
+                        )
+                    }
+                }
+                if (isDownloading) {
+                    Spacer(Modifier.height(AgentSpacing.space2))
+                    val progress = downloading?.second
+                    if (progress != null) {
+                        LinearProgressIndicator(
+                            progress = { progress },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(6.dp)
+                                .clip(RoundedCornerShape(3.dp))
+                        )
+                        Text(
+                            text = "${(progress * 100).toInt()}%",
+                            style = machineSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 2.dp)
+                        )
+                    } else {
+                        LinearProgressIndicator(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(6.dp)
+                                .clip(RoundedCornerShape(3.dp))
+                        )
+                    }
+                }
+            }
+            if (entry != catalog.last()) AkDivider()
+        }
+    }
+
+    // —— 推理参数 ————————————————————————————————————————————
+    AkSectionCard(
+        title = "推理参数",
+        description = "上下文越大越吃内存（4K 约额外 0.5GB 级）；线程数超过大核数收益递减。" +
+            "改动保存后下次加载生效。"
+    ) {
+        LocalParamField(
+            label = "上下文长度（token）",
+            value = nCtx.toString(),
+            hint = "512 ~ 16384，常用 2048 / 4096",
+            onValue = { vm.setLocalNCtx(it.toIntOrNull() ?: return@LocalParamField) }
+        )
+        Spacer(Modifier.height(AgentSpacing.space3))
+        LocalParamField(
+            label = "推理线程数",
+            value = threads.toString(),
+            hint = "1 ~ 8，默认取 min(4, 大核数)",
+            onValue = { vm.setLocalThreads(it.toIntOrNull() ?: return@LocalParamField) }
+        )
+        Spacer(Modifier.height(AgentSpacing.space3))
+        LocalParamField(
+            label = "单次生成上限（token）",
+            value = maxTokens.toString(),
+            hint = "64 ~ 8192，一次回复的最大长度",
+            onValue = { vm.setLocalMaxTokens(it.toIntOrNull() ?: return@LocalParamField) }
+        )
+    }
+
+    pendingDelete?.let { name ->
+        val sizeMb = models.firstOrNull { it.fileName == name }?.sizeBytes?.div(1024 * 1024)
+        AkConfirmDialog(
+            title = "删除模型文件",
+            message = "确定删除 $name 吗？文件将从本机移除" +
+                (sizeMb?.let { "（$it MB），" } ?: "，") + "需要时需重新下载。",
+            confirmText = "删除",
+            danger = true,
+            icon = Icons.Outlined.Delete,
+            onConfirm = {
+                vm.deleteLocalModel(name)
+                pendingDelete = null
+            },
+            onDismiss = { pendingDelete = null }
+        )
+    }
+}
+
+/** 「模型」页签里本地模式的状态摘要（点「本地模型」页签可管理）。 */
+@Composable
+private fun LocalModeSummaryCard(vm: ChatViewModel) {
+    val active by vm.localActive.collectAsStateWithLifecycle()
+    val loaded by vm.localLoaded.collectAsStateWithLifecycle()
+    val models by vm.localModels.collectAsStateWithLifecycle()
+    Column {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            AkStatusDot(
+                if (active.isNotBlank()) LocalAkColors.success
+                else MaterialTheme.colorScheme.error,
+                6.dp
+            )
+            Spacer(Modifier.width(7.dp))
+            Text(
+                text = if (active.isBlank()) "未选择本地模型" else "已选用 $active",
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+        }
+        Spacer(Modifier.height(AgentSpacing.space2))
+        Text(
+            text = buildString {
+                append("本地模式不使用 Base URL 与 API Key。")
+                if (active.isBlank()) {
+                    append("请切到「本地模型」页签下载并选用一个 GGUF 模型（约 1GB 起）。")
+                } else {
+                    append("模型文件共 ${models.size} 个，推理参数见「本地模型」页签。")
+                    if (loaded) append("当前已在内存中，可直接对话。")
+                }
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+}
+
+/** 本地参数数字输入行：label + 数值框 + 提示。 */
+@Composable
+private fun LocalParamField(
+    label: String,
+    value: String,
+    hint: String,
+    onValue: (String) -> Unit
+) {
+    Column {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(AgentSpacing.space2))
+        AkTextField(
+            value = value,
+            onValueChange = onValue,
+            label = label,
+            placeholder = hint,
+            machine = true
         )
     }
 }

@@ -36,6 +36,10 @@ android {
         val ciVersionCode = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: LOCAL_FALLBACK_VERSION_CODE
         versionCode = ciVersionCode.coerceAtLeast(LOCAL_FALLBACK_VERSION_CODE)
         versionName = "1.$ciVersionCode"
+        // 本地 llama.cpp 推理只编 arm64-v8a：先覆盖全部真机，模拟器 x86_64 后续再补
+        ndk {
+            abiFilters += "arm64-v8a"
+        }
     }
 
     buildTypes {
@@ -47,6 +51,14 @@ android {
 
     buildFeatures { compose = true }
     composeOptions { kotlinCompilerExtensionVersion = "1.5.15" }
+
+    // 本地 llama.cpp 推理：只出 arm64-v8a（市面手机全覆盖，先做扎实再扩 x86_64 模拟器）
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
+    }
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17

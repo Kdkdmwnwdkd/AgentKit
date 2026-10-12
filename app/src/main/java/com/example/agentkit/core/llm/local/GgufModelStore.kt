@@ -1,0 +1,241 @@
+package com.example.agentkit.core.llm.local
+
+import android.content.Context
+import com.example.agentkit.core.AgentLogger
+import kotlinx.coroutines.suspendCancellableCoroutine
+import okhttp3.Call
+import okhttp3.Callback
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.Response
+import java.io.File
+import java.io.IOException
+import java.util.concurrent.TimeUnit
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
+
+/**
+ * 内置 GGUF 模型目录条目。
+ *
+ * 全部为 HuggingFace 上广泛使用的 Q4_K_M 量化（体积/质量的黄金分割点）：
+ * Q4_K_M 在 4bit 权重 + fp16 激活下，1.5B~4B 模型在手机 CPU 上可跑到
+ * 5~15 tok/s，且文件 1~2.5GB，主流 8GB 内存机型无压力。
+ *
+ * @param supportsSystemPrompt false 时（如 Gemma-2）客户端不会注入系统提示，
+ *       工具调用协议改为附在首条 user 消息上（见 LocalLlamaClient）。
+ */
+data class GgufCatalogEntry(
+    val fileName: String,
+    val displayName: String,
+    val url: String,
+    val approxBytes: Long,
+    val paramSize: String,
+    val description: String,
+    val supportsSystemPrompt: Boolean = true
+)
+
+/** 已下载到本地的模型文件。 */
+data class DownloadedModel(
+    val fileName: String,
+    val sizeBytes: Long,
+    val lastModified: Long
+)
+
+/**
+ * GGUF 模型文件管理：内置目录 + 下载（断点续传）+ 本地文件清单。
+ *
+ * 存放位置：App 私有目录 files/models/（卸载 App 即清理，不需要存储权限）。
+ * 下载走 OkHttp 异步回调 + suspendCancellableCoroutine：协程取消时自动取消
+ * 网络请求，切页面/返回不会把下载挂死在后台。
+ */
+class GgufModelStore(private val context: Context) {
+
+    private val modelsDir: File = LocalLlamaSetting.modelsDir(context)
+
+    private val client = OkHttpClient.Builder()
+        .connectTimeout(30, TimeUnit.SECONDS)
+        .readTimeout(120, TimeUnit.SECONDS)   // 大文件单次读取间隔可能很久
+        .build()
+
+    /** 内置目录：按参数量升序，越靠后越吃内存。 */
+    fun catalog(): List<GgufCatalogEntry> = listOf(
+        GgufCatalogEntry(
+            fileName = "qwen2.5-1.5b-instruct-q4_k_m.gguf",
+            displayName = "Qwen2.5 1.5B Instruct",
+            url = "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf",
+            approxBytes = 1_037_000_000,
+            paramSize = "1.5B",
+            description = "官方量化，中英文均衡，入门首选"
+        ),
+        GgufCatalogEntry(
+            fileName = "qwen2.5-coder-1.5b-instruct-q4_k_m.gguf",
+            displayName = "Qwen2.5 Coder 1.5B",
+            url = "https://huggingface.co/lmstudio-community/Qwen2.5-Coder-1.5B-Instruct-GGUF/resolve/main/qwen2.5-coder-1.5b-instruct-q4_k_m.gguf",
+            approxBytes = 1_037_000_000,
+            paramSize = "1.5B",
+            description = "写代码专用微调，工具调用更稳"
+        ),
+        GgufCatalogEntry(
+            fileName = "Llama-3.2-1B-Instruct-Q4_K_M.gguf",
+            displayName = "Llama 3.2 1B Instruct",
+            url = "https://huggingface.co/bartowski/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B-Instruct-Q4_K_M.gguf",
+            approxBytes = 807_000_000,
+            paramSize = "1B",
+            description = "体积最小，英文强、中文一般"
+        ),
+        GgufCatalogEntry(
+            fileName = "gemma-2-2b-it-Q4_K_M.gguf",
+            displayName = "Gemma 2 2B IT",
+            url = "https://huggingface.co/bartowski/gemma-2-2b-it-GGUF/resolve/main/gemma-2-2b-it-Q4_K_M.gguf",
+            approxBytes = 1_710_000_000,
+            paramSize = "2B",
+            description = "轻量多语言；不支持系统提示词",
+            supportsSystemPrompt = false
+        ),
+        GgufCatalogEntry(
+            fileName = "qwen2.5-3b-instruct-q4_k_m.gguf",
+            displayName = "Qwen2.5 3B Instruct",
+            url = "https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf",
+            approxBytes = 1_881_000_000,
+            paramSize = "3B",
+            description = "质量/速度平衡点，推荐 6GB+ 内存"
+        ),
+        GgufCatalogEntry(
+            fileName = "Llama-3.2-3B-Instruct-Q4_K_M.gguf",
+            displayName = "Llama 3.2 3B Instruct",
+            url = "https://huggingface.co/bartowski/Llama-3.2-3B-Instruct-GGUF/resolve/main/Llama-3.2-3B-Instruct-Q4_K_M.gguf",
+            approxBytes = 1_880_000_000,
+            paramSize = "3B",
+            description = "英文任务更强，中文一般"
+        ),
+        GgufCatalogEntry(
+            fileName = "Qwen3-4B-Q4_K_M.gguf",
+            displayName = "Qwen3 4B",
+            url = "https://huggingface.co/Qwen/Qwen3-4B-GGUF/resolve/main/Qwen3-4B-Q4_K_M.gguf",
+            approxBytes = 2_497_000_000,
+            paramSize = "4B",
+            description = "新一代架构，本地质量天花板；需 8GB+ 内存"
+        )
+    )
+
+    /** 本地已下载的模型（按修改时间倒序；跳过 .part 半成品）。 */
+    fun listDownloaded(): List<DownloadedModel> =
+        modelsDir.listFiles { f -> f.isFile && f.name.endsWith(".gguf") }
+            ?.map { DownloadedModel(it.name, it.length(), it.lastModified()) }
+            ?.sortedByDescending { it.lastModified }
+            ?: emptyList()
+
+    fun isDownloaded(fileName: String): Boolean =
+        File(modelsDir, fileName).let { it.isFile && it.length() > 0 }
+
+    fun modelFile(fileName: String): File = File(modelsDir, fileName)
+
+    fun delete(fileName: String): Boolean {
+        // 正在用的模型先卸载，避免 native 层持有已删除文件的 mmap
+        val setting = LocalLlamaSetting(context)
+        if (setting.activeModel == fileName) {
+            LocalLlamaEngine.unload()
+            setting.activeModel = ""
+        }
+        val f = File(modelsDir, fileName)
+        val part = File(modelsDir, "$fileName.part")
+        part.delete()
+        return !f.exists() || f.delete()
+    }
+
+    /**
+     * 下载目录条目到 models/（断点续传：.part 半成品 + Range 请求）。
+     *
+     * @param onProgress (已下载字节, 总字节或 -1) 在 OkHttp 回调线程调用，
+     *        实现方只需把值写进 StateFlow，不要碰 UI。
+     * @return 成功时 Result.success(模型文件)；失败带 IOException（含取消）。
+     */
+    suspend fun download(
+        entry: GgufCatalogEntry,
+        onProgress: (downloaded: Long, total: Long) -> Unit
+    ): Result<File> {
+        val target = File(modelsDir, entry.fileName)
+        val part = File(modelsDir, "${entry.fileName}.part")
+        if (target.isFile && target.length() > 0) {
+            return Result.success(target)
+        }
+
+        val resumeFrom = if (part.isFile) part.length() else 0L
+        val builder = Request.Builder().url(entry.url)
+        if (resumeFrom > 0) {
+            builder.header("Range", "bytes=$resumeFrom-")
+            AgentLogger.i("LocalLlama", "断点续传 ${entry.fileName} @ ${resumeFrom / 1024 / 1024} MB")
+        }
+
+        return suspendCancellableCoroutine { cont ->
+            val call = client.newCall(builder.build())
+            // 协程取消 → 取消网络请求，回调线程随后会以 IOException 结束
+            cont.invokeOnCancellation { call.cancel() }
+            call.enqueue(object : Callback {
+                override fun onFailure(call: Call, e: IOException) {
+                    part.delete()   // 取消/失败都清理半成品，下次重新来
+                    if (cont.isActive) cont.resumeWithException(e)
+                }
+
+                override fun onResponse(call: Call, response: Response) {
+                    try {
+                        if (!response.isSuccessful) {
+                            val msg = "下载失败 HTTP ${response.code}"
+                            if (cont.isActive) cont.resume(Result.failure(IOException(msg)))
+                            return
+                        }
+                        val body = response.body ?: throw IOException("空响应体")
+                        val append = response.code == 206 && resumeFrom > 0
+                        if (!append && resumeFrom > 0) {
+                            // 服务器忽略 Range 返回 200：不能往半成品后面拼，从头下
+                            part.delete()
+                        }
+                        val base = if (append) resumeFrom else 0L
+                        val total = if (body.contentLength() > 0) base + body.contentLength() else -1L
+                        modelsDir.mkdirs()
+                        part.outputStream().use { out ->
+                            body.byteStream().use { input ->
+                                val buf = ByteArray(256 * 1024)
+                                var downloaded = base
+                                while (true) {
+                                    val n = input.read(buf)
+                                    if (n < 0) break
+                                    out.write(buf, 0, n)
+                                    downloaded += n
+                                    onProgress(downloaded, total)
+                                }
+                            }
+                        }
+                        if (!part.renameTo(target)) {
+                            throw IOException("临时文件重命名失败")
+                        }
+                        AgentLogger.i(
+                            "LocalLlama",
+                            "下载完成 ${entry.fileName}（${target.length() / 1024 / 1024} MB）"
+                        )
+                        if (cont.isActive) cont.resume(Result.success(target))
+                    } catch (e: Exception) {
+                        part.delete()
+                        if (cont.isActive) {
+                            cont.resume(Result.failure(e as? IOException ?: IOException(e)))
+                        }
+                    } finally {
+                        response.close()
+                    }
+                }
+            })
+        }
+    }
+
+    /** 简单 GGUF 完整性校验：文件头 magic 必须是 "GGUF"。 */
+    fun isValidGguf(file: File): Boolean {
+        if (!file.isFile || file.length() < 8) return false
+        return runCatching {
+            file.inputStream().use { inp ->
+                val magic = ByteArray(4)
+                inp.read(magic, 0, 4)
+                String(magic, Charsets.US_ASCII) == "GGUF"
+            }
+        }.getOrDefault(false)
+    }
+}

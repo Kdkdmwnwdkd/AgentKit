@@ -8,3 +8,6 @@ captures/
 .DS_Store
 *.apk
 !gradle/wrapper/gradle-wrapper.jar
+
+# llama.cpp 源码（MIT）在构建时由 scripts/fetch-llama.sh 拉取固定 tag，不进仓库
+app/src/main/cpp/llama.cpp/

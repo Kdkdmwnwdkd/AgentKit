@@ -40,6 +40,12 @@ import com.example.agentkit.core.ToolMessage
 import com.example.agentkit.core.ToolApproval
 import com.example.agentkit.core.ToolRegistry
 import com.example.agentkit.core.UserMessage
+import com.example.agentkit.core.llm.local.DownloadedModel
+import com.example.agentkit.core.llm.local.GgufCatalogEntry
+import com.example.agentkit.core.llm.local.GgufModelStore
+import com.example.agentkit.core.llm.local.LocalLlamaClient
+import com.example.agentkit.core.llm.local.LocalLlamaEngine
+import com.example.agentkit.core.llm.local.LocalLlamaSetting
 import com.example.agentkit.skill.JsEngine
 import com.example.agentkit.skill.ModelConfig
 import com.example.agentkit.skill.RhinoJsEngine
@@ -224,6 +230,108 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     /** L9 记忆库：跨会话长期记忆，持久化到 filesDir/memory/memory.json。 */
     private val memoryStore = MemoryStore(File(app.filesDir, "memory"))
 
+    // —— 本地 llama.cpp 推理（九步第 3 步）————————————————————————
+
+    /** 本地推理参数（active 模型 / ctx / 线程数）持久化。 */
+    private val localSetting = LocalLlamaSetting(app)
+
+    /** GGUF 模型文件管理（files/models/）：目录、下载、删除。 */
+    private val modelStore = GgufModelStore(app)
+
+    /** 本地模型清单快照（页签打开时刷新）。 */
+    private val _localModels = MutableStateFlow(modelStore.listDownloaded())
+    val localModels: StateFlow<List<DownloadedModel>> =
+        _localModels.asStateFlow()
+
+    /** 当前选中的本地模型文件名（空 = 未选）。 */
+    private val _localActive = MutableStateFlow(localSetting.activeModel)
+    val localActive: StateFlow<String> = _localActive.asStateFlow()
+
+    /** native 引擎是否已加载模型（真机才可能为 true）。 */
+    private val _localLoaded = MutableStateFlow(false)
+    val localLoaded: StateFlow<Boolean> = _localLoaded.asStateFlow()
+
+    /** 下载中的文件名 → 进度（0f~1f，total 未知时为 null 持续刷新）。 */
+    private val _localDownloading = MutableStateFlow<Pair<String, Float?>?>(null)
+    val localDownloading: StateFlow<Pair<String, Float?>?> = _localDownloading.asStateFlow()
+
+    /** 本地推理参数（页签内编辑，保存即落盘）。 */
+    private val _localNCtx = MutableStateFlow(localSetting.nCtx)
+    val localNCtx: StateFlow<Int> = _localNCtx.asStateFlow()
+
+    private val _localThreads = MutableStateFlow(localSetting.nThreads)
+    val localThreads: StateFlow<Int> = _localThreads.asStateFlow()
+
+    private val _localMaxTokens = MutableStateFlow(localSetting.maxTokens)
+    val localMaxTokens: StateFlow<Int> = _localMaxTokens.asStateFlow()
+
+    /** 刷新本地模型清单（页签 onResume / 下载完成后调用）。 */
+    fun refreshLocalModels() {
+        _localModels.value = modelStore.listDownloaded()
+        _localLoaded.value = LocalLlamaEngineIsLoaded()
+    }
+
+    private fun LocalLlamaEngineIsLoaded(): Boolean =
+        LocalLlamaEngine.isLoaded
+
+    /** 选用某个已下载模型（立即生效；下次对话时引擎按参数加载/复用）。 */
+    fun setActiveLocalModel(fileName: String) {
+        localSetting.activeModel = fileName
+        _localActive.value = fileName
+    }
+
+    /** 删除本地模型文件（正在加载的会先卸载）。 */
+    fun deleteLocalModel(fileName: String) {
+        modelStore.delete(fileName)
+        _localModels.value = modelStore.listDownloaded()
+        if (_localActive.value == fileName) _localActive.value = localSetting.activeModel
+    }
+
+    /** 卸载常驻内存的本地模型（换模型或内存吃紧时用）。 */
+    fun unloadLocalModel() {
+        LocalLlamaEngine.unload()
+        _localLoaded.value = false
+    }
+
+    /** 下载内置目录中的模型（断点续传；重复调用会复用已完成文件）。 */
+    fun downloadLocalModel(entry: GgufCatalogEntry) {
+        if (_localDownloading.value != null) return
+        viewModelScope.launch {
+            _localDownloading.value = entry.fileName to null
+            val outcome = runCatching {
+                modelStore.download(entry) { downloaded, total ->
+                    _localDownloading.value = entry.fileName to
+                        if (total > 0) downloaded.toFloat() / total else null
+                }
+            }
+            _localDownloading.value = null
+            _localModels.value = modelStore.listDownloaded()
+            _importStatus.value = when {
+                outcome.isFailure -> "下载失败：${outcome.exceptionOrNull()?.message}"
+                // 下完自动选用，省一次点击
+                else -> {
+                    setActiveLocalModel(entry.fileName)
+                    "已下载并选用 ${entry.displayName}"
+                }
+            }
+        }
+    }
+
+    fun setLocalNCtx(v: Int) {
+        localSetting.nCtx = v
+        _localNCtx.value = localSetting.nCtx
+    }
+
+    fun setLocalThreads(v: Int) {
+        localSetting.nThreads = v
+        _localThreads.value = localSetting.nThreads
+    }
+
+    fun setLocalMaxTokens(v: Int) {
+        localSetting.maxTokens = v
+        _localMaxTokens.value = localSetting.maxTokens
+    }
+
     /** L8 最近日志（格式化后的文本，最新的在前），供自动化页「运行日志」卡片展示。 */
     private val _logs = MutableStateFlow<List<String>>(emptyList())
     val logs: StateFlow<List<String>> = _logs.asStateFlow()
@@ -407,8 +515,17 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     // L10：ui_tap / ui_input / ui_swipe / ui_key / ui_click / ui_screenshot 等危险工具执行前先问用户
     private val approvalHandler: ToolApproval = { tool, args -> requestApproval(tool, args) }
 
-    /** 供应商工厂：openai / claude / gemini（local-llama 第 3 步注册）。 */
-    private val providerManager = ProviderManager()
+    /**
+     * 供应商工厂：openai / claude / gemini 由 ProviderManager 内置注册；
+     * local-llama 在此补注册——工厂签名只有 LLMConfig，而本地客户端还需要
+     * setting（模型文件/参数）与 modelStore（文件定位），这些是 ViewModel 的常驻成员，
+     * 在注册处闭包捕获即可，不必改 ProviderManager 的接口。
+     */
+    private val providerManager = ProviderManager().apply {
+        registerProvider("local-llama") { cfg ->
+            LocalLlamaClient(LocalLlamaEngine, localSetting, modelStore, cfg)
+        }
+    }
 
     private val loop = AgentLoop(
         llmProvider = {
@@ -439,9 +556,14 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
 
     /**
      * 按供应商拼「测试连接」卡片展示的端点——与各 Provider 实现实际请求路径一致
-     * （openai: /chat/completions；claude: /v1/messages；gemini: /v1beta/models/{m}:generateContent）。
+     * （openai: /chat/completions；claude: /v1/messages；gemini: /v1beta/models/{m}:generateContent；
+     * local-llama: 本地文件，展示「本地推理 + 文件名」）。
      */
     private fun endpointFor(cfg: ModelConfig): String {
+        if (cfg.providerId == "local-llama") {
+            val name = localSetting.activeModel.ifBlank { "未选择模型" }
+            return "本地推理 · llama.cpp · $name"
+        }
         val base = ConfigSanitizer.normalizeBaseUrl(cfg.baseUrl).trimEnd('/')
         return when (cfg.providerId) {
             "claude" -> if (base.endsWith("/v1")) "$base/messages" else "$base/v1/messages"
@@ -484,7 +606,12 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             val cfg = ConfigSanitizer.sanitized(baseUrl, apiKey, model, providerId)
             val endpoint = endpointFor(cfg)
-            val finger = keyFingerprint(cfg.apiKey)
+            // 本地模式没有 Key：指纹位展示模型文件名，比 "len=0" 更有信息量
+            val finger = if (cfg.providerId == "local-llama") {
+                "模型文件=${localSetting.activeModel.ifBlank { "未选择" }}"
+            } else {
+                keyFingerprint(cfg.apiKey)
+            }
             val outcome = runCatching {
                 withContext(Dispatchers.IO) {
                     providerManager
@@ -497,13 +624,19 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
                     val t = outcome.exceptionOrNull()!!
                     // 异常文案离开日志系统前先脱敏（防御：异常里可能夹带 url 中的 key 片段）
                     val msg = (t.message?.let { AgentLogger.sanitize(it) } ?: "未知错误").take(200)
+                    val localTip = if (providerId == "local-llama") {
+                        "本地推理失败：确认模型文件已下载完整、设备为 arm64；" +
+                            "加载日志可在「日志」页查看（标签 llama-jni）"
+                    } else {
+                        "无法连接：请检查网络、Base URL 是否可达（错误类型：${t::class.java.simpleName}）"
+                    }
                     TestResult(
                         ok = false,
                         code = -1,
                         endpoint = endpoint,
                         fingerprint = finger,
                         bodyPreview = msg,
-                        suggestion = "无法连接：请检查网络、Base URL 是否可达（错误类型：${t::class.java.simpleName}）"
+                        suggestion = localTip
                     )
                 }
 

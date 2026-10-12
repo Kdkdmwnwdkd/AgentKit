@@ -32,12 +32,16 @@ jobs:
           export ANDROID_HOME=$SDK
           export PATH="$SDK/cmdline-tools/latest/bin:$PATH"
           yes | sdkmanager --licenses >/dev/null
-          sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+          # NDK 26.3 + cmake 3.22.1：本地 llama.cpp 推理（九步第 3 步）native 构建用
+          sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0" "ndk;26.3.11579264" "cmake;3.22.1"
           echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
           echo "$SDK/platform-tools" >> "$GITHUB_PATH"
 
       - name: Point local.properties to SDK
         run: echo "sdk.dir=$ANDROID_HOME" > local.properties
+
+      - name: Fetch llama.cpp b4600 (构建时拉取，不进仓库)
+        run: ./scripts/fetch-llama.sh git
 
       - name: Make gradlew executable
         run: chmod +x ./gradlew
