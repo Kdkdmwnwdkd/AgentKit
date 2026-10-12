@@ -56,7 +56,12 @@ data class Project(
 data class ModelConfig(
     val baseUrl: String = "https://api.openai.com/v1",
     val apiKey: String = "",
-    val model: String = "gpt-4o-mini"
+    val model: String = "gpt-4o-mini",
+    /**
+     * 供应商标识："openai" / "claude" / "gemini"（"local-llama" 第 3 步落地）。
+     * 放末尾保源码兼容（旧构造点三参照常可用）；旧配置无此键时默认 "openai"。
+     */
+    val providerId: String = "openai"
 )
 
 /** 路由上下文：根据本次请求的特征给 Skill 打分（Coomi SkillRouter 思路，净室重写）。 */

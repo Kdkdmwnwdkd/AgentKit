@@ -87,7 +87,9 @@ object ConfigSanitizer {
         return ModelConfig(
             baseUrl = normalizeBaseUrl(cfg.baseUrl),
             apiKey = cleanApiKey(cfg.apiKey),
-            model = cleanModel(cfg.model)
+            model = cleanModel(cfg.model),
+            // 透传 providerId：否则每次保存/读取都会把供应商打回 "openai"
+            providerId = cfg.providerId
         )
     }
 
@@ -104,6 +106,19 @@ object ConfigSanitizer {
             baseUrl = normalizeBaseUrl(baseUrl),
             apiKey = cleanApiKey(apiKey),
             model = cleanModel(model)
+        )
+    }
+
+    /**
+     * 重载：四要素版（含 providerId）。测试连接/保存走这支，
+     * 避免供应商在清洗环节被打回默认值。
+     */
+    fun sanitized(baseUrl: String, apiKey: String, model: String, providerId: String): ModelConfig {
+        return ModelConfig(
+            baseUrl = normalizeBaseUrl(baseUrl),
+            apiKey = cleanApiKey(apiKey),
+            model = cleanModel(model),
+            providerId = providerId
         )
     }
 }

@@ -4,6 +4,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -70,9 +71,11 @@ fun ModelConfigScreen(vm: ChatViewModel, onBack: () -> Unit) {
     var baseUrl by remember(config) { mutableStateOf(config.baseUrl) }
     var apiKey by remember(config) { mutableStateOf(config.apiKey) }
     var model by remember(config) { mutableStateOf(config.model) }
+    var providerId by remember(config) { mutableStateOf(config.providerId) }
     var tab by rememberSaveable { mutableStateOf(0) }
 
-    val dirty = baseUrl != config.baseUrl || apiKey != config.apiKey || model != config.model
+    val dirty = baseUrl != config.baseUrl || apiKey != config.apiKey ||
+        model != config.model || providerId != config.providerId
 
     Column(Modifier.fillMaxWidth()) {
         PageTopBar(title = AppDest.MODEL.title)
@@ -101,10 +104,26 @@ fun ModelConfigScreen(vm: ChatViewModel, onBack: () -> Unit) {
                     onApiKey = { apiKey = it },
                     model = model,
                     onModel = { model = it },
+                    providerId = providerId,
+                    onProviderChange = { id ->
+                        if (id != providerId) {
+                            // 智能预填：仅当当前值是旧供应商默认值或空时才填新默认值，
+                            // 用户手工改过的一律不覆盖（可预期 > 聪明）
+                            if (baseUrl == ProviderDefaults.defaultUrl(providerId) || baseUrl.isBlank()) {
+                                baseUrl = ProviderDefaults.defaultUrl(id)
+                            }
+                            if (model == ProviderDefaults.defaultModel(providerId) || model.isBlank()) {
+                                model = ProviderDefaults.defaultModel(id)
+                            }
+                            providerId = id
+                        }
+                    },
                     dirty = dirty,
                     onSave = {
                         // 保存时统一过 ConfigSanitizer：剔除不可见字符、规范化 URL，避免带着 \u00A0 落盘
-                        vm.updateConfig(ConfigSanitizer.sanitized(baseUrl, apiKey, model))
+                        vm.updateConfig(
+                            ConfigSanitizer.sanitized(baseUrl, apiKey, model, providerId)
+                        )
                         onBack()
                     },
                     onCancel = onBack
@@ -113,6 +132,21 @@ fun ModelConfigScreen(vm: ChatViewModel, onBack: () -> Unit) {
                 else -> PromptTab(config = config)
             }
         }
+    }
+}
+
+/** 三家供应商的默认 Base URL / 模型名（切换供应商时预填用）。 */
+private object ProviderDefaults {
+    fun defaultUrl(id: String): String = when (id) {
+        "claude" -> "https://api.anthropic.com"
+        "gemini" -> "https://generativelanguage.googleapis.com"
+        else -> "https://api.openai.com/v1"
+    }
+
+    fun defaultModel(id: String): String = when (id) {
+        "claude" -> "claude-sonnet-4-5"
+        "gemini" -> "gemini-2.5-pro"
+        else -> "gpt-4o-mini"
     }
 }
 
@@ -167,6 +201,55 @@ private fun ModelPageTabs(selected: Int, onSelect: (Int) -> Unit) {
     }
 }
 
+/**
+ * 供应商选择器（§6.8 模型 Tab 顶部）：三枚等高胶囊（48dp 触控，§6.0）。
+ *
+ * 选中：primary 底 + on-primary 文字 w600；未选：透明底 + 1.5dp outline 描边 +
+ * on-surface-variant 文字 w500。背景色 150ms 过渡（AkMotionFastColor），按压涟漪
+ * 走 Surface 原生 onClick——与全 App 交互语言一致，无自绘按压态。
+ */
+@Composable
+private fun ProviderSelector(selected: String, onSelect: (String) -> Unit) {
+    val providers = listOf(
+        "openai" to "OpenAI 兼容",
+        "claude" to "Claude",
+        "gemini" to "Gemini"
+    )
+    Row(
+        Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(AgentSpacing.space2)
+    ) {
+        providers.forEach { (id, label) ->
+            val isSelected = id == selected
+            val bg by animateColorAsState(
+                targetValue = if (isSelected) MaterialTheme.colorScheme.primary else Color.Transparent,
+                animationSpec = AkMotionFastColor
+            )
+            Surface(
+                onClick = { onSelect(id) },
+                modifier = Modifier
+                    .weight(1f)
+                    .height(48.dp),
+                shape = RoundedCornerShape(14.dp),
+                color = bg,
+                border = if (isSelected) null
+                else BorderStroke(1.5.dp, MaterialTheme.colorScheme.outlineVariant)
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Text(
+                        text = label,
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Medium,
+                        color = if (isSelected) MaterialTheme.colorScheme.onPrimary
+                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1
+                    )
+                }
+            }
+        }
+    }
+}
+
 /** 「模型」Tab：接入字段 + Key 自检 + 测试连接四态 + 结果卡 + 保存/取消（§6.8）。 */
 @Composable
 private fun ModelTab(
@@ -177,6 +260,8 @@ private fun ModelTab(
     onApiKey: (String) -> Unit,
     model: String,
     onModel: (String) -> Unit,
+    providerId: String,
+    onProviderChange: (String) -> Unit,
     dirty: Boolean,
     onSave: () -> Unit,
     onCancel: () -> Unit
@@ -190,14 +275,23 @@ private fun ModelTab(
 
     AkSectionCard(
         title = "模型接入",
-        description = "兼容任意 OpenAI 格式端点（含 vLLM / Ollama / OneAPI）。" +
+        description = "三家供应商可切换：OpenAI 兼容端点（含 vLLM / Ollama / OneAPI）、" +
+            "Claude Messages API、Gemini generateContent。" +
             "填错 Key 时对话页会直接提示「API Key 无效」，不会再反复重试。"
     ) {
+        Text(
+            text = "供应商",
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(AgentSpacing.space2))
+        ProviderSelector(selected = providerId, onSelect = onProviderChange)
+        Spacer(Modifier.height(AgentSpacing.space3))
         AkTextField(
             value = baseUrl,
             onValueChange = onBaseUrl,
             label = "Base URL",
-            placeholder = "https://api.openai.com/v1",
+            placeholder = ProviderDefaults.defaultUrl(providerId),
             machine = true
         )
         Spacer(Modifier.height(AgentSpacing.space3))
@@ -225,7 +319,7 @@ private fun ModelTab(
             value = model,
             onValueChange = onModel,
             label = "模型名",
-            placeholder = "gpt-4o-mini",
+            placeholder = ProviderDefaults.defaultModel(providerId),
             machine = true
         )
     }
@@ -234,7 +328,7 @@ private fun ModelTab(
         testing = testing,
         result = testResult,
         enabled = canTest && !testing,
-        onClick = { vm.testConnection(baseUrl, apiKey, model) }
+        onClick = { vm.testConnection(baseUrl, apiKey, model, providerId) }
     )
     if (!canTest) {
         Text(

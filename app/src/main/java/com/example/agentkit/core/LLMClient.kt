@@ -42,15 +42,37 @@ class LlmHttpException(val code: Int, message: String, val serverBody: String = 
 data class PingResult(val code: Int, val bodyPreview: String)
 
 /**
- * LLM 抽象：Agent 核心只依赖它。换供应商（OpenAI / 本地 llama.cpp / Claude）
+ * 模型信息：Provider 动态列出的可用模型（listModels）。
+ * 本地 llama 走内置清单，OpenAI 兼容端点可走 /models，Claude/Gemini 可内置常用档位。
+ */
+data class ModelInfo(
+    val id: String,
+    val displayName: String,
+    val contextLength: Int? = null
+)
+
+/**
+ * LLM 抽象：Agent 核心只依赖它。换供应商（OpenAI / Claude / Gemini / 本地 llama.cpp）
  * 只需新增一个实现，AgentLoop 一行都不用改。
+ *
+ * 协议差异（鉴权头、消息结构、工具回传形态）全部内聚在各实现类内，
+ * 对外统一成同一套 ChatMessage / AssistantMessage / ToolCall。
  */
 interface LLMClient {
+    /** 供应商标识（"openai" / "claude" / "gemini" / "local-llama"），ProviderManager 的键。 */
+    val id: String
+
     suspend fun chat(messages: List<ChatMessage>, tools: List<AgentTool>): AssistantMessage
 
     /** 流式输出（文本增量）。默认不支持；实现方按需覆盖。 */
     fun streamText(messages: List<ChatMessage>, tools: List<AgentTool>): Flow<String> =
         throw UnsupportedOperationException("当前供应商不支持流式输出")
+
+    /** 动态列出可用模型；默认空（实现方按需覆盖，如本地 llama 内置清单）。 */
+    suspend fun listModels(): List<ModelInfo> = emptyList()
+
+    /** 「测试连接」最小探测（各协议自行实现最小请求）。 */
+    suspend fun testPing(): PingResult
 }
 
 /**
@@ -61,6 +83,8 @@ class OpenAIClient(
     private val config: LLMConfig,
     private val http: OkHttpClient = OkHttpClient()
 ) : LLMClient {
+
+    override val id: String = "openai"
 
     override suspend fun chat(
         messages: List<ChatMessage>,
@@ -186,7 +210,7 @@ class OpenAIClient(
      *
      * @return [PingResult] 状态码与响应体预览（均已脱敏处理）。
      */
-    suspend fun testPing(): PingResult = withContext(Dispatchers.IO) {
+    override suspend fun testPing(): PingResult = withContext(Dispatchers.IO) {
         val requestJson = buildJsonObject {
             put("model", effectiveModel())
             putJsonArray("messages") {
@@ -314,12 +338,16 @@ class OpenAIClient(
 /**
  * 供应商注册表（RikkaHub ProviderManager 思路，净室重写）。
  * 通过 [create] 按名称构造 LLMClient；新增供应商只需 registerProvider。
+ *
+ * "local-llama" 留给第 3 步本地 llama.cpp 集成时注册（见 docs/research/02）。
  */
 class ProviderManager {
     private val providers = mutableMapOf<String, (LLMConfig) -> LLMClient>()
 
     init {
         registerProvider("openai") { OpenAIClient(it) }
+        registerProvider("claude") { com.example.agentkit.core.llm.ClaudeClient(it) }
+        registerProvider("gemini") { com.example.agentkit.core.llm.GeminiClient(it) }
     }
 
     fun registerProvider(name: String, factory: (LLMConfig) -> LLMClient) {

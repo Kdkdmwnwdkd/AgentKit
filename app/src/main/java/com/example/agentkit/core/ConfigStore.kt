@@ -31,7 +31,9 @@ class ConfigStore(context: Context) {
         val raw = ModelConfig(
             baseUrl = sp.getString(KEY_BASE_URL, ModelConfig().baseUrl) ?: ModelConfig().baseUrl,
             apiKey = sp.getString(KEY_API_KEY, ModelConfig().apiKey) ?: ModelConfig().apiKey,
-            model = sp.getString(KEY_MODEL, ModelConfig().model) ?: ModelConfig().model
+            model = sp.getString(KEY_MODEL, ModelConfig().model) ?: ModelConfig().model,
+            // 旧版本没有此键：默认 "openai"，老用户的配置无缝延续
+            providerId = sp.getString(KEY_PROVIDER, "openai") ?: "openai"
         )
         return ConfigSanitizer.sanitized(raw)
     }
@@ -48,6 +50,7 @@ class ConfigStore(context: Context) {
             putString(KEY_BASE_URL, clean.baseUrl)
             putString(KEY_API_KEY, clean.apiKey)
             putString(KEY_MODEL, clean.model)
+            putString(KEY_PROVIDER, clean.providerId)
         }.apply()
     }
 
@@ -57,5 +60,6 @@ class ConfigStore(context: Context) {
         private const val KEY_BASE_URL = "base_url"
         private const val KEY_API_KEY = "api_key"
         private const val KEY_MODEL = "model"
+        private const val KEY_PROVIDER = "provider_id"
     }
 }

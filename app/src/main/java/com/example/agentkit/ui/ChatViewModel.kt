@@ -34,7 +34,7 @@ import com.example.agentkit.core.AssistantMessage
 import com.example.agentkit.core.ChatMessage
 import com.example.agentkit.core.LlmHttpException
 import com.example.agentkit.core.LLMConfig
-import com.example.agentkit.core.OpenAIClient
+import com.example.agentkit.core.ProviderManager
 import com.example.agentkit.core.ToolCall
 import com.example.agentkit.core.ToolMessage
 import com.example.agentkit.core.ToolApproval
@@ -403,13 +403,17 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         _pendingApproval.value?.deferred?.complete(false)
     }
 
-    // llmProvider 每次都按最新配置构造，支持运行时切换模型/Key
+    // llmProvider 每次都按最新配置构造，支持运行时切换模型/Key/供应商
     // L10：ui_tap / ui_input / ui_swipe / ui_key / ui_click / ui_screenshot 等危险工具执行前先问用户
     private val approvalHandler: ToolApproval = { tool, args -> requestApproval(tool, args) }
 
+    /** 供应商工厂：openai / claude / gemini（local-llama 第 3 步注册）。 */
+    private val providerManager = ProviderManager()
+
     private val loop = AgentLoop(
         llmProvider = {
-            OpenAIClient(LLMConfig(_config.value.baseUrl, _config.value.apiKey, _config.value.model))
+            val c = _config.value
+            providerManager.create(c.providerId, LLMConfig(c.baseUrl, c.apiKey, c.model))
         },
         registry = registry,
         approval = approvalHandler,
@@ -434,6 +438,19 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     }
 
     /**
+     * 按供应商拼「测试连接」卡片展示的端点——与各 Provider 实现实际请求路径一致
+     * （openai: /chat/completions；claude: /v1/messages；gemini: /v1beta/models/{m}:generateContent）。
+     */
+    private fun endpointFor(cfg: ModelConfig): String {
+        val base = ConfigSanitizer.normalizeBaseUrl(cfg.baseUrl).trimEnd('/')
+        return when (cfg.providerId) {
+            "claude" -> if (base.endsWith("/v1")) "$base/messages" else "$base/v1/messages"
+            "gemini" -> "$base/v1beta/models/${ConfigSanitizer.cleanModel(cfg.model)}:generateContent"
+            else -> "$base/chat/completions"
+        }
+    }
+
+    /**
      * 「测试连接」：用配置页当前输入框的值（先实时清洗）发起一次最小请求，
      * 把连通性结果写入 [_testResult] 供卡片渲染。网络 IO 全部走 Dispatchers.IO，不阻塞主线程。
      *
@@ -444,17 +461,35 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
      * @param apiKey 输入框当前的 API Key（原始值）。
      * @param model 输入框当前的模型名（原始值）。
      */
-    fun testConnection(baseUrl: String, apiKey: String, model: String) {
+    /** 三参重载：兼容旧调用点（默认 openai 供应商）。 */
+    fun testConnection(baseUrl: String, apiKey: String, model: String) =
+        testConnection(baseUrl, apiKey, model, "openai")
+
+    /**
+     * 「测试连接」：用配置页当前输入框的值（先实时清洗）发起一次最小请求，
+     * 把连通性结果写入 [_testResult] 供卡片渲染。网络 IO 全部走 Dispatchers.IO，不阻塞主线程。
+     *
+     * 最小请求体按供应商各自协议构造（Provider 实现内聚），
+     * 既不污染对话历史，也几乎不产生 token 消耗。
+     *
+     * @param baseUrl 输入框当前的 Base URL（原始值）。
+     * @param apiKey 输入框当前的 API Key（原始值）。
+     * @param model 输入框当前的模型名（原始值）。
+     * @param providerId 当前选中的供应商（"openai" / "claude" / "gemini"）。
+     */
+    fun testConnection(baseUrl: String, apiKey: String, model: String, providerId: String) {
         if (_testing.value) return
         _testing.value = true
         _testResult.value = null
         viewModelScope.launch {
-            val cfg = ConfigSanitizer.sanitized(baseUrl, apiKey, model)
-            val endpoint = "${cfg.baseUrl.trimEnd('/')}/chat/completions"
+            val cfg = ConfigSanitizer.sanitized(baseUrl, apiKey, model, providerId)
+            val endpoint = endpointFor(cfg)
             val finger = keyFingerprint(cfg.apiKey)
             val outcome = runCatching {
                 withContext(Dispatchers.IO) {
-                    OpenAIClient(LLMConfig(cfg.baseUrl, cfg.apiKey, cfg.model)).testPing()
+                    providerManager
+                        .create(cfg.providerId, LLMConfig(cfg.baseUrl, cfg.apiKey, cfg.model))
+                        .testPing()
                 }
             }
             _testResult.value = when {
