@@ -1,0 +1,1189 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AgentKit 视觉规范 v3.1 · 暖纸 — 高保真设计稿</title>
+<style>
+/* ================= 1. 设计令牌：Light（默认·主设计套） ================= */
+:root{
+  --ak-bg:#F8EFE9; --ak-surface:#FFFFFF; --ak-surface-1:#F4E9E2; --ak-surface-2:#EFE2D9;
+  --ak-surface-var:#F6EDE7;
+  --ak-on-surface:#2E2620; --ak-on-surface-var:#6B5B4E; --ak-on-surface-ter:#756450;
+  --ak-outline:#E5D6CC; --ak-outline-strong:#8A7563;
+  --ak-primary:#0E5D6B; --ak-on-primary:#FFFFFF; --ak-primary-container:#D2E7E9; --ak-on-primary-container:#093F49;
+  --ak-danger:#B4322A; --ak-danger-fill:#B4322A; --ak-on-danger-fill:#FFFFFF;
+  --ak-danger-container:#F9E2DF; --ak-on-danger-container:#7E1F16;
+  --ak-warning:#8A5A12; --ak-warning-container:#F7E8D2; --ak-on-warning-container:#5C3A05;
+  --ak-success:#177245; --ak-success-container:#DCF0E3; --ak-on-success-container:#0F4A2A;
+  --ak-trust-sandbox:#6B5B4E; --ak-log-debug:#756450; --ak-log-info:#0E5D6B;
+  --ak-inverse-surface:#2E2620; --ak-inverse-on-surface:#F8EFE9;
+  --ak-scrim:rgba(26,18,13,.40); --ak-glass:rgba(255,255,255,.92);
+  --tint-primary:rgba(14,93,107,.12);
+  --font-human:"Noto Sans SC","PingFang SC","Microsoft YaHei",sans-serif;
+  --font-mono:"JetBrains Mono","SF Mono",Consolas,"Courier New",monospace;
+}
+/* ================= Dark（配套平行套，暖黑非冷黑） ================= */
+[data-theme="dark"]{
+  --ak-bg:#17110E; --ak-surface:#1F1815; --ak-surface-1:#241C18; --ak-surface-2:#2A211C;
+  --ak-surface-var:#372C25;
+  --ak-on-surface:#F2EAE3; --ak-on-surface-var:#BBA99B; --ak-on-surface-ter:#A89A89;
+  --ak-outline:#3E332C; --ak-outline-strong:#9C8672;
+  --ak-primary:#7FC8CE; --ak-on-primary:#05292E; --ak-primary-container:#14494F; --ak-on-primary-container:#B9E6EA;
+  --ak-danger:#FF8D82; --ak-danger-fill:#C2483A; --ak-on-danger-fill:#FFFFFF;
+  --ak-danger-container:#3D1A14; --ak-on-danger-container:#FFC9C0;
+  --ak-warning:#F2B950; --ak-warning-container:#3A2A12; --ak-on-warning-container:#F5D9A0;
+  --ak-success:#62D996; --ak-success-container:#123828; --ak-on-success-container:#BFF0D4;
+  --ak-trust-sandbox:#A8988A; --ak-log-debug:#A89A89; --ak-log-info:#7FC8CE;
+  --ak-inverse-surface:#F2EAE3; --ak-inverse-on-surface:#17110E;
+  --ak-scrim:rgba(0,0,0,.56); --ak-glass:rgba(31,24,21,.92);
+  --tint-primary:rgba(127,200,206,.12);
+}
+/* ================= 2. 基础 ================= */
+*{margin:0;padding:0;box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{font-family:var(--font-human);background:var(--ak-bg);color:var(--ak-on-surface);font-size:15px;line-height:26px;transition:background .3s ease,color .3s ease}
+button{font:inherit;color:inherit;background:none;border:none;cursor:pointer;text-align:left}
+:focus-visible{outline:2px solid var(--ak-primary);outline-offset:2px;border-radius:6px}
+.ic{width:24px;height:24px;fill:none;stroke:currentColor;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round;flex:none;display:block}
+.mono{font-family:var(--font-mono)}
+.wrap{max-width:1000px;margin:0 auto;padding:0 28px}
+/* ================= 3. 页头 ================= */
+.page-head{padding:76px 0 4px;display:flex;justify-content:space-between;align-items:flex-start;gap:28px;flex-wrap:wrap}
+.brand{display:flex;gap:16px;align-items:center}
+.brand-mark{width:52px;height:52px;border-radius:14px;background:var(--ak-primary-container);color:var(--ak-primary);display:grid;place-items:center;flex:none}
+.brand-mark .ic{width:28px;height:28px}
+.brand h1{font-size:26px;line-height:34px;font-weight:600}
+.brand-claim{margin-top:4px;font-size:15px;line-height:26px;color:var(--ak-on-surface-var)}
+.head-meta{margin-top:16px;font-size:12px;line-height:18px;color:var(--ak-on-surface-ter)}
+.tgl{display:inline-flex;align-items:center;gap:8px;height:44px;padding:0 18px;border-radius:999px;background:var(--ak-surface);color:var(--ak-on-surface);font-size:13px;font-weight:500;transition:transform .1s ease,background .3s ease;flex:none}
+.tgl:active{transform:scale(.97)}
+.tgl .ic{width:18px;height:18px}
+.tgl .i-moon{display:none}
+[data-theme="dark"] .tgl .i-sun{display:none}
+[data-theme="dark"] .tgl .i-moon{display:block}
+/* ================= 4. 章节骨架（大留白，无分割线堆叠） ================= */
+.sec{margin-top:84px}
+.sec-head{margin-bottom:40px}
+.sec-head h2{font-size:22px;line-height:30px;font-weight:600;display:flex;align-items:baseline;gap:12px}
+.sec-idx{font-size:12px;font-weight:400;color:var(--ak-on-surface-ter);font-family:var(--font-mono)}
+.sec-head p{margin-top:8px;font-size:13px;line-height:20px;color:var(--ak-on-surface-var);max-width:640px}
+.demo-cap{margin-top:14px;font-size:12px;line-height:20px;color:var(--ak-on-surface-ter);max-width:640px}
+.g2{display:grid;grid-template-columns:1fr 1fr;gap:48px;align-items:start}
+.g2+.g2{margin-top:56px}
+.g3{display:grid;grid-template-columns:repeat(3,1fr);gap:32px;align-items:start}
+.cell{min-width:0}
+.cell-head{display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin-bottom:20px;flex-wrap:wrap}
+.cell-head h3{font-size:16px;line-height:24px;font-weight:500}
+.cell-head span{font-size:11px;line-height:14px;color:var(--ak-on-surface-ter)}
+.sub-h{font-size:14px;line-height:20px;font-weight:600;margin:52px 0 20px;display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+.sub-h span{font-size:11px;font-weight:400;color:var(--ak-on-surface-ter)}
+/* ================= 5. 色板 ================= */
+.pal-note{font-size:13px;line-height:20px;color:var(--ak-on-surface-var);margin-bottom:8px}
+.pal-note b{font-weight:600;color:var(--ak-primary)}
+.pal-group{margin-top:32px}
+.pal-group h3{font-size:14px;line-height:20px;font-weight:600}
+.pg-note{font-size:12px;line-height:18px;color:var(--ak-on-surface-ter);margin:2px 0 14px}
+.sw-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:16px}
+.sw-chip{height:38px;border-radius:10px}
+.sw-chip--pale{box-shadow:inset 0 0 0 1px var(--ak-outline)}
+.sw-name{margin-top:8px;font-size:11px;line-height:14px;color:var(--ak-on-surface-var);word-break:break-all}
+.sw-hex{font-size:11px;line-height:14px;color:var(--ak-on-surface-ter)}
+.sw-scrim{position:relative;overflow:hidden}
+.sw-scrim::after{content:"";position:absolute;inset:0;background:var(--ak-scrim)}
+.layer-page{border:1px dashed var(--ak-outline);border-radius:20px;padding:20px;margin-top:28px;min-height:200px}
+.layer-card{background:var(--ak-surface);border-radius:20px;padding:20px;min-height:128px;margin-top:26px}
+.layer-inner{background:var(--ak-surface-1);border-radius:14px;padding:14px;min-height:64px;margin-top:26px}
+.lyr-tag{display:block;font-size:12px;line-height:16px;color:var(--ak-on-surface-var)}
+.lyr-tag .mono{color:var(--ak-on-surface)}
+.badge{display:inline-flex;align-items:center;gap:5px;height:24px;padding:0 12px;border-radius:999px;font-size:11px;line-height:14px;font-weight:500}
+.b-ok{background:var(--ak-success-container);color:var(--ak-on-success-container)} .b-warn{background:var(--ak-warning-container);color:var(--ak-on-warning-container)} .b-sand{background:var(--ak-surface-2);color:var(--ak-on-surface-var)}
+.dot{width:8px;height:8px;border-radius:50%;flex:none}
+.dot-debug{background:var(--ak-log-debug)} .dot-info{background:var(--ak-log-info)}
+.dot-warn{background:var(--ak-warning)} .dot-err{background:var(--ak-danger)}
+.dot-ok{background:var(--ak-success)} .dot-pri{background:var(--ak-primary)}
+.dot-red{width:8px;height:8px;border-radius:50%;background:var(--ak-danger);flex:none}
+.lv-debug{color:var(--ak-log-debug)} .lv-info{color:var(--ak-log-info)} .lv-warn{color:var(--ak-warning)} .lv-err{color:var(--ak-danger)}
+/* ================= 6. 字体阶梯 ================= */
+.ts{background:var(--ak-surface);border-radius:20px;padding:6px 28px}
+.ts-row{display:flex;align-items:baseline;gap:24px;padding:15px 0}
+.ts-row+.ts-row{border-top:1px solid var(--ak-outline)}
+.ts-meta{flex:none;width:196px;font-size:11px;line-height:16px;color:var(--ak-on-surface-ter);font-family:var(--font-mono)}
+.ts-sample{min-width:0}
+.t-headline{font-size:22px;line-height:30px;font-weight:600;display:block}.t-title{font-size:18px;line-height:26px;font-weight:600;display:block}
+.t-titlemd{font-size:16px;line-height:24px;font-weight:500;display:block}.t-body{font-size:15px;line-height:26px;display:block}
+.t-bodysm{font-size:13px;line-height:20px;display:block}.t-labellg{font-size:14px;line-height:20px;font-weight:600;display:block}
+.t-labelmd{font-size:12px;line-height:16px;font-weight:500;display:block}.t-labelsm{font-size:11px;line-height:14px;font-weight:500;display:block}
+.t-mach1{font-family:var(--font-mono);font-size:13px;line-height:20px;display:block}.t-mach2{font-family:var(--font-mono);font-size:12px;line-height:16px;display:block}
+.tips{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-top:24px}
+.tip{background:var(--ak-surface-1);border-radius:14px;padding:16px}
+.tip b{display:block;font-size:13px;line-height:20px;font-weight:600;margin-bottom:6px}
+.tip p{font-size:12px;line-height:20px;color:var(--ak-on-surface-var)}
+/* ================= 7. 组件：列表项 / 开关 / 徽章 ================= */
+.list-card{background:var(--ak-surface);border-radius:20px;overflow:hidden}
+.list-row{position:relative;display:flex;align-items:center;gap:12px;padding:12px 16px;min-height:72px;width:100%;transition:transform .1s ease,background .15s ease}
+.list-row+.list-row::before{content:"";position:absolute;top:0;left:16px;right:0;height:1px;background:var(--ak-outline)}
+.list-row:active{transform:scale(.97)}
+.icon-base{width:40px;height:40px;border-radius:12px;background:var(--ak-surface-1);color:var(--ak-on-surface-var);display:grid;place-items:center;flex:none}
+.icon-base .ic{width:22px;height:22px}
+.list-text{flex:1;min-width:0}
+.list-title{font-size:16px;line-height:24px;font-weight:500}
+.list-desc{font-size:13px;line-height:20px;color:var(--ak-on-surface-var);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.list-ctl{flex:none;display:flex;align-items:center;gap:8px;color:var(--ak-on-surface-ter)}
+.list-ctl .ic{width:20px;height:20px}
+.sw-toggle{width:46px;height:28px;border-radius:999px;background:var(--ak-surface-2);position:relative;flex:none;transition:background .15s ease}
+.sw-toggle::after{content:"";position:absolute;top:50%;left:3px;transform:translateY(-50%);width:16px;height:16px;border-radius:50%;background:var(--ak-outline-strong);transition:width .15s ease,left .15s ease,background .15s ease}
+.sw-toggle.on{background:var(--ak-primary)}
+.sw-toggle.on::after{left:21px;width:22px;height:22px;background:var(--ak-on-primary)}
+.chip{height:32px;padding:0 14px;border-radius:999px;font-size:12px;line-height:16px;font-weight:500;display:inline-flex;align-items:center;background:var(--ak-surface-1);color:var(--ak-on-surface-var)}
+.chip.on{background:var(--tint-primary);color:var(--ak-on-primary-container)}
+.btn{height:48px;border-radius:14px;font-size:14px;font-weight:600;flex:1;display:inline-flex;align-items:center;justify-content:center;gap:8px;transition:transform .1s ease,background .15s ease}
+.btn:active{transform:scale(.97)}
+.btn-outlined{border:1.5px solid var(--ak-outline-strong);color:var(--ak-on-surface)} .btn-danger{background:var(--ak-danger-fill);color:var(--ak-on-danger-fill)} .btn-filled{background:var(--ak-primary);color:var(--ak-on-primary)}
+.text-btn{font-size:14px;font-weight:600;color:var(--ak-primary);padding:6px 8px;border-radius:8px}
+/* ================= 8. 聊天气泡 / 工具卡 / 技能卡 ================= */
+.chat-demo{display:flex;flex-direction:column;gap:8px;max-width:440px}
+.chat-time{align-self:center;font-size:12px;line-height:16px;color:var(--ak-on-surface-ter)}
+.sys-hint{align-self:center;font-size:12px;line-height:16px;color:var(--ak-on-surface-ter);max-width:80%;text-align:center}
+.msg{display:flex;gap:8px;align-items:flex-end}
+.msg+.msg{margin-top:8px}
+.msg-user{flex-direction:row-reverse}
+.avatar{width:28px;height:28px;border-radius:50%;display:grid;place-items:center;flex:none}
+.avatar-user{background:var(--ak-surface-1);color:var(--ak-on-surface-var)}
+.avatar-ai{background:var(--ak-primary-container);color:var(--ak-on-primary-container)}
+.avatar .ic{width:20px;height:20px}
+.bubble{max-width:clamp(240px,76%,400px);padding:10px 14px;font-size:15px;line-height:26px;border-radius:18px}
+.bubble-user{background:var(--ak-primary);color:var(--ak-on-primary);border-top-right-radius:4px}
+.bubble-ai{background:var(--ak-surface);color:var(--ak-on-surface);border-top-left-radius:4px}
+.msg-ai .bubble{max-width:clamp(272px,84%,520px)}
+.cursor{display:inline-block;width:2px;height:14px;background:var(--ak-primary);border-radius:1px;vertical-align:-2px;margin-left:3px;animation:blink .8s infinite}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:0}}
+.tool-card{background:var(--ak-surface);border-radius:20px;padding:0 16px 12px}
+.tool-head{display:flex;align-items:center;gap:8px;width:100%;height:48px;transition:transform .1s ease}
+.tool-head:active{transform:scale(.97)}
+.tool-name{font-size:13px;line-height:20px;font-weight:500}
+.tool-sep{font-size:12px;color:var(--ak-on-surface-ter)}
+.tool-status{font-size:12px;line-height:16px;font-weight:500}
+.st-run{color:var(--ak-primary)} .st-done{color:var(--ak-success)} .st-fail{color:var(--ak-danger)} .st-deny{color:var(--ak-on-surface-var)}
+.tool-head .ic-chev{width:20px;height:20px;margin-left:auto;color:var(--ak-on-surface-ter);transition:transform .25s ease}
+.tool-card.open .tool-head .ic-chev{transform:rotate(180deg)}
+.tool-sub{font-size:12px;line-height:16px;color:var(--ak-on-surface-ter);padding-bottom:10px}
+.tool-expand{max-height:0;overflow:hidden;transition:max-height .25s ease}
+.tool-card.open .tool-expand{max-height:260px}
+.embed-label{font-size:11px;line-height:14px;color:var(--ak-on-surface-ter);margin:4px 0 6px}
+.embed-block{background:var(--ak-surface-1);border-radius:14px;padding:12px;font-size:13px;line-height:20px;max-height:140px;overflow:auto;margin-bottom:8px}
+.embed-block.err{color:var(--ak-danger)}
+.st-row{display:flex;gap:18px;flex-wrap:wrap;margin-top:14px}
+.st-row span{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:500}
+.skill-card{background:var(--ak-surface);border-radius:20px;padding:16px}
+.skill-head{display:flex;gap:12px;align-items:flex-start}
+.skill-name{font-size:16px;line-height:24px;font-weight:600;display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
+.skill-ver{font-size:11px;line-height:14px;color:var(--ak-on-surface-ter);font-weight:400}
+.skill-badges{display:flex;gap:8px;margin-top:8px;flex-wrap:wrap}
+.skill-danger{margin-top:12px;font-size:12px;line-height:16px;font-weight:500;color:var(--ak-danger)}
+.skill-desc{margin-top:8px;font-size:13px;line-height:20px;color:var(--ak-on-surface-var)}
+.skill-more{display:flex;align-items:center;gap:6px;margin-top:10px;font-size:12px;font-weight:500;color:var(--ak-primary)}
+.skill-more .ic{width:16px;height:16px;transition:transform .25s ease}
+.skill-card.open .skill-more .ic{transform:rotate(180deg)}
+.skill-detail{max-height:0;overflow:hidden;transition:max-height .25s ease}
+.skill-card.open .skill-detail{max-height:200px}
+.sd-row{display:flex;align-items:center;gap:8px;padding:7px 0;font-size:12px;line-height:16px}
+.sd-row .ic{width:14px;height:14px}
+.sd-ok{color:var(--ak-primary)} .sd-no{color:var(--ak-danger)}
+.sd-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sd-act{margin-left:auto;color:var(--ak-on-surface-var);flex:none}
+.skill-foot{margin-top:12px;padding-top:12px;border-top:1px solid var(--ak-outline);display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap}
+.skill-auth{font-size:12px;line-height:16px}
+.skill-auth.ok{color:var(--ak-success)} .skill-auth.warn{color:var(--ak-warning)}
+/* ================= 9. 审批 Dialog ================= */
+.dialog{width:344px;max-width:100%;background:var(--ak-surface);border-radius:20px;padding:24px;animation:dlgIn .2s cubic-bezier(.2,0,0,1) both}
+@keyframes dlgIn{from{opacity:0;transform:scale(.96)}to{opacity:1;transform:scale(1)}}
+.dlg-icon{width:36px;height:36px;border-radius:50%;background:var(--ak-danger-container);color:var(--ak-danger);display:grid;place-items:center;margin-bottom:16px}
+.dlg-icon .ic{width:20px;height:20px}
+.dlg-title{font-size:18px;line-height:26px;font-weight:600}
+.dlg-sub{margin-top:6px;font-size:15px;line-height:26px;color:var(--ak-on-surface-var)}
+.dlg-block{background:var(--ak-surface-1);border-radius:14px;border-left:3px solid var(--ak-danger);padding:14px;margin-top:16px;max-height:140px;overflow:auto}
+.dlg-block p{font-size:13px;line-height:20px}
+.dlg-block .k{font-weight:500}
+.dlg-src{margin-top:16px;font-size:13px;line-height:20px;color:var(--ak-on-surface-ter)}
+.dlg-ask{display:flex;align-items:center;gap:4px;margin-top:14px;min-height:48px}
+.cbx-btn{width:48px;height:48px;display:grid;place-items:center;flex:none;margin-left:-8px;border-radius:999px}
+.cbx{width:40px;height:40px;border-radius:8px;border:1.5px solid var(--ak-outline-strong);display:grid;place-items:center;color:transparent;transition:background .15s ease,border-color .15s ease,color .15s ease}
+.cbx .ic{width:20px;height:20px}
+.cbx-btn.on .cbx{background:var(--ak-primary);border-color:var(--ak-primary);color:var(--ak-on-primary)}
+.dlg-ask-txt{font-size:15px;line-height:24px;color:var(--ak-on-surface-var)}
+.dlg-btns{display:flex;gap:12px;margin-top:14px}
+.dlg-cd{margin-top:16px}
+.dlg-cd-txt{font-size:11px;line-height:14px;color:var(--ak-on-surface-ter);text-align:center}
+.cd-line{height:2px;background:var(--ak-danger);border-radius:1px;margin-top:8px;transform-origin:left center;animation:cdrain 13s linear infinite}
+@keyframes cdrain{0%{transform:scaleX(1)}76.9%{transform:scaleX(0)}100%{transform:scaleX(0)}}
+.legend h3{font-size:16px;line-height:24px;font-weight:500;margin-bottom:16px}
+.legend ol{list-style:none;counter-reset:el}
+.legend li{counter-increment:el;position:relative;padding:9px 0 9px 34px;font-size:13px;line-height:22px;color:var(--ak-on-surface-var)}
+.legend li::before{content:counter(el);position:absolute;left:0;top:11px;width:22px;height:22px;border-radius:50%;background:var(--ak-primary-container);color:var(--ak-on-primary-container);font-size:11px;font-weight:600;display:grid;place-items:center;font-family:var(--font-mono)}
+.legend li b{color:var(--ak-on-surface);font-weight:600}
+/* ================= 10. 日志条目 ================= */
+.log-card{background:var(--ak-surface);border-radius:20px;overflow:hidden}
+.chips{display:flex;gap:8px;padding:12px 16px;flex-wrap:wrap}
+.log-row{padding:12px 16px;position:relative;width:100%;display:block;transition:background .15s ease}
+.log-row+.log-row::before{content:"";position:absolute;top:0;left:16px;right:0;height:1px;background:var(--ak-outline)}
+.log-row.warn::after,.log-row.err::after{content:"";position:absolute;left:0;top:8px;bottom:8px;width:3px;border-radius:2px}
+.log-row.warn::after{background:var(--ak-warning)}
+.log-row.err::after{background:var(--ak-danger)}
+.log-l1{display:flex;align-items:center;gap:6px}
+.log-lvl{font-size:12px;line-height:16px;font-weight:500}
+.log-time{margin-left:auto;font-size:12px;line-height:16px;color:var(--ak-on-surface-ter)}
+.log-l1 .ic-chev{width:16px;height:16px;color:var(--ak-on-surface-ter);transition:transform .25s ease}
+.log-row.open .log-l1 .ic-chev{transform:rotate(180deg)}
+.log-msg{margin-top:3px;font-size:15px;line-height:24px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.log-expand{max-height:0;overflow:hidden;transition:max-height .25s ease}
+.log-row.open .log-expand{max-height:160px}
+.log-expand .embed-block{margin:10px 0 2px}
+/* ================= 11. 模型配置 ================= */
+.sec-card{background:var(--ak-surface);border-radius:20px;padding:20px;margin-bottom:16px}
+.sec-card-title{font-size:18px;line-height:26px;font-weight:600;margin-bottom:8px}
+.field-label{display:block;font-size:13px;line-height:20px;color:var(--ak-on-surface-var);margin:14px 0 6px}
+.field{width:100%;height:56px;background:var(--ak-surface-var);border:1.5px solid transparent;border-radius:14px;padding:0 16px;font-family:var(--font-mono);font-size:13px;line-height:20px;color:var(--ak-on-surface);outline:none;transition:border-color .15s ease,background .15s ease}
+.field:focus{background:var(--ak-surface);border-color:var(--ak-primary)}
+.key-wrap{position:relative}
+.key-wrap .field{padding-right:58px}
+.eye-btn{position:absolute;right:4px;top:4px;width:48px;height:48px;border-radius:12px;display:grid;place-items:center;color:var(--ak-on-surface-var)} .eye-btn .ic{width:20px;height:20px}
+.eye-btn .ic-eye-off{display:none} .eye-btn.is-off .ic-eye{display:none} .eye-btn.is-off .ic-eye-off{display:block}
+.key-check{display:flex;align-items:center;gap:7px;margin-top:12px;font-size:12px;line-height:16px;color:var(--ak-on-surface-var);flex-wrap:wrap}
+.btn-test{width:100%;height:48px;border-radius:14px;background:var(--ak-primary);color:var(--ak-on-primary);font-size:14px;font-weight:600;display:inline-flex;align-items:center;justify-content:center;gap:8px;margin-top:16px;transition:transform .1s ease,background .2s ease,color .2s ease}
+.btn-test:active{transform:scale(.97)}
+.btn-test.is-ok{background:var(--ak-success-container);color:var(--ak-on-success-container)}
+.btn-test.is-fail{background:var(--ak-danger-container);color:var(--ak-on-danger-container)}
+.btn-test .ic{width:18px;height:18px}
+.t-spin{width:18px;height:18px;border:2px solid currentColor;border-top-color:transparent;border-radius:50%;animation:spin .8s linear infinite;display:none;flex:none}
+@keyframes spin{to{transform:rotate(360deg)}}
+.btn-test .t-ok,.btn-test .t-fail{display:none}
+.result-card{margin-top:14px;background:var(--ak-surface-1);border-radius:20px;padding:14px;font-size:12px;line-height:16px}
+.res-row{display:flex;gap:10px;padding:3px 0}
+.res-row b{font-weight:400;color:var(--ak-on-surface-ter);width:52px;flex:none}
+.res-copy{display:flex;justify-content:flex-end;margin-top:6px}
+.btn-row{display:flex;gap:12px}
+/* ================= 12. 手机样张 ================= */
+.phone{width:380px;max-width:100%;flex:none;background:var(--ak-surface);border-radius:46px;padding:12px;box-shadow:0 18px 44px rgba(46,38,32,.14)}
+[data-theme="dark"] .phone{box-shadow:0 18px 44px rgba(0,0,0,.5)}
+.screen{border-radius:36px;background:var(--ak-bg);height:640px;overflow:hidden;display:flex;flex-direction:column;position:relative}
+.screen--tall{height:690px} .screen--lg{height:720px}
+.statusbar{height:30px;flex:none;display:flex;align-items:center;justify-content:space-between;padding:0 22px;font-size:11px;line-height:14px;color:var(--ak-on-surface-ter)}
+.sb-r{display:flex;gap:5px;align-items:center}
+.sb-r .ic{width:13px;height:13px}
+.topbar{height:56px;flex:none;display:flex;align-items:center;padding:0 4px}
+.tb-title{flex:1;min-width:0;text-align:center;font-size:18px;line-height:26px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding:0 4px}
+.tb-btn{width:48px;height:48px;border-radius:999px;display:grid;place-items:center;flex:none;color:var(--ak-on-surface);transition:transform .1s ease,background .15s ease}
+.tb-btn:active{transform:scale(.97);background:var(--ak-surface-2)}
+.content{flex:1;min-height:0;overflow:hidden;padding:12px 20px;display:flex;flex-direction:column;gap:8px}
+/* 输入栏：贴屏幕底 · 玻璃拟态全 App 唯一一处 */
+.inputbar{flex:none;background:var(--ak-glass);border-top:1px solid var(--ak-outline);padding:8px 12px 4px;display:flex;gap:8px;align-items:center}
+.inputbar--old{background:var(--ak-surface)}
+.input-field{flex:1;min-width:0;height:48px;border-radius:20px;background:var(--ak-surface-var);display:flex;align-items:center;padding:0 16px;font-size:15px;line-height:20px;color:var(--ak-on-surface-ter)}
+.send-btn{width:48px;height:48px;border-radius:999px;display:grid;place-items:center;flex:none;transition:transform .1s ease}
+.send-btn:active{transform:scale(.97)}
+.send-visual{width:40px;height:40px;border-radius:50%;background:var(--ak-primary);color:var(--ak-on-primary);display:grid;place-items:center}
+.send-visual .ic{width:24px;height:24px}
+.navpad{flex:none;height:16px;background:var(--ak-glass)}
+/* v3.0 已废止：底部 Tab（仅存于前后对比稿） */
+.tabbar{flex:none;display:flex;height:64px;background:var(--ak-surface);border-top:1px solid var(--ak-outline)}
+.tab{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;font-size:12px;line-height:16px;font-weight:500;color:var(--ak-on-surface-var);position:relative}
+.tab .ic{width:24px;height:24px}
+.tab.on{color:var(--ak-primary)}
+.tab .dot-red{position:absolute;top:8px;right:calc(50% - 22px)}
+/* 抽屉：窄屏 overlay（宽屏常驻见 .drawer--static） */
+.scrim-d{position:absolute;inset:0;background:var(--ak-scrim);z-index:2;opacity:0;pointer-events:none;transition:opacity .2s ease}
+.screen--open .scrim-d{opacity:1;pointer-events:auto}
+.drawer{position:absolute;left:0;top:0;bottom:0;width:min(83%,320px);min-width:280px;background:var(--ak-surface-1);border-right:1px solid var(--ak-outline);z-index:3;transform:translateX(-102%);transition:transform .25s cubic-bezier(.2,0,0,1);display:flex;flex-direction:column;padding:42px 8px 12px;overflow:hidden}
+.screen--open .drawer{transform:none}
+.drawer-head{display:flex;gap:12px;align-items:center;padding:0 12px 12px}
+.app-mark{width:40px;height:40px;border-radius:14px;background:var(--ak-primary-container);color:var(--ak-primary);display:grid;place-items:center;flex:none}
+.app-mark .ic{width:24px;height:24px}
+.drawer-name{display:block;font-size:18px;line-height:26px;font-weight:600}
+.drawer-ready{display:flex;align-items:center;gap:6px;font-size:12px;line-height:16px;margin-top:2px}
+.drawer-ready .dot{width:6px;height:6px}
+.rdy-ok{color:var(--ak-success)} .rdy-ok .dot{background:var(--ak-success)}
+.rdy-warn{color:var(--ak-warning)} .rdy-warn .dot{background:var(--ak-warning)}
+.rdy-bad{color:var(--ak-danger)} .rdy-bad .dot{background:var(--ak-danger)}
+.drawer-group{font-size:13px;line-height:18px;font-weight:500;color:var(--ak-on-surface-var);padding:8px 12px 4px}
+.drawer-item{position:relative;display:flex;align-items:center;gap:12px;height:52px;padding:0 12px;border-radius:14px;font-size:16px;line-height:24px;font-weight:500;color:var(--ak-on-surface);width:100%;flex:none;transition:background .15s ease,color .15s ease,transform .1s ease}
+.drawer-item+.drawer-item{margin-top:4px}
+.drawer-item .ic{width:24px;height:24px;color:var(--ak-on-surface-var)}
+.drawer-item:active{transform:scale(.97)}
+.drawer-item.on{background:var(--tint-primary);color:var(--ak-primary)}
+.drawer-item.on .ic{color:var(--ak-primary)}
+.drawer-item.on::before{content:"";position:absolute;left:-8px;top:0;bottom:0;width:3px;border-radius:2px;background:var(--ak-primary)}
+.drawer-count{margin-left:auto;font-size:12px;line-height:16px;font-weight:500;color:var(--ak-on-surface-var)}
+.drawer-item .dot-red{margin-left:auto}
+.drawer-bottom{margin-top:16px}
+.drawer--static{position:relative;transform:none;width:280px;min-width:0;flex:none;height:100%;padding:16px 8px}
+/* 就绪文字三态标本 */
+.ready-spec{display:flex;align-items:center;gap:8px;background:var(--ak-surface-1);border-radius:14px;padding:14px 16px;font-size:12px;line-height:16px;width:100%}
+.ready-spec .dot{width:6px;height:6px}
+/* 右滑手势示意 */
+.gest{display:grid;grid-template-columns:repeat(3,1fr);gap:24px}
+.gest-frame{height:300px;border-radius:24px;background:var(--ak-bg);position:relative;overflow:hidden;padding:14px}
+.gest-ghost{height:44px;border-radius:14px;background:var(--ak-surface);flex:none}
+.gest-ghost+.gest-ghost{margin-top:8px}
+.gest-hot{position:absolute;left:0;top:0;bottom:0;width:24px;background:var(--ak-surface-2);border-right:1px dashed var(--ak-outline-strong)}
+.gest-hot span{position:absolute;left:32px;top:14px;font-size:10px;line-height:14px;color:var(--ak-on-surface-ter);white-space:nowrap}
+.gest-finger{position:absolute;left:8px;top:50%;transform:translateY(-50%);width:32px;height:32px;border-radius:50%;background:var(--ak-primary-container);display:grid;place-items:center}
+.gest-finger::after{content:"";width:10px;height:10px;border-radius:50%;background:var(--ak-primary)}
+.gest-arrow{position:absolute;left:52px;top:50%;transform:translateY(-50%);color:var(--ak-primary)}
+.gest-arrow .ic{width:28px;height:28px}
+.gest-drawer{position:absolute;left:0;top:0;bottom:0;width:min(83%,300px);min-width:250px;background:var(--ak-surface-1);border-right:1px solid var(--ak-outline);padding:14px 8px;display:flex;flex-direction:column;gap:4px}
+.gest-drawer.mid{transform:translateX(-42%)}
+.gi{height:44px;border-radius:14px;background:var(--ak-surface);display:flex;align-items:center;padding:0 12px;gap:10px;font-size:14px;font-weight:500;flex:none}
+.gi .ic{width:20px;height:20px;color:var(--ak-on-surface-var)}
+.gi.on{background:var(--tint-primary);color:var(--ak-primary)}
+.gi.on .ic{color:var(--ak-primary)}
+.gest-scrim{position:absolute;inset:0;background:var(--ak-scrim);opacity:0}
+.gest-scrim.mid{opacity:.55}
+.gest-cap{margin-top:10px;font-size:11px;line-height:16px;color:var(--ak-on-surface-ter)}
+/* 宽屏常驻抽屉态 */
+.wide{border-radius:24px;background:var(--ak-surface);padding:12px;box-shadow:0 18px 44px rgba(46,38,32,.14)}
+[data-theme="dark"] .wide{box-shadow:0 18px 44px rgba(0,0,0,.5)}
+.wide-inner{display:flex;height:660px;border-radius:14px;overflow:hidden;background:var(--ak-bg)}
+.wide-main{flex:1;min-width:0;display:flex;flex-direction:column}
+.wide-body{flex:1;padding:20px;display:flex;justify-content:center}
+.wide-limit{width:100%;max-width:680px;border:1px dashed var(--ak-outline-strong);border-radius:20px;padding:16px;display:flex;flex-direction:column;gap:10px}
+.wide-limit p{font-size:12px;line-height:18px;color:var(--ak-on-surface-ter)}
+.wide-ghost{height:56px;border-radius:20px;background:var(--ak-surface)}
+/* 页面内 Tab（模型页，全 App 仅 1 处） */
+.ptabs{display:flex;gap:28px;padding:4px 20px 0;border-bottom:1px solid var(--ak-outline);flex:none}
+.ptab{position:relative;height:44px;display:flex;align-items:center;font-size:14px;line-height:20px;font-weight:500;color:var(--ak-on-surface-var);transition:color .15s ease}
+.ptab.on{color:var(--ak-primary);font-weight:600}
+.ptab.on::after{content:"";position:absolute;left:0;right:0;bottom:-1px;height:2px;border-radius:2px;background:var(--ak-primary)}
+/* 顶栏标本 */
+.anat{background:var(--ak-bg);border-radius:14px;padding:8px 10px}
+.tb-hit{border:1px dashed var(--ak-outline-strong);border-radius:999px;width:48px;height:48px;display:grid;place-items:center;flex:none}
+.anat-row{display:flex;flex-wrap:wrap;gap:6px 18px;padding:10px 6px 4px;font-size:11px;line-height:16px;color:var(--ak-on-surface-ter)}
+.tb-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(296px,1fr));gap:20px}
+.tb-spec{background:var(--ak-bg);border-radius:14px;padding:0 4px}
+.tb-cap{font-size:11px;line-height:14px;color:var(--ak-on-surface-ter);padding:6px 10px 10px}
+.mock-row{display:grid;grid-template-columns:380px 1fr;gap:56px;align-items:center;margin-top:52px}
+.mock-note h3{font-size:18px;line-height:26px;font-weight:600;margin-bottom:14px}
+.mock-note ul{list-style:none}
+.mock-note li{position:relative;padding:4px 0 4px 18px;font-size:13px;line-height:22px;color:var(--ak-on-surface-var);margin-bottom:4px}
+.mock-note li::before{content:"";position:absolute;left:0;top:14px;width:7px;height:7px;border-radius:50%;background:var(--ak-primary);opacity:.55}
+.gain-box{height:64px;border:1px dashed var(--ak-outline-strong);border-radius:14px;display:grid;place-items:center;font-size:11px;line-height:16px;color:var(--ak-on-surface-ter);text-align:center;margin-top:auto}
+.mock-tag{display:inline-flex;align-items:center;height:22px;padding:0 10px;border-radius:999px;font-size:11px;font-weight:500;background:var(--ak-surface-1);color:var(--ak-on-surface-var);margin-bottom:10px}
+.mock-tag.del{background:var(--ak-danger-container);color:var(--ak-on-danger-container)}
+/* ================= 13. 页尾 ================= */
+.page-foot{margin-top:96px;padding:40px 0 72px;border-top:1px solid var(--ak-outline)}
+.foot-grid{display:grid;grid-template-columns:1fr 1fr;gap:56px}
+.foot-grid h3{font-size:16px;line-height:24px;font-weight:500;margin-bottom:12px}
+.prio-row{display:flex;gap:12px;padding:10px 0;align-items:flex-start}
+.chip-prio{flex:none;height:24px;padding:0 10px;border-radius:999px;font-size:11px;line-height:14px;font-weight:600;display:inline-flex;align-items:center;margin-top:2px}
+.p0{background:var(--ak-primary);color:var(--ak-on-primary)} .p1{background:var(--ak-primary-container);color:var(--ak-on-primary-container)} .p2{background:var(--ak-surface-1);color:var(--ak-on-surface-var)}
+.prio-row p{font-size:13px;line-height:22px;color:var(--ak-on-surface-var)}
+.prio-row b{color:var(--ak-on-surface);font-weight:600}
+.ck{display:flex;gap:10px;padding:7px 0;width:100%;align-items:flex-start;font-size:13px;line-height:20px;color:var(--ak-on-surface-var)}
+.ck-box{width:18px;height:18px;border-radius:6px;border:1.5px solid var(--ak-outline-strong);flex:none;margin-top:2px;display:grid;place-items:center;color:transparent;transition:background .15s ease,border-color .15s ease,color .15s ease}
+.ck-box .ic{width:12px;height:12px;stroke-width:2.5}
+.ck.on .ck-box{background:var(--ak-primary);border-color:var(--ak-primary);color:var(--ak-on-primary)}
+.foot-note{margin-top:36px;font-size:12px;line-height:20px;color:var(--ak-on-surface-ter)}
+/* ================= 14. 响应式与动效偏好 ================= */
+@media (max-width:920px){
+  .g2,.g3,.tips,.foot-grid{grid-template-columns:1fr}
+  .mock-row{grid-template-columns:1fr;justify-items:center;gap:32px}
+  .gest{grid-template-columns:1fr}
+  .page-head{padding-top:56px}
+}
+@media (prefers-reduced-motion:reduce){
+  .cursor{animation:none;opacity:1}
+  .dialog{animation:none}
+}
+</style>
+</head>
+<body>
+<!-- ========== 图标精灵：24 viewBox · 线性 · 单色 currentColor · 零外链 ========== -->
+<svg xmlns="http://www.w3.org/2000/svg" style="display:none" aria-hidden="true">
+  <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol>
+  <symbol id="i-back" viewBox="0 0 24 24"><path d="M19 12H5M11 18l-6-6 6-6"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 13l4 4L19 7"/></symbol>
+  <symbol id="i-chev-r" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></symbol>
+  <symbol id="i-chev-d" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></symbol>
+  <symbol id="i-chat" viewBox="0 0 24 24"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></symbol>
+  <symbol id="i-cube" viewBox="0 0 24 24"><path d="M21 8l-9-5-9 5v8l9 5 9-5V8zM3 8l9 5 9-5M12 13v8"/></symbol>
+  <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M3 8h8M15 8h6M3 16h2M11 16h10"/><circle cx="13" cy="8" r="2.2"/><circle cx="9" cy="16" r="2.2"/></symbol>
+  <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3l7 3v5c0 4.6-3 7.7-7 9-4-1.3-7-4.4-7-9V6l7-3z"/></symbol>
+  <symbol id="i-key" viewBox="0 0 24 24"><circle cx="7.5" cy="7.5" r="3.6"/><path d="M10.2 10.2L20 20M16.6 16.6l2.4-2.4M13.8 13.8l2.4-2.4"/></symbol>
+  <symbol id="i-list" viewBox="0 0 24 24"><path d="M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01"/></symbol>
+  <symbol id="i-puzzle" viewBox="0 0 24 24"><path d="M14 3a2 2 0 014 0v1h3a1 1 0 011 1v3h1a2 2 0 010 4h-1v3a1 1 0 01-1 1h-3v1a2 2 0 01-4 0v-1h-3a1 1 0 01-1-1v-3h-1a2 2 0 010-4h1V5a1 1 0 011-1h3V3z"/></symbol>
+  <symbol id="i-db" viewBox="0 0 24 24"><ellipse cx="12" cy="5.5" rx="7.5" ry="3"/><path d="M4.5 5.5v13c0 1.7 3.4 3 7.5 3s7.5-1.3 7.5-3v-13M4.5 12c0 1.7 3.4 3 7.5 3s7.5-1.3 7.5-3"/></symbol>
+  <symbol id="i-gear" viewBox="0 0 24 24"><path d="M12 15a3 3 0 100-6 3 3 0 000 6z"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 11-4 0v-.09a1.65 1.65 0 00-1-1.51 1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 110-4h.09a1.65 1.65 0 001.51-1 1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06a1.65 1.65 0 001.82.33h.08a1.65 1.65 0 001-1.51V3a2 2 0 114 0v.09a1.65 1.65 0 001 1.51h.08a1.65 1.65 0 001.82-.33l.06-.06a2 2 0 112.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82v.08a1.65 1.65 0 001.51 1H21a2 2 0 110 4h-.09a1.65 1.65 0 00-1.51 1z"/></symbol>
+  <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.6"/><path d="M12 11v5"/><path d="M12 8h.01"/></symbol>
+  <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-9-9c2.5 0 4.9 1 6.7 2.7L21 8"/><path d="M21 3v5h-5"/></symbol>
+  <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4v11M7 11l5 5 5-5M4 20h16"/></symbol>
+  <symbol id="i-person" viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.6"/><path d="M5 20c1.3-3.4 3.9-5 7-5s5.7 1.6 7 5"/></symbol>
+  <symbol id="i-star" viewBox="0 0 24 24"><path d="M12 3.5l2.6 5.3 5.8.8-4.2 4.1 1 5.8-5.2-2.7-5.2 2.7 1-5.8L3.6 9.6l5.8-.8L12 3.5z"/></symbol>
+  <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 4.5L2.8 19.5h18.4L12 4.5z"/><path d="M12 10v4.2"/><path d="M12 17.2h.01"/></symbol>
+  <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2.5 12S6 5.8 12 5.8 21.5 12 21.5 12 18 18.2 12 18.2 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="3"/></symbol>
+  <symbol id="i-eye-off" viewBox="0 0 24 24"><path d="M2.5 12S6 5.8 12 5.8 21.5 12 21.5 12 18 18.2 12 18.2 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="3"/><path d="M4 4l16 16"/></symbol>
+  <symbol id="i-send" viewBox="0 0 24 24"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4 20-7z"/></symbol>
+  <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5 5l1.4 1.4M17.6 17.6L19 19M5 19l1.4-1.4M17.6 6.4L19 5"/></symbol>
+  <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20 13.5A8.5 8.5 0 1110.5 4 6.8 6.8 0 0020 13.5z"/></symbol>
+  <symbol id="i-ban" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.6"/><path d="M6.2 6.2l11.6 11.6"/></symbol>
+  <symbol id="i-wifi" viewBox="0 0 24 24"><path d="M4.5 9.5a11 11 0 0115 0M7.8 13a6.5 6.5 0 018.4 0M12 16.6h.01"/></symbol>
+  <symbol id="i-signal" viewBox="0 0 24 24"><path d="M4 20v-3.5M9.3 20v-7.5M14.7 20v-11M20 20V5"/></symbol>
+  <symbol id="i-batt" viewBox="0 0 24 24"><rect x="2" y="8" width="17" height="9" rx="2.5"/><path d="M21.5 11v3"/></symbol>
+  <symbol id="i-swipe" viewBox="0 0 24 24"><path d="M4 12h13M13 6l6 6-6 6"/></symbol>
+</svg>
+
+<div class="wrap">
+<!-- ================= 页头 ================= -->
+<header class="page-head">
+  <div>
+    <div class="brand">
+      <div class="brand-mark"><svg class="ic"><use href="#i-shield"/></svg></div>
+      <div>
+        <h1>AgentKit</h1>
+        <p class="brand-claim">每一次替你动手，都先给你看、再让你定、事后查得到。</p>
+      </div>
+    </div>
+    <p class="head-meta">视觉规范 v3 · 暖纸 Warm Paper · v3.1 导航修订：底部 Tab 废止，抽屉为唯一 App 级导航 · Light 为主设计套，Dark 为配套平行套</p>
+  </div>
+  <button class="tgl" id="themeToggle" aria-label="切换明暗主题">
+    <svg class="ic i-sun"><use href="#i-sun"/></svg>
+    <svg class="ic i-moon"><use href="#i-moon"/></svg>
+    <span id="tglTxt">切换到深色</span>
+  </button>
+</header>
+
+<!-- ================= 01 色彩 ================= -->
+<section class="sec">
+  <div class="sec-head">
+    <h2><span class="sec-idx">01</span>色彩</h2>
+    <p>三层底色分层 · 27 个 token · 同时出现色相 ≤5 族 · 60+ 组对比度实测（正文 ≥4.5:1，交互边界 ≥3:1；v3.1 新增抽屉就绪文字 / 选中项 7 行，4.96–9.48:1）</p>
+  </div>
+  <p class="pal-note">当前套件：<b id="themeName">浅色</b>（主设计套），深色为配套平行套 — 点击页首按钮，色板与色值同步翻转</p>
+  <!-- 三层底色关系图 -->
+  <div class="layer-page">
+    <span class="lyr-tag"><span class="mono">--ak-bg</span> · 页面底色（淡暖粉） · 页面边距 20dp</span>
+    <div class="layer-card">
+      <span class="lyr-tag"><span class="mono">--ak-surface</span> · 卡片 · 圆角 20dp · 0 阴影 0 描边</span>
+      <div class="layer-inner">
+        <span class="lyr-tag"><span class="mono">--ak-surface-1</span> · 内嵌块 · 圆角 14dp · 入参 / 结果 / chip / 图标底座 / 抽屉底</span>
+      </div>
+    </div>
+  </div>
+  <p class="demo-cap">虚线框只是本页的标注，App 内没有任何框线：分层只靠明度阶层（粉底 → 白卡 → 暖灰内嵌），按压态 --ak-surface-2 不用 elevation。全 App 0 阴影、0 描边、无渐变。</p>
+
+  <div class="pal-group">
+    <h3>三层底色与按压态</h3>
+    <p class="pg-note">暖纸族：页面 → 卡片 → 内嵌 → 按压，一屏几物全靠它分层</p>
+    <div class="sw-grid">
+      <div class="sw"><div class="sw-chip" style="background:var(--ak-bg)"></div><div class="sw-name mono">--ak-bg</div><div class="sw-hex mono" data-light="#F8EFE9" data-dark="#17110E">#F8EFE9</div></div>
+      <div class="sw"><div class="sw-chip sw-chip--pale" style="background:var(--ak-surface)"></div><div class="sw-name mono">--ak-surface</div><div class="sw-hex mono" data-light="#FFFFFF" data-dark="#1F1815">#FFFFFF</div></div>
+      <div class="sw"><div class="sw-chip" style="background:var(--ak-surface-1)"></div><div class="sw-name mono">--ak-surface-1</div><div class="sw-hex mono" data-light="#F4E9E2" data-dark="#241C18">#F4E9E2</div></div>
+      <div class="sw"><div class="sw-chip" style="background:var(--ak-surface-2)"></div><div class="sw-name mono">--ak-surface-2</div><div class="sw-hex mono" data-light="#EFE2D9" data-dark="#2A211C">#EFE2D9</div></div>
+      <div class="sw"><div class="sw-chip" style="background:var(--ak-surface-var)"></div><div class="sw-name mono">--ak-surface-var</div><div class="sw-hex mono" data-light="#F6EDE7" data-dark="#372C25">#F6EDE7</div></div>
+    </div>
+  </div>
+
+  <div class="pal-group">
+    <h3>文字（暖中性族，无冷灰）</h3>
+    <p class="pg-note">冷灰落在暖粉底上会发脏，全部文字带暖褐底调</p>
+    <div class="sw-grid">
+      <div class="sw"><div class="sw-chip" style="background:var(--ak-on-surface)"></div><div class="sw-name mono">--ak-on-surface</div><div class="sw-hex mono" data-light="#2E2620" data-dark="#F2EAE3">#2E2620</div></div>
+      <div class="sw"><div class="sw-chip" style="background:var(--ak-on-surface-var)"></div><div class="sw-name mono">--ak-on-surface-var</div><div class="sw-hex mono" data-light="#6B5B4E" data-dark="#BBA99B">#6B5B4E</div></div>
+      <div class="sw"><div class="sw-chip" style="background:var(--ak-on-surface-ter)"></div><div class="sw-name mono">--ak-on-surface-ter</div><div class="sw-hex mono" data-light="#756450" data-dark="#A89A89">#756450</div></div>
+    </div>
+  </div>
+  <div class="pal-group">
+    <h3>主色 · 青碧</h3>
+    <p class="pg-note">hue ≈192°，与暖粉底近似互补；白字实测 7.51:1</p>
+    <div class="sw-grid">
+      <div class="sw"><div class="sw-chip" style="background:var(--ak-primary)"></div><div class="sw-name mono">--ak-primary</div><div class="sw-hex mono" data-light="#0E5D6B" data-dark="#7FC8CE">#0E5D6B</div></div>
+      <div class="sw"><div class="sw-chip sw-chip--pale" style="background:var(--ak-on-primary)"></div><div class="sw-name mono">--ak-on-primary</div><div class="sw-hex mono" data-light="#FFFFFF" data-dark="#05292E">#FFFFFF</div></div>
+      <div class="sw"><div class="sw-chip" style="background:var(--ak-primary-container)"></div><div class="sw-name mono">--ak-primary-container</div><div class="sw-hex mono" data-light="#D2E7E9" data-dark="#14494F">#D2E7E9</div></div>
+      <div class="sw"><div class="sw-chip" style="background:var(--ak-on-primary-container)"></div><div class="sw-name mono">--ak-on-primary-container</div><div class="sw-hex mono" data-light="#093F49" data-dark="#B9E6EA">#093F49</div></div>
+    </div>
+  </div>
+  <div class="pal-group">
+    <h3>语义色 · 红（审批 / 破坏性 / ERROR）</h3>
+    <p class="pg-note">红色 = 危险动作，不用来标记来源或用户拒绝</p>
+    <div class="sw-grid">
+      <div class="sw"><div class="sw-chip" style="background:var(--ak-danger)"></div><div class="sw-name mono">--ak-danger</div><div class="sw-hex mono" data-light="#B4322A" data-dark="#FF8D82">#B4322A</div></div>
+      <div class="sw"><div class="sw-chip" style="background:var(--ak-danger-fill)"></div><div class="sw-name mono">--ak-danger-fill</div><div class="sw-hex mono" data-light="#B4322A" data-dark="#C2483A">#B4322A</div></div>
+      <div class="sw"><div class="sw-chip sw-chip--pale" style="background:var(--ak-on-danger-fill)"></div><div class="sw-name mono">--ak-on-danger-fill</div><div class="sw-hex mono" data-light="#FFFFFF" data-dark="#FFFFFF">#FFFFFF</div></div>
+      <div class="sw"><div class="sw-chip" style="background:var(--ak-danger-container)"></div><div class="sw-name mono">--ak-danger-container</div><div class="sw-hex mono" data-light="#F9E2DF" data-dark="#3D1A14">#F9E2DF</div></div>
+      <div class="sw"><div class="sw-chip" style="background:var(--ak-on-danger-container)"></div><div class="sw-name mono">--ak-on-danger-container</div><div class="sw-hex mono" data-light="#7E1F16" data-dark="#FFC9C0">#7E1F16</div></div>
+    </div>
+  </div>
+  <div class="pal-group">
+    <h3>语义色 · 琥珀 / 绿 / 沙箱</h3>
+    <p class="pg-note">琥珀 = 警惕与导入来源；绿 = 就绪 / 内置 / 完成；沙箱为中性暖灰</p>
+    <div class="sw-grid">
+      <div class="sw"><div class="sw-chip" style="background:var(--ak-warning)"></div><div class="sw-name mono">--ak-warning</div><div class="sw-hex mono" data-light="#8A5A12" data-dark="#F2B950">#8A5A12</div></div>
+      <div class="sw"><div class="sw-chip" style="background:var(--ak-warning-container)"></div><div class="sw-name mono">--ak-warning-container</div><div class="sw-hex mono" data-light="#F7E8D2" data-dark="#3A2A12">#F7E8D2</div></div>
+      <div class="sw"><div class="sw-chip" style="background:var(--ak-on-warning-container)"></div><div class="sw-name mono">--ak-on-warning-container</div><div class="sw-hex mono" data-light="#5C3A05" data-dark="#F5D9A0">#5C3A05</div></div>
+      <div class="sw"><div class="sw-chip" style="background:var(--ak-success)"></div><div class="sw-name mono">--ak-success</div><div class="sw-hex mono" data-light="#177245" data-dark="#62D996">#177245</div></div>
+      <div class="sw"><div class="sw-chip" style="background:var(--ak-success-container)"></div><div class="sw-name mono">--ak-success-container</div><div class="sw-hex mono" data-light="#DCF0E3" data-dark="#123828">#DCF0E3</div></div>
+      <div class="sw"><div class="sw-chip" style="background:var(--ak-on-success-container)"></div><div class="sw-name mono">--ak-on-success-container</div><div class="sw-hex mono" data-light="#0F4A2A" data-dark="#BFF0D4">#0F4A2A</div></div>
+      <div class="sw"><div class="sw-chip" style="background:var(--ak-trust-sandbox)"></div><div class="sw-name mono">--ak-trust-sandbox</div><div class="sw-hex mono" data-light="#6B5B4E" data-dark="#A8988A">#6B5B4E</div></div>
+    </div>
+  </div>
+  <div class="pal-group">
+    <h3>线条 / 反色 / 遮罩</h3>
+    <p class="pg-note">outline 只做装饰分隔（<2:1）；outlineStrong 才是交互边界（≥3:1）</p>
+    <div class="sw-grid">
+      <div class="sw"><div class="sw-chip" style="background:var(--ak-outline)"></div><div class="sw-name mono">--ak-outline</div><div class="sw-hex mono" data-light="#E5D6CC" data-dark="#3E332C">#E5D6CC</div></div>
+      <div class="sw"><div class="sw-chip" style="background:var(--ak-outline-strong)"></div><div class="sw-name mono">--ak-outline-strong</div><div class="sw-hex mono" data-light="#8A7563" data-dark="#9C8672">#8A7563</div></div>
+      <div class="sw"><div class="sw-chip" style="background:var(--ak-log-debug)"></div><div class="sw-name mono">--ak-log-debug</div><div class="sw-hex mono" data-light="#756450" data-dark="#A89A89">#756450</div></div>
+      <div class="sw"><div class="sw-chip" style="background:var(--ak-log-info)"></div><div class="sw-name mono">--ak-log-info</div><div class="sw-hex mono" data-light="#0E5D6B" data-dark="#7FC8CE">#0E5D6B</div></div>
+      <div class="sw"><div class="sw-chip" style="background:var(--ak-inverse-surface)"></div><div class="sw-name mono">--ak-inverse-surface</div><div class="sw-hex mono" data-light="#2E2620" data-dark="#F2EAE3">#2E2620</div></div>
+      <div class="sw"><div class="sw-chip sw-chip--pale" style="background:var(--ak-inverse-on-surface)"></div><div class="sw-name mono">--ak-inverse-on-surface</div><div class="sw-hex mono" data-light="#F8EFE9" data-dark="#17110E">#F8EFE9</div></div>
+      <div class="sw"><div class="sw-chip sw-scrim" style="background:var(--ak-bg)"></div><div class="sw-name mono">--ak-scrim</div><div class="sw-hex mono" data-light="#1A120D @ 40%" data-dark="#000000 @ 56%">#1A120D @ 40%</div></div>
+    </div>
+  </div>
+
+  <p class="demo-cap">级别色只用于文字与 8dp 点（点 decorative）；WARN/ERROR 另有左缘 3dp 色条。淡 tint 徽章底 + on-*-container 深色墨迹（Light 全族 ≥8.29:1），徽章不随开关状态变色。</p>
+</section>
+
+<!-- ================= 02 字体 ================= -->
+<section class="sec">
+  <div class="sec-head">
+    <h2><span class="sec-idx">02</span>字体与排版</h2>
+    <p>9 档人类语言 + 2 个 mono 工具样式 · 中文行高 ≥1.7 · 零英文微标签，mono 只服务机器文本</p>
+  </div>
+  <div class="ts">
+    <div class="ts-row"><span class="ts-meta">headlineSmall 22/30 w600</span><span class="ts-sample t-headline">内容区强调（非页面标题）</span></div>
+    <div class="ts-row"><span class="ts-meta">titleLarge 18/26 w600</span><span class="ts-sample t-title">确认执行危险操作 · 对话（顶栏标题）</span></div>
+    <div class="ts-row"><span class="ts-meta">titleMedium 16/24 w500</span><span class="ts-sample t-titlemd">设置导航</span></div>
+    <div class="ts-row"><span class="ts-meta">bodyLarge 15/26 w400</span><span class="ts-sample t-body">好的，共 7 步。先调静音，再处理闹钟；中途需要你确认一次危险操作。</span></div>
+    <div class="ts-row"><span class="ts-meta">bodySmall 13/20 w400</span><span class="ts-sample t-bodysm">来源：技能「设置导航」· 指令「打开设置并点击 WLAN」</span></div>
+    <div class="ts-row"><span class="ts-meta">labelLarge 14/20 w600</span><span class="ts-sample t-labellg">允许执行</span></div>
+    <div class="ts-row"><span class="ts-meta">labelMedium 12/16 w500</span><span class="ts-sample t-labelmd">执行中 · 已完成 · 已拒绝 · 模型 / 提示词（页面内 Tab）</span></div>
+    <div class="ts-row"><span class="ts-meta">labelSmall 11/14 w500</span><span class="ts-sample t-labelsm">● 内置 · 10 秒后自动拒绝</span></div>
+    <div class="ts-row"><span class="ts-meta">machineText 13/20 mono</span><span class="ts-sample t-mach1">set_ringer_mode · https://api.agentkit.local/v1</span></div>
+    <div class="ts-row"><span class="ts-meta">machineSmall 12/16 mono</span><span class="ts-sample t-mach2">14:22:31.204 · sk-a…7F3A · 第 3 步，共 7 步</span></div>
+  </div>
+  <div class="tips">
+    <div class="tip"><b>行高用绝对值</b><p>中文正文 ≥1.7（bodyLarge 15/26）；一律绝对值不用倍数；fontScale >1.3 时行高 ×1.4，容器用最小高不用固定高。</p></div>
+    <div class="tip"><b>数字等宽化</b><p>时间戳 / STEP n/m / 时长 / 指纹 / Key 走 mono；人类叙述里的数字（「3 条记忆」）跟随正文。</p></div>
+    <div class="tip"><b>纯中文语汇</b><p>界面无英文微标签、无拼音；mono 只出现在机器自己说出来的字符串里，不再是装饰语汇。</p></div>
+  </div>
+</section>
+
+<!-- ================= 03 组件 ================= -->
+<section class="sec">
+  <div class="sec-head">
+    <h2><span class="sec-idx">03</span>组件</h2>
+    <p>7 个关键组件 + 基础控件 · 所有卡片类一律 20dp 圆角、0 阴影、0 描边 · 点击可展开的卡片有真实交互</p>
+  </div>
+
+  <div class="g2">
+    <!-- 列表项 -->
+    <div class="cell">
+      <div class="cell-head"><h3>列表项</h3><span>白卡分组 · 行高 ≥72dp · 分隔线缩进 16dp</span></div>
+      <div class="list-card">
+        <button class="list-row"><span class="icon-base"><svg class="ic"><use href="#i-key"/></svg></span><span class="list-text"><span class="list-title">模型配置</span><span class="list-desc">agentkit-pro · Key 校验通过</span></span><span class="list-ctl"><svg class="ic"><use href="#i-chev-r"/></svg></span></button>
+        <button class="list-row"><span class="icon-base"><svg class="ic"><use href="#i-puzzle"/></svg></span><span class="list-text"><span class="list-title">技能中心</span><span class="list-desc">4 个技能 · 1 个外部导入</span></span><span class="list-ctl"><svg class="ic"><use href="#i-chev-r"/></svg></span></button>
+        <button class="list-row"><span class="icon-base"><svg class="ic"><use href="#i-list"/></svg></span><span class="list-text"><span class="list-title">运行日志</span><span class="list-desc">最近 24 小时 · 3 条警告</span></span><span class="list-ctl"><svg class="ic"><use href="#i-chev-r"/></svg></span></button>
+        <div class="list-row"><span class="icon-base"><svg class="ic"><use href="#i-moon"/></svg></span><span class="list-text"><span class="list-title">深色主题</span><span class="list-desc">暖黑配套套，不是纯黑</span></span><span class="list-ctl"><span class="sw-toggle on" role="img" aria-label="开关已开启"></span></span></div>
+      </div>
+      <p class="demo-cap">40dp 圆角图标底座 + 主文案 16sp / 描述 13sp 两行；右侧控件或 20dp 箭头；按压 bg surface-2 + scale 0.97。</p>
+    </div>
+    <!-- 聊天气泡 -->
+    <div class="cell">
+      <div class="cell-head"><h3>聊天气泡 · 三态</h3><span>用户青碧 / AI 白卡 / 系统提示无气泡</span></div>
+      <div class="chat-demo">
+        <span class="chat-time mono">14:22</span>
+        <span class="sys-hint">正在规划操作…</span>
+        <div class="msg msg-user"><span class="avatar avatar-user"><svg class="ic"><use href="#i-person"/></svg></span><div class="bubble bubble-user">帮我把手机静音，再关掉明早七点的闹钟</div></div>
+        <div class="msg msg-ai"><span class="avatar avatar-ai"><svg class="ic"><use href="#i-star"/></svg></span><div class="bubble bubble-ai">好的，共 7 步。先调静音，再处理闹钟；中途需要你确认一次危险操作。</div></div>
+        <div class="msg msg-ai"><span class="avatar avatar-ai"><svg class="ic"><use href="#i-star"/></svg></span><div class="bubble bubble-ai">正在执行第 3 步<i class="cursor"></i></div></div>
+      </div>
+      <p class="demo-cap">用户 = 青碧填充 + 白字（右上 4dp 尾角）；AI = 白卡 + 暖黑文字（左上 4dp 尾角）；流式光标是全 App 唯一循环动画（800ms）。</p>
+    </div>
+  </div>
+  <div class="g2">
+    <!-- 工具调用卡 -->
+    <div class="cell">
+      <div class="cell-head"><h3>工具调用卡</h3><span>白卡 20dp · 无描边无色带 · 点击展开</span></div>
+      <div class="tool-card open" id="toolCard">
+        <button class="tool-head" data-toggle="toolCard" aria-expanded="true">
+          <i class="dot dot-pri"></i>
+          <span class="tool-name mono">set_ringer_mode</span>
+          <span class="tool-sep">—</span>
+          <span class="tool-status st-run">执行中</span>
+          <svg class="ic ic-chev"><use href="#i-chev-d"/></svg>
+        </button>
+        <div class="tool-sub mono">第 3 步，共 7 步 · 214ms</div>
+        <div class="tool-expand">
+          <div class="embed-label">入参</div>
+          <div class="embed-block mono">{"mode": "silent", "flags": 0}</div>
+          <div class="embed-label">结果</div>
+          <div class="embed-block mono">{"ok": true, "previous": "normal"}</div>
+        </div>
+      </div>
+      <div class="st-row">
+        <span class="st-run"><i class="dot dot-pri"></i>执行中</span>
+        <span class="st-done"><i class="dot dot-ok"></i>已完成</span>
+        <span class="st-fail"><i class="dot dot-err"></i>已失败</span>
+        <span class="st-deny"><i class="dot" style="background:var(--ak-on-surface-var)"></i>已拒绝</span>
+      </div>
+      <p class="demo-cap">状态双编码：点 + 中文状态文字；「已拒绝」用中性色——拒绝是用户决策，不是故障。单步任务只显示时长。</p>
+    </div>
+    <!-- 技能卡 -->
+    <div class="cell">
+      <div class="cell-head"><h3>技能卡</h3><span>徽章三色 · 高危摘要行 · 点击展开明细</span></div>
+      <div class="skill-card open" id="skillCard">
+        <div class="skill-head">
+          <span class="icon-base"><svg class="ic"><use href="#i-puzzle"/></svg></span>
+          <div style="flex:1;min-width:0">
+            <div class="skill-name">设置导航 <span class="skill-ver mono">v1.2.0</span></div>
+            <div class="skill-badges"><span class="badge b-warn">● 导入</span></div>
+          </div>
+          <span class="sw-toggle on" role="img" aria-label="技能已启用"></span>
+        </div>
+        <p class="skill-danger">已拦截 2 个高危工具</p>
+        <p class="skill-desc">把「打开设置并点击 WLAN」这类固定路径编排成一步指令，执行前仍需审批。</p>
+        <button class="skill-more" data-toggle="skillCard" aria-expanded="true">展开放行 / 拦截明细<svg class="ic"><use href="#i-chev-d"/></svg></button>
+        <div class="skill-detail">
+          <div class="sd-row"><svg class="ic sd-ok"><use href="#i-check"/></svg><span class="sd-name mono">am start -a …WIFI_SETTINGS</span><span class="sd-act">放行</span></div>
+          <div class="sd-row"><svg class="ic sd-no"><use href="#i-ban"/></svg><span class="sd-name mono">adb shell pm grant …</span><span class="sd-act">拦截</span></div>
+          <div class="sd-row"><svg class="ic sd-ok"><use href="#i-check"/></svg><span class="sd-name mono">input tap 540 1200</span><span class="sd-act">放行</span></div>
+        </div>
+        <div class="skill-foot">
+          <span class="skill-auth ok">脚本执行：已授权</span>
+          <button class="text-btn">授权脚本</button>
+        </div>
+      </div>
+      <p class="demo-cap">权限 chips 矩阵已删除，改为一行高危摘要；明细「藏不住」——拦截项用禁行图标 + 红字。</p>
+    </div>
+  </div>
+  <div class="g2">
+    <!-- 审批 Dialog -->
+    <div class="cell">
+      <div class="cell-head"><h3>危险操作审批 Dialog</h3><span>招牌组件 · 简洁但警觉</span></div>
+      <div class="dialog" role="dialog" aria-modal="true" aria-label="确认执行危险操作">
+        <div class="dlg-icon"><svg class="ic"><use href="#i-alert"/></svg></div>
+        <h3 class="dlg-title">确认执行危险操作</h3>
+        <p class="dlg-sub">Agent 正在请求操控你的手机，执行后不可撤销。</p>
+        <div class="dlg-block">
+          <p class="mono">am start -a android.settings.action.WIFI_SETTINGS</p>
+          <p class="mono k">com.android.settings</p>
+        </div>
+        <p class="dlg-src">来源：技能「设置导航」· 指令「打开设置并点击 WLAN」</p>
+        <div class="dlg-ask">
+          <button class="cbx-btn" id="dlgCbx" aria-label="本次会话不再询问同类操作"><span class="cbx"><svg class="ic"><use href="#i-check"/></svg></span></button>
+          <span class="dlg-ask-txt">本次会话不再询问同类操作</span>
+        </div>
+        <div class="dlg-btns">
+          <button class="btn btn-outlined">拒绝</button>
+          <button class="btn btn-danger">允许执行</button>
+        </div>
+        <div class="dlg-cd">
+          <p class="dlg-cd-txt">10 秒后自动拒绝</p>
+          <div class="cd-line"></div>
+        </div>
+      </div>
+      <p class="demo-cap">示意循环：倒计时线 10s 排空后停顿 3s。真实场景为一次性 10s linear；reduce-motion 下保留。</p>
+    </div>
+    <!-- 六要素 -->
+    <div class="cell legend">
+      <h3>招牌组件六要素</h3>
+      <ol>
+        <li><b>静态警示图标</b> — 36dp 圆底 danger-container，不呼吸、不脉冲</li>
+        <li><b>18sp 正常字重标题</b> — 文案陈述事实，不加大、不加粗、不变红、不全大写</li>
+        <li><b>「将执行」暖灰块 + 左缘 3dp 红竖条</b> — mono 工具名与参数换行，包名 w500 强调，最多 5 行可滚动</li>
+        <li><b>来源行</b> — 技能 + 指令，maxLines 2；无来源时显示「本次对话直接调用」</li>
+        <li><b>等高按钮 48dp</b> — 拒绝 = 强轨描边；允许执行 = 红填充白字（Light 6.12:1 / Dark 4.90:1）</li>
+        <li><b>10s 倒计时进度线</b> — 功能性进度，非装饰动效，默认开启</li>
+      </ol>
+      <p class="demo-cap">另含免询勾选行。红色只出现在图标 / 竖条 / 按钮 / 倒计时线四处，合计 &lt;8% 弹窗面；padding 24dp、块间距 16dp——重大但从容。入场 fade + scale .96，200ms，无弹跳无脉冲。</p>
+    </div>
+  </div>
+  <div class="g2">
+    <!-- 日志条目 -->
+    <div class="cell">
+      <div class="cell-head"><h3>运行日志条目</h3><span>两行式 · 中文级别 · WARN/ERROR 左缘色条</span></div>
+      <div class="log-card">
+        <div class="chips">
+          <span class="chip on">全部</span><span class="chip">信息</span><span class="chip">警告</span><span class="chip">错误</span>
+        </div>
+        <div class="log-row warn">
+          <div class="log-l1"><i class="dot dot-warn"></i><span class="log-lvl lv-warn">警告</span><span class="log-time mono">14:22:31.204</span></div>
+          <p class="log-msg">技能「设置导航」第 3 步耗时 214ms，超过 200ms 阈值，已记录未拦截。</p>
+        </div>
+        <div class="log-row">
+          <div class="log-l1"><i class="dot dot-info"></i><span class="log-lvl lv-info">信息</span><span class="log-time mono">14:22:30.981</span></div>
+          <p class="log-msg">已连接模型 agentkit-pro，载入 12 条记忆，规划 7 步操作。</p>
+        </div>
+        <button class="log-row err open" id="logErr" data-toggle="logErr" aria-expanded="true">
+          <div class="log-l1"><i class="dot dot-err"></i><span class="log-lvl lv-err">错误</span><span class="log-time mono">14:21:58.442</span><svg class="ic ic-chev"><use href="#i-chev-d"/></svg></div>
+          <p class="log-msg">第 5 步执行失败：权限 WRITE_SECURE_SETTINGS 未授权，已回滚前 4 步。</p>
+          <div class="log-expand"><div class="embed-block err mono">E_SECURE_SETTINGS: permission denied\nstep=5 skill=设置导航\nrollback=ok (4 steps)</div></div>
+        </button>
+      </div>
+      <p class="demo-cap">级别双编码（色 + 中文文字），筛选 chips 全中文；选中 = primary@12% 底 + on-primary-container 文字。</p>
+    </div>
+    <!-- 模型配置 -->
+    <div class="cell">
+      <div class="cell-head"><h3>模型配置</h3><span>填充式输入 · Key 自检 · 测试连接四态</span></div>
+      <div class="sec-card">
+        <div class="sec-card-title">接口</div>
+        <span class="field-label">Base URL</span>
+        <input class="field" value="https://api.agentkit.local/v1" readonly>
+        <span class="field-label">模型名</span>
+        <input class="field" value="agentkit-pro" readonly>
+        <span class="field-label">API Key</span>
+        <div class="key-wrap">
+          <input class="field" id="keyField" value="sk-••••••••••••••7F3A" data-real="sk-agentkit-9f2a…7F3A" readonly>
+          <button class="eye-btn" id="eyeBtn" aria-label="显示或隐藏 Key"><svg class="ic ic-eye"><use href="#i-eye"/></svg><svg class="ic ic-eye-off"><use href="#i-eye-off"/></svg></button>
+        </div>
+        <div class="key-check"><i class="dot dot-ok"></i>长度 56 · <span class="mono">sk-a…7F3A</span> · 校验通过</div>
+      </div>
+      <div class="sec-card">
+        <div class="sec-card-title">连接</div>
+        <button class="btn-test" id="testBtn">
+          <span class="t-spin"></span>
+          <svg class="ic t-ok"><use href="#i-check"/></svg>
+          <svg class="ic t-fail"><use href="#i-alert"/></svg>
+          <span class="t-txt">测试连接</span>
+        </button>
+        <div class="result-card">
+          <div class="res-row"><b>端点</b><span class="mono">/v1/chat/completions</span></div>
+          <div class="res-row"><b>指纹</b><span class="mono">sk-a…7F3A · 长度 56</span></div>
+          <div class="res-row"><b>响应</b><span class="mono">200 ok · 214ms</span></div>
+          <div class="res-copy"><button class="text-btn">复制</button></div>
+        </div>
+      </div>
+      <p class="demo-cap">点击「测试连接」可循环演示四态：测试中 → 连接正常 → 401 · Key 无效 → 复位；点击眼睛可切换 Key 掩码。</p>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 04 导航（v3.1 重写） ================= -->
+<section class="sec">
+  <div class="sec-head">
+    <h2><span class="sec-idx">04</span>导航（v3.1 重写）</h2>
+    <p>删掉底部 3 Tab，侧边抽屉升格为唯一 App 级导航：每屏固定元素 −1、内容区净增 64dp、与「左上圆钮 + 侧抽屉」原型一致。页面内 Tab（模型页「模型 / 提示词」）是内容分区，不是 App 导航。</p>
+  </div>
+
+  <div class="sub-h">4.1 顶栏<span>透明 overlay · 每页同一骨架 · 常驻透明滚动不变实色</span></div>
+  <div class="anat">
+    <div class="topbar">
+      <span class="tb-hit"><button class="tb-btn" aria-label="打开导航抽屉"><svg class="ic"><use href="#i-menu"/></svg></button></span>
+      <span class="tb-title">对话</span>
+      <span class="tb-hit"><button class="tb-btn" aria-label="新对话"><svg class="ic"><use href="#i-plus"/></svg></button></span>
+    </div>
+    <div class="anat-row"><span>栏高 56dp + 状态栏 inset</span><span>触控 48×48dp（虚线框）</span><span>视觉 40dp 圆形</span><span>图标 24dp · 1.5dp 线性</span><span>标题 18/26 w600 居中</span></div>
+  </div>
+  <p class="demo-cap">顶栏 overlay 于内容之上、常驻透明（与页面同色 --ak-bg），无底色无分割线，滚动不变实色；内容区预留「状态栏 + 56dp」顶部 padding，零监听零状态。右 = 0–1 个动作按钮，规格同汉堡。</p>
+
+  <div class="tb-grid">
+    <div class="tb-spec"><div class="topbar"><button class="tb-btn" aria-label="打开导航抽屉"><svg class="ic"><use href="#i-menu"/></svg></button><span class="tb-title">对话</span><button class="tb-btn" aria-label="新对话"><svg class="ic"><use href="#i-plus"/></svg></button></div><p class="tb-cap">对话 · 右上 = 新对话（会话为空时禁用）</p></div>
+    <div class="tb-spec"><div class="topbar"><button class="tb-btn" aria-label="打开导航抽屉"><svg class="ic"><use href="#i-menu"/></svg></button><span class="tb-title">模型配置</span><span style="width:48px;flex:none"></span></div><p class="tb-cap">模型配置 · 无右上动作（保存 / 取消在内容区底部）</p></div>
+    <div class="tb-spec"><div class="topbar"><button class="tb-btn" aria-label="打开导航抽屉"><svg class="ic"><use href="#i-menu"/></svg></button><span class="tb-title">控制台</span><button class="tb-btn" aria-label="刷新"><svg class="ic"><use href="#i-refresh"/></svg></button></div><p class="tb-cap">控制台 · 右上 = 刷新（拉取最新自动化状态）</p></div>
+    <div class="tb-spec"><div class="topbar"><button class="tb-btn" aria-label="打开导航抽屉"><svg class="ic"><use href="#i-menu"/></svg></button><span class="tb-title">权限中心</span><span style="width:48px;flex:none"></span></div><p class="tb-cap">权限中心 · 无右上动作（允许 / 拒绝在列表项内）</p></div>
+    <div class="tb-spec"><div class="topbar"><button class="tb-btn" aria-label="打开导航抽屉"><svg class="ic"><use href="#i-menu"/></svg></button><span class="tb-title">技能中心</span><button class="tb-btn" aria-label="导入"><svg class="ic"><use href="#i-plus"/></svg></button></div><p class="tb-cap">技能中心 · 右上 = 导入（走导入来源警示流程）</p></div>
+    <div class="tb-spec"><div class="topbar"><button class="tb-btn" aria-label="打开导航抽屉"><svg class="ic"><use href="#i-menu"/></svg></button><span class="tb-title">运行日志</span><button class="tb-btn" aria-label="导出"><svg class="ic"><use href="#i-download"/></svg></button></div><p class="tb-cap">运行日志 · 右上 = 导出（筛选 chips 在内容区顶部）</p></div>
+    <div class="tb-spec"><div class="topbar"><button class="tb-btn" aria-label="打开导航抽屉"><svg class="ic"><use href="#i-menu"/></svg></button><span class="tb-title">记忆库</span><button class="tb-btn" aria-label="新建记忆"><svg class="ic"><use href="#i-plus"/></svg></button></div><p class="tb-cap">记忆库 · 右上 = 新建记忆（手动添加一条）</p></div>
+    <div class="tb-spec"><div class="topbar"><button class="tb-btn" aria-label="打开导航抽屉"><svg class="ic"><use href="#i-menu"/></svg></button><span class="tb-title">设置</span><span style="width:48px;flex:none"></span></div><p class="tb-cap">设置 · 无右上动作</p></div>
+    <div class="tb-spec"><div class="topbar"><button class="tb-btn" aria-label="打开导航抽屉"><svg class="ic"><use href="#i-menu"/></svg></button><span class="tb-title">关于</span><span style="width:48px;flex:none"></span></div><p class="tb-cap">关于 · 无右上动作（开源许可并入本页）</p></div>
+    <div class="tb-spec"><div class="topbar"><button class="tb-btn" aria-label="返回"><svg class="ic"><use href="#i-back"/></svg></button><span class="tb-title">技能详情</span><span style="width:48px;flex:none"></span></div><p class="tb-cap">二级页 · 左 = 返回按钮（替换汉堡）· 右按需 0–1 个</p></div>
+  </div>
+
+  <div class="sub-h">4.2 抽屉展开态<span>9 入口 · 两分组 + 底部位 · 覆盖在对话页上（可交互）</span></div>
+  <div class="mock-row">
+    <div class="phone">
+      <div class="screen screen--tall screen--open" id="drawerScreen">
+        <div class="statusbar"><span class="mono">14:22</span><span class="sb-r"><svg class="ic"><use href="#i-signal"/></svg><svg class="ic"><use href="#i-wifi"/></svg><svg class="ic"><use href="#i-batt"/></svg></span></div>
+        <div class="topbar">
+          <button class="tb-btn" id="drawerOpenBtn" aria-label="打开导航抽屉" aria-expanded="true"><svg class="ic"><use href="#i-menu"/></svg></button>
+          <span class="tb-title">对话</span>
+          <button class="tb-btn" aria-label="新对话"><svg class="ic"><use href="#i-plus"/></svg></button>
+        </div>
+        <div class="content">
+          <span class="chat-time mono">14:22</span><span class="sys-hint">正在规划操作…</span>
+          <div class="msg msg-user"><span class="avatar avatar-user"><svg class="ic"><use href="#i-person"/></svg></span><div class="bubble bubble-user">帮我把手机静音，再关掉明早七点的闹钟</div></div>
+          <div class="msg msg-ai"><span class="avatar avatar-ai"><svg class="ic"><use href="#i-star"/></svg></span><div class="bubble bubble-ai">好的，共 7 步。先静音，再处理闹钟，中途需要你确认一次危险操作。</div></div>
+          <div class="msg msg-ai"><span class="avatar avatar-ai"><svg class="ic"><use href="#i-star"/></svg></span><div class="bubble bubble-ai">正在执行第 3 步<i class="cursor"></i></div></div>
+        </div>
+        <div class="inputbar"><div class="input-field">说点什么…</div><button class="send-btn" aria-label="发送"><span class="send-visual"><svg class="ic"><use href="#i-send"/></svg></span></button></div>
+        <div class="navpad"></div>
+        <div class="scrim-d" id="drawerScrim"></div>
+        <nav class="drawer" aria-label="导航抽屉">
+          <div class="drawer-head">
+            <span class="app-mark"><svg class="ic"><use href="#i-shield"/></svg></span>
+            <span><span class="drawer-name">AgentKit</span><span class="drawer-ready rdy-warn"><i class="dot"></i>无障碍已连接 · 3 项待授权</span></span>
+          </div>
+          <div class="drawer-group">主要</div>
+          <button class="drawer-item on"><svg class="ic"><use href="#i-chat"/></svg>对话</button>
+          <button class="drawer-item"><svg class="ic"><use href="#i-cube"/></svg>模型</button>
+          <button class="drawer-item"><svg class="ic"><use href="#i-sliders"/></svg>控制台</button>
+          <div class="drawer-group">管理</div>
+          <button class="drawer-item"><svg class="ic"><use href="#i-shield"/></svg>权限中心<i class="dot-red"></i></button>
+          <button class="drawer-item"><svg class="ic"><use href="#i-puzzle"/></svg>技能中心</button>
+          <button class="drawer-item"><svg class="ic"><use href="#i-list"/></svg>运行日志<span class="drawer-count">3</span></button>
+          <button class="drawer-item"><svg class="ic"><use href="#i-db"/></svg>记忆库</button>
+          <div class="drawer-bottom">
+            <button class="drawer-item"><svg class="ic"><use href="#i-gear"/></svg>设置</button>
+            <button class="drawer-item"><svg class="ic"><use href="#i-info"/></svg>关于</button>
+          </div>
+        </nav>
+      </div>
+    </div>
+    <div class="mock-note">
+      <h3>抽屉 = 唯一 App 级导航</h3>
+      <ul>
+        <li>9 入口两分组 + 底部位：主要（对话 / 模型 / 控制台）· 管理（权限中心 / 技能中心 / 运行日志 / 记忆库）· 底部（设置 / 关于，无分组标题）</li>
+        <li>选中态三件套：primary@12% 底 + 图标与文字 primary + 左缘 3dp 圆角竖条（贴抽屉左缘、与项等高）</li>
+        <li>全 App 仅 2 处角标：权限中心 = 静态红点（有待授权）；运行日志 = 纯数字（未读 ERROR 条数）；零不显示、不脉冲</li>
+        <li>就绪文字取三态之②：warning 点 +「无障碍已连接 · 3 项待授权」，与权限中心红点同源</li>
+        <li>宽 clamp(280dp, 82vw, 320dp)；滑入 250ms；滑出与 scrim fade 200ms；scrim #1A120D@40%，点击关闭</li>
+        <li>项高 52dp、radius 14dp、无 chevron；点当前所在页项 = 仅关闭抽屉，不重复导航</li>
+        <li>可交互：点 scrim 关闭，点左上汉堡重新展开；高度预算 ≈716dp，主流机型一屏放得下</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="sub-h">4.3 就绪文字三态<span>状态词着色 · 与权限中心红点同源 · 对比度 Light 4.96–5.13:1</span></div>
+  <div class="g3">
+    <div class="cell">
+      <div class="cell-head"><h3>① 已连接</h3><span>0 项待授权</span></div>
+      <div class="ready-spec rdy-ok"><i class="dot"></i><span>无障碍已连接</span></div>
+      <p class="demo-cap">success 点 + success 文字；无待授权时红点不显示。</p>
+    </div>
+    <div class="cell">
+      <div class="cell-head"><h3>② N 项待授权</h3><span>与红点同源</span></div>
+      <div class="ready-spec rdy-warn"><i class="dot"></i><span>无障碍已连接 · 3 项待授权</span></div>
+      <p class="demo-cap">warning 点 + warning 文字；N 用正文数字，随待授权存量变化。</p>
+    </div>
+    <div class="cell">
+      <div class="cell-head"><h3>③ 未连接</h3><span>整行可点</span></div>
+      <button class="ready-spec rdy-bad"><i class="dot"></i><span>无障碍未连接（可点）</span></button>
+      <p class="demo-cap">danger 点 + danger 文字；整行可点跳权限中心，无障碍合并播报。</p>
+    </div>
+  </div>
+
+  <div class="sub-h">4.4 右滑手势与宽屏常驻<span>左缘 24dp 热区 · 松手超过 1/3 吸附 · ≥840dp 抽屉常驻</span></div>
+  <div class="gest">
+    <div><div class="gest-frame">
+      <div class="gest-ghost"></div><div class="gest-ghost"></div><div class="gest-ghost"></div>
+      <div class="gest-hot"><span>左缘 24dp 热区</span></div><div class="gest-finger"></div><div class="gest-arrow"><svg class="ic"><use href="#i-swipe"/></svg></div>
+    </div><p class="gest-cap">① 一级页左缘 24dp 内按下：缓解汉堡居左、右手单手难够到；不新增右下角浮动按钮。</p></div>
+    <div><div class="gest-frame">
+      <div class="gest-ghost"></div><div class="gest-ghost"></div><div class="gest-ghost"></div>
+      <div class="gest-scrim mid"></div><div class="gest-drawer mid"><span class="gi on"><svg class="ic"><use href="#i-chat"/></svg>对话</span><span class="gi"><svg class="ic"><use href="#i-cube"/></svg>模型</span><span class="gi"><svg class="ic"><use href="#i-sliders"/></svg>控制台</span></div>
+    </div><p class="gest-cap">② 跟手拖拽：抽屉位移与 scrim 透明度随手势进度，背后页面内容不位移（省算力）。</p></div>
+    <div><div class="gest-frame">
+      <div class="gest-ghost"></div><div class="gest-ghost"></div><div class="gest-ghost"></div>
+      <div class="gest-scrim"></div><div class="gest-drawer"><span class="gi on"><svg class="ic"><use href="#i-chat"/></svg>对话</span><span class="gi"><svg class="ic"><use href="#i-cube"/></svg>模型</span><span class="gi"><svg class="ic"><use href="#i-sliders"/></svg>控制台</span></div>
+    </div><p class="gest-cap">③ 松手吸附：超过抽屉宽 1/3 展开，否则回弹；吸附过渡 150ms；返回键同样关闭。</p></div>
+  </div>
+
+  <div class="wide">
+    <div class="wide-inner">
+      <nav class="drawer drawer--static" aria-label="常驻侧栏">
+        <div class="drawer-head">
+          <span class="app-mark"><svg class="ic"><use href="#i-shield"/></svg></span>
+          <span><span class="drawer-name">AgentKit</span><span class="drawer-ready rdy-warn"><i class="dot"></i>无障碍已连接 · 3 项待授权</span></span>
+        </div>
+        <div class="drawer-group">主要</div>
+        <button class="drawer-item on"><svg class="ic"><use href="#i-chat"/></svg>对话</button><button class="drawer-item"><svg class="ic"><use href="#i-cube"/></svg>模型</button><button class="drawer-item"><svg class="ic"><use href="#i-sliders"/></svg>控制台</button>
+        <div class="drawer-group">管理</div>
+        <button class="drawer-item"><svg class="ic"><use href="#i-shield"/></svg>权限中心<i class="dot-red"></i></button><button class="drawer-item"><svg class="ic"><use href="#i-puzzle"/></svg>技能中心</button><button class="drawer-item"><svg class="ic"><use href="#i-list"/></svg>运行日志<span class="drawer-count">3</span></button><button class="drawer-item"><svg class="ic"><use href="#i-db"/></svg>记忆库</button>
+        <div class="drawer-bottom">
+          <button class="drawer-item"><svg class="ic"><use href="#i-gear"/></svg>设置</button>
+          <button class="drawer-item"><svg class="ic"><use href="#i-info"/></svg>关于</button>
+        </div>
+      </nav>
+      <div class="wide-main">
+        <div class="topbar">
+          <button class="tb-btn" aria-label="打开导航抽屉"><svg class="ic"><use href="#i-menu"/></svg></button>
+          <span class="tb-title">对话</span>
+          <button class="tb-btn" aria-label="新对话"><svg class="ic"><use href="#i-plus"/></svg></button>
+        </div>
+        <div class="wide-body">
+          <div class="wide-limit">
+            <p>内容区宽 = min(屏宽 − 280dp, 680dp) 居中（虚线为限宽参考）· 抽屉常驻 280dp，无 scrim、无滑入</p>
+            <div class="wide-ghost"></div>
+            <div class="wide-ghost"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <p class="demo-cap">≥840dp：抽屉从 overlay 变为常驻侧栏（280dp），顶部仍留状态栏 inset；页面边距 20dp 固定不做 clamp，内容区限宽 680dp 居中。高度预算 ≈716dp，一屏放得下；更矮的窗口允许抽屉内部滚动，不加折叠、不加「查看更多」。</p>
+
+  <div class="sub-h">4.5 页面内 Tab<span>全 App 仅模型页 1 处 · 内容分区非 App 导航</span></div>
+  <div class="tb-grid">
+    <div class="tb-spec"><div class="topbar"><button class="tb-btn" aria-label="打开导航抽屉"><svg class="ic"><use href="#i-menu"/></svg></button><span class="tb-title">模型配置</span><span style="width:48px;flex:none"></span></div><div class="ptabs" role="tablist"><button class="ptab on" role="tab" aria-selected="true" data-ptab>模型</button><button class="ptab" role="tab" aria-selected="false" data-ptab>提示词</button></div><p class="tb-cap">「模型」选中 · primary w600 + 底部 2dp 下划线宽随文字 · 可点击切换</p></div>
+    <div class="tb-spec"><div class="topbar"><button class="tb-btn" aria-label="打开导航抽屉"><svg class="ic"><use href="#i-menu"/></svg></button><span class="tb-title">模型配置</span><span style="width:48px;flex:none"></span></div><div class="ptabs" role="tablist"><button class="ptab" role="tab" aria-selected="false" data-ptab>模型</button><button class="ptab on" role="tab" aria-selected="true" data-ptab>提示词</button></div><p class="tb-cap">「提示词」选中 · 变色 + 下划线位移 150ms · 仅点选，不与抽屉右滑争抢</p></div>
+  </div>
+  <p class="demo-cap">文字 Tab 14/20：未选 = on-surface-var w500；选中 = primary w600 + 底部 2dp 下划线（宽随文字）。无药丸、无背景、无 spring；仅点选，不支持滑动切换——避免与抽屉右滑手势争抢。完整手机上下文见 05 模型配置页样张；RikkaHub 自己也有页面内 Tab：两者层级不同，不构成双导航。</p>
+</section>
+
+<!-- ================= 05 屏幕样张 ================= -->
+<section class="sec">
+  <div class="sec-head">
+    <h2><span class="sec-idx">05</span>屏幕样张</h2>
+    <p>380px 手机框 · 控制台 / 技能中心 / 运行日志 / 记忆库 沿用对话页同一骨架，仅右上动作不同（见 4.1 顶栏差异）· 一屏几物，靠留白分组</p>
+  </div>
+
+  <!-- 屏 1：对话页 -->
+  <div class="mock-row">
+    <div class="phone">
+      <div class="screen">
+        <div class="statusbar"><span class="mono">14:22</span><span class="sb-r"><svg class="ic"><use href="#i-signal"/></svg><svg class="ic"><use href="#i-wifi"/></svg><svg class="ic"><use href="#i-batt"/></svg></span></div>
+        <div class="topbar">
+          <button class="tb-btn" aria-label="打开导航抽屉"><svg class="ic"><use href="#i-menu"/></svg></button>
+          <span class="tb-title">对话</span>
+          <button class="tb-btn" aria-label="新对话"><svg class="ic"><use href="#i-plus"/></svg></button>
+        </div>
+        <div class="content">
+          <span class="chat-time mono">14:22</span>
+          <span class="sys-hint">正在规划操作…</span>
+          <div class="msg msg-user"><span class="avatar avatar-user"><svg class="ic"><use href="#i-person"/></svg></span><div class="bubble bubble-user">帮我把手机静音，再关掉明早七点的闹钟</div></div>
+          <div class="msg msg-ai"><span class="avatar avatar-ai"><svg class="ic"><use href="#i-star"/></svg></span><div class="bubble bubble-ai">好的，共 7 步。先静音，再处理闹钟，中途需要你确认一次危险操作。</div></div>
+          <div class="msg msg-ai"><span class="avatar avatar-ai"><svg class="ic"><use href="#i-star"/></svg></span><div class="bubble bubble-ai">正在执行第 3 步<i class="cursor"></i></div></div>
+          <div class="tool-card">
+            <div class="tool-head">
+              <i class="dot dot-pri"></i>
+              <span class="tool-name mono">set_ringer_mode</span>
+              <span class="tool-sep">—</span>
+              <span class="tool-status st-run">执行中</span>
+              <svg class="ic ic-chev"><use href="#i-chev-d"/></svg>
+            </div>
+            <div class="tool-sub mono">第 3 步，共 7 步 · 214ms</div>
+          </div>
+        </div>
+        <div class="inputbar"><div class="input-field">说点什么…</div><button class="send-btn" aria-label="发送"><span class="send-visual"><svg class="ic"><use href="#i-send"/></svg></span></button></div>
+        <div class="navpad"></div>
+      </div>
+    </div>
+    <div class="mock-note">
+      <h3>对话页（v3.1 骨架）</h3>
+      <ul>
+        <li>顶栏 = 圆形汉堡 + 居中标题「对话」+ 新对话；56dp + 状态栏 inset，常驻透明、滚动不变实色</li>
+        <li>输入栏直接贴屏幕底：栏体 68dp + navigationBarsPadding，消息从栏底穿过呈磨砂透光</li>
+        <li>玻璃拟态全 App 唯一一处：surface @ 92% + 顶部 1dp outline，不做真实 blur</li>
+        <li>内容区净增 64dp（原底部 Tab 栏已删）≈ 2.5 行正文，915dp 高机型上 ≈7% 可视高</li>
+        <li>无底部 Tab：9 个目的地全部收进抽屉，出错时从任何页面一步进日志 / 权限</li>
+        <li>工具调用卡：状态点 + mono 工具名 + 中文状态 + 「第 3 步，共 7 步」</li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- 屏 2：贴底前后对比 -->
+  <div class="g2">
+    <div class="cell">
+      <span class="mock-tag del">v3.0 · 已废止</span>
+      <div class="phone">
+        <div class="screen">
+          <div class="statusbar"><span class="mono">14:22</span><span class="sb-r"><svg class="ic"><use href="#i-signal"/></svg><svg class="ic"><use href="#i-wifi"/></svg><svg class="ic"><use href="#i-batt"/></svg></span></div>
+          <div class="topbar">
+            <button class="tb-btn" aria-label="返回"><svg class="ic"><use href="#i-back"/></svg></button>
+            <span class="tb-title">新会话</span>
+            <button class="tb-btn" aria-label="新会话"><svg class="ic"><use href="#i-plus"/></svg></button>
+          </div>
+          <div class="content">
+            <span class="chat-time mono">14:22</span>
+            <div class="msg msg-user"><span class="avatar avatar-user"><svg class="ic"><use href="#i-person"/></svg></span><div class="bubble bubble-user">帮我把手机静音，再关掉明早七点的闹钟</div></div>
+            <div class="msg msg-ai"><span class="avatar avatar-ai"><svg class="ic"><use href="#i-star"/></svg></span><div class="bubble bubble-ai">好的，共 7 步。中途需要你确认一次危险操作。</div></div>
+            <div class="gest-ghost"></div><div class="gest-ghost"></div>
+          </div>
+          <div class="inputbar inputbar--old"><div class="input-field">说点什么…</div><button class="send-btn" aria-label="发送"><span class="send-visual"><svg class="ic"><use href="#i-send"/></svg></span></button></div>
+          <div class="tabbar">
+            <button class="tab on"><svg class="ic"><use href="#i-chat"/></svg><span>对话</span><i class="dot-red"></i></button>
+            <button class="tab"><svg class="ic"><use href="#i-cube"/></svg><span>模型</span></button>
+            <button class="tab"><svg class="ic"><use href="#i-sliders"/></svg><span>控制台</span></button>
+          </div>
+        </div>
+      </div>
+      <p class="demo-cap">输入栏在底部 Tab 上方，Tab 常驻占 64dp + 手势区空间。「输入栏 + Tab」组合稿与全部 Tab 状态稿已删除（§8.4）；对话未读红点随 Tab 一并废止，改由系统通知承担。</p>
+    </div>
+    <div class="cell">
+      <span class="mock-tag">v3.1 · 现行</span>
+      <div class="phone">
+        <div class="screen">
+          <div class="statusbar"><span class="mono">14:22</span><span class="sb-r"><svg class="ic"><use href="#i-signal"/></svg><svg class="ic"><use href="#i-wifi"/></svg><svg class="ic"><use href="#i-batt"/></svg></span></div>
+          <div class="topbar">
+            <button class="tb-btn" aria-label="打开导航抽屉"><svg class="ic"><use href="#i-menu"/></svg></button>
+            <span class="tb-title">对话</span>
+            <button class="tb-btn" aria-label="新对话"><svg class="ic"><use href="#i-plus"/></svg></button>
+          </div>
+          <div class="content">
+            <span class="chat-time mono">14:22</span>
+            <div class="msg msg-user"><span class="avatar avatar-user"><svg class="ic"><use href="#i-person"/></svg></span><div class="bubble bubble-user">帮我把手机静音，再关掉明早七点的闹钟</div></div>
+            <div class="msg msg-ai"><span class="avatar avatar-ai"><svg class="ic"><use href="#i-star"/></svg></span><div class="bubble bubble-ai">好的，共 7 步。中途需要你确认一次危险操作。</div></div>
+            <div class="gain-box">原底部 Tab 栏 64dp 已删除<br>内容区净增 +64dp</div>
+          </div>
+          <div class="inputbar"><div class="input-field">说点什么…</div><button class="send-btn" aria-label="发送"><span class="send-visual"><svg class="ic"><use href="#i-send"/></svg></span></button></div>
+          <div class="navpad"></div>
+        </div>
+      </div>
+      <p class="demo-cap">输入栏直接贴屏幕底（玻璃栏 68dp + navigationBarsPadding）；Tab 栏整体废止，虚线框 = 原 Tab 栏位置，内容区净增 64dp——简洁的收益可量化。</p>
+    </div>
+  </div>
+
+  <!-- 屏 3：模型配置页 -->
+  <div class="mock-row">
+    <div class="phone">
+      <div class="screen screen--lg">
+        <div class="statusbar"><span class="mono">14:22</span><span class="sb-r"><svg class="ic"><use href="#i-signal"/></svg><svg class="ic"><use href="#i-wifi"/></svg><svg class="ic"><use href="#i-batt"/></svg></span></div>
+        <div class="topbar">
+          <button class="tb-btn" aria-label="打开导航抽屉"><svg class="ic"><use href="#i-menu"/></svg></button>
+          <span class="tb-title">模型配置</span>
+          <span style="width:48px;flex:none"></span>
+        </div>
+        <div class="ptabs" role="tablist">
+          <button class="ptab on" role="tab" aria-selected="true" data-ptab>模型</button>
+          <button class="ptab" role="tab" aria-selected="false" data-ptab>提示词</button>
+        </div>
+        <div class="content">
+          <div class="sec-card">
+            <div class="sec-card-title">接口</div>
+            <span class="field-label">Base URL</span>
+            <input class="field" value="https://api.agentkit.local/v1" readonly>
+            <span class="field-label">模型名</span>
+            <input class="field" value="agentkit-pro" readonly>
+            <span class="field-label">API Key</span>
+            <div class="key-wrap">
+              <input class="field" value="sk-••••••••••••••7F3A" readonly>
+              <span class="eye-btn" aria-label="Key 掩码"><svg class="ic ic-eye"><use href="#i-eye"/></svg></span>
+            </div>
+            <div class="key-check"><i class="dot dot-ok"></i>长度 56 · <span class="mono">sk-a…7F3A</span> · 校验通过</div>
+          </div>
+          <div class="sec-card">
+            <div class="sec-card-title">连接</div>
+            <button class="btn-test"><svg class="ic"><use href="#i-wifi"/></svg><span>测试连接</span></button>
+          </div>
+          <div class="btn-row">
+            <button class="btn btn-outlined">取消</button>
+            <button class="btn btn-filled">保存</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="mock-note">
+      <h3>模型配置页（页面内 Tab 所在页）</h3>
+      <ul>
+        <li>顶栏无右上动作：保存 / 取消在内容区底部 Row——保存有毁损性，不进顶栏防误触</li>
+        <li>顶栏标题下方即页面内 Tab「模型 / 提示词」（可点击切换两态）</li>
+        <li>填充式输入框：默认无描边，聚焦 1.5dp primary；Key masked + 眼睛按钮（触控 48dp）</li>
+        <li>Key 自检行每次输入实时刷新；测试连接四态交互见 03 组件区</li>
+        <li>结果卡（端点 / 指纹 / 响应）在测试后出现，右下「复制」文字按钮</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 页尾 ================= -->
+<footer class="page-foot">
+  <div class="foot-grid">
+    <div>
+      <h3>落地优先级</h3>
+      <div class="prio-row"><span class="chip-prio p0">P0</span><p><b>Theme 五文件</b>全量替换 + ApprovalDialog 重做 + 列表项 / 气泡 / ToolCard 基件</p></div>
+      <div class="prio-row"><span class="chip-prio p1">P1</span><p><b>抽屉 + 透明顶栏 + 页面内 Tab</b>按 §6.5 新建；<b>删除</b>旧底部 Tab（NavigationBar / TabRow）全部代码与状态；日志条目与筛选 chips + 技能卡 + 空态 5 个</p></div>
+      <div class="prio-row"><span class="chip-prio p2">P2</span><p><b>模型配置页</b>Key 自检与测试连接四态 + 图标迁移（emoji 与文本符号 → 线性矢量）</p></div>
+    </div>
+    <div>
+      <h3>视觉回归清单（点击勾选）</h3>
+      <button class="ck"><span class="ck-box"><svg class="ic"><use href="#i-check"/></svg></span><span>正文 / 次要 / 三级文字在粉底、白卡、内嵌块三种底色上，明暗双套均 ≥4.5:1</span></button>
+      <button class="ck"><span class="ck-box"><svg class="ic"><use href="#i-check"/></svg></span><span>交互边界一律 outlineStrong（≥3:1）；装饰分隔线只走 outline（<2:1）</span></button>
+      <button class="ck"><span class="ck-box"><svg class="ic"><use href="#i-check"/></svg></span><span>全 App 0 阴影、卡片 0 描边；分层只靠底色与 scrim；无渐变</span></button>
+      <button class="ck"><span class="ck-box"><svg class="ic"><use href="#i-check"/></svg></span><span>触控 ≥48dp；抽屉项 52dp；顶栏圆形按钮 48 触控 / 40 视觉；审批两按钮等高 48dp</span></button>
+      <button class="ck"><span class="ck-box"><svg class="ic"><use href="#i-check"/></svg></span><span>纯中文语汇；mono 只出现在机器文本（时间戳 / Key / 工具名 / 入参 / STEP）</span></button>
+      <button class="ck"><span class="ck-box"><svg class="ic"><use href="#i-check"/></svg></span><span>动效只取 4 个 token + 流式光标 + 倒计时线；无 spring / pulse / 光带 / shake</span></button>
+      <button class="ck"><span class="ck-box"><svg class="ic"><use href="#i-check"/></svg></span><span>v3.1：底部 Tab 彻底删除；抽屉 9 入口 + 2 角标 + 就绪三态；输入栏贴底 +64dp；页面内 Tab 仅模型页 1 处</span></button>
+    </div>
+  </div>
+  <p class="foot-note">AgentKit 视觉规范 v3 · 暖纸 Warm Paper · v3.1 导航修订 · 单文件自包含，零外部依赖 · 前端从规范 §8.1 落地，改色值必须先回 §3.4 复测对比度</p>
+</footer>
+</div>
+
+<script>
+(function(){
+  var root=document.documentElement;
+  function isDark(){return root.getAttribute('data-theme')==='dark'}
+  function store(v){try{localStorage.setItem('ak-theme',v)}catch(e){}}
+  function read(){try{return localStorage.getItem('ak-theme')}catch(e){return null}}
+  if(read()==='dark')root.setAttribute('data-theme','dark');
+  /* 明暗切换 + 色值标签同步翻转 */
+  function sync(){
+    var d=isDark();
+    document.querySelectorAll('[data-light]').forEach(function(el){
+      el.textContent=d?el.getAttribute('data-dark'):el.getAttribute('data-light');
+    });
+    var tn=document.getElementById('themeName');if(tn)tn.textContent=d?'深色':'浅色';
+    var tt=document.getElementById('tglTxt');if(tt)tt.textContent=d?'切换到浅色':'切换到深色';
+  }
+  document.getElementById('themeToggle').addEventListener('click',function(){
+    if(isDark()){root.removeAttribute('data-theme');store('light');}
+    else{root.setAttribute('data-theme','dark');store('dark');}
+    sync();
+  });
+  sync();
+  /* 展开 / 收起（250ms，全组件共用 token） */
+  document.querySelectorAll('[data-toggle]').forEach(function(btn){
+    btn.addEventListener('click',function(){
+      var t=document.getElementById(btn.getAttribute('data-toggle'));
+      if(!t)return;
+      var open=t.classList.toggle('open');btn.setAttribute('aria-expanded',open?'true':'false');
+    });
+  });
+  /* 审批免询勾选 / 回归清单勾选 */
+  document.querySelectorAll('.cbx-btn,.ck').forEach(function(b){
+    b.addEventListener('click',function(){b.classList.toggle('on');});
+  });
+  /* Key 掩码切换 */
+  var eye=document.getElementById('eyeBtn'),kf=document.getElementById('keyField');
+  if(eye&&kf){
+    var mask=kf.value,shown=false;
+    eye.addEventListener('click',function(){
+      shown=!shown;
+      kf.value=shown?kf.getAttribute('data-real'):mask;
+      eye.classList.toggle('is-off',shown);
+    });
+  }
+  /* 测试连接四态演示：测试中 → 连接正常 → 测试中 → 401 → 复位 */
+  var tb=document.getElementById('testBtn');
+  if(tb){
+    var phase=0,round=0;
+    var spin=tb.querySelector('.t-spin'),icOk=tb.querySelector('.t-ok'),icFail=tb.querySelector('.t-fail'),txt=tb.querySelector('.t-txt');
+    function render(){
+      tb.className='btn-test'+(phase===2?' is-ok':phase===3?' is-fail':'');
+      spin.style.display=phase===1?'block':'none';icOk.style.display=phase===2?'block':'none';icFail.style.display=phase===3?'block':'none';
+      txt.textContent=phase===0?'测试连接':phase===1?'测试中…':phase===2?'连接正常 · 214ms':'401 · Key 无效';
+    }
+    tb.addEventListener('click',function(){
+      if(phase===1)return;
+      if(phase===3){phase=0;render();return;}
+      phase=1;render();
+      setTimeout(function(){round++;phase=round%2===1?2:3;render();},1400);
+    });
+  }
+  /* 抽屉演示：点汉堡展开 / 点 scrim 或菜单项关闭（滑入 250ms，scrim fade 200ms） */
+  var scr=document.getElementById('drawerScreen');
+  if(scr){
+    var ob=document.getElementById('drawerOpenBtn'),sc=document.getElementById('drawerScrim');
+    function setDrawer(open){
+      scr.classList.toggle('screen--open',open);
+      if(ob)ob.setAttribute('aria-expanded',open?'true':'false');
+    }
+    if(ob)ob.addEventListener('click',function(){setDrawer(!scr.classList.contains('screen--open'));});
+    if(sc)sc.addEventListener('click',function(){setDrawer(false);});
+    scr.querySelectorAll('.drawer-item').forEach(function(it){
+      it.addEventListener('click',function(){setDrawer(false);});
+    });
+  }
+  /* 页面内 Tab（模型页：模型 / 提示词，仅点选） */
+  document.querySelectorAll('[data-ptab]').forEach(function(b){
+    b.addEventListener('click',function(){
+      var g=b.closest('.ptabs');
+      if(!g)return;
+      g.querySelectorAll('.ptab').forEach(function(x){x.classList.remove('on');x.setAttribute('aria-selected','false');});
+      b.classList.add('on');b.setAttribute('aria-selected','true');
+    });
+  });
+})();
+</script>
+</body>
+</html>
