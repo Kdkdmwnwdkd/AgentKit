@@ -94,8 +94,11 @@ import kotlinx.coroutines.withContext
 /**
  * 对话页（视觉规范 §6.2 气泡 / §6.3 工具卡 / §6.4 审批 / §6.9 空态 / §6.10 输入栏）。
  *
- * 一级页面：顶栏走 [PageTopBar]（标题「对话」+ 右上「新对话」），抽屉开关由宿主注入。
+ * 一级页面：顶栏走 [PageTopBar]（标题 = 当前会话名 + 右上「新对话」），抽屉开关由宿主注入。
  * 消息列与输入栏贴底排布；审批弹窗是对话流中的模态事件（UX v1 D4：审批不是导航项）。
+ *
+ * 功能三（聊天记录，录屏反馈「人家都有聊天记录对话记录，你这都没有」）：顶栏标题实时反映
+ * 当前会话名（首条消息自动命名 / 抽屉长按可重命名），右上「＋」新建会话并切过去。
  *
  * @param onOpenModel 空态「去配置模型」→ 模型页。
  * @param onOpenPermissions 空态检查清单 / 抽屉就绪文字 → 权限中心。
@@ -107,6 +110,8 @@ fun ChatScreen(
     onOpenPermissions: () -> Unit
 ) {
     val messages by vm.messages.collectAsStateWithLifecycle()
+    val conversations by vm.conversations.collectAsStateWithLifecycle()
+    val activeConversationId by vm.activeConversationId.collectAsStateWithLifecycle()
     val input by vm.input.collectAsStateWithLifecycle()
     val running by vm.isRunning.collectAsStateWithLifecycle()
     val pendingApproval by vm.pendingApproval.collectAsStateWithLifecycle()
@@ -130,15 +135,14 @@ fun ChatScreen(
 
     Column(Modifier.fillMaxSize()) {
         PageTopBar(
-            title = AppDest.CHAT.title,
+            // 功能三：标题 = 当前会话名（找不到摘要时回落「对话」——冷启动首帧也可能为空）
+            title = conversations.firstOrNull { it.id == activeConversationId }?.title
+                ?: AppDest.CHAT.title,
             actionIcon = Icons.Outlined.Add,
             actionDescription = "新对话",
-            // 当前会话已为空时禁用（§6.5.4）
+            // 当前会话已为空时禁用（§6.5.4）：再建也是空会话，无信息增量
             actionEnabled = messages.isNotEmpty(),
-            onAction = {
-                // 「新对话」需要清空 messages，而 ChatViewModel 公开接口本次一行不改
-                // （硬性约束），故按钮先按规格渲染（含禁用态），行为待 ViewModel 增补 clearMessages() 后接入。
-            }
+            onAction = { vm.newConversation() }
         )
         if (messages.isEmpty()) {
             EmptyGuide(

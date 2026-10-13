@@ -29,6 +29,9 @@ import com.example.agentkit.core.AgentLoop
 import com.example.agentkit.core.AgentLogger
 import com.example.agentkit.core.ConfigSanitizer
 import com.example.agentkit.core.ConfigStore
+import com.example.agentkit.core.ConversationStore
+import com.example.agentkit.core.ConversationSummary
+import com.example.agentkit.core.ModelProfile
 import com.example.agentkit.core.AgentTool
 import com.example.agentkit.core.AssistantMessage
 import com.example.agentkit.core.ChatMessage
@@ -41,6 +44,8 @@ import com.example.agentkit.core.ToolMessage
 import com.example.agentkit.core.ToolApproval
 import com.example.agentkit.core.ToolRegistry
 import com.example.agentkit.core.UserMessage
+import com.example.agentkit.core.toMsgRecord
+import com.example.agentkit.core.toUiItems
 import com.example.agentkit.core.llm.local.DownloadedModel
 import com.example.agentkit.core.llm.local.GgufCatalogEntry
 import com.example.agentkit.core.llm.local.GgufModelStore
@@ -81,6 +86,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonObject
 import java.io.File
 import java.net.URL
+import java.util.UUID
 
 /** 单个技能向 UI 暴露的「工具-能力」明细。 */
 data class SkillToolInfo(
@@ -450,7 +456,25 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         _deviceContext.value = DeviceContextStore.snapshot()
     }
 
-    private val _messages = MutableStateFlow<List<UiItem>>(emptyList())
+    // —— 功能三：聊天记录（用户真机录屏反馈：「人家都有聊天记录对话记录，你这都没有」）——
+    // 会话持久化：conversations.json 放 filesDir，原子写 + .bak（形态学 MemoryStore）
+    private val conversationStore = ConversationStore(File(app.filesDir, "conversations.json"))
+
+    /** 当前会话 id；_messages 的语义即「当前会话的消息」。 */
+    private val _activeConversationId = MutableStateFlow(conversationStore.ensureNotEmpty())
+    val activeConversationId: StateFlow<String?> = _activeConversationId.asStateFlow()
+
+    /** 会话摘要列表（updatedAt 倒序；抽屉「最近对话」与对话页顶栏标题消费）。 */
+    private val _conversations = MutableStateFlow(conversationStore.list())
+    val conversations: StateFlow<List<ConversationSummary>> = _conversations.asStateFlow()
+
+    /**
+     * 当前会话的消息；启动时从会话存储载入（功能三：重启 App 后对话还在）。
+     * 声明序保证 [conversationStore] / [_activeConversationId] 已就绪。
+     */
+    private val _messages = MutableStateFlow(
+        conversationStore.load(_activeConversationId.value)?.messages?.toUiItems() ?: emptyList()
+    )
     val messages: StateFlow<List<UiItem>> = _messages.asStateFlow()
 
     /** Hotfix2：过程事件回调来自工具并行执行线程，与主线程的 send() 竞争同一列表——加锁防丢更新。 */
@@ -459,9 +483,42 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     /** 模型配置持久化：进程重启也能还原，避免「明明填过却退回默认值」的不一致。 */
     private val configStore = ConfigStore(app)
 
-    /** 当前模型配置（已落盘，UI 直接消费）；初始化即从 ConfigStore 读取，而不是凭空默认值。 */
-    private val _config = MutableStateFlow(configStore.load())
+    // —— 功能二：多模型配置（用户真机录屏反馈：「别人的模型可以搞好几个，你就只能搞一个」）——
+    // _profiles = 全部档案，_activeProfileId = 当前生效档案；config 同名同型保留
+    // （= active profile 的 config），现有消费者（对话页 / 401 气泡 / 测试连接）零改动
+    private val _profiles = MutableStateFlow(configStore.loadProfiles())
+    private val _activeProfileId = MutableStateFlow(configStore.loadActiveId().orEmpty())
+
+    /**
+     * 取出当前生效配置；顺带做两道兜底（profiles 为空 / activeId 失效），
+     * 保证 [config] 永远有值——老消费者零改动。
+     */
+    private fun ensureActiveConfig(): ModelConfig {
+        if (_profiles.value.isEmpty()) {
+            // 极端：profiles_json 损坏成空数组——建默认配置落盘，App 继续可用
+            val id = UUID.randomUUID().toString()
+            val profile = ModelProfile(id, "默认配置", ModelConfig())
+            _profiles.value = listOf(profile)
+            _activeProfileId.value = id
+            configStore.saveProfiles(_profiles.value, id)
+            return profile.config
+        }
+        val active = _profiles.value.firstOrNull { it.id == _activeProfileId.value }
+            ?: _profiles.value.first()
+        // activeId 指向不存在的档案（数据漂移）：回退第一个并纠正内存态
+        if (active.id != _activeProfileId.value) _activeProfileId.value = active.id
+        return active.config
+    }
+
+    /** 当前模型配置（已落盘，UI 直接消费）；= 当前生效 profile 的 config。 */
+    private val _config = MutableStateFlow(ensureActiveConfig())
     val config: StateFlow<ModelConfig> = _config.asStateFlow()
+
+    /** 全部模型配置档案（配置页切换条消费）。 */
+    val profiles: StateFlow<List<ModelProfile>> = _profiles.asStateFlow()
+
+    /** 当前生效档案 id（配置页高亮 + 编辑器语义锚点）。 */
+    val activeProfileId: StateFlow<String> = _activeProfileId.asStateFlow()
 
     /** 「测试连接」结果流：配置页卡片消费，null 表示尚未测试。 */
     private val _testResult = MutableStateFlow<TestResult?>(null)
@@ -551,12 +608,15 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     private fun handleAgentEvent(ev: AgentEvent) = synchronized(msgLock) {
         when (ev) {
             is AgentEvent.ToolStarted -> {
-                _messages.value = _messages.value + UiItem.Tool(
+                val item = UiItem.Tool(
                     call = ev.call,
                     result = "",
                     isError = false,
                     running = true
                 )
+                _messages.value = _messages.value + item
+                // 功能三：执行中态先落一条占位（终态到达后按 call.id 覆盖，见 ConversationStore.appendMessage）
+                appendToStore(item)
             }
 
             is AgentEvent.ToolFinished -> {
@@ -573,6 +633,8 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
                         running = false
                     )
                     _messages.value = cur.toMutableList().also { it[idx] = done }
+                    // 功能三：终态落盘（store 按 call.id 覆盖执行中占位）
+                    appendToStore(done)
                 }
                 // idx < 0（理论上不该发生）：终态由 send() 的 history 兜底补上
             }
@@ -580,13 +642,73 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * 更新模型配置：先过 [ConfigSanitizer] 清洗（剔除不可见字符/规范化 URL），
-     * 再落盘 + 更新内存状态流，保证「保存即生效、重启不丢失」。
+     * 更新模型配置：语义不变——改的是「当前生效档案」的 config（功能二）。
+     * 先过 [ConfigSanitizer] 清洗（剔除不可见字符/规范化 URL），再落盘 + 更新内存状态流，
+     * 保证「保存即生效、重启不丢失」。
      */
     fun updateConfig(cfg: ModelConfig) {
         val clean = ConfigSanitizer.sanitized(cfg)
-        configStore.save(clean)
+        val id = _activeProfileId.value
+        val updated = _profiles.value.map { if (it.id == id) it.copy(config = clean) else it }
+        _profiles.value = updated
         _config.value = clean
+        // saveProfiles 内部同步镜像旧四键（媒体 Key 回退链不断，见 ConfigStore）
+        configStore.saveProfiles(updated, id)
+    }
+
+    /**
+     * 新增一个配置档案（功能二；配置页切换条「＋」）。
+     * 复制当前生效配置作起点——换 Key / 换端点不用从零填；命名「配置 N」并立即切换过去。
+     *
+     * @return 新档案 id。
+     */
+    fun addProfile(): String {
+        val base = _config.value
+        val id = UUID.randomUUID().toString()
+        val profile = ModelProfile(id, "配置 ${_profiles.value.size + 1}", base)
+        val updated = _profiles.value + profile
+        _profiles.value = updated
+        _activeProfileId.value = id
+        _config.value = base
+        configStore.saveProfiles(updated, id)
+        return id
+    }
+
+    /**
+     * 切换生效档案（配置页切换条点击）。
+     * 运行中切换对下一轮请求生效——[loop] 的 llmProvider lambda 每轮读 _config.value，天然支持。
+     */
+    fun switchProfile(id: String) {
+        val target = _profiles.value.firstOrNull { it.id == id } ?: return
+        _activeProfileId.value = id
+        _config.value = target.config
+        configStore.saveProfiles(_profiles.value, id)
+    }
+
+    /** 重命名档案（空名忽略，防用户清空文本框后按确定）。 */
+    fun renameProfile(id: String, name: String) {
+        val trimmed = name.trim()
+        if (trimmed.isBlank()) return
+        val updated = _profiles.value.map { if (it.id == id) it.copy(name = trimmed) else it }
+        _profiles.value = updated
+        configStore.saveProfiles(updated, _activeProfileId.value)
+    }
+
+    /**
+     * 删除档案；只剩 1 个时拒绝（至少保留一个，否则当前生效配置无处安放）。
+     * 删的是当前生效档案则切换到剩下第一个。
+     */
+    fun deleteProfile(id: String) {
+        if (_profiles.value.size <= 1) return
+        val updated = _profiles.value.filter { it.id != id }
+        var activeId = _activeProfileId.value
+        if (activeId == id) {
+            activeId = updated.first().id
+            _config.value = updated.first().config
+        }
+        _activeProfileId.value = activeId
+        _profiles.value = updated
+        configStore.saveProfiles(updated, activeId)
     }
 
     /** 由当前保存的 Key 生成「len=35 head=sk-a tail=d38d」指纹，供 401 气泡与测试卡片共用。 */
@@ -781,7 +903,9 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             // Hotfix2：用户消息立即上屏；工具调用过程由 handleAgentEvent 实时渲染
             // （执行中卡 → 终态卡）；最终历史只补文本回答，工具卡按 call.id 去重
-            _messages.value = _messages.value + UiItem.User(text)
+            val userItem = UiItem.User(text)
+            _messages.value = _messages.value + userItem
+            appendToStore(userItem) // 功能三：聊天记录同步落盘
             // 先拿到 Result，再在同一个挂起体里做后续 IO：Result.onSuccess 的 lambda 不是 suspend
             val outcome = runCatching { loop.run(fullInput) }
             outcome.onSuccess { history ->
@@ -803,7 +927,9 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
             outcome.onFailure {
                 AgentLogger.e("Chat", "运行失败", it)
                 // 气泡面向用户：技术异常在此映射成可读文案（完整堆栈已在日志里落盘）
-                _messages.value = _messages.value + UiItem.Assistant(friendlyMessage(it))
+                val errItem = UiItem.Assistant(friendlyMessage(it))
+                _messages.value = _messages.value + errItem
+                appendToStore(errItem) // 功能三：失败气泡也进聊天记录
             }
             // L9：把本轮对话沉淀成低权重 event 记忆，下次会话也能回忆起来
             val finalAnswer = outcome.getOrNull()
@@ -892,6 +1018,84 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
             else -> return
         }
         _messages.value = _messages.value + item
+        appendToStore(item) // 功能三：history 兜底补的消息同样落盘
+    }
+
+    // —— 功能三：会话切换 / 增删改（聊天记录） ——
+
+    /**
+     * 同步一条消息到会话存储。与 _messages 写入点同处调用、同在 [msgLock] 内，保顺序；
+     * activeConversationId 运行中不变（[switchConversation] 有 isRunning 守卫），直接读 current。
+     *
+     * 每条消息后都刷摘要流：工具事件频次高（每轮多个 ToolStarted/ToolFinished），不刷的话
+     * 抽屉「最近对话」的标题/条数/updatedAt 在整个会话期间全陈旧，首条 user 触发的自动
+     * 命名也不反映到顶栏（QA 抓到的体验缺陷）。store.list() 是内存 items 快照 map+sort
+     * （synchronized 内、无磁盘 IO），每事件刷新是 O(n) 内存操作，可负担。
+     */
+    private fun appendToStore(item: UiItem) {
+        // _activeConversationId 内部是非空 String（ensureNotEmpty 兜底）；对外 StateFlow 声明为
+        // String? 是给 UI 层「可能还没初始化」的余地，这里直接读内部值即可
+        val convId = _activeConversationId.value
+        conversationStore.appendMessage(convId, item.toMsgRecord())
+        refreshConversations()
+    }
+
+    /** 刷新会话摘要列表（每次增删改后调用；抽屉最近对话区与顶栏标题消费）。 */
+    private fun refreshConversations() {
+        _conversations.value = conversationStore.list()
+    }
+
+    /** 载入指定会话为当前会话（设 id + 读消息进 _messages + 刷新摘要）。 */
+    private fun loadConversation(id: String) {
+        _activeConversationId.value = id
+        _messages.value = conversationStore.load(id)?.messages?.toUiItems() ?: emptyList()
+        refreshConversations()
+    }
+
+    /**
+     * 新建对话并切过去（顶栏 / 抽屉「＋ 新对话」）。
+     * 运行中拒绝（VM 兜底，UI 禁用只是双保险）：新建即切 activeConversationId，
+     * 在途事件（ToolStarted/ToolFinished、history 兜底、onFailure）会按新 id 落盘，
+     * 把旧会话的尾巴写进新会话——与 [switchConversation] 同一理由。
+     */
+    fun newConversation() {
+        if (isRunning.value) return
+        loadConversation(conversationStore.create())
+    }
+
+    /**
+     * 切换到指定会话（抽屉「最近对话」点击）。
+     * 运行中直接拒绝：Agent 事件按当前会话写消息，中途切换会写串（UI 层也会禁用，双保险）。
+     */
+    fun switchConversation(id: String) {
+        if (isRunning.value) return
+        if (id == _activeConversationId.value) return
+        loadConversation(id)
+    }
+
+    /**
+     * 删除会话；删的是当前会话则顺手切到剩下的最近一个（_messages 不空指）。
+     * 删 active 会话 = 变相切 active（ensureNotEmpty 会载入另一个会话），运行中同样拒绝；
+     * 删非 active 会话不碰 activeConversationId，在途事件不受影响，不拦。
+     */
+    fun deleteConversation(id: String) {
+        if (id == _activeConversationId.value && isRunning.value) return
+        conversationStore.delete(id)
+        if (id == _activeConversationId.value) {
+            loadConversation(conversationStore.ensureNotEmpty())
+        } else {
+            refreshConversations()
+        }
+    }
+
+    /**
+     * 重命名会话（抽屉长按菜单 → 对话框）。
+     * 不需要 isRunning 守卫：只改标题、不切 activeConversationId、不动 _messages，
+     * 在途事件仍按原 id 正常落盘（rename 同步更新该会话的 title 字段，无写串风险）。
+     */
+    fun renameConversation(id: String, title: String) {
+        conversationStore.rename(id, title)
+        refreshConversations()
     }
 
     // —— L7 技能导入 / 卸载 / 授权 ——

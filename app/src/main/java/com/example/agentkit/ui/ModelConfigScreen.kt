@@ -4,29 +4,38 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Download
+import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material3.CircularProgressIndicator
@@ -44,7 +53,9 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.SpanStyle
@@ -55,9 +66,12 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.agentkit.core.ConfigSanitizer
 import com.example.agentkit.core.DEFAULT_SYSTEM_PROMPT
+import com.example.agentkit.core.ModelProfile
 
 /**
  * 模型配置页（视觉规范 §6.8 + §6.5.3 页面内 Tab）。
@@ -65,12 +79,17 @@ import com.example.agentkit.core.DEFAULT_SYSTEM_PROMPT
  * 一级页面：顶栏「模型配置」无右上动作（保存有毁损性，不进顶栏防误触，§6.5.4）；
  * 内容区顶部为页面内 Tab「模型 / 提示词」——内容分区，非 App 导航。
  *
+ * 功能二（多模型配置，录屏反馈「别人的模型可以搞好几个」）：顶栏下方是配置档案切换条，
+ * 页面语义变为「编辑当前选中的配置」；保存 / 测连通 / 提示词全部作用于当前档案。
+ *
  * @param onBack 「取消 / 保存」后回对话页（抽屉路由由宿主持有）。
  */
 @Composable
 fun ModelConfigScreen(vm: ChatViewModel, onBack: () -> Unit) {
     val config by vm.config.collectAsStateWithLifecycle()
-    // 以已落盘配置为基准：config 变化（保存成功）即重置编辑态，避免二次进入残留旧值
+    val profiles by vm.profiles.collectAsStateWithLifecycle()
+    val activeProfileId by vm.activeProfileId.collectAsStateWithLifecycle()
+    // 以已落盘配置为基准：config 变化（保存成功 / 切换档案）即重置编辑态，避免二次进入残留旧值
     var baseUrl by remember(config) { mutableStateOf(config.baseUrl) }
     var apiKey by remember(config) { mutableStateOf(config.apiKey) }
     var model by remember(config) { mutableStateOf(config.model) }
@@ -82,6 +101,14 @@ fun ModelConfigScreen(vm: ChatViewModel, onBack: () -> Unit) {
 
     Column(Modifier.fillMaxWidth()) {
         PageTopBar(title = AppDest.MODEL.title)
+        // 切换档案会静默丢弃未保存编辑（编辑器随 config 重置）——档案是顶层上下文，
+        // 切走即换编辑对象，与「保存后才生效」的语义一致，不另做挽留弹窗
+        ProfileSwitcher(
+            profiles = profiles,
+            activeId = activeProfileId,
+            onSelect = { vm.switchProfile(it) },
+            onAdd = { vm.addProfile() }
+        )
         LocalTabRefreshEffect(vm = vm, tab = tab)
         ModelPageTabs(
             selected = tab,
@@ -217,6 +244,81 @@ private fun ModelPageTabs(selected: Int, onSelect: (Int) -> Unit) {
 }
 
 /**
+ * 功能二：配置档案切换条（录屏反馈「别人的模型可以搞好几个，你就只能搞一个」）。
+ *
+ * Row + horizontalScroll：档案多了一行放不下时横向滚动，不换行、不挤压编辑器；
+ * 每档案一枚 [AkChip]（选中态 = 当前生效配置），条尾「＋」chip 视觉与 AkChip 对齐。
+ * 切换是即时生效的（VM 同步 _config 与旧四键镜像），未经保存的编辑器改动随切换丢弃。
+ */
+@Composable
+private fun ProfileSwitcher(
+    profiles: List<ModelProfile>,
+    activeId: String,
+    onSelect: (String) -> Unit,
+    onAdd: () -> Unit
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState())
+            .padding(horizontal = AgentSpacing.space5, vertical = AgentSpacing.space3),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        profiles.forEach { profile ->
+            AkChip(
+                text = profile.name,
+                selected = profile.id == activeId,
+                onClick = { onSelect(profile.id) }
+            )
+            Spacer(Modifier.width(AgentSpacing.space2))
+        }
+        AddProfileChip(onClick = onAdd)
+    }
+}
+
+/** 「＋」chip：按 [AkChip] 视觉自绘（32dp 高 / radius full / surface-1 底 / 按压 surface-2 + scale 0.97）。 */
+@Composable
+private fun AddProfileChip(onClick: () -> Unit) {
+    val interaction = remember { MutableInteractionSource() }
+    val pressed by interaction.collectIsPressedAsState()
+    val scale by animateFloatAsState(
+        targetValue = if (pressed) 0.97f else 1f,
+        animationSpec = AkMotionPress
+    )
+    val bg by animateColorAsState(
+        targetValue = if (pressed) LocalAkColors.surface2 else LocalAkColors.surface1,
+        animationSpec = AkMotionFastColor
+    )
+    Row(
+        Modifier
+            .heightIn(min = 32.dp)
+            .scale(scale)
+            .clip(CircleShape)
+            .background(bg)
+            .clickable(
+                interactionSource = interaction,
+                indication = null,
+                onClick = onClick
+            )
+            .padding(horizontal = 14.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            imageVector = Icons.Outlined.Add,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.size(16.dp)
+        )
+        Spacer(Modifier.width(4.dp))
+        Text(
+            text = "新增",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.primary
+        )
+    }
+}
+
+/**
  * 供应商选择器（§6.8 模型 Tab 顶部）：2×2 等高胶囊（48dp 触控，§6.0）。
  *
  * 四家两行：上行云端三家，下行本地模型——本地是「另一种模式」而非第四家云端，
@@ -298,8 +400,13 @@ private fun ModelTab(
 ) {
     val testResult by vm.testResult.collectAsStateWithLifecycle()
     val testing by vm.testing.collectAsStateWithLifecycle()
+    val profiles by vm.profiles.collectAsStateWithLifecycle()
+    val activeProfileId by vm.activeProfileId.collectAsStateWithLifecycle()
     val ctx = LocalContext.current
     var keyRevealed by rememberSaveable { mutableStateOf(false) }
+    var showRename by rememberSaveable { mutableStateOf(false) }
+    var showDelete by rememberSaveable { mutableStateOf(false) }
+    val activeProfile = profiles.firstOrNull { it.id == activeProfileId }
 
     // 本地模式没有端点/Key：测试按钮放行，字段区换成状态卡
     val isLocal = providerId == "local-llama"
@@ -395,6 +502,124 @@ private fun ModelTab(
             enabled = dirty,
             modifier = Modifier.weight(1f)
         )
+    }
+
+    // 功能二：当前档案管理。删除是不可逆操作，AkConfirmDialog danger 二次确认；
+    // 只剩一个档案时删除项置灰（VM 侧 deleteProfile 同样拒绝，双保险）
+    AkGroupCard {
+        AkListItem(
+            icon = Icons.Outlined.Edit,
+            title = "重命名当前配置",
+            description = activeProfile?.name ?: "未命名配置",
+            onClick = { showRename = true }
+        )
+        AkDivider()
+        AkListItem(
+            icon = Icons.Outlined.Delete,
+            title = "删除当前配置",
+            description = if (profiles.size > 1) "删除后不可恢复，将切换到其余配置"
+            else "至少保留一个配置",
+            enabled = profiles.size > 1,
+            onClick = { showDelete = true }
+        )
+    }
+
+    // 重命名对话框：AkModalHost 承载退场动画（直接随 flag 卸载会闪断）
+    AkModalHost(target = if (showRename) activeProfileId else null) { id, visible ->
+        val profile = profiles.firstOrNull { it.id == id }
+        var text by remember(id) { mutableStateOf(profile?.name ?: "") }
+        RenameProfileDialog(
+            name = text,
+            onNameChange = { text = it },
+            visible = visible,
+            onConfirm = { vm.renameProfile(id, text); showRename = false },
+            onDismiss = { showRename = false }
+        )
+    }
+
+    // 删除确认：danger 红色只出现在审批与不可逆确认两处（§3.1）
+    AkModalHost(target = if (showDelete) activeProfileId else null) { id, visible ->
+        val profile = profiles.firstOrNull { it.id == id }
+        AkConfirmDialog(
+            title = "删除当前配置",
+            message = "确定删除「${profile?.name ?: "该配置"}」吗？" +
+                "其 Base URL 与 API Key 将一并移除，删除后不可恢复。",
+            confirmText = "删除",
+            danger = true,
+            icon = Icons.Outlined.Delete,
+            visible = visible,
+            onConfirm = { vm.deleteProfile(id); showDelete = false },
+            onDismiss = { showDelete = false }
+        )
+    }
+}
+
+/**
+ * 功能二：档案重命名对话框（[AkModalHost] 承载退场动画）。
+ *
+ * 与 [AkConfirmDialog] 同语言：344dp 白卡 + scale/fade 出入场；提交空名由 VM 忽略
+ * （renameProfile 对 blank 直接 return），此处按钮同步禁用给即时反馈。
+ */
+@Composable
+private fun RenameProfileDialog(
+    name: String,
+    onNameChange: (String) -> Unit,
+    visible: Boolean,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val spec = if (visible) AkMotionDialog else AkMotionExit
+    val scale by animateFloatAsState(if (visible) 1f else 0.96f, animationSpec = spec)
+    val alpha by animateFloatAsState(if (visible) 1f else 0f, animationSpec = spec)
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        // 宽 = min(344dp, 100vw − 48dp)：外层 padding 24dp 给出后者，widthIn 封顶 344dp
+        Box(
+            Modifier
+                .fillMaxSize()
+                .padding(horizontal = 24.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Surface(
+                shape = RoundedCornerShape(20.dp),
+                color = MaterialTheme.colorScheme.surface,
+                modifier = Modifier
+                    .widthIn(max = 344.dp)
+                    .scale(scale)
+                    .alpha(alpha)
+            ) {
+                Column(Modifier.padding(24.dp)) {
+                    Text(
+                        text = "重命名配置",
+                        style = MaterialTheme.typography.titleLarge,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Spacer(Modifier.height(AgentSpacing.space4))
+                    AkTextField(
+                        value = name,
+                        onValueChange = onNameChange,
+                        label = "配置名称",
+                        placeholder = "例如：家里的 OpenAI"
+                    )
+                    Spacer(Modifier.height(AgentSpacing.space6))
+                    Row(horizontalArrangement = Arrangement.spacedBy(AgentSpacing.space2)) {
+                        AkOutlinedButton(
+                            text = "取消",
+                            onClick = onDismiss,
+                            modifier = Modifier.weight(1f)
+                        )
+                        AkPrimaryButton(
+                            text = "确定",
+                            onClick = onConfirm,
+                            enabled = name.isNotBlank(),
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                }
+            }
+        }
     }
 }
 

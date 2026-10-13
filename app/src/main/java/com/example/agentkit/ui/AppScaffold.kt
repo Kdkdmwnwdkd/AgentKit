@@ -1,5 +1,8 @@
 package com.example.agentkit.ui
 
+import android.app.Activity
+import android.os.SystemClock
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.AnimationSpec
@@ -7,11 +10,14 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.snap
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.gestures.draggable
 import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
@@ -33,10 +39,12 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Build
 import androidx.compose.material.icons.outlined.Chat
 import androidx.compose.material.icons.outlined.Cloud
 import androidx.compose.material.icons.outlined.Dashboard
+import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Extension
@@ -64,18 +72,28 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.agentkit.core.ConversationSummary
+import java.text.SimpleDateFormat
+import java.util.Calendar
+import java.util.Date
+import java.util.Locale
 
 /**
  * 一级目的地全量路由表（UX v1 §1.7）：15 个值全部保留，页面都还能到。
@@ -135,6 +153,18 @@ private val PrimaryGroup = listOf(
 private val BottomGroup = listOf(AppDest.SETTINGS)
 
 /**
+ * 功能一：返回栈上限（录屏反馈「别人按返回的返回到上一个地方，你这个是直接退出」）。
+ * 超过上限丢最旧——最近的导航历史才有参考价值，也防无限增长。
+ */
+private const val BACK_STACK_MAX = 10
+
+/** 功能一：根页连按两次返回退出 App 的间隔窗口（2s，主流 App 通行值）。 */
+private const val BACK_EXIT_WINDOW_MS = 2_000L
+
+/** 功能三：抽屉「最近对话」最多展示条数（录屏反馈「人家都有聊天记录对话记录」）。 */
+private const val MAX_RECENT_CONVERSATIONS = 8
+
+/**
  * 待授权项数：无障碍服务 / 屏幕捕获 / 通知访问 / 使用情况访问 四项中未就绪的数量。
  *
  * 抽屉就绪文字、控制台三宫格、权限中心页三处共用同一函数——同一状态源必须同一计数，
@@ -179,12 +209,25 @@ fun AppScaffold(
     var route by rememberSaveable { mutableStateOf(AppDest.CHAT.route) }
     val dest = AppDest.fromRoute(route)
 
+    // 功能一：导航返回栈（录屏反馈「按返回直接退出」）。
+    // 注意实现选择：rememberSaveable 不能保存 SnapshotStateList——字节码级实证
+    // （DisposableSaveableStateRegistry.canBeSavedToBundle 的 AcceptableClasses 只认
+    // Serializable / Parcelable / String 等，mutableStateListOf 两者都不是，仅对
+    // SnapshotMutableState 特解包），故用 MutableState<List<AppDest>>：AppDest 是 enum
+    // （Serializable），空表与恢复后的 ArrayList 均可保存，配置变更/进程死亡后栈不丢。
+    var backStack by rememberSaveable { mutableStateOf(listOf<AppDest>()) }
+    // 功能一：根页「再按一次返回退出」的上一次按压时刻（0 = 从未按过）
+    var backPressedAt by rememberSaveable { mutableStateOf(0L) }
+
     // —— 就绪文字 / 未读 ERROR 数据源（与权限中心页、控制台同源）——
     val serviceConnected by vm.serviceConnected.collectAsStateWithLifecycle()
     val capturing by vm.capturing.collectAsStateWithLifecycle()
     val notificationGranted by vm.notificationGranted.collectAsStateWithLifecycle()
     val usageGranted by vm.usageGranted.collectAsStateWithLifecycle()
     val logs by vm.logs.collectAsStateWithLifecycle()
+    // 功能三：会话摘要与当前会话 id（抽屉「最近对话」组消费）
+    val conversations by vm.conversations.collectAsStateWithLifecycle()
+    val activeConversationId by vm.activeConversationId.collectAsStateWithLifecycle()
     val pendingGrants = pendingGrantCount(
         serviceConnected, capturing, notificationGranted, usageGranted
     )
@@ -222,6 +265,7 @@ fun AppScaffold(
 
     val ak = LocalAkColors
     val view = LocalView.current
+    val context = LocalContext.current
     val density = LocalDensity.current
     val hamburgerFocus = remember { FocusRequester() }
     val firstItemFocus = remember { FocusRequester() }
@@ -233,6 +277,29 @@ fun AppScaffold(
     val closeDrawer: () -> Unit = {
         openTarget = false
         settleSpec = AkMotionDialog // 关闭：200ms motionDialog 滑出
+    }
+
+    // 功能一：弹出返回栈顶（回上一页）。返回 false = 栈已空（根页）
+    val popBack: () -> Boolean = {
+        val last = backStack.lastOrNull()
+        if (last != null) {
+            backStack = backStack.dropLast(1)
+            route = last.route
+            true
+        } else {
+            false
+        }
+    }
+
+    // 功能一：根页返回 = Toast 提示，2s 窗口内再按才 finish（防误触，主流 App 通行值）
+    val onBackAtRoot: () -> Unit = {
+        val now = SystemClock.elapsedRealtime()
+        if (now - backPressedAt < BACK_EXIT_WINDOW_MS) {
+            (context as? Activity)?.finish()
+        } else {
+            backPressedAt = now
+            Toast.makeText(context, "再按一次返回退出", Toast.LENGTH_SHORT).show()
+        }
     }
 
     // 抽屉打开：焦点移入第一项 + announce「已打开」；关闭：焦点返回汉堡 + announce「已关闭」（§6.5.5）
@@ -256,11 +323,30 @@ fun AppScaffold(
         val drawerWidth = minOf(320.dp, maxOf(280.dp, maxWidth * 0.82f))
         val drawerWidthPx = with(density) { drawerWidth.toPx() }
 
-        val onSelect: (AppDest) -> Unit = { target ->
+        // 功能一：统一导航入口（抽屉点选 / 「＋ 新对话」共用）——记返回栈 + 切路由 + 窄屏关抽屉
+        val navigateTo: (AppDest) -> Unit = { target ->
             // 点当前所在页项 = 仅关闭抽屉（不重复导航，§6.5.2）
-            if (target != dest) route = target.route
+            if (target != dest) {
+                if (backStack.size >= BACK_STACK_MAX) backStack = backStack.drop(1)
+                backStack = backStack + dest
+                route = target.route
+            }
             if (!wide) closeDrawer()
         }
+        val onSelect: (AppDest) -> Unit = navigateTo
+        val onNewConversation: () -> Unit = {
+            vm.newConversation()
+            navigateTo(AppDest.CHAT)
+        }
+        val onSelectConversation: (String) -> Unit = { id ->
+            // QA P3：在设置页等非对话页点最近对话，会话切了人还留在原页——先导航回对话页
+            // （navigateTo 内部带记栈 + 窄屏关抽屉，与抽屉点选行为一致）
+            if (dest != AppDest.CHAT) navigateTo(AppDest.CHAT)
+            vm.switchConversation(id)
+            if (!wide) closeDrawer()
+        }
+        // 功能一：页面内「返回」统一语义——先试返回栈，空则回对话页（ MODEL 保存/取消用）
+        val onPageBack: () -> Unit = { if (!popBack()) route = AppDest.CHAT.route }
 
         // 抽屉打开器注入页面：页面只消费本地值，不感知导航宿主细节（宽屏常驻态为空操作）
         CompositionLocalProvider(
@@ -281,7 +367,13 @@ fun AppScaffold(
                             dest = dest,
                             serviceConnected = serviceConnected,
                             pendingGrants = pendingGrants,
+                            conversations = conversations,
+                            activeConversationId = activeConversationId,
                             onSelect = onSelect,
+                            onNewConversation = onNewConversation,
+                            onSelectConversation = onSelectConversation,
+                            onRenameConversation = { id, title -> vm.renameConversation(id, title) },
+                            onDeleteConversation = { id -> vm.deleteConversation(id) },
                             firstItemFocus = null
                         )
                     }
@@ -297,7 +389,10 @@ fun AppScaffold(
                                 .widthIn(max = 680.dp)
                                 .fillMaxSize()
                         ) {
-                            ScreenHost(dest, vm, themeMode, onThemeModeChange, onSelect, unreadErrors)
+                            ScreenHost(
+                                dest, vm, themeMode, onThemeModeChange,
+                                onSelect, onPageBack, unreadErrors
+                            )
                         }
                     }
                 }
@@ -306,7 +401,10 @@ fun AppScaffold(
                 Box(Modifier.fillMaxSize()) {
                     // 内容层：状态栏 inset 由宿主统一处理，页面只画 56dp 透明顶栏 + 内容
                     Box(Modifier.fillMaxSize().statusBarsPadding()) {
-                        ScreenHost(dest, vm, themeMode, onThemeModeChange, onSelect, unreadErrors)
+                        ScreenHost(
+                            dest, vm, themeMode, onThemeModeChange,
+                            onSelect, onPageBack, unreadErrors
+                        )
                     }
 
                     // 左缘 24dp 热区：跟手拖拽（抽屉位移与 scrim 透明度随手势进度）
@@ -360,7 +458,15 @@ fun AppScaffold(
                                 dest = dest,
                                 serviceConnected = serviceConnected,
                                 pendingGrants = pendingGrants,
+                                conversations = conversations,
+                                activeConversationId = activeConversationId,
                                 onSelect = onSelect,
+                                onNewConversation = onNewConversation,
+                                onSelectConversation = onSelectConversation,
+                                onRenameConversation = { id, title ->
+                                    vm.renameConversation(id, title)
+                                },
+                                onDeleteConversation = { id -> vm.deleteConversation(id) },
                                 firstItemFocus = firstItemFocus
                             )
                             // 右缘 1dp outline 装饰线（全 App 唯一抽屉描边，规范明文；其余场景 0 描边）
@@ -374,9 +480,18 @@ fun AppScaffold(
                         }
                     }
                 }
+            }
+        }
 
-                // 返回键关闭抽屉（§6.5.2）；二级返回语义由各页自持
-                BackHandler(enabled = openTarget) { closeDrawer() }
+        // 功能一：系统返回键三级优先（录屏反馈「别人按返回的返回到上一个地方」）：
+        // ① 抽屉开着 → 关抽屉；② 有导航历史 → 回上一页；③ 根页 → Toast 提示，2s 内再按退出。
+        //  Dialog（审批 / 二次确认）是独立窗口，系统返回先被 Dialog 窗口消费，不会走到这里——不冲突。
+        // 从窄屏分支移出常驻：宽屏同样有页面间前进/后退语义（模型页保存后应回对话页）。
+        BackHandler {
+            when {
+                openTarget -> closeDrawer()
+                popBack() -> Unit
+                else -> onBackAtRoot()
             }
         }
     }
@@ -385,6 +500,8 @@ fun AppScaffold(
 /**
  * 路由分发：全部一级目的地 → 各屏幕文件。
  * 页面切换无转场动画（v3 无此 token）；顶栏由各页用 [PageTopBar] 自渲染（§6.5.1 骨架统一）。
+ *
+ * @param onBack 页面内「返回」动作（功能一）：模型页保存/取消后回上一页，无历史时回对话页。
  */
 @Composable
 private fun ScreenHost(
@@ -393,6 +510,7 @@ private fun ScreenHost(
     themeMode: ThemeMode,
     onThemeModeChange: (ThemeMode) -> Unit,
     onNavigate: (AppDest) -> Unit,
+    onBack: () -> Unit,
     unreadErrors: Int
 ) {
     when (dest) {
@@ -401,7 +519,8 @@ private fun ScreenHost(
             onOpenModel = { onNavigate(AppDest.MODEL) },
             onOpenPermissions = { onNavigate(AppDest.PERMISSIONS) }
         )
-        AppDest.MODEL -> ModelConfigScreen(vm) { onNavigate(AppDest.CHAT) }
+        // 功能一：模型页不再硬跳对话页——从哪来往哪回（抽屉来的回抽屉关闭态，空态直达的回对话页）
+        AppDest.MODEL -> ModelConfigScreen(vm) { onBack() }
         AppDest.CONSOLE -> ConsoleScreen(vm, unreadErrors, onNavigate)
         AppDest.TERMINAL -> TerminalScreen()
         AppDest.CONTAINER -> ContainerScreen()
@@ -441,11 +560,13 @@ internal fun PageTopBar(
 }
 
 /**
- * 抽屉内容：头部（应用标记 + 就绪文字三态）+ 主要组 + 底部位（§6.5.2）。
+ * 抽屉内容：头部（应用标记 + 就绪文字三态）+ 主要组 + 最近对话组 + 底部位（§6.5.2）。
  *
  * 用户反馈侧边栏拥挤，参照 RikkaHub 极简风：抽屉从「9+4+2」瘦身为「4+1」，
  * 管理组与「关于」整体搬进设置页，只服务抽屉项的红点逻辑随之成为死代码一并删除
  * （权限 / 日志角标在控制台快捷入口、权限中心页仍可见，同源不受影响）。
+ *
+ * 功能三（聊天记录）：主要组与底部位之间插入「最近对话」组——点选切换、长按管理。
  *
  * @param firstItemFocus 焦点请求器：抽屉打开时移入第一项（§6.5.5）；宽屏常驻态传 null。
  */
@@ -454,9 +575,20 @@ private fun DrawerContent(
     dest: AppDest,
     serviceConnected: Boolean,
     pendingGrants: Int,
+    conversations: List<ConversationSummary>,
+    activeConversationId: String?,
     onSelect: (AppDest) -> Unit,
+    onNewConversation: () -> Unit,
+    onSelectConversation: (String) -> Unit,
+    onRenameConversation: (String, String) -> Unit,
+    onDeleteConversation: (String) -> Unit,
     firstItemFocus: FocusRequester?
 ) {
+    // 长按菜单 / 重命名 / 删除三个模态的目标会话 id（AkModalHost 三态机承载退场动画）
+    var menuConvId by remember { mutableStateOf<String?>(null) }
+    var renameConvId by remember { mutableStateOf<String?>(null) }
+    var deleteConvId by remember { mutableStateOf<String?>(null) }
+
     Column(
         Modifier
             .fillMaxSize()
@@ -484,6 +616,26 @@ private fun DrawerContent(
             )
         }
 
+        // 功能三：最近对话组（录屏反馈「人家都有聊天记录对话记录，你这都没有」）。
+        // 最多 8 条 + 相对时间；点选切换（运行中由 VM 守卫拒绝），长按出管理菜单
+        if (conversations.isNotEmpty()) {
+            Spacer(Modifier.height(AgentSpacing.space5))
+            DrawerGroupTitle("最近对话")
+            conversations.take(MAX_RECENT_CONVERSATIONS).forEach { conv ->
+                DrawerConversationRow(
+                    conversation = conv,
+                    isActive = conv.id == activeConversationId,
+                    onClick = { onSelectConversation(conv.id) },
+                    onLongClick = { menuConvId = conv.id }
+                )
+            }
+            AkListItem(
+                icon = Icons.Outlined.Add,
+                title = "新对话",
+                onClick = onNewConversation
+            )
+        }
+
         // 底部位：与上方间距 20dp，不加分隔线、不配分组标题（§6.5.2）
         Spacer(Modifier.height(AgentSpacing.space5))
         BottomGroup.forEach { item ->
@@ -496,6 +648,285 @@ private fun DrawerContent(
         }
         Spacer(Modifier.height(AgentSpacing.space3))
     }
+
+    // —— 功能三：长按菜单 / 重命名 / 删除确认（Dialog 独立窗口，浮于 scrim 之上）——
+    AkModalHost(target = menuConvId) { id, visible ->
+        ConversationMenuDialog(
+            title = conversations.firstOrNull { it.id == id }?.title ?: "对话",
+            visible = visible,
+            onRename = { menuConvId = null; renameConvId = id },
+            onDelete = { menuConvId = null; deleteConvId = id },
+            onDismiss = { menuConvId = null }
+        )
+    }
+    AkModalHost(target = renameConvId) { id, visible ->
+        var text by remember(id) {
+            mutableStateOf(conversations.firstOrNull { it.id == id }?.title ?: "")
+        }
+        RenameConversationDialog(
+            name = text,
+            onNameChange = { text = it },
+            visible = visible,
+            onConfirm = { onRenameConversation(id, text); renameConvId = null },
+            onDismiss = { renameConvId = null }
+        )
+    }
+    AkModalHost(target = deleteConvId) { id, visible ->
+        val title = conversations.firstOrNull { it.id == id }?.title ?: "该对话"
+        AkConfirmDialog(
+            title = "删除对话",
+            message = "确定删除「$title」吗？消息记录将从本机移除，删除后不可恢复。",
+            confirmText = "删除",
+            danger = true,
+            icon = Icons.Outlined.Delete,
+            visible = visible,
+            onConfirm = { onDeleteConversation(id); deleteConvId = null },
+            onDismiss = { deleteConvId = null }
+        )
+    }
+}
+
+/**
+ * 功能三：抽屉「最近对话」行。Chat 前导图标 + 标题（单行省略）+ 相对时间与条数。
+ * 视觉对齐 [DrawerItem]（52dp / radius 14dp / 选中三件套），按压 surface-2 + scale 0.97；
+ * 长按出管理菜单。
+ *
+ * combinedClickable 在 foundation 1.7.0 仍挂 ExperimentalFoundationApi（反编译不看注解会误判），
+ * 但它是官方唯一的「单击 + 长按」合一实现、行为早已稳定，本行只用 onClick/onLongClick 两参数。
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun DrawerConversationRow(
+    conversation: ConversationSummary,
+    isActive: Boolean,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val ak = LocalAkColors
+    Box(
+        modifier
+            .fillMaxWidth()
+            .padding(horizontal = AgentSpacing.space2)
+            .heightIn(min = AgentDimens.drawerItemHeight)
+    ) {
+        // 选中三件套之③：左缘 3dp primary 圆角竖条（与 DrawerItem 同语言）
+        if (isActive) {
+            Box(
+                Modifier
+                    .align(Alignment.CenterStart)
+                    .width(3.dp)
+                    .fillMaxHeight()
+                    .clip(RoundedCornerShape(topEnd = 2.dp, bottomEnd = 2.dp))
+                    .background(MaterialTheme.colorScheme.primary)
+            )
+        }
+        val interaction = remember { MutableInteractionSource() }
+        val pressed by interaction.collectIsPressedAsState()
+        val bg by animateColorAsState(
+            targetValue = when {
+                isActive -> MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+                pressed -> ak.surface2
+                else -> Color.Transparent
+            },
+            animationSpec = AkMotionFastColor
+        )
+        Row(
+            modifier = Modifier
+                .fillMaxSize()
+                .clip(RoundedCornerShape(14.dp))
+                .background(bg)
+                .combinedClickable(
+                    interactionSource = interaction,
+                    indication = null,
+                    onClick = onClick,
+                    onLongClick = onLongClick
+                )
+                // 合并为单节点：一次聚焦读全，selected 态读作「已选中」
+                .semantics(mergeDescendants = true) {
+                    contentDescription = conversation.title
+                    selected = isActive
+                },
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                imageVector = Icons.Outlined.Chat,
+                contentDescription = null,
+                tint = if (isActive) MaterialTheme.colorScheme.primary
+                else MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(24.dp)
+            )
+            Spacer(Modifier.width(AgentSpacing.space3))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    text = conversation.title,
+                    style = MaterialTheme.typography.titleMedium,
+                    color = if (isActive) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = "${relativeTime(conversation.updatedAt)} · " +
+                        "${conversation.messageCount} 条消息",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+    }
+}
+
+/**
+ * 功能三：会话长按菜单（重命名 / 删除）。与 [AkConfirmDialog] 同语言：
+ * 344dp 白卡 + scale/fade 出入场；删除是危险动作，但红色只留给确认弹窗，菜单项保持中性（§3.1）。
+ */
+@Composable
+private fun ConversationMenuDialog(
+    title: String,
+    visible: Boolean,
+    onRename: () -> Unit,
+    onDelete: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val spec = if (visible) AkMotionDialog else AkMotionExit
+    val scale by animateFloatAsState(if (visible) 1f else 0.96f, animationSpec = spec)
+    val alpha by animateFloatAsState(if (visible) 1f else 0f, animationSpec = spec)
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Box(
+            Modifier
+                .fillMaxSize()
+                .padding(horizontal = 24.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Surface(
+                shape = RoundedCornerShape(20.dp),
+                color = MaterialTheme.colorScheme.surface,
+                modifier = Modifier
+                    .widthIn(max = 344.dp)
+                    .scale(scale)
+                    .alpha(alpha)
+            ) {
+                Column(Modifier.padding(vertical = AgentSpacing.space4)) {
+                    Text(
+                        text = title,
+                        style = MaterialTheme.typography.titleLarge,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(horizontal = AgentSpacing.space6)
+                    )
+                    Spacer(Modifier.height(AgentSpacing.space2))
+                    AkListItem(
+                        icon = Icons.Outlined.Edit,
+                        title = "重命名",
+                        onClick = onRename
+                    )
+                    AkListItem(
+                        icon = Icons.Outlined.Delete,
+                        title = "删除对话",
+                        onClick = onDelete
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * 功能三：会话重命名对话框（[AkModalHost] 承载退场动画）。
+ * 提交空名由 VM 忽略（renameConversation 对 blank 直接 return），此处按钮同步禁用。
+ */
+@Composable
+private fun RenameConversationDialog(
+    name: String,
+    onNameChange: (String) -> Unit,
+    visible: Boolean,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val spec = if (visible) AkMotionDialog else AkMotionExit
+    val scale by animateFloatAsState(if (visible) 1f else 0.96f, animationSpec = spec)
+    val alpha by animateFloatAsState(if (visible) 1f else 0f, animationSpec = spec)
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Box(
+            Modifier
+                .fillMaxSize()
+                .padding(horizontal = 24.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Surface(
+                shape = RoundedCornerShape(20.dp),
+                color = MaterialTheme.colorScheme.surface,
+                modifier = Modifier
+                    .widthIn(max = 344.dp)
+                    .scale(scale)
+                    .alpha(alpha)
+            ) {
+                Column(Modifier.padding(24.dp)) {
+                    Text(
+                        text = "重命名对话",
+                        style = MaterialTheme.typography.titleLarge,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Spacer(Modifier.height(AgentSpacing.space4))
+                    AkTextField(
+                        value = name,
+                        onValueChange = onNameChange,
+                        label = "对话名称",
+                        placeholder = "例如：查天气"
+                    )
+                    Spacer(Modifier.height(AgentSpacing.space6))
+                    Row(horizontalArrangement = Arrangement.spacedBy(AgentSpacing.space2)) {
+                        AkOutlinedButton(
+                            text = "取消",
+                            onClick = onDismiss,
+                            modifier = Modifier.weight(1f)
+                        )
+                        AkPrimaryButton(
+                            text = "确定",
+                            onClick = onConfirm,
+                            enabled = name.isNotBlank(),
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * 功能三：相对时间（抽屉「最近对话」用）——按日历日比较（QA P3：原 48h 窗口会把前天
+ * 误标「昨天」）：同日 HH:mm / 昨天「昨天 HH:mm」/ 更早 MM-dd。
+ * ts 晚于 now（时钟偏差等异常值）按「刚刚」处理，不出现「昨天」在未来的情况。
+ */
+private fun relativeTime(ts: Long): String {
+    val now = System.currentTimeMillis()
+    if (ts > now) return "刚刚"
+    val dayFmt = SimpleDateFormat("yyyyMMdd", Locale.getDefault())
+    val tsKey = dayFmt.format(Date(ts))
+    val nowKey = dayFmt.format(Date(now))
+    val time = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(ts))
+    return when {
+        tsKey == nowKey -> time
+        tsKey == yesterdayKey() -> "昨天 $time"
+        else -> SimpleDateFormat("MM-dd", Locale.getDefault()).format(Date(ts))
+    }
+}
+
+/** 今天的昨天的 yyyyMMdd（Calendar 回退一天后格式化，跨月 / 跨年都正确）。 */
+private fun yesterdayKey(): String {
+    val cal = Calendar.getInstance().apply { add(Calendar.DAY_OF_YEAR, -1) }
+    return SimpleDateFormat("yyyyMMdd", Locale.getDefault()).format(cal.time)
 }
 
 /** 抽屉头部：40dp 圆角应用标记 +「AgentKit」+ 就绪文字三态（§6.5.2）。 */

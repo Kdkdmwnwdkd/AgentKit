@@ -3,14 +3,26 @@ package com.example.agentkit.core
 import android.content.Context
 import android.content.SharedPreferences
 import com.example.agentkit.skill.ModelConfig
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.decodeFromString
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
+import java.util.UUID
 
 /**
  * 模型配置持久化（SharedPreferences）。
  *
- * 解决的问题：原实现 ModelConfig 只存在内存，App 进程被系统回收后全部丢失，
+ * 解决的问题：原实现 ModelConfig 只存内存，App 进程被系统回收后全部丢失，
  * 退回「openai.com / 空 Key / gpt-4o-mini」默认值，用户「明明填过」的认知与
  * App 实际状态永久不一致，进而出现「在别处能用、在本 App 一直 401」的迷惑现象。
- * 这里把三元组落盘，进程重启也能还原。
+ * 这里把配置落盘，进程重启也能还原。
+ *
+ * 功能二（多模型配置，用户真机录屏反馈：「别人的模型可以搞好几个，你就只能搞一个」）：
+ * 单配置进化为多档案——`profiles_json` 存 List<[ModelProfile]>，`active_profile_id`
+ * 记当前生效档案。旧四键（base_url/api_key/model/provider_id）保留不删，并**镜像**
+ * 当前生效配置：`loadMediaKey("openai")` 的媒体 Key 空值回退读的是旧 api_key 键
+ * （媒体工坊用），镜像保证回退读到的是「当前生效 Key」，多配置切换后不会读到
+ * 上一个配置的 Key。
  *
  * Key 存明文（App 私有目录 SharedPreferences，与 AutomationPrefs、Skill 授权做法一致）；
  * 不引入新的加密依赖——移动端本地私有存储已足够隔离，加密无法防御 root 设备，
@@ -21,9 +33,16 @@ class ConfigStore(context: Context) {
     private val sp: SharedPreferences =
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
+    /** profiles_json 解码用：容错将来加字段（老包写的新键多几个字段不崩）。 */
+    private val json = Json { ignoreUnknownKeys = true }
+
     /**
-     * 读出配置。读出来的原始值再过一遍 [ConfigSanitizer]，
+     * 读出「当前生效配置」（= active profile 的 config，或旧四键镜像值）。
+     * 读出来的原始值再过一遍 [ConfigSanitizer]，
      * 防止历史脏数据（早期版本可能把带不可见字符的 Key 写进了盘）继续生效。
+     *
+     * 注意：多档案入口见 [loadProfiles] / [loadActiveId]；本方法保留给旧调用方与
+     * 「镜像键」视角的读取（媒体 Key 回退链仍读旧四键），ChatViewModel 已不再使用。
      *
      * @return 已净化的配置；从未保存过时返回 [ModelConfig] 默认值。
      */
@@ -39,8 +58,8 @@ class ConfigStore(context: Context) {
     }
 
     /**
-     * 保存配置。保存前先过一遍 [ConfigSanitizer]，确保落盘的就是净化后的 Key，
-     * 下次读出来也是干净的（双保险：load 还会再洗一遍）。
+     * 保存配置（旧单配置入口，保留兼容）。
+     * 多档案写入见 [saveProfiles]；本方法只动旧四键，不再被 ChatViewModel 调用。
      *
      * @param cfg 用户提交的原始配置（可能含不可见字符）。
      */
@@ -52,6 +71,94 @@ class ConfigStore(context: Context) {
             putString(KEY_MODEL, clean.model)
             putString(KEY_PROVIDER, clean.providerId)
         }.apply()
+    }
+
+    /**
+     * 读出全部配置档案；首次读取时执行一次性迁移（见 [migrateLegacyIfNeeded]）。
+     * 读出来再过一遍 [ConfigSanitizer]（与 [load] 一致的双保险）。
+     *
+     * @return 档案列表；全新用户（未迁移、未保存过）返回空列表，由调用方兜底建默认配置。
+     */
+    fun loadProfiles(): List<ModelProfile> {
+        migrateLegacyIfNeeded()
+        val raw = sp.getString(KEY_PROFILES, null) ?: return emptyList()
+        val parsed = runCatching {
+            json.decodeFromString<List<ModelProfile>>(raw)
+        }.getOrNull() ?: return emptyList()
+        return parsed.map { it.copy(config = ConfigSanitizer.sanitized(it.config)) }
+    }
+
+    /** 当前生效档案 id；没有（全新用户）返回 null。 */
+    fun loadActiveId(): String? {
+        migrateLegacyIfNeeded()
+        return sp.getString(KEY_ACTIVE_ID, null)?.takeIf { it.isNotBlank() }
+    }
+
+    /**
+     * 保存全部档案 + 当前生效 id，并同步镜像旧四键。
+     *
+     * 镜像键（重要）：把当前生效配置的 baseUrl/apiKey/model/providerId 写回旧四键——
+     * `loadMediaKey("openai")` 在媒体 Key 为空时回退读旧 api_key 键（媒体工坊用），
+     * 镜像保证回退读到的是「当前生效 Key」，多配置切换后不会读到上一个配置的 Key。
+     *
+     * @param list 全部档案（内部会先净化再落盘）。
+     * @param activeId 当前生效档案 id；失效时回退第一个。
+     */
+    fun saveProfiles(list: List<ModelProfile>, activeId: String) {
+        // 净化后再存：与旧 save() 一致，落盘即干净（load 还会再洗一遍）
+        val cleaned = list.map { it.copy(config = ConfigSanitizer.sanitized(it.config)) }
+        val active = cleaned.firstOrNull { it.id == activeId } ?: cleaned.firstOrNull()
+        sp.edit().apply {
+            putString(KEY_PROFILES, json.encodeToString(cleaned))
+            putString(KEY_ACTIVE_ID, active?.id ?: "")
+            // 镜像：旧四键 = 当前生效配置（媒体 Key 回退链不断，见方法注释）
+            putString(KEY_BASE_URL, active?.config?.baseUrl ?: "")
+            putString(KEY_API_KEY, active?.config?.apiKey ?: "")
+            putString(KEY_MODEL, active?.config?.model ?: "")
+            putString(KEY_PROVIDER, active?.config?.providerId ?: "")
+        }.apply()
+    }
+
+    /**
+     * 一次性迁移（重要，老用户 Key 不能丢）：`profiles_json` 不存在、但旧四键有值时，
+     * 用旧值包成第一个 profile（id 用 UUID，name 按 providerId 给中文名）并立即落盘
+     * `profiles_json` + `active_profile_id`。旧四键保留不删（媒体 Key 回退等历史逻辑还读它们）。
+     *
+     * 幂等：`profiles_json` 一存在就直接返回。
+     */
+    private fun migrateLegacyIfNeeded() {
+        if (sp.contains(KEY_PROFILES)) return
+        val baseUrl = sp.getString(KEY_BASE_URL, null)
+        val apiKey = sp.getString(KEY_API_KEY, null)
+        val model = sp.getString(KEY_MODEL, null)
+        val provider = sp.getString(KEY_PROVIDER, null)
+        // 四键全无 = 全新用户，没有可迁移的数据（VM 会兜底建默认配置）
+        if (baseUrl == null && apiKey == null && model == null && provider == null) return
+        val cfg = ConfigSanitizer.sanitized(
+            ModelConfig(
+                baseUrl = baseUrl ?: ModelConfig().baseUrl,
+                apiKey = apiKey ?: ModelConfig().apiKey,
+                model = model ?: ModelConfig().model,
+                // 旧版本没有此键：默认 "openai"，老用户的配置无缝延续
+                providerId = provider ?: "openai"
+            )
+        )
+        val profile = ModelProfile(
+            id = UUID.randomUUID().toString(),
+            name = defaultNameFor(cfg.providerId),
+            config = cfg
+        )
+        // 立即落盘：迁移结果持久化，下次启动不再迁移
+        // （镜像键同步发生——旧四键被写成净化后的同一份值，语义不变）
+        saveProfiles(listOf(profile), profile.id)
+    }
+
+    /** 迁移时按 providerId 给中文名（老用户的第一个 profile 要一眼认出是哪家）。 */
+    private fun defaultNameFor(providerId: String): String = when (providerId) {
+        "openai" -> "OpenAI"
+        "claude" -> "Claude"
+        "gemini" -> "Gemini"
+        else -> "默认配置"
     }
 
     /**
@@ -69,6 +176,8 @@ class ConfigStore(context: Context) {
      *
      * OpenAI 特例：媒体 Key 为空时回退到 LLM Key——images API 与 chat API
      * 同一账号同一把钥匙，避免用户「明明配过模型还要再填一遍」的割裂感。
+     * 多配置时代（功能二）回退读到的是旧 api_key 键的镜像值 = 当前生效 Key
+     * （镜像逻辑见 [saveProfiles]），切换配置后回退不会读到上一个配置的 Key。
      */
     fun loadMediaKey(providerId: String): String {
         val own = sp.getString(KEY_MEDIA_KEY_PREFIX + providerId, "").orEmpty()
@@ -113,6 +222,10 @@ class ConfigStore(context: Context) {
         private const val KEY_API_KEY = "api_key"
         private const val KEY_MODEL = "model"
         private const val KEY_PROVIDER = "provider_id"
+        /** 功能二：多配置档案 JSON（List<ModelProfile>）。 */
+        private const val KEY_PROFILES = "profiles_json"
+        /** 功能二：当前生效档案 id。 */
+        private const val KEY_ACTIVE_ID = "active_profile_id"
         private const val KEY_MEDIA_KEY_PREFIX = "media_key_"
         private const val KEY_GH_OWNER = "gh_owner"
         private const val KEY_GH_REPO = "gh_repo"
@@ -120,3 +233,20 @@ class ConfigStore(context: Context) {
         private const val KEY_GH_WORKFLOW = "gh_workflow"
     }
 }
+
+/**
+ * 一个模型配置档案（功能二：多模型配置——用户真机录屏反馈：
+ * 「别人的模型可以搞好几个，你就只能搞一个」）。
+ *
+ * 放在 ConfigStore 同文件：档案是存储形态的一部分，与迁移/镜像逻辑同进退。
+ *
+ * @param id 稳定标识（UUID），切换/重命名/删除都认它不认下标。
+ * @param name 用户可见名称（「OpenAI」「配置 2」…，可重命名）。
+ * @param config 该档案的完整模型配置（baseUrl/apiKey/model/providerId）。
+ */
+@Serializable
+data class ModelProfile(
+    val id: String,
+    val name: String,
+    val config: ModelConfig
+)
