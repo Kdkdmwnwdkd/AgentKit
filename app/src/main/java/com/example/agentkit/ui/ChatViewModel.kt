@@ -35,6 +35,7 @@ import com.example.agentkit.core.ChatMessage
 import com.example.agentkit.core.LlmHttpException
 import com.example.agentkit.core.LLMConfig
 import com.example.agentkit.core.ProviderManager
+import com.example.agentkit.core.AgentEvent
 import com.example.agentkit.core.ToolCall
 import com.example.agentkit.core.ToolMessage
 import com.example.agentkit.core.ToolApproval
@@ -111,7 +112,9 @@ sealed interface UiItem {
         val result: String,
         val isError: Boolean,
         /** 工具返回的图片（data URL 列表），如 ui_screenshot 截图，直接渲染在对话中。 */
-        val images: List<String> = emptyList()
+        val images: List<String> = emptyList(),
+        /** Hotfix2：执行中态（AgentEvent.ToolStarted 已上报、ToolFinished 未到）。 */
+        val running: Boolean = false
     ) : UiItem
 }
 
@@ -450,6 +453,9 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     private val _messages = MutableStateFlow<List<UiItem>>(emptyList())
     val messages: StateFlow<List<UiItem>> = _messages.asStateFlow()
 
+    /** Hotfix2：过程事件回调来自工具并行执行线程，与主线程的 send() 竞争同一列表——加锁防丢更新。 */
+    private val msgLock = Any()
+
     /** 模型配置持久化：进程重启也能还原，避免「明明填过却退回默认值」的不一致。 */
     private val configStore = ConfigStore(app)
 
@@ -535,8 +541,43 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         registry = registry,
         approval = approvalHandler,
         // L9：每轮运行都把当前记忆摘要注入系统提示
-        memoryProvider = { memoryStore.summaryForPrompt(12, 1200) }
+        memoryProvider = { memoryStore.summaryForPrompt(12, 1200) },
+        // Hotfix2：工具调用过程实时上屏（执行中卡 → 终态卡），
+        // 修掉「AI 干完什么都在黑盒里、跑完才甩结果」的体验缺陷
+        onEvent = ::handleAgentEvent
     )
+
+    /** 过程事件 → UI 实时更新（Hotfix2）。工具并行执行时多线程回调，读写列表加锁防丢更新。 */
+    private fun handleAgentEvent(ev: AgentEvent) = synchronized(msgLock) {
+        when (ev) {
+            is AgentEvent.ToolStarted -> {
+                _messages.value = _messages.value + UiItem.Tool(
+                    call = ev.call,
+                    result = "",
+                    isError = false,
+                    running = true
+                )
+            }
+
+            is AgentEvent.ToolFinished -> {
+                val cur = _messages.value
+                val idx = cur.indexOfFirst {
+                    it is UiItem.Tool && it.call.id == ev.message.id && it.running
+                }
+                if (idx >= 0) {
+                    val done = UiItem.Tool(
+                        call = ToolCall(ev.message.id, ev.message.name, ev.message.arguments),
+                        result = ev.message.content,
+                        isError = ev.message.isError,
+                        images = ev.message.images,
+                        running = false
+                    )
+                    _messages.value = cur.toMutableList().also { it[idx] = done }
+                }
+                // idx < 0（理论上不该发生）：终态由 send() 的 history 兜底补上
+            }
+        }
+    }
 
     /**
      * 更新模型配置：先过 [ConfigSanitizer] 清洗（剔除不可见字符/规范化 URL），
@@ -738,9 +779,27 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         val fullInput = if (ctxPrompt.isBlank()) text else "$ctxPrompt\n\n用户当前请求：$text"
 
         viewModelScope.launch {
+            // Hotfix2：用户消息立即上屏；工具调用过程由 handleAgentEvent 实时渲染
+            // （执行中卡 → 终态卡）；最终历史只补文本回答，工具卡按 call.id 去重
+            _messages.value = _messages.value + UiItem.User(text)
             // 先拿到 Result，再在同一个挂起体里做后续 IO：Result.onSuccess 的 lambda 不是 suspend
             val outcome = runCatching { loop.run(fullInput) }
-            outcome.onSuccess { history -> history.forEach { append(it) } }
+            outcome.onSuccess { history ->
+                history.forEach { msg ->
+                    when (msg) {
+                        // 发送时已实时上屏，跳过防重复
+                        is UserMessage -> Unit
+                        // 过程事件已渲染过同 id 的工具卡；未渲染的才兜底补上
+                        is ToolMessage -> {
+                            val shown = _messages.value.any { it is UiItem.Tool && it.call.id == msg.id }
+                            if (!shown) append(msg)
+                        }
+                        // 中间轮 Assistant 可能只有 toolCalls 无文本，空内容不出气泡
+                        is AssistantMessage -> if (msg.content.isNotBlank()) append(msg)
+                        else -> Unit
+                    }
+                }
+            }
             outcome.onFailure {
                 AgentLogger.e("Chat", "运行失败", it)
                 // 气泡面向用户：技术异常在此映射成可读文案（完整堆栈已在日志里落盘）

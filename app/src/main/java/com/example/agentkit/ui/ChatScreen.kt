@@ -708,12 +708,15 @@ private suspend fun <T> withContextIo(block: () -> T): T =
 private enum class ToolStatus { RUNNING, DONE, FAILED, REJECTED }
 
 /**
- * 工具调用终态推导（§6.3 四态）。
+ * 工具调用四态（§6.3 状态文字双编码）。
  *
  * 「已拒绝」判据 = AgentLoop 在审批被拒时回填的结果文案（core/AgentLoop：「用户拒绝了该危险操作」）：
- * 拒绝是用户决策不是故障，用中性色（继承 v2.1 R3）。UiItem.Tool 只承载终态，无 RUNNING 实例。
+ * 拒绝是用户决策不是故障，用中性色（继承 v2.1 R3）。
+ * Hotfix2 起 UiItem.Tool 有 RUNNING 实例（running=true）：AgentEvent.ToolStarted 已上报、
+ * ToolFinished 未到——过程透明化，用户能看见 AI 正在调什么工具。
  */
 private fun UiItem.Tool.status(): ToolStatus = when {
+    running -> ToolStatus.RUNNING
     isError && result.contains("用户拒绝了") -> ToolStatus.REJECTED
     isError -> ToolStatus.FAILED
     else -> ToolStatus.DONE
@@ -774,7 +777,16 @@ private fun ToolCard(item: UiItem.Tool) {
                         .padding(horizontal = AgentSpacing.space1),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    AkStatusDot(statusColor, 8.dp)
+                    // Hotfix2：执行中态把静态状态点换成 12dp 转圈，一眼可见「正在跑」
+                    if (status == ToolStatus.RUNNING) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(12.dp),
+                            strokeWidth = 1.5.dp,
+                            color = statusColor
+                        )
+                    } else {
+                        AkStatusDot(statusColor, 8.dp)
+                    }
                     Spacer(Modifier.width(AgentSpacing.space2))
                     Text(
                         text = item.call.name,
@@ -807,12 +819,15 @@ private fun ToolCard(item: UiItem.Tool) {
             }
             if (expanded) {
                 EmbedBlock(label = "入参", text = item.call.arguments.toString())
-                Spacer(Modifier.height(AgentSpacing.space2))
-                EmbedBlock(
-                    label = "结果",
-                    text = item.result,
-                    error = item.isError
-                )
+                // 执行中态还没有结果，只展示入参（Hotfix2）
+                if (!item.running) {
+                    Spacer(Modifier.height(AgentSpacing.space2))
+                    EmbedBlock(
+                        label = "结果",
+                        text = item.result,
+                        error = item.isError
+                    )
+                }
             }
             // 工具返回的图片（如 ui_screenshot 截图）默认可见
             if (item.images.isNotEmpty()) {

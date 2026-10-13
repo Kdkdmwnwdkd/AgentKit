@@ -14,6 +14,21 @@ private const val MEMORY_USAGE_PROMPT =
     "<memory_usage>你可调用 memory_write 记录用户偏好/关键事实，用 memory_search 回忆过往信息。以下是当前记忆摘要：</memory_usage>"
 
 /**
+ * AgentLoop 执行过程事件（Hotfix2：过程透明化）。
+ *
+ * 旧模式：run() 整轮跑完才返回完整历史，UI 只能「事后」渲染——执行期间用户在
+ * 黑盒里干等，AI 调过什么工具、被什么拦截，一概不可见。现在关键节点实时抛事件，
+ * UI 边跑边渲染（工具卡「执行中 → 已完成/已失败/已拒绝」）。
+ */
+sealed interface AgentEvent {
+    /** 工具调用开始执行（参数已定，结果未出）。 */
+    data class ToolStarted(val call: ToolCall) : AgentEvent
+
+    /** 工具调用结束（成功 / 失败 / 审批被拒，携带回填的 ToolMessage）。 */
+    data class ToolFinished(val message: ToolMessage) : AgentEvent
+}
+
+/**
  * Agent 核心循环：规划 -> 调工具 -> 回填 -> 再规划，直到 LLM 不再请求工具调用。
  *
  * 借鉴（净室重写，非抄源码）：
@@ -36,7 +51,9 @@ class AgentLoop(
     private val maxHistoryMessages: Int = 40,
     private val approval: ToolApproval? = null,
     private val checkpoint: ((List<ChatMessage>) -> Unit)? = null,
-    private val memoryProvider: (() -> String)? = null
+    private val memoryProvider: (() -> String)? = null,
+    /** 过程事件回调（Hotfix2）：工具开始/结束实时抛出；null = 关闭（默认，保持旧行为）。 */
+    private val onEvent: ((AgentEvent) -> Unit)? = null
 ) {
     /** 执行一轮对话，返回完整消息历史（含系统提示、工具调用与结果）。 */
     suspend fun run(userInput: String): List<ChatMessage> {
@@ -72,14 +89,14 @@ class AgentLoop(
                 return messages
             }
 
-            // 并行执行本轮工具调用（受 maxParallelTools 限流）
-            val stepImages = mutableListOf<String>()
-            val results = coroutineScope {
-                resp.toolCalls
-                    .take(maxParallelTools)
-                    .map { call -> async { executeCall(call, stepImages) } }
-                    .awaitAll()
-            }
+        // 并行执行本轮工具调用（受 maxParallelTools 限流）
+        val stepImages = mutableListOf<String>()
+        val results = coroutineScope {
+            resp.toolCalls
+                .take(maxParallelTools)
+                .map { call -> async { executeCall(call, stepImages) } }
+                .awaitAll()
+        }
             messages.addAll(results)
             // 若本轮有工具返回图片（如 ui_screenshot），附到下一轮对话让视觉模型“看见”
             if (stepImages.isNotEmpty()) {
@@ -98,9 +115,26 @@ class AgentLoop(
         return messages
     }
 
-    /** 单步执行：未知工具、审批拒绝、异常都包装成 ToolMessage 进入历史。
-     * 若工具返回图片（ToolPart.Image），其 url 收集到 [images] 供回灌视觉模型。 */
+    /**
+     * 单步执行 + 过程事件上报（Hotfix2）。
+     *
+     * ToolStarted 在真正执行前抛出（此时参数已定、结果未出，UI 显示「执行中」卡）；
+     * ToolFinished 在 [executeCallInner] 返回后抛出（UI 把同一张卡翻成终态）。
+     * 并行执行时多个调用的事件会交错到达，UI 侧按 call.id 归并，不依赖顺序。
+     */
     private suspend fun executeCall(call: ToolCall, images: MutableList<String>): ToolMessage {
+        onEvent?.invoke(AgentEvent.ToolStarted(call))
+        val msg = executeCallInner(call, images)
+        onEvent?.invoke(AgentEvent.ToolFinished(msg))
+        return msg
+    }
+
+    /** 单步执行：未知工具、审批拒绝、异常都包装成 ToolMessage 进入历史。
+     * 若工具返回图片（ToolPart.Image），其 url 收集到 [images] 供回灌视觉模型。
+     *
+     * Hotfix2：本方法只负责「执行」——ToolStarted / ToolFinished 两个过程
+     * 事件由外层 [executeCall] 统一抛出，内层保持纯执行语义。 */
+    private suspend fun executeCallInner(call: ToolCall, images: MutableList<String>): ToolMessage {
         val tool = registry.get(call.name)
             ?: run {
                 AgentLogger.w("Tool", "未知工具：${call.name}")
