@@ -37,6 +37,7 @@ import com.example.agentkit.core.AssistantMessage
 import com.example.agentkit.core.ChatMessage
 import com.example.agentkit.core.LlmHttpException
 import com.example.agentkit.core.LLMConfig
+import com.example.agentkit.core.ModelListFetcher
 import com.example.agentkit.core.ProviderManager
 import com.example.agentkit.core.AgentEvent
 import com.example.agentkit.core.ToolCall
@@ -74,12 +75,15 @@ import com.example.agentkit.tools.HttpRequestTool
 import com.example.agentkit.tools.NotificationTool
 import com.example.agentkit.tools.ReadFileTool
 import com.example.agentkit.tools.WriteFileTool
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -846,6 +850,81 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
             }
             _testing.value = false
         }
+    }
+
+    // —— 模型列表拉取（模型配置页「选择模型」弹窗）————————————————————————
+
+    /** 「选择模型」弹窗的模型 id 列表；emptyList = 未拉取或拉到空。 */
+    private val _modelList = MutableStateFlow<List<String>>(emptyList())
+    val modelList: StateFlow<List<String>> = _modelList.asStateFlow()
+
+    /** 是否正在拉取模型列表：UI 显示 loading，并作并发守卫（拉取中忽略重复触发）。 */
+    private val _modelListLoading = MutableStateFlow(false)
+    val modelListLoading: StateFlow<Boolean> = _modelListLoading.asStateFlow()
+
+    /** 拉取失败文案（已脱敏后截断）；null = 无错误。 */
+    private val _modelListError = MutableStateFlow<String?>(null)
+    val modelListError: StateFlow<String?> = _modelListError.asStateFlow()
+
+    /** 拉取任务句柄：重试 / 关闭时先 cancel 旧 job，避免旧结果覆盖新结果。 */
+    private var modelListJob: Job? = null
+
+    /**
+     * 拉取模型列表（模型配置页「选择模型」弹窗打开即调用）。
+     * 与 [testConnection] 同模式：并发守卫 + Dispatchers.IO + 失败脱敏。
+     *
+     * @param baseUrl 输入框当前的 Base URL（原始值，fetcher 内部先过 ConfigSanitizer）。
+     * @param apiKey 输入框当前的 API Key（原始值）。
+     * @param providerId 当前选中的供应商（"openai" / "claude" / "gemini" / "local-llama"）。
+     */
+    fun fetchModelList(baseUrl: String, apiKey: String, providerId: String) {
+        // 并发守卫：正在拉取时直接忽略重复点击（与 _testing 同一思路）
+        if (_modelListLoading.value) return
+        // 本地模型不做网络拉取：请在「本地模型」页签的状态卡中选择
+        // （isLocal 时弹窗入口根本不显示，这里是双保险）
+        if (providerId == "local-llama") {
+            _modelListError.value = "本地模型请在下方状态卡中选择"
+            return
+        }
+        modelListJob?.cancel()
+        _modelListLoading.value = true
+        _modelListError.value = null
+        modelListJob = viewModelScope.launch {
+            try {
+                // 先过 ConfigSanitizer（与 testConnection 同模式；fetcher 内部还会再洗一遍做防御双保险）
+                val base = ConfigSanitizer.normalizeBaseUrl(baseUrl)
+                val key = ConfigSanitizer.cleanApiKey(apiKey)
+                val models = withContext(Dispatchers.IO) {
+                    ModelListFetcher().fetch(base, key, providerId)
+                }
+                // OkHttp 的 execute() 是阻塞调用，withContext(IO) 里的挂起不会因
+                // 外层 job cancel 而中断：旧任务可能跑完阻塞调用后走到这里。
+                // isActive 守卫保证旧 job 晚到时不写脏状态（旧配置的列表 / 错误都不覆盖新拉取）。
+                if (!isActive) return@launch
+                _modelList.value = models
+            } catch (e: CancellationException) {
+                // 取消不是错误：向上传播，绝不吞（否则协程树语义被破坏）
+                throw e
+            } catch (e: Throwable) {
+                if (!isActive) return@launch
+                // 异常文案离开 UI 前先脱敏再截断（防御：异常里可能夹带 url 中的 key 片段）
+                _modelListError.value =
+                    (e.message?.let { AgentLogger.sanitize(it) } ?: "未知错误").take(200)
+            } finally {
+                // 只有当期 job 能收 loading：旧 job 的 finally 晚到时 isActive=false，
+                // 不会把新任务刚置的 _modelListLoading=true 误收成 false
+                if (isActive) _modelListLoading.value = false
+            }
+        }
+    }
+
+    /** 清空模型列表三状态（弹窗关闭时调用：cancel 在途任务 + 三态归零，下次打开重新拉）。 */
+    fun clearModelList() {
+        modelListJob?.cancel()
+        modelListJob = null
+        _modelList.value = emptyList()
+        _modelListLoading.value = false
+        _modelListError.value = null
     }
 
     // —— L8 运行日志（日记）：出错可定位 ——

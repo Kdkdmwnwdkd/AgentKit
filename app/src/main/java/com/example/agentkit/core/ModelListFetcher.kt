@@ -1,0 +1,155 @@
+package com.example.agentkit.core
+
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import java.io.IOException
+import java.util.concurrent.TimeUnit
+
+/**
+ * 模型列表拉取器：模型配置页「选择模型」弹窗的数据源。
+ *
+ * 背景：用户填好 Base URL + API Key 后，应该能拉取该端点有哪些模型并搜索选择，
+ * 而不是盲手填模型名（三家供应商的模型列表端点实测形态见下）。
+ *
+ * 三家端点差异（与 ClaudeClient 同思路：协议差异全部内聚在本类内，对外只暴露 fetch）：
+ *  - OpenAI 兼容（含 vLLM / Ollama / OneAPI / DeepSeek 等一切兼容端点）：
+ *    GET {baseUrl}/models，请求头 Authorization: Bearer {apiKey}，
+ *    响应 {"data":[{"id":"..."}]}，取 data[].id；
+ *  - Claude：GET {baseUrl}/models，请求头 x-api-key: {apiKey}
+ *    + anthropic-version: 2023-06-01，响应同样取 data[].id；
+ *  - Gemini：GET {baseUrl}/models?pageSize=100，请求头 x-goog-api-key: {apiKey}，
+ *    响应 {"models":[{"name":"models/xxx","supportedGenerationMethods":[...]}]}，
+ *    name 去掉 models/ 前缀，且 supportedGenerationMethods 含 generateContent 才纳入。
+ *
+ * local-llama 不做网络拉取（本地模型走「本地模型」页签的状态卡管理），由调用方短路。
+ *
+ * 安全约定：失败抛出的 IOException message 已脱敏、绝不含 apiKey——HTTP 错误只带状态码，
+ * 响应体只进日志（且先过 AgentLogger.sanitize），不回灌给调用方。
+ */
+class ModelListFetcher(
+    private val http: OkHttpClient = OkHttpClient.Builder()
+        .connectTimeout(15, TimeUnit.SECONDS)
+        .readTimeout(20, TimeUnit.SECONDS)
+        .build()
+) {
+
+    /**
+     * 拉取指定端点的可用模型 id 列表。全程 Dispatchers.IO，不阻塞主线程。
+     *
+     * @param baseUrl 输入框当前的 Base URL（原始值，内部先过 ConfigSanitizer.normalizeBaseUrl）。
+     * @param apiKey 输入框当前的 API Key（原始值，内部先过 ConfigSanitizer.cleanApiKey）。
+     * @param providerId "openai" / "claude" / "gemini"（local-llama 由调用方短路，不进来）。
+     * @return 模型 id 列表；端点不支持 /models（data/models 数组缺失）时返回 emptyList()。
+     * @throws IOException 网络失败 / HTTP 非 2xx / 响应体解析失败；message 已脱敏，绝不含 apiKey。
+     */
+    suspend fun fetch(baseUrl: String, apiKey: String, providerId: String): List<String> =
+        withContext(Dispatchers.IO) {
+            // 防御性清洗：与三家 Client 同一套 ConfigSanitizer，避免带着 \u00A0 等不可见字符发请求
+            val base = ConfigSanitizer.normalizeBaseUrl(baseUrl).trimEnd('/')
+            val key = ConfigSanitizer.cleanApiKey(apiKey)
+            val request = buildRequest(base, key, providerId)
+            val resp = try {
+                http.newCall(request).execute()
+            } catch (e: IOException) {
+                AgentLogger.e("ModelList", "网络请求异常", e)
+                throw e
+            }
+            resp.use { r ->
+                if (!r.isSuccessful) {
+                    // 响应体可能回显 sk-xxx：只脱敏后进日志，异常 message 只带状态码，
+                    // 绝不把响应体拼进 message（可能夹带信息）
+                    val errBody = runCatching { r.body?.string() }.getOrDefault("") ?: ""
+                    AgentLogger.httpError(r.code, AgentLogger.sanitize(errBody).take(200))
+                    throw IOException("获取模型列表失败：HTTP ${r.code}")
+                }
+                val text = r.body?.string().orEmpty()
+                parseModelIds(text, providerId)
+            }
+        }
+
+    /** 按供应商拼请求：端点与鉴权头的差异都在这里分叉（内聚在本类，对齐 ClaudeClient 风格）。 */
+    private fun buildRequest(baseUrl: String, apiKey: String, providerId: String): Request =
+        when (providerId) {
+            // Claude：默认端点 https://api.anthropic.com 不带版本段，此处按 ClaudeClient
+            // .endpointUrl 同款防御性拼接补齐 /v1（用户已手填 /v1 时不重复拼）
+            "claude" -> {
+                val b = if (baseUrl.endsWith("/v1")) baseUrl else "$baseUrl/v1"
+                Request.Builder()
+                    .url("$b/models")
+                    .addHeader("x-api-key", apiKey)
+                    .addHeader("anthropic-version", ANTHROPIC_VERSION)
+                    .get()
+                    .build()
+            }
+
+            // Gemini：默认端点 https://generativelanguage.googleapis.com 不带版本段，
+            // 此处按 GeminiClient.endpointUrl 同款防御性拼接补齐 /v1beta
+            // （base 在 fetch 里已 trimEnd('/')，removeSuffix 后重拼幂等）
+            "gemini" -> {
+                val b = baseUrl.removeSuffix("/v1beta") + "/v1beta"
+                Request.Builder()
+                    .url("$b/models?pageSize=100")
+                    .addHeader("x-goog-api-key", apiKey)
+                    .get()
+                    .build()
+            }
+
+            // OpenAI 兼容（默认分支）：默认端点 https://api.openai.com/v1 已自带 /v1，
+            // 不补版本段——兼容端点（vLLM / Ollama / OneAPI 等）的约定就是自带版本段，
+            // 强行兜底 /v1 反而会破坏规范上就是裸域名的自填端点（与 OpenAIClient 行为一致）
+            else -> Request.Builder()
+                .url("$baseUrl/models")
+                .addHeader("Authorization", "Bearer $apiKey")
+                .get()
+                .build()
+        }
+
+    /**
+     * 解析响应体为模型 id 列表。
+     * 单条解析失败跳过（mapNotNull 容错，不抛）；整个 body 解析失败才抛 IOException。
+     */
+    private fun parseModelIds(text: String, providerId: String): List<String> {
+        val root = try {
+            Json.parseToJsonElement(text).jsonObject
+        } catch (e: Exception) {
+            AgentLogger.e("ModelList", "响应解析异常", e)
+            throw IOException("获取模型列表失败：响应解析异常")
+        }
+        return when (providerId) {
+            // Gemini：models[].name 去掉 models/ 前缀；只收支持 generateContent 的条目，
+            // name 缺省 / 方法不含 generateContent 的跳过
+            "gemini" -> root["models"]?.jsonArray?.mapNotNull { el ->
+                runCatching {
+                    val obj = el.jsonObject
+                    val name = obj["name"]?.jsonPrimitive?.contentOrNull ?: return@runCatching null
+                    val supportsGenerate = obj["supportedGenerationMethods"]?.jsonArray
+                        ?.any { it.jsonPrimitive.contentOrNull == "generateContent" } == true
+                    if (name.isNotBlank() && supportsGenerate) {
+                        name.removePrefix("models/")
+                    } else {
+                        null
+                    }
+                }.getOrNull()
+            } ?: emptyList()
+
+            // OpenAI / Claude：data[].id；id 缺省或为空的条目跳过
+            else -> root["data"]?.jsonArray?.mapNotNull { el ->
+                runCatching {
+                    el.jsonObject["id"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
+                }.getOrNull()
+            } ?: emptyList()
+        }
+    }
+
+    companion object {
+        /** Anthropic API 版本头（官方要求，缺了会 400；与 ClaudeClient 保持一致）。 */
+        private const val ANTHROPIC_VERSION = "2023-06-01"
+    }
+}

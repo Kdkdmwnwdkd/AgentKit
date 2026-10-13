@@ -24,6 +24,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -36,6 +38,7 @@ import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material3.CircularProgressIndicator
@@ -64,6 +67,8 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
@@ -432,6 +437,8 @@ private fun ModelTab(
     var keyRevealed by rememberSaveable { mutableStateOf(false) }
     var showRename by rememberSaveable { mutableStateOf(false) }
     var showDelete by rememberSaveable { mutableStateOf(false) }
+    // 「选择模型」弹窗：从当前端点拉取可用模型列表搜索选择（用户反馈「给了路径我就能搜到有什么模型」）
+    var showModelPicker by rememberSaveable { mutableStateOf(false) }
     val activeProfile = profiles.firstOrNull { it.id == activeProfileId }
 
     // 本地模式没有端点/Key：测试按钮放行，字段区换成状态卡
@@ -485,12 +492,22 @@ private fun ModelTab(
             )
             KeySelfCheck(apiKey)
             Spacer(Modifier.height(AgentSpacing.space3))
+            // 模型名： trailing 放大镜 IconButton（48dp 触控）打开「选择模型」弹窗，
+            // 从端点拉取可用模型搜索选择，不必盲手填（用法同上方 API Key 字段的眼睛按钮）
             AkTextField(
                 value = model,
                 onValueChange = onModel,
                 label = "模型名",
                 placeholder = ProviderDefaults.defaultModel(providerId),
-                machine = true
+                machine = true,
+                trailing = {
+                    AkCircleIconButton(
+                        icon = Icons.Outlined.Search,
+                        description = "获取模型列表",
+                        onClick = { showModelPicker = true },
+                        iconSize = 20.dp
+                    )
+                }
             )
         }
     }
@@ -527,6 +544,20 @@ private fun ModelTab(
             onClick = onSave,
             enabled = dirty,
             modifier = Modifier.weight(1f)
+        )
+    }
+
+    // 「选择模型」弹窗：AkModalHost 承载退场动画（用法同重命名/删除对话框）。
+    // 打开即拉取；local-llama 模式字段区换成 LocalModeSummaryCard，天然没有该入口。
+    AkModalHost(target = if (showModelPicker) true else null) { _, visible ->
+        ModelPickerSheet(
+            vm = vm,
+            baseUrl = baseUrl,
+            apiKey = apiKey,
+            providerId = providerId,
+            onPick = { onModel(it); showModelPicker = false },
+            onDismiss = { vm.clearModelList(); showModelPicker = false },
+            visible = visible
         )
     }
 
@@ -718,6 +749,213 @@ private fun AddProfileDialog(
                             modifier = Modifier.weight(1f)
                         )
                     }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * 「选择模型」弹窗（用户反馈「给了路径我就能搜索到他有什么模型，我不是说模型我自己搞」）：
+ * 从当前端点拉取可用模型，点击选择；也可以返回手动输入。
+ *
+ * 视觉语言对齐 [AddProfileDialog] / [RenameProfileDialog]：AkModalHost 承载退场 +
+ * 344dp 圆角白卡 + scale/fade 出入场。四态渲染（消费 VM 的 modelListLoading /
+ * modelListError / modelList 三个 StateFlow）：
+ *  ① loading：圆环 +「正在获取模型列表…」；
+ *  ② error：脱敏后的错误文案 +「重试」；
+ *  ③ 空列表且非 loading：「未获取到模型」+「重试」+「该端点可能不支持 /models，可返回手动输入」；
+ *  ④ 有数据：搜索框 +「共 N 个模型」+ 封顶 360dp 的 LazyColumn，点击行即选定；
+ *     当前已选中的行（与已落盘的 config.model 比对）文字升 primary 并附对勾。
+ */
+@Composable
+private fun ModelPickerSheet(
+    vm: ChatViewModel,
+    baseUrl: String,
+    apiKey: String,
+    providerId: String,
+    onPick: (String) -> Unit,
+    onDismiss: () -> Unit,
+    visible: Boolean
+) {
+    val loading by vm.modelListLoading.collectAsStateWithLifecycle()
+    val error by vm.modelListError.collectAsStateWithLifecycle()
+    val models by vm.modelList.collectAsStateWithLifecycle()
+    // 当前已选中的模型：以已落盘配置为准（不是编辑器里未保存的值）
+    val config by vm.config.collectAsStateWithLifecycle()
+    // 搜索关键词：纯本地状态，无需上提到 VM
+    var keyword by remember { mutableStateOf("") }
+
+    // 打开即拉（弹窗随退场动画卸载后，再次打开重新组合会重新触发）
+    LaunchedEffect(Unit) { vm.fetchModelList(baseUrl, apiKey, providerId) }
+
+    val spec = if (visible) AkMotionDialog else AkMotionExit
+    val scale by animateFloatAsState(if (visible) 1f else 0.96f, animationSpec = spec)
+    val alpha by animateFloatAsState(if (visible) 1f else 0f, animationSpec = spec)
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        // 宽 = min(344dp, 100vw − 48dp)：外层 padding 24dp 给出后者，widthIn 封顶 344dp
+        Box(
+            Modifier
+                .fillMaxSize()
+                .padding(horizontal = 24.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Surface(
+                shape = RoundedCornerShape(20.dp),
+                color = MaterialTheme.colorScheme.surface,
+                modifier = Modifier
+                    .widthIn(max = 344.dp)
+                    .scale(scale)
+                    .alpha(alpha)
+            ) {
+                Column(Modifier.padding(24.dp)) {
+                    Text(
+                        text = "选择模型",
+                        style = MaterialTheme.typography.titleLarge,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Spacer(Modifier.height(AgentSpacing.space2))
+                    Text(
+                        text = "从当前端点拉取可用模型，点击选择；也可以返回手动输入",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(AgentSpacing.space4))
+                    when {
+                        // ① loading
+                        loading -> Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = AgentSpacing.space6),
+                            horizontalArrangement = Arrangement.Center,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(18.dp),
+                                strokeWidth = 2.dp
+                            )
+                            Spacer(Modifier.width(AgentSpacing.space2))
+                            Text(
+                                text = "正在获取模型列表…",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+
+                        // ② error：文案 + 重试
+                        error != null -> Column(
+                            Modifier.fillMaxWidth(),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Text(
+                                text = error ?: "未知错误",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.error,
+                                textAlign = TextAlign.Center
+                            )
+                            Spacer(Modifier.height(AgentSpacing.space2))
+                            AkTextButton(
+                                text = "重试",
+                                onClick = { vm.fetchModelList(baseUrl, apiKey, providerId) }
+                            )
+                        }
+
+                        // ③ 空列表（非 loading）：未获取到 + 重试 + 端点不支持提示
+                        models.isEmpty() -> Column(
+                            Modifier.fillMaxWidth(),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Text(
+                                text = "未获取到模型",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Spacer(Modifier.height(AgentSpacing.space2))
+                            AkTextButton(
+                                text = "重试",
+                                onClick = { vm.fetchModelList(baseUrl, apiKey, providerId) }
+                            )
+                            Spacer(Modifier.height(AgentSpacing.space2))
+                            Text(
+                                text = "该端点可能不支持 /models，可返回手动输入",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                textAlign = TextAlign.Center
+                            )
+                        }
+
+                        // ④ 有数据：搜索框 + 计数 + 封顶列表
+                        else -> {
+                            AkTextField(
+                                value = keyword,
+                                onValueChange = { keyword = it },
+                                label = "搜索模型",
+                                placeholder = "搜索模型",
+                                machine = true
+                            )
+                            Spacer(Modifier.height(AgentSpacing.space2))
+                            Text(
+                                text = "共 ${models.size} 个模型",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Spacer(Modifier.height(AgentSpacing.space2))
+                            // 本地过滤：modelId 含关键词（忽略大小写）即命中
+                            val filtered = models.filter { it.contains(keyword, ignoreCase = true) }
+                            LazyColumn(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(max = 360.dp)
+                            ) {
+                                items(filtered) { id ->
+                                    val isCurrent = id == config.model
+                                    Row(
+                                        Modifier
+                                            .fillMaxWidth()
+                                            .clip(RoundedCornerShape(12.dp))
+                                            .clickable { onPick(id) }
+                                            .padding(
+                                                vertical = AgentSpacing.space3,
+                                                horizontal = AgentSpacing.space2
+                                            ),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(
+                                            text = id,
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            color = if (isCurrent) {
+                                                MaterialTheme.colorScheme.primary
+                                            } else {
+                                                MaterialTheme.colorScheme.onSurface
+                                            },
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                        if (isCurrent) {
+                                            Spacer(Modifier.width(AgentSpacing.space2))
+                                            Icon(
+                                                imageVector = Icons.Outlined.Check,
+                                                contentDescription = "当前模型",
+                                                tint = MaterialTheme.colorScheme.primary,
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(AgentSpacing.space6))
+                    // 底部取消：fillMaxWidth，与顶部动作行的视觉重量一致
+                    AkOutlinedButton(
+                        text = "取消",
+                        onClick = onDismiss,
+                        modifier = Modifier.fillMaxWidth()
+                    )
                 }
             }
         }
