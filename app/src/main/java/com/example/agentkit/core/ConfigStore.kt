@@ -54,6 +54,31 @@ class ConfigStore(context: Context) {
         }.apply()
     }
 
+    /**
+     * 保存媒体 Provider Key（生图/视频工坊用，与 LLM Key 同库不同键——调研 06 号文档
+     * 明确「不引入统一密钥库」，开源前不做加密，与 LLM Key 同等待遇）。
+     *
+     * @param providerId media Provider id（dashscope / openai / volc / minimax）。
+     */
+    fun saveMediaKey(providerId: String, key: String) {
+        sp.edit().putString(KEY_MEDIA_KEY_PREFIX + providerId, key.trim()).apply()
+    }
+
+    /**
+     * 读媒体 Provider Key。
+     *
+     * OpenAI 特例：媒体 Key 为空时回退到 LLM Key——images API 与 chat API
+     * 同一账号同一把钥匙，避免用户「明明配过模型还要再填一遍」的割裂感。
+     */
+    fun loadMediaKey(providerId: String): String {
+        val own = sp.getString(KEY_MEDIA_KEY_PREFIX + providerId, "").orEmpty()
+        if (own.isNotBlank()) return own
+        if (providerId == "openai") {
+            return sp.getString(KEY_API_KEY, "").orEmpty()
+        }
+        return ""
+    }
+
     companion object {
         /** 与现有 SharedPreferences 命名风格保持一致（agentkit_ 前缀）。 */
         private const val PREFS_NAME = "agentkit_model_config"
@@ -61,5 +86,6 @@ class ConfigStore(context: Context) {
         private const val KEY_API_KEY = "api_key"
         private const val KEY_MODEL = "model"
         private const val KEY_PROVIDER = "provider_id"
+        private const val KEY_MEDIA_KEY_PREFIX = "media_key_"
     }
 }

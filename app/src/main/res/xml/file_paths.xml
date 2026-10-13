@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  FileProvider 路径配置：作品库（filesDir/media/outputs/）的文件经 content:// URI
+  分享给系统相册/播放器。零依赖（androidx.core 自带），不暴露 filesDir 全貌。
+-->
+<paths>
+    <files-path name="media_outputs" path="media/outputs/" />
+</paths>

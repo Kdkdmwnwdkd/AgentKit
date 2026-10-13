@@ -40,6 +40,7 @@ import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Extension
 import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material.icons.outlined.Palette
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Shield
 import androidx.compose.material.icons.outlined.Storage
@@ -76,7 +77,9 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 
 /**
- * 抽屉 9 个一级目的地（视觉规范 §6.5.2「入口清单」完整覆盖）。
+ * 抽屉一级目的地（视觉规范 §6.5.2「入口清单」的 9 项 + 九步流水线扩展 4 项：
+ * 容器 / 编辑器 / MCP / 创作工坊——规范外扩是调研九步的显式要求，入口风格
+ * 仍严格遵循 §6.5.2 的抽屉项规格）。
  *
  * @param route 路由键（UX v1 §1.7 路由表直译，用于 rememberSaveable 持久化）。
  * @param label 抽屉菜单项文案（单行中文，§6.5.2）。
@@ -96,6 +99,7 @@ enum class AppDest(
     CONTAINER("container", "容器", "容器", Icons.Outlined.ViewInAr),
     EDITOR("editor", "编辑器", "编辑器", Icons.Outlined.Edit),
     MCP("mcp", "MCP", "MCP", Icons.Outlined.Cloud),
+    MEDIA("media", "创作", "创作工坊", Icons.Outlined.Palette),
     PERMISSIONS("permissions", "权限中心", "权限中心", Icons.Outlined.Shield),
     SKILLS("skills", "技能中心", "技能中心", Icons.Outlined.Extension),
     LOGS("logs", "运行日志", "运行日志", Icons.Outlined.Description),
@@ -110,7 +114,7 @@ enum class AppDest(
 
 /** 抽屉「主要」组：天天用（§6.5.2）。 */
 private val PrimaryGroup = listOf(
-    AppDest.CHAT, AppDest.MODEL, AppDest.CONSOLE, AppDest.TERMINAL, AppDest.CONTAINER, AppDest.EDITOR, AppDest.MCP
+    AppDest.CHAT, AppDest.MODEL, AppDest.CONSOLE, AppDest.TERMINAL, AppDest.CONTAINER, AppDest.EDITOR, AppDest.MCP, AppDest.MEDIA
 )
 
 /** 抽屉「管理」组：出事时用（§6.5.2）。 */
@@ -368,7 +372,7 @@ fun AppScaffold(
 }
 
 /**
- * 路由分发：9 个一级目的地 → 各屏幕文件。
+ * 路由分发：全部一级目的地 → 各屏幕文件。
  * 页面切换无转场动画（v3 无此 token）；顶栏由各页用 [PageTopBar] 自渲染（§6.5.1 骨架统一）。
  */
 @Composable
@@ -392,6 +396,7 @@ private fun ScreenHost(
         AppDest.CONTAINER -> ContainerScreen()
         AppDest.EDITOR -> EditorScreen()
         AppDest.MCP -> McpScreen()
+        AppDest.MEDIA -> MediaScreen()
         AppDest.PERMISSIONS -> PermissionsScreen(vm)
         AppDest.SKILLS -> SkillsScreen(vm)
         AppDest.LOGS -> LogsScreen(vm)

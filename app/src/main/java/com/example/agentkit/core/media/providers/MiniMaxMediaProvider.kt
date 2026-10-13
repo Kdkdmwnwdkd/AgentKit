@@ -1,0 +1,113 @@
+package com.example.agentkit.core.media.providers
+
+import com.example.agentkit.core.media.MediaException
+import com.example.agentkit.core.media.MediaKind
+import com.example.agentkit.core.media.MediaProvider
+import com.example.agentkit.core.media.MediaRequest
+import com.example.agentkit.core.media.MediaTaskHandle
+import com.example.agentkit.core.media.MediaTaskState
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+import java.util.concurrent.TimeUnit
+
+/**
+ * MiniMax 海螺视频（调研 06 号文档「MiniMax 海螺（视频强项）」直译）。
+ *
+ * 协议：异步两段式。
+ *   - 提交：POST /v1/video_generation {model, prompt} → task_id
+ *   - 轮询：GET /v1/query/video_generation?task_id= → status + video_url
+ *     （status: Queueing / Preparing / Processing / Success / Fail；
+ *      video_url 为带时效的下载直链，拿到即由下载器落盘。）
+ *
+ * 只做视频——海螺的图片接口与视频不同源，工坊的图片任务由其余三家承担，
+ * 一个类只把一件事做透（调研 06 号文档「Provider 各管各的协议」）。
+ */
+class MiniMaxMediaProvider(private val apiKey: String) : MediaProvider {
+
+    override val id = "minimax"
+    override val displayName = "MiniMax 海螺"
+    override val kinds = setOf(MediaKind.TEXT_TO_VIDEO)
+
+    private val json = Json { ignoreUnknownKeys = true }
+    private val http = OkHttpClient.Builder()
+        .connectTimeout(15, TimeUnit.SECONDS)
+        .readTimeout(120, TimeUnit.SECONDS)
+        .build()
+
+    override suspend fun submit(request: MediaRequest): MediaTaskHandle = withContext(Dispatchers.IO) {
+        requireKey()
+        val body = buildJsonObject {
+            put("model", request.extra["model"] ?: "MiniMax-Hailuo-02")
+            put("prompt", request.prompt)
+            request.extra["duration"]?.let { put("duration", it.toIntOrNull() ?: 6) }
+        }
+        val request_ = Request.Builder()
+            .url("$BASE_URL/video_generation")
+            .header("Authorization", "Bearer $apiKey")
+            .post(json.encodeToString(JsonObject.serializer(), body).toRequestBody(JSON))
+            .build()
+        http.newCall(request_).execute().use { resp ->
+            val text = resp.body?.string().orEmpty()
+            if (!resp.isSuccessful) throw MediaException("HTTP ${resp.code}: ${text.take(300)}")
+            val root = json.parseToJsonElement(text).jsonObject
+            val baseResp = root["base_resp"]?.jsonObject
+            if (baseResp != null && baseResp["status_code"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() != 0) {
+                throw MediaException(
+                    baseResp["status_msg"]?.jsonPrimitive?.contentOrNull ?: "提交失败"
+                )
+            }
+            val taskId = root["task_id"]?.jsonPrimitive?.contentOrNull
+                ?: throw MediaException("提交响应缺 task_id")
+            return@withContext MediaTaskHandle(taskId, MediaTaskState.Running(null))
+        }
+    }
+
+    override suspend fun poll(taskId: String): MediaTaskState = withContext(Dispatchers.IO) {
+        requireKey()
+        val request = Request.Builder()
+            .url("$BASE_URL/query/video_generation?task_id=$taskId")
+            .header("Authorization", "Bearer $apiKey")
+            .get()
+            .build()
+        http.newCall(request).execute().use { resp ->
+            val text = resp.body?.string().orEmpty()
+            if (!resp.isSuccessful) throw MediaException("HTTP ${resp.code}: ${text.take(300)}")
+            val root = json.parseToJsonElement(text).jsonObject
+            return@withContext when (root["status"]?.jsonPrimitive?.contentOrNull) {
+                "Success" -> {
+                    val url = root["video_url"]?.jsonPrimitive?.contentOrNull
+                        ?: throw MediaException("任务成功但响应无 video_url")
+                    MediaTaskState.Succeeded(listOf(url))
+                }
+
+                "Fail" -> {
+                    val msg = root["base_resp"]?.jsonObject?.get("status_msg")?.jsonPrimitive?.contentOrNull
+                        ?: "任务失败"
+                    MediaTaskState.Failed(msg)
+                }
+
+                else -> MediaTaskState.Running(null)
+            }
+        }
+    }
+
+    private fun requireKey() {
+        if (apiKey.isBlank()) throw MediaException("未配置 MiniMax API Key")
+    }
+
+    companion object {
+        private const val BASE_URL = "https://api.minimaxi.chat/v1"
+        private val JSON = "application/json; charset=utf-8".toMediaType()
+    }
+}
