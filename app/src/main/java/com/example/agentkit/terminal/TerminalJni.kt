@@ -57,6 +57,23 @@ object TerminalJni {
     ): Long
 
     /**
+     * 创建 pty 子进程并执行 [argv]（多参数命令，容器 proot 用）。
+     *
+     * @param argv 命令 + 参数数组（argv[0] 为可执行文件绝对路径）
+     * @param env  环境变量数组（K=V 形式）
+     * @param cwd  子进程工作目录
+     * @param rows 初始行数 / @param cols 初始列数
+     * @return 会话句柄；0 = 失败
+     */
+    external fun createSubprocessArgv(
+        argv: Array<String>,
+        env: Array<String>,
+        cwd: String,
+        rows: Int,
+        cols: Int
+    ): Long
+
+    /**
      * 阻塞读 master fd（pty 输出 → 仿真器）。
      *
      * @return 读到的字节数；0 = EOF（shell 已退出）；-1 = 句柄无效 / 已销毁 / 读错误

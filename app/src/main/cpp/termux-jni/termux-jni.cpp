@@ -13,6 +13,7 @@
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
+#include <cstdlib>
 #include <string>
 #include <vector>
 
@@ -150,6 +151,89 @@ Java_com_example_agentkit_terminal_TerminalJni_createSubprocess(
     sp->exitCode = -1;
     pthread_mutex_init(&sp->mu, nullptr);
     LOGI("createSubprocess 成功: pid=%d master=%d %dx%d", pid, master,
+         ws.ws_row, ws.ws_col);
+    return reinterpret_cast<jlong>(sp);
+}
+
+/**
+ * 创建 pty 子进程并执行 [argv]（多参数命令，供容器 proot 使用）。
+ *
+ * 与 createSubprocess 同构：forkpty → 子进程 setenv 环境变量 → execvp(argv[0], argv)。
+ * 区别在于支持参数向量（如 `proot -r rootfs -b /dev ... /bin/sh`），而非单路径 execve。
+ *
+ * @param argv Java 字符串数组（argv[0] 为可执行文件绝对路径）
+ * @param env  环境变量数组（K=V 形式；子进程内 setenv，供 execvp 经由 environ 继承）
+ * @param cwd  子进程工作目录（execvp 前 chdir）
+ * @param rows / cols 终端尺寸
+ * @return 会话句柄；0 = 失败
+ */
+JNIEXPORT jlong JNICALL
+Java_com_example_agentkit_terminal_TerminalJni_createSubprocessArgv(
+    JNIEnv* env, jobject /*thiz*/, jobjectArray jargv, jobjectArray jenv,
+    jstring cwd, jint rows, jint cols) {
+    if (!jargv) {
+        LOGE("createSubprocessArgv: argv 为空");
+        return 0;
+    }
+    const std::string cwdStr = jstringToStd(env, cwd);
+    std::vector<std::string> argvStore = jStringArrayToVector(env, jargv);
+    if (argvStore.empty() || argvStore[0].empty()) {
+        LOGE("createSubprocessArgv: argv[0] 为空");
+        return 0;
+    }
+    std::vector<std::string> envStore = jStringArrayToVector(env, jenv);
+
+    struct winsize ws{};
+    ws.ws_row = static_cast<unsigned short>(rows > 0 ? rows : 24);
+    ws.ws_col = static_cast<unsigned short>(cols > 0 ? cols : 80);
+
+    int master = -1;
+    pid_t pid = forkpty(&master, nullptr, nullptr, &ws);
+    if (pid < 0) {
+        LOGE("forkpty 失败: errno=%d (%s)", errno, strerror(errno));
+        return 0;
+    }
+
+    if (pid == 0) {
+        // —— 子进程路径 ——
+        if (!cwdStr.empty() && chdir(cwdStr.c_str()) != 0) {
+            const int e = errno;
+            char buf[64];
+            const int len = snprintf(buf, sizeof(buf), "chdir(%s) failed errno=%d\n",
+                                     cwdStr.c_str(), e);
+            ssize_t ignored = write(STDERR_FILENO, buf, static_cast<size_t>(len));
+            (void) ignored;
+        }
+        // 把 K=V 环境变量注入子进程 environ（execvp 沿用 environ）
+        for (auto& e : envStore) {
+            const size_t eq = e.find('=');
+            if (eq != std::string::npos && eq > 0) {
+                setenv(e.substr(0, eq).c_str(), e.substr(eq + 1).c_str(), 1);
+            }
+        }
+        std::vector<char*> argvp;
+        argvp.reserve(argvStore.size() + 1);
+        for (auto& a : argvStore) argvp.push_back(const_cast<char*>(a.c_str()));
+        argvp.push_back(nullptr);
+        execvp(argvStore[0].c_str(), argvp.data());
+        const int e = errno;
+        char buf[64];
+        const int len = snprintf(buf, sizeof(buf), "execvp(%s) failed errno=%d\n",
+                                 argvStore[0].c_str(), e);
+        ssize_t ignored = write(STDERR_FILENO, buf, static_cast<size_t>(len));
+        (void) ignored;
+        _exit(127);
+    }
+
+    // —— 父进程路径 ——
+    auto* sp = new Subprocess();
+    sp->pid = pid;
+    sp->masterFd = master;
+    sp->slaveFd = -1;
+    sp->reaped = false;
+    sp->exitCode = -1;
+    pthread_mutex_init(&sp->mu, nullptr);
+    LOGI("createSubprocessArgv 成功: pid=%d master=%d %dx%d", pid, master,
          ws.ws_row, ws.ws_col);
     return reinterpret_cast<jlong>(sp);
 }

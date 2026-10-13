@@ -1,0 +1,33 @@
+AgentKit · 第三方组件源码要约（proot）
+=====================================
+
+本应用以「独立可执行文件」形式随 APK 分发 proot（路径：
+assets/bin/arm64-v8a/proot），并由运行时提取到应用私有目录执行。
+proot 采用 GPL-2.0（或更新版本）授权，其许可证全文见同目录 COPYING。
+
+依据 GPL 义务，特此提供对应的完整对应源代码（Complete Corresponding Source）：
+
+  - 上游仓库：https://github.com/proot-me/proot
+  - 本应用所用提交：25dc6a3134891f98a79f57ce1c2c1b23ff15cad1
+      （git ls-remote 于构建时记录；如需精确复现请用该 commit）
+  - 获取方式（任选其一）：
+      1) git clone https://github.com/proot-me/proot.git
+         git checkout 25dc6a3134891f98a79f57ce1c2c1b23ff15cad1
+      2) 通过上游 Releases / 镜像站获取对应版本源码包
+
+构建本 proot 二进制的工具链与步骤见仓库根目录脚本：
+
+  scripts/build-proot.sh
+
+该脚本使用 Android NDK（aarch64, minSdk API 26）交叉编译 proot，
+并将其放入 app/src/main/assets/bin/arm64-v8a/proot。
+proot 依赖 talloc（Samba 项目，LGPL-3.0），脚本会一并拉取并交叉编译。
+
+合规要点：
+  - proot 未被静态链接进本应用自身的任何动态库，而是作为独立程序 execve，
+    以履行 GPL 对「独立可执行」组件的分发要求。
+  - 若你修改了随附的 proot 源码，须按 GPL 同样向接收者提供修改后的源码。
+
+联系与书面要约：
+  如无法通过 above 方式获取源码，可书面请求至本应用分发方，
+  我们将在收到请求后提供源码（可能收取介质成本费，以 GPL 允许为限）。

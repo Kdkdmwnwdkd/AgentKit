@@ -93,14 +93,13 @@ private val TermTextStyle: TextStyle = TextStyle(
 )
 
 /**
- * 终端会话的进程级持有者。
+ * 终端会话的进程级持有者（TERMINAL 页专用）。
  *
  * 为什么需要它：屏幕旋转会销毁并重建 Composition，若把 [TerminalSession] 直接放进
  * remember，每次旋转都会杀掉 shell 再重开一个（pty 句柄是 native 资源，
  * rememberSaveable 保不住它）。这里用「引用计数 + 延迟销毁」兜住旋转窗口期：
  * 退出页面后 1 秒内重新进入（旋转场景）即取消销毁、原会话继续；真正离开才
- * kill 进程组。进程死亡（Process Death）时 holder 随之消失，重新进入即全新会话——
- * 这是有意取舍，native 句柄本就无法跨进程死亡保留。
+ * kill 进程组。进程死亡（Process Death）时 holder 随之消失，重新进入即全新会话。
  */
 private object TerminalSessionHolder {
 
@@ -126,7 +125,6 @@ private object TerminalSessionHolder {
 
     /**
      * 获取（必要时创建并启动）会话。
-     *
      * @return 会话实例；启动失败返回 null（原因见 [startError]）
      */
     fun acquire(cwd: File, filesDir: File, packageName: String): TerminalSession? {
@@ -172,90 +170,62 @@ private object TerminalSessionHolder {
 }
 
 /**
- * 终端页（调研文档 03「第 4 步：终端组件」直译）。
+ * 终端内容区（输出 + 输入栏），TERMINAL 与 CONTAINER 两页共用。
  *
- * 结构：透明顶栏（[PageTopBar]「终端」）→ 输出区（Column + verticalScroll 逐行 Text，
- * 长按复制、底部自动跟随）→ 输入栏（等宽单行 + 发送 + Ctrl 切换 + 快捷键行）。
+ * 结构：输出区（逐行等宽渲染 + 底部自动跟随 + 长按复制）→ 输入栏（等宽单行 + 发送 +
+ * Ctrl 切换 + Tab/↑/↓/Esc 快捷键）。会话存活态来自 holder 的 [updateTick]/[exitCode]/
+ * [startError]，本组合只负责渲染，不含进程生命周期。
  *
- * 交互约定：
- * - `ls` / `echo hi` 的回显由 pty 本身完成（shell 回写 master），本页只负责渲染；
- * - Ctrl+C：点「Ctrl」chip 进入待发态，输入单个字母（如 C）点发送即发 0x03；
- * - ↑↓ 发 `ESC[A` / `ESC[B`（历史命令），Tab 发 `\t`（补全）；
- * - 退出页面即销毁会话（kill 进程组 + 回收僵尸），旋转不重建（见 [TerminalSessionHolder]）。
+ * @param session    当前会话（null = 未建立或已退出）
+ * @param updateTick 输出刷新滴答（变化时重新快照渲染）
+ * @param exitCode   会话退出码（null = 运行中）
+ * @param startError 启动失败原因（非 null 时显示降级文案）
  */
 @Composable
-fun TerminalScreen() {
+internal fun TerminalContent(
+    session: TerminalSession?,
+    updateTick: Long,
+    exitCode: Int?,
+    startError: String?
+) {
     val context = LocalContext.current
     val ak = LocalAkColors
-    val jniOk = remember { TerminalJni.ensureLoaded() }
-    val cwd = remember {
-        File(context.filesDir, "workspace").apply { runCatching { mkdirs() } }
+
+    if (startError != null) {
+        AkEmptyState(
+            icon = Icons.Outlined.Terminal,
+            title = "启动失败",
+            description = startError
+        )
+        return
     }
 
-    Column(Modifier.fillMaxSize()) {
-        PageTopBar(title = AppDest.TERMINAL.title)
+    val snapshot = remember(session, updateTick) {
+        session?.emulator?.snapshot() ?: TerminalSnapshot.EMPTY
+    }
 
-        if (!jniOk) {
-            // 降级：x86 模拟器等未编入 pty 模块的 ABI——明确文案，而不是崩
-            AkEmptyState(
-                icon = Icons.Outlined.Terminal,
-                title = "终端不可用",
-                description = "当前设备架构不支持终端（pty 模块仅随 arm64-v8a 构建），可在真机上使用。"
-            )
-            return@Column
-        }
+    val scrollState = rememberScrollState()
+    var autoFollow by remember { mutableStateOf(true) }
 
-        var session by remember { mutableStateOf(TerminalSessionHolder.peekSession()) }
-        LaunchedEffect(Unit) {
-            session = TerminalSessionHolder.acquire(cwd, context.filesDir, context.packageName)
-        }
-        // 退出页面（含返回键导航离开）即释放；销毁延迟到 holder 的旋转窗口期之后
-        DisposableEffect(Unit) {
-            onDispose { TerminalSessionHolder.release() }
-        }
-
-        val tick by TerminalSessionHolder.updateTick
-        val exitCode by TerminalSessionHolder.exitCode
-        val startError by TerminalSessionHolder.startError
-
-        val snapshot = remember(session, tick) {
-            session?.emulator?.snapshot() ?: TerminalSnapshot.EMPTY
-        }
-
-        if (startError != null) {
-            AkEmptyState(
-                icon = Icons.Outlined.Terminal,
-                title = "终端启动失败",
-                description = startError ?: ""
-            )
-            return@Column
-        }
-
-        // —— 输出区：逐行等宽渲染 + 底部自动跟随 + 长按复制 ——
-        val scrollState = rememberScrollState()
-        var autoFollow by remember { mutableStateOf(true) }
-
-        // 用户手势停止时判定是否停在底部：在底部 → 恢复自动跟随；上滑 → 暂停
-        // （程序化 scrollTo 不置 isScrollInProgress，不会被误判为用户操作）
-        LaunchedEffect(scrollState) {
-            var wasInProgress = false
-            snapshotFlow { scrollState.isScrollInProgress }.collect { inProgress ->
-                if (wasInProgress && !inProgress) {
-                    autoFollow = scrollState.value >= scrollState.maxValue - 2
-                }
-                wasInProgress = inProgress
+    // 用户手势停止时判定是否停在底部：在底部 → 恢复自动跟随；上滑 → 暂停
+    LaunchedEffect(scrollState) {
+        var wasInProgress = false
+        snapshotFlow { scrollState.isScrollInProgress }.collect { inProgress ->
+            if (wasInProgress && !inProgress) {
+                autoFollow = scrollState.value >= scrollState.maxValue - 2
             }
+            wasInProgress = inProgress
         }
-        // 新输出自动滚底（仅当用户仍在底部时）
-        LaunchedEffect(snapshot.lines.size) {
-            if (autoFollow) scrollState.scrollTo(scrollState.maxValue)
-        }
+    }
+    // 新输出自动滚底（仅当用户仍在底部时）
+    LaunchedEffect(snapshot.lines.size) {
+        if (autoFollow) scrollState.scrollTo(scrollState.maxValue)
+    }
 
-        // 长按复制的读取源：rememberUpdatedState 保证手势闭包里始终拿到最新快照，
-        // 又不会因每次输出刷新而重启手势检测（重启会让进行中的长按断掉）
-        val clipboard = LocalClipboardManager.current
-        val currentSnapshot by rememberUpdatedState(snapshot)
+    val clipboard = LocalClipboardManager.current
+    val currentSnapshot by rememberUpdatedState(snapshot)
 
+    Column(Modifier.fillMaxSize()) {
         BoxWithConstraints(
             Modifier
                 .weight(1f)
@@ -281,9 +251,7 @@ fun TerminalScreen() {
                         vertical = AgentSpacing.space2
                     )
             ) {
-                // 长按复制整屏：detectTapGestures 的 onLongPress（稳定 API）。
-                // 与 verticalScroll 的分工——拖动被滚动消费，静止长按才触发复制，
-                // 两个 modifier 分层挂载互不抢占。
+                // 长按复制整屏
                 Box(
                     Modifier
                         .fillMaxWidth()
@@ -324,13 +292,56 @@ fun TerminalScreen() {
             }
         }
 
-        // —— 输入栏：等宽单行输入 + 发送 + Ctrl 切换 + 快捷键行 ——
-        // 会话退出后输入栏随之禁用（写已退出的 pty 只会得到 EIO，不如直接停掉）
         TerminalInputBar(
             enabled = session != null && exitCode == null,
             onSendText = { text -> session?.write("$text\n") },
             onSendCtrl = { c -> session?.sendCtrl(c) },
             onSendRaw = { raw -> session?.write(raw) }
+        )
+    }
+}
+
+/**
+ * 终端页（调研文档 03「第 4 步：终端组件」直译）。
+ *
+ * 结构：透明顶栏（[PageTopBar]「终端」）→ [TerminalContent]。
+ * JNI 不可用 / 启动失败时显式降级——不静默崩溃。
+ */
+@Composable
+fun TerminalScreen() {
+    val context = LocalContext.current
+    val jniOk = remember { TerminalJni.ensureLoaded() }
+    val cwd = remember {
+        File(context.filesDir, "workspace").apply { runCatching { mkdirs() } }
+    }
+
+    Column(Modifier.fillMaxSize()) {
+        PageTopBar(title = AppDest.TERMINAL.title)
+
+        if (!jniOk) {
+            // 降级：x86 模拟器等未编入 pty 模块的 ABI——明确文案，而不是崩
+            AkEmptyState(
+                icon = Icons.Outlined.Terminal,
+                title = "终端不可用",
+                description = "当前设备架构不支持终端（pty 模块仅随 arm64-v8a 构建），可在真机上使用。"
+            )
+            return@Column
+        }
+
+        var session by remember { mutableStateOf(TerminalSessionHolder.peekSession()) }
+        LaunchedEffect(Unit) {
+            session = TerminalSessionHolder.acquire(cwd, context.filesDir, context.packageName)
+        }
+        // 退出页面（含返回键导航离开）即释放；销毁延迟到 holder 的旋转窗口期之后
+        DisposableEffect(Unit) {
+            onDispose { TerminalSessionHolder.release() }
+        }
+
+        TerminalContent(
+            session = session,
+            updateTick = TerminalSessionHolder.updateTick.value,
+            exitCode = TerminalSessionHolder.exitCode.value,
+            startError = TerminalSessionHolder.startError.value
         )
     }
 }
@@ -458,7 +469,7 @@ private fun TerminalInputBar(
             )
         }
         Spacer(Modifier.height(AgentSpacing.space1))
-        // 快捷键行：Tab 补全 / ↑↓ 历史 / Esc / Ctrl 切换（§6.7 chip 语汇，32dp 紧凑不抢终端高度）
+        // 快捷键行：Tab 补全 / ↑↓ 历史 / Esc / Ctrl 切换
         Row(horizontalArrangement = Arrangement.spacedBy(AgentSpacing.space2)) {
             AkChip(text = "Tab", selected = false, onClick = { onSendRaw("\t") })
             AkChip(text = "↑", selected = false, onClick = { onSendRaw("\u001B[A") })

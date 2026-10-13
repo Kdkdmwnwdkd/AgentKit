@@ -37,6 +37,8 @@ class TerminalSession(
     private val initialRows: Int = 24,
     private val filesDir: File,
     private val packageName: String,
+    private val argv: List<String> = listOf(shellPath),
+    private val env: List<String>? = null,
     private val homeDir: File = cwd.parentFile ?: cwd
 ) {
 
@@ -73,12 +75,17 @@ class TerminalSession(
         if (!TerminalJni.ensureLoaded()) {
             throw IOException("libagentkit-termux.so 不可用（当前 ABI 未编入 pty 模块）")
         }
-        val env = buildEnv()
-        handle = TerminalJni.createSubprocess(
-            shellPath, env, cwd.absolutePath, initialRows, initialCols
-        )
+        val provided = env ?: buildEnv().toList()
+        val envArr = provided.toTypedArray()
+        handle = if (argv.size == 1) {
+            TerminalJni.createSubprocess(argv[0], envArr, cwd.absolutePath, initialRows, initialCols)
+        } else {
+            TerminalJni.createSubprocessArgv(
+                argv.toTypedArray(), envArr, cwd.absolutePath, initialRows, initialCols
+            )
+        }
         if (handle == 0L) {
-            throw IOException("forkpty 失败：无法启动 $shellPath（cwd=${cwd.absolutePath}）")
+            throw IOException("forkpty 失败：无法启动 ${argv[0]}（cwd=${cwd.absolutePath}）")
         }
         started = true
         AgentLogger.i(
