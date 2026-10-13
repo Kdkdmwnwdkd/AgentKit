@@ -28,6 +28,9 @@
     <!-- ===== L4 系统级特殊授权（均需在设置中手动授予） ===== -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.WRITE_SETTINGS" tools:ignore="ProtectedPermissions" />
+
+    <!-- ===== L9 构建链路：拉起系统安装器安装 CI 产出的 APK ===== -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS" tools:ignore="ProtectedPermissions" />
     <!-- REQUEST_INSTALL_PACKAGES：代码中未实现（无静默安装能力），遵循最小权限原则移除；后续实现对应能力时再申请。 -->
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />

@@ -79,6 +79,33 @@ class ConfigStore(context: Context) {
         return ""
     }
 
+    /**
+     * 保存 GitHub 构建配置（第 9 步「构建」按钮用，与 LLM/媒体 Key 同库不同键）。
+     * PAT 明文存储的取舍见 [ConfigStore] 类注释：App 私有目录 + 开源前迁移加密。
+     */
+    fun saveGithubConfig(cfg: com.example.agentkit.core.build.GitHubConfig) {
+        sp.edit().apply {
+            putString(KEY_GH_OWNER, cfg.owner.trim())
+            putString(KEY_GH_REPO, cfg.repo.trim())
+            putString(KEY_GH_PAT, cfg.pat.trim())
+            putString(KEY_GH_WORKFLOW, cfg.workflow.ifBlank { "build.yml" })
+        }.apply()
+    }
+
+    /** 读 GitHub 构建配置；从未保存过返回 null（UI 据此走首次引导）。 */
+    fun loadGithubConfig(): com.example.agentkit.core.build.GitHubConfig? {
+        val owner = sp.getString(KEY_GH_OWNER, "").orEmpty()
+        val repo = sp.getString(KEY_GH_REPO, "").orEmpty()
+        val pat = sp.getString(KEY_GH_PAT, "").orEmpty()
+        if (owner.isBlank() || repo.isBlank() || pat.isBlank()) return null
+        return com.example.agentkit.core.build.GitHubConfig(
+            owner = owner,
+            repo = repo,
+            pat = pat,
+            workflow = sp.getString(KEY_GH_WORKFLOW, "build.yml") ?: "build.yml"
+        )
+    }
+
     companion object {
         /** 与现有 SharedPreferences 命名风格保持一致（agentkit_ 前缀）。 */
         private const val PREFS_NAME = "agentkit_model_config"
@@ -87,5 +114,9 @@ class ConfigStore(context: Context) {
         private const val KEY_MODEL = "model"
         private const val KEY_PROVIDER = "provider_id"
         private const val KEY_MEDIA_KEY_PREFIX = "media_key_"
+        private const val KEY_GH_OWNER = "gh_owner"
+        private const val KEY_GH_REPO = "gh_repo"
+        private const val KEY_GH_PAT = "gh_pat"
+        private const val KEY_GH_WORKFLOW = "gh_workflow"
     }
 }

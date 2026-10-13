@@ -33,6 +33,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Build
 import androidx.compose.material.icons.outlined.Chat
 import androidx.compose.material.icons.outlined.Cloud
 import androidx.compose.material.icons.outlined.Dashboard
@@ -100,6 +101,7 @@ enum class AppDest(
     EDITOR("editor", "编辑器", "编辑器", Icons.Outlined.Edit),
     MCP("mcp", "MCP", "MCP", Icons.Outlined.Cloud),
     MEDIA("media", "创作", "创作工坊", Icons.Outlined.Palette),
+    BUILD("build", "构建", "构建", Icons.Outlined.Build),
     PERMISSIONS("permissions", "权限中心", "权限中心", Icons.Outlined.Shield),
     SKILLS("skills", "技能中心", "技能中心", Icons.Outlined.Extension),
     LOGS("logs", "运行日志", "运行日志", Icons.Outlined.Description),
@@ -114,7 +116,7 @@ enum class AppDest(
 
 /** 抽屉「主要」组：天天用（§6.5.2）。 */
 private val PrimaryGroup = listOf(
-    AppDest.CHAT, AppDest.MODEL, AppDest.CONSOLE, AppDest.TERMINAL, AppDest.CONTAINER, AppDest.EDITOR, AppDest.MCP, AppDest.MEDIA
+    AppDest.CHAT, AppDest.MODEL, AppDest.CONSOLE, AppDest.TERMINAL, AppDest.CONTAINER, AppDest.EDITOR, AppDest.MCP, AppDest.MEDIA, AppDest.BUILD
 )
 
 /** 抽屉「管理」组：出事时用（§6.5.2）。 */
@@ -397,6 +399,7 @@ private fun ScreenHost(
         AppDest.EDITOR -> EditorScreen()
         AppDest.MCP -> McpScreen()
         AppDest.MEDIA -> MediaScreen()
+        AppDest.BUILD -> BuildScreen()
         AppDest.PERMISSIONS -> PermissionsScreen(vm)
         AppDest.SKILLS -> SkillsScreen(vm)
         AppDest.LOGS -> LogsScreen(vm)

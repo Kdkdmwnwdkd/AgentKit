@@ -5,4 +5,5 @@
 -->
 <paths>
     <files-path name="media_outputs" path="media/outputs/" />
+    <files-path name="builds" path="builds/" />
 </paths>
