@@ -1,6 +1,7 @@
 package com.example.agentkit.terminal
 
 import com.example.agentkit.core.AgentLogger
+import com.example.agentkit.core.ProcessEnv
 import android.os.Handler
 import android.os.Looper
 import kotlinx.coroutines.CoroutineScope
@@ -29,6 +30,11 @@ import java.io.IOException
  * @param filesDir App filesDir（PATH / TMPDIR 的环境变量基准）
  * @param packageName 包名（注入环境变量，供容器脚本识别宿主）
  * @param homeDir HOME 目录（默认 cwd 的上级目录，与 Termux 的 filesDir/home 语义一致）
+ * @param argv 完整 argv；**argv[0] 必须是可执行文件自身**（容器场景由
+ *   [com.example.agentkit.core.container.ProotRunner.buildInvocation] 直接给出，选项不会错位）
+ * @param env 额外环境变量（`KEY=VALUE`）。**非空时与宿主 `System.getenv()` 求并集**
+ *   （同名键以本参数为准）——forkpty 后子进程不继承 JVM 进程环境，只喂自定义 env 会让
+ *   proot 因缺 `ANDROID_ROOT` / `LD_LIBRARY_PATH` 瞬间退出且日志无报错。传 null 时用 [buildEnv]
  */
 class TerminalSession(
     private val shellPath: String = "/system/bin/sh",
@@ -75,8 +81,20 @@ class TerminalSession(
         if (!TerminalJni.ensureLoaded()) {
             throw IOException("libagentkit-termux.so 不可用（当前 ABI 未编入 pty 模块）")
         }
-        val provided = env ?: buildEnv().toList()
-        val envArr = provided.toTypedArray()
+        // 外部提供 env（容器场景）时**不能二选一**：forkpty 后子进程不继承 JVM 的
+        // System.getenv()，只喂自定义 env 会让 proot 因缺 ANDROID_ROOT / LD_LIBRARY_PATH
+        // 瞬间退出且日志无任何报错。这里取并集，同名键以外部 env 为准（外部覆盖宿主）。
+        // 未提供 env 的普通终端会话保持 buildEnv() 原行为不变。
+        val envArr = if (env != null) {
+            val merged = ProcessEnv.mergeHostEnv(env)
+            AgentLogger.d(
+                TAG,
+                "env 合并：宿主 ${ProcessEnv.hostEnvSize()} 项 + 自定义 ${env.size} 项 → ${merged.size} 项"
+            )
+            merged
+        } else {
+            buildEnv()
+        }
         handle = if (argv.size == 1) {
             TerminalJni.createSubprocess(argv[0], envArr, cwd.absolutePath, initialRows, initialCols)
         } else {
