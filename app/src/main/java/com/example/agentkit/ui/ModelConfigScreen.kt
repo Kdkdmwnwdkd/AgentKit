@@ -10,7 +10,6 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -191,9 +190,7 @@ private fun ModelPageTabs(selected: Int, onSelect: (Int) -> Unit) {
                     .padding(
                         horizontal = AgentSpacing.space4,
                         vertical = AgentSpacing.space3
-                    )
-                    // 下划线宽随文字：列宽取子节点固有最小宽（= 文字宽）
-                    .width(IntrinsicSize.Min),
+                    ),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Text(
@@ -204,6 +201,9 @@ private fun ModelPageTabs(selected: Int, onSelect: (Int) -> Unit) {
                     else MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Spacer(Modifier.height(6.dp))
+                // 列宽自然 wrapContentWidth（= 最宽子项，即文字宽），下划线随之等宽。
+                // 注意：不要用 Modifier.width(IntrinsicSize.Min)——在 Row 的普通测量路径下
+                // 宽度会塌缩到单字宽，中文逐字换行表现为竖排（真机实测，2026-10-13）。
                 Box(
                     Modifier
                         .fillMaxWidth()

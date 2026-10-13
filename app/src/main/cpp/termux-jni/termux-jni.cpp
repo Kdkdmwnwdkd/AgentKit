@@ -10,6 +10,7 @@
 
 #include <jni.h>
 #include <android/log.h>
+#include <atomic>
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
@@ -33,12 +34,15 @@ namespace {
 
 /** 一条 pty 会话：子进程 pid + master fd。句柄以 jlong 传给 Kotlin。 */
 struct Subprocess {
-    pid_t pid;        // 子进程 pid（forkpty 内部已 setsid，pid 即进程组 id）
-    int masterFd;     // master 端；销毁后置 -1
-    int slaveFd;      // 父进程不持有 slave（见 createSubprocess 注释），恒为 -1
-    bool reaped;      // 已 waitpid 回收，防僵尸
-    int exitCode;     // 回收时记录的退出码（信号杀死 = 128 + 信号）
-    pthread_mutex_t mu;  // 保护 fd 访问与销毁路径的线程安全
+    pid_t pid;              // 子进程 pid（forkpty 内部已 setsid，pid 即进程组 id）
+    std::atomic<int> masterFd;  // master 端；销毁后置 -1（原子：读/写/ioctl 无锁快照读）
+    int slaveFd;            // 父进程不持有 slave（见 createSubprocess 注释），恒为 -1
+    bool reaped;            // 已 waitpid 回收，防僵尸
+    int exitCode;           // 回收时记录的退出码（信号杀死 = 128 + 信号）
+    // 只保护 reaped/exitCode 与 waitpid 区（全部非阻塞）。
+    // 绝对不要用它包阻塞 read/write——主线程的 resize/write 会因此死等读循环的锁
+    // （真机实测 ANR「应用无响应」，2026-10-13）。
+    pthread_mutex_t mu;
 };
 
 std::string jstringToStd(JNIEnv* env, jstring js) {
@@ -145,7 +149,7 @@ Java_com_example_agentkit_terminal_TerminalJni_createSubprocess(
     // 子进程退出后 master 的 read 永远拿不到 EOF。句柄里 slaveFd 恒记 -1。
     auto* sp = new Subprocess();
     sp->pid = pid;
-    sp->masterFd = master;
+    sp->masterFd.store(master);
     sp->slaveFd = -1;
     sp->reaped = false;
     sp->exitCode = -1;
@@ -228,7 +232,7 @@ Java_com_example_agentkit_terminal_TerminalJni_createSubprocessArgv(
     // —— 父进程路径 ——
     auto* sp = new Subprocess();
     sp->pid = pid;
-    sp->masterFd = master;
+    sp->masterFd.store(master);
     sp->slaveFd = -1;
     sp->reaped = false;
     sp->exitCode = -1;
@@ -241,6 +245,10 @@ Java_com_example_agentkit_terminal_TerminalJni_createSubprocessArgv(
 /**
  * 阻塞读 master fd（pty 输出 → 仿真器）。
  *
+ * 无锁：fd 取原子快照后直接阻塞 read。锁只保护非阻塞状态区——若像旧版那样持锁
+ * read，主线程的 resize/write 会死等读循环释放锁而 ANR（真机实测，2026-10-13）。
+ * fd 被销毁路径 close 后，本 read 立即返回 EBADF/EIO → -1，读循环自然收尾。
+ *
  * @return 读到的字节数；0 = EOF（子进程关闭了 slave 一侧）；-1 = 句柄无效 / 已销毁 / 读错误
  */
 JNIEXPORT jint JNICALL
@@ -250,22 +258,15 @@ Java_com_example_agentkit_terminal_TerminalJni_readBytes(
     if (!sp) return -1;
     const jsize cap = env->GetArrayLength(buf);
     if (cap <= 0) return 0;
-    pthread_mutex_lock(&sp->mu);
-    if (sp->masterFd < 0) {
-        pthread_mutex_unlock(&sp->mu);
-        return -1;
-    }
+    const int fd = sp->masterFd.load();
+    if (fd < 0) return -1;
     jbyte* dst = env->GetByteArrayElements(buf, nullptr);
-    if (!dst) {
-        pthread_mutex_unlock(&sp->mu);
-        return -1;
-    }
+    if (!dst) return -1;
     ssize_t n;
     do {
-        n = read(sp->masterFd, dst, static_cast<size_t>(cap));
+        n = read(fd, dst, static_cast<size_t>(cap));
     } while (n < 0 && errno == EINTR);
-    env->ReleaseByteArrayElements(buf, dst, 0);  // n>0 时不回拷（JNI_ABORT 语义由 0 承担：内容未改）
-    pthread_mutex_unlock(&sp->mu);
+    env->ReleaseByteArrayElements(buf, dst, 0);  // mode 0 = 内容回拷 + 释放
     if (n < 0) {
         // EIO 在 Linux pty 上表示子进程侧已全部关闭，视同 EOF 由 Kotlin 侧统一收尾
         LOGI("read 返回 -1: errno=%d (%s)", errno, strerror(errno));
@@ -277,6 +278,8 @@ Java_com_example_agentkit_terminal_TerminalJni_readBytes(
 /**
  * 写 master fd（用户输入 → pty）。内部循环写全部，不会写一半就返回。
  *
+ * 无锁（fd 原子快照）：输入路径由主线程直达，持锁写在 pty 缓冲满时会阻塞 UI。
+ *
  * @return 写入字节数；-1 = 句柄无效 / 已销毁 / 写错误
  */
 JNIEXPORT jint JNICALL
@@ -286,19 +289,13 @@ Java_com_example_agentkit_terminal_TerminalJni_writeBytes(
     if (!sp) return -1;
     const jsize len = env->GetArrayLength(data);
     if (len <= 0) return 0;
-    pthread_mutex_lock(&sp->mu);
-    if (sp->masterFd < 0) {
-        pthread_mutex_unlock(&sp->mu);
-        return -1;
-    }
+    const int fd = sp->masterFd.load();
+    if (fd < 0) return -1;
     jbyte* src = env->GetByteArrayElements(data, nullptr);
-    if (!src) {
-        pthread_mutex_unlock(&sp->mu);
-        return -1;
-    }
+    if (!src) return -1;
     jsize off = 0;
     while (off < len) {
-        ssize_t n = write(sp->masterFd, src + off, static_cast<size_t>(len - off));
+        ssize_t n = write(fd, src + off, static_cast<size_t>(len - off));
         if (n < 0) {
             if (errno == EINTR) continue;
             LOGE("write 失败: errno=%d (%s)", errno, strerror(errno));
@@ -308,26 +305,23 @@ Java_com_example_agentkit_terminal_TerminalJni_writeBytes(
         off += static_cast<jsize>(n);
     }
     env->ReleaseByteArrayElements(data, src, JNI_ABORT);  // 只读不写，不回收
-    pthread_mutex_unlock(&sp->mu);
     return static_cast<jint>(off);
 }
 
-/** 修改 pty 窗口大小（ioctl TIOCSWINSZ）：子进程收到 SIGWINCH 后自行重排。 */
+/** 修改 pty 窗口大小（ioctl TIOCSWINSZ）：子进程收到 SIGWINCH 后自行重排。无锁（ioctl 非阻塞）。 */
 JNIEXPORT void JNICALL
 Java_com_example_agentkit_terminal_TerminalJni_setPtyWindowSize(
     JNIEnv* /*env*/, jobject /*thiz*/, jlong handle, jint rows, jint cols) {
     auto* sp = reinterpret_cast<Subprocess*>(handle);
     if (!sp) return;
-    pthread_mutex_lock(&sp->mu);
-    if (sp->masterFd >= 0) {
-        struct winsize ws{};
-        ws.ws_row = static_cast<unsigned short>(rows > 0 ? rows : 24);
-        ws.ws_col = static_cast<unsigned short>(cols > 0 ? cols : 80);
-        if (ioctl(sp->masterFd, TIOCSWINSZ, &ws) != 0) {
-            LOGI("TIOCSWINSZ 失败: errno=%d (%s)", errno, strerror(errno));
-        }
+    const int fd = sp->masterFd.load();
+    if (fd < 0) return;
+    struct winsize ws{};
+    ws.ws_row = static_cast<unsigned short>(rows > 0 ? rows : 24);
+    ws.ws_col = static_cast<unsigned short>(cols > 0 ? cols : 80);
+    if (ioctl(fd, TIOCSWINSZ, &ws) != 0) {
+        LOGI("TIOCSWINSZ 失败: errno=%d (%s)", errno, strerror(errno));
     }
-    pthread_mutex_unlock(&sp->mu);
 }
 
 /**
@@ -342,10 +336,13 @@ Java_com_example_agentkit_terminal_TerminalJni_killProcessGroup(
     JNIEnv* /*env*/, jobject /*thiz*/, jlong handle) {
     auto* sp = reinterpret_cast<Subprocess*>(handle);
     if (!sp) return;
-    pthread_mutex_lock(&sp->mu);
+    // 先把 fd 摘走（后续 readBytes 快照取到 -1 即退出）；阻塞 read 会被 close 唤醒返回错误
+    const int fd = sp->masterFd.exchange(-1);
     if (sp->pid > 0 && kill(-sp->pid, SIGKILL) != 0 && errno != ESRCH) {
         LOGE("kill(-%d) 失败: errno=%d (%s)", sp->pid, errno, strerror(errno));
     }
+    // SIGKILL 后子进程秒退，waitpid 立即回收（此区持锁但非阻塞）
+    pthread_mutex_lock(&sp->mu);
     if (!sp->reaped && sp->pid > 0) {
         int status = 0;
         if (waitpid(sp->pid, &status, 0) == sp->pid) {
@@ -353,11 +350,8 @@ Java_com_example_agentkit_terminal_TerminalJni_killProcessGroup(
             sp->exitCode = statusToExitCode(status);
         }
     }
-    if (sp->masterFd >= 0) {
-        close(sp->masterFd);
-        sp->masterFd = -1;
-    }
     pthread_mutex_unlock(&sp->mu);
+    if (fd >= 0) close(fd);
     LOGI("killProcessGroup 完成: pid=%d exit=%d", sp->pid, sp->exitCode);
 }
 
