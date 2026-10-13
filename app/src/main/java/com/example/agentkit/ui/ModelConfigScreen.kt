@@ -95,6 +95,9 @@ fun ModelConfigScreen(vm: ChatViewModel, onBack: () -> Unit) {
     var model by remember(config) { mutableStateOf(config.model) }
     var providerId by remember(config) { mutableStateOf(config.providerId) }
     var tab by rememberSaveable { mutableStateOf(0) }
+    // 功能二：新建档案对话框开关（用户录屏反馈「点＋新增没有任何 visible 反馈」——
+    // 旧行为直接静默建副本，新 chip 还被横向滚动条挤到屏外；参照 App 改为先弹命名框）
+    var showAdd by rememberSaveable { mutableStateOf(false) }
 
     val dirty = baseUrl != config.baseUrl || apiKey != config.apiKey ||
         model != config.model || providerId != config.providerId
@@ -107,7 +110,7 @@ fun ModelConfigScreen(vm: ChatViewModel, onBack: () -> Unit) {
             profiles = profiles,
             activeId = activeProfileId,
             onSelect = { vm.switchProfile(it) },
-            onAdd = { vm.addProfile() }
+            onAdd = { showAdd = true }
         )
         LocalTabRefreshEffect(vm = vm, tab = tab)
         ModelPageTabs(
@@ -165,6 +168,21 @@ fun ModelConfigScreen(vm: ChatViewModel, onBack: () -> Unit) {
                 else -> PromptTab(config = config)
             }
         }
+    }
+
+    // 功能二：新建档案对话框（用户录屏反馈「新增无 visible 反馈」+ 参照 App：先弹命名框再创建）。
+    // 预填自动名「配置 N」，用户可直接点创建；清空则按 null 交 VM 走自动命名，绝不建空白名档案。
+    // AkModalHost 用法与 ModelTab 的重命名对话框一致：退场播完再卸载，content 离开组合后
+    // 内部 remember 的输入状态随之重置，下次打开重新预填。
+    AkModalHost(target = if (showAdd) true else null) { _, visible ->
+        var name by remember { mutableStateOf("配置 ${profiles.size + 1}") }
+        AddProfileDialog(
+            name = name,
+            onNameChange = { name = it },
+            visible = visible,
+            onConfirm = { vm.addProfile(name.ifBlank { null }); showAdd = false },
+            onDismiss = { showAdd = false }
+        )
     }
 }
 
@@ -257,10 +275,18 @@ private fun ProfileSwitcher(
     onSelect: (String) -> Unit,
     onAdd: () -> Unit
 ) {
+    val scrollState = rememberScrollState()
+    // 用户录屏反馈「点＋新增后根本没有增加，他还是在最开始那个页面，根本就没变」：
+    // 新档案 chip 追加在条尾，一屏放不下时被横向滚动条挤到屏幕外，点了跟没点一样。
+    // 档案数量变化即平滑滚到最右，让最新档案和「＋」按钮进入可见区（数量没变不滚，
+    // 避免切 tab 等无关重组把用户已经手动滚开的位置强行拽回）。
+    LaunchedEffect(profiles.size) {
+        scrollState.animateScrollTo(scrollState.maxValue)
+    }
     Row(
         Modifier
             .fillMaxWidth()
-            .horizontalScroll(rememberScrollState())
+            .horizontalScroll(scrollState)
             .padding(horizontal = AgentSpacing.space5, vertical = AgentSpacing.space3),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -614,6 +640,81 @@ private fun RenameProfileDialog(
                             text = "确定",
                             onClick = onConfirm,
                             enabled = name.isNotBlank(),
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * 功能二：「新建模型配置」对话框（用户录屏反馈「点＋新增没有任何 visible 反馈，
+ * 还是在最开始那个页面，根本就没变」+ 参照 App：点「＋新建」→ 命名框 → 创建后才可见）。
+ *
+ * 与 [RenameProfileDialog] 同语言同机制（AkModalHost 承载退场 + 344dp 白卡 + scale/fade）：
+ * 标题 + 一句描述 + 名称输入 + 取消/创建。创建按钮永不禁用——名称清空时由 VM 回退
+ * 自动命名（addProfile 对空白名走「配置 N」），绝不创建空白名档案。
+ */
+@Composable
+private fun AddProfileDialog(
+    name: String,
+    onNameChange: (String) -> Unit,
+    visible: Boolean,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val spec = if (visible) AkMotionDialog else AkMotionExit
+    val scale by animateFloatAsState(if (visible) 1f else 0.96f, animationSpec = spec)
+    val alpha by animateFloatAsState(if (visible) 1f else 0f, animationSpec = spec)
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Box(
+            Modifier
+                .fillMaxSize()
+                .padding(horizontal = 24.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Surface(
+                shape = RoundedCornerShape(20.dp),
+                color = MaterialTheme.colorScheme.surface,
+                modifier = Modifier
+                    .widthIn(max = 344.dp)
+                    .scale(scale)
+                    .alpha(alpha)
+            ) {
+                Column(Modifier.padding(24.dp)) {
+                    Text(
+                        text = "新建模型配置",
+                        style = MaterialTheme.typography.titleLarge,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Spacer(Modifier.height(AgentSpacing.space2))
+                    Text(
+                        text = "创建新的模型配置，自定义 API 和参数设置",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(AgentSpacing.space4))
+                    AkTextField(
+                        value = name,
+                        onValueChange = onNameChange,
+                        label = "配置名称",
+                        placeholder = "例如：GPT-4 配置、Claude 配置..."
+                    )
+                    Spacer(Modifier.height(AgentSpacing.space6))
+                    Row(horizontalArrangement = Arrangement.spacedBy(AgentSpacing.space2)) {
+                        AkOutlinedButton(
+                            text = "取消",
+                            onClick = onDismiss,
+                            modifier = Modifier.weight(1f)
+                        )
+                        AkPrimaryButton(
+                            text = "创建",
+                            onClick = onConfirm,
                             modifier = Modifier.weight(1f)
                         )
                     }
