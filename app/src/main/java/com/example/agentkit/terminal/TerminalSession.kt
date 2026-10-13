@@ -1,0 +1,185 @@
+package com.example.agentkit.terminal
+
+import com.example.agentkit.core.AgentLogger
+import android.os.Handler
+import android.os.Looper
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import java.io.File
+import java.io.IOException
+
+/**
+ * 终端 pty 会话：一条 shell 的完整生命周期（净室重写）。
+ *
+ * 职责边界（与 Termux 同构的四层切分，但全部自写）：
+ * - 本类持有 JNI 句柄，管「读循环 → 仿真器 → 回调」与「输入 → pty」两条数据流；
+ * - 解析与屏幕模型在 [TerminalEmulator]（纯 Kotlin，零 Android 依赖，可单测）；
+ * - native 原语在 [TerminalJni]。
+ *
+ * 线程模型：读循环跑在 [Dispatchers.IO] 协程（阻塞 read），写操作由调用方线程直接
+ * 下发（writeBytes 内部持锁，与销毁路径互斥）。[onUpdate] / [onExit] 保证切回主线程。
+ *
+ * @param shellPath 要执行的 shell 绝对路径（默认系统 mksh）
+ * @param cwd 会话工作目录（终端默认 cd 到这里）
+ * @param initialCols / initialRows 初始窗口尺寸（首帧后由 UI 按容器尺寸 [resize] 校正）
+ * @param filesDir App filesDir（PATH / TMPDIR 的环境变量基准）
+ * @param packageName 包名（注入环境变量，供容器脚本识别宿主）
+ * @param homeDir HOME 目录（默认 cwd 的上级目录，与 Termux 的 filesDir/home 语义一致）
+ */
+class TerminalSession(
+    private val shellPath: String = "/system/bin/sh",
+    private val cwd: File,
+    private val initialCols: Int = 80,
+    private val initialRows: Int = 24,
+    private val filesDir: File,
+    private val packageName: String,
+    private val homeDir: File = cwd.parentFile ?: cwd
+) {
+
+    /** 本会话的屏幕模型（读线程写、UI 快照读；内部已互斥）。 */
+    val emulator = TerminalEmulator(initialCols, initialRows)
+
+    /** 屏幕有新输出（主线程回调；UI 在此重新快照渲染）。 */
+    var onUpdate: (() -> Unit)? = null
+
+    /** 会话退出（主线程回调）；参数为退出码（信号杀死 = 128 + 信号，未获取 = -1）。 */
+    var onExit: ((Int) -> Unit)? = null
+
+    private var handle: Long = 0L
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val main = Handler(Looper.getMainLooper())
+
+    @Volatile
+    private var started = false
+
+    @Volatile
+    private var destroyed = false
+
+    /** 会话是否仍在运行（已启动且未销毁、未退出）。 */
+    val isAlive: Boolean
+        get() = started && !destroyed && handle != 0L
+
+    /**
+     * 启动会话：构造环境变量 → forkpty 执行 shell → 起读循环。
+     *
+     * @throws IOException JNI 库不可用或 forkpty 失败（UI 显示降级文案，不崩）
+     */
+    fun start() {
+        if (started || destroyed) return
+        if (!TerminalJni.ensureLoaded()) {
+            throw IOException("libagentkit-termux.so 不可用（当前 ABI 未编入 pty 模块）")
+        }
+        val env = buildEnv()
+        handle = TerminalJni.createSubprocess(
+            shellPath, env, cwd.absolutePath, initialRows, initialCols
+        )
+        if (handle == 0L) {
+            throw IOException("forkpty 失败：无法启动 $shellPath（cwd=${cwd.absolutePath}）")
+        }
+        started = true
+        AgentLogger.i(
+            TAG,
+            "终端会话已启动：$shellPath cwd=${cwd.absolutePath} ${initialCols}x$initialRows"
+        )
+        scope.launch { readLoop() }
+    }
+
+    /**
+     * 环境变量构造（Java 侧职责，C 层只原样转给 execve）：
+     * HOME / PATH（含 filesDir/usr/bin，为将来的容器工具链预留）/
+     * LANG=C.UTF-8 / TERM=xterm-256color / TMPDIR / PWD。
+     */
+    private fun buildEnv(): Array<String> {
+        val tmpDir = File(filesDir, "tmp").apply { runCatching { mkdirs() } }
+        return arrayOf(
+            "HOME=${homeDir.absolutePath}",
+            "PATH=${filesDir.absolutePath}/usr/bin:/system/bin:/system/xbin",
+            "LANG=C.UTF-8",
+            "TERM=xterm-256color",
+            "TMPDIR=${tmpDir.absolutePath}",
+            "PWD=${cwd.absolutePath}",
+            "ANDROID_PACKAGE=$packageName"
+        )
+    }
+
+    /** 读循环：pty 输出 → 仿真器 → 主线程刷新回调；EOF / 错误时收尾并回调退出码。 */
+    private suspend fun readLoop() {
+        val buf = ByteArray(8192)
+        while (scope.isActive && !destroyed) {
+            val n = try {
+                TerminalJni.readBytes(handle, buf)
+            } catch (t: Throwable) {
+                AgentLogger.w(TAG, "readBytes 异常：${t.message}")
+                -1
+            }
+            if (n > 0) {
+                emulator.append(buf, n)
+                postUpdate()
+                continue
+            }
+            // 0 = EOF（shell 退出并关闭了 slave）；-1 = 已销毁或子进程退出后的 EIO
+            break
+        }
+        val code = runCatching { TerminalJni.waitFor(handle, 3000) }.getOrDefault(-1)
+        AgentLogger.i(TAG, "终端会话结束，退出码=$code")
+        postExit(code)
+    }
+
+    /**
+     * 向 shell 写文本（UTF-8 编码后整体下发）。
+     * 会话已退出时静默丢弃——输入栏在退出态本就不该有输入。
+     */
+    fun write(text: String) {
+        if (destroyed || handle == 0L || text.isEmpty()) return
+        val data = text.toByteArray(Charsets.UTF_8)
+        val n = TerminalJni.writeBytes(handle, data)
+        if (n < 0) AgentLogger.w(TAG, "writeBytes 失败（会话可能已退出）")
+    }
+
+    /**
+     * 发送控制字符：如 [sendCtrl]('C') → 0x03（Ctrl+C，中断前台进程）；
+     * 'D' → EOF（退出登录 shell）、'Z' → 挂起。取字符编码低 5 位。
+     */
+    fun sendCtrl(c: Char) {
+        val code = (c.code and 0x1F).toChar()
+        write(code.toString())
+    }
+
+    /** 改变窗口尺寸：同步 Emulator 缓冲与 pty winsize（触发 shell 侧 SIGWINCH 重排）。 */
+    fun resize(cols: Int, rows: Int) {
+        if (destroyed || handle == 0L) return
+        emulator.resize(cols, rows)
+        TerminalJni.setPtyWindowSize(handle, rows, cols)
+    }
+
+    /**
+     * 销毁会话（幂等）：杀进程组（含 shell 的所有子进程）+ 回收僵尸 + 取消读协程。
+     * App 退后台 / 退出终端页必须调用——pty 读线程是阻塞 IO，不回收会白耗电。
+     */
+    fun destroy() {
+        if (destroyed) return
+        destroyed = true
+        if (handle != 0L) {
+            runCatching { TerminalJni.killProcessGroup(handle) }
+                .onFailure { AgentLogger.w(TAG, "killProcessGroup 失败：${it.message}") }
+        }
+        scope.cancel()
+        AgentLogger.i(TAG, "终端会话已销毁")
+    }
+
+    private fun postUpdate() {
+        main.post { if (!destroyed) onUpdate?.invoke() }
+    }
+
+    private fun postExit(code: Int) {
+        main.post { onExit?.invoke(code) }
+    }
+
+    companion object {
+        private const val TAG = "TerminalSession"
+    }
+}

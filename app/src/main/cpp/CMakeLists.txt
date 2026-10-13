@@ -65,3 +65,12 @@ target_link_libraries(agentkit-llama
 # 静态库里的 1000+ 个 llama_*/ggml_* 符号不该出现在 .so 的动态导出表：
 # 既污染符号空间又有潜在冲突风险。JNI 函数在本文件里编译，不受影响。
 target_link_options(agentkit-llama PRIVATE "-Wl,--exclude-libs,ALL")
+
+# ---- 终端组件 JNI 桥（pty 薄封装，自写，无第三方依赖）----
+# forkpty/openpty 由 bionic（libc）直接提供，无需额外链接库。
+add_library(agentkit-termux SHARED termux-jni/termux-jni.cpp)
+
+target_link_libraries(agentkit-termux
+    android
+    log
+)

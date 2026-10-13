@@ -41,6 +41,7 @@ import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Shield
 import androidx.compose.material.icons.outlined.Storage
+import androidx.compose.material.icons.outlined.Terminal
 import androidx.compose.material.icons.outlined.ViewInAr
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -89,6 +90,7 @@ enum class AppDest(
     CHAT("chat", "对话", "对话", Icons.Outlined.Chat),
     MODEL("model", "模型", "模型配置", Icons.Outlined.ViewInAr),
     CONSOLE("console", "控制台", "控制台", Icons.Outlined.Dashboard),
+    TERMINAL("terminal", "终端", "终端", Icons.Outlined.Terminal),
     PERMISSIONS("permissions", "权限中心", "权限中心", Icons.Outlined.Shield),
     SKILLS("skills", "技能中心", "技能中心", Icons.Outlined.Extension),
     LOGS("logs", "运行日志", "运行日志", Icons.Outlined.Description),
@@ -102,7 +104,7 @@ enum class AppDest(
 }
 
 /** 抽屉「主要」组：天天用（§6.5.2）。 */
-private val PrimaryGroup = listOf(AppDest.CHAT, AppDest.MODEL, AppDest.CONSOLE)
+private val PrimaryGroup = listOf(AppDest.CHAT, AppDest.MODEL, AppDest.CONSOLE, AppDest.TERMINAL)
 
 /** 抽屉「管理」组：出事时用（§6.5.2）。 */
 private val ManageGroup = listOf(AppDest.PERMISSIONS, AppDest.SKILLS, AppDest.LOGS, AppDest.MEMORY)
@@ -379,6 +381,7 @@ private fun ScreenHost(
         )
         AppDest.MODEL -> ModelConfigScreen(vm) { onNavigate(AppDest.CHAT) }
         AppDest.CONSOLE -> ConsoleScreen(vm, unreadErrors, onNavigate)
+        AppDest.TERMINAL -> TerminalScreen()
         AppDest.PERMISSIONS -> PermissionsScreen(vm)
         AppDest.SKILLS -> SkillsScreen(vm)
         AppDest.LOGS -> LogsScreen(vm)
