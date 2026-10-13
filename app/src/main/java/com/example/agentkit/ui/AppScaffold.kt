@@ -36,6 +36,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Chat
 import androidx.compose.material.icons.outlined.Dashboard
 import androidx.compose.material.icons.outlined.Description
+import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Extension
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Settings
@@ -92,6 +93,7 @@ enum class AppDest(
     CONSOLE("console", "控制台", "控制台", Icons.Outlined.Dashboard),
     TERMINAL("terminal", "终端", "终端", Icons.Outlined.Terminal),
     CONTAINER("container", "容器", "容器", Icons.Outlined.ViewInAr),
+    EDITOR("editor", "编辑器", "编辑器", Icons.Outlined.Edit),
     PERMISSIONS("permissions", "权限中心", "权限中心", Icons.Outlined.Shield),
     SKILLS("skills", "技能中心", "技能中心", Icons.Outlined.Extension),
     LOGS("logs", "运行日志", "运行日志", Icons.Outlined.Description),
@@ -106,7 +108,7 @@ enum class AppDest(
 
 /** 抽屉「主要」组：天天用（§6.5.2）。 */
 private val PrimaryGroup = listOf(
-    AppDest.CHAT, AppDest.MODEL, AppDest.CONSOLE, AppDest.TERMINAL, AppDest.CONTAINER
+    AppDest.CHAT, AppDest.MODEL, AppDest.CONSOLE, AppDest.TERMINAL, AppDest.CONTAINER, AppDest.EDITOR
 )
 
 /** 抽屉「管理」组：出事时用（§6.5.2）。 */
@@ -386,6 +388,7 @@ private fun ScreenHost(
         AppDest.CONSOLE -> ConsoleScreen(vm, unreadErrors, onNavigate)
         AppDest.TERMINAL -> TerminalScreen()
         AppDest.CONTAINER -> ContainerScreen()
+        AppDest.EDITOR -> EditorScreen()
         AppDest.PERMISSIONS -> PermissionsScreen(vm)
         AppDest.SKILLS -> SkillsScreen(vm)
         AppDest.LOGS -> LogsScreen(vm)
