@@ -658,25 +658,30 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
 
     /**
      * 新增一个配置档案（功能二；配置页切换条「＋」→「新建模型配置」对话框确认后调用）。
-     * 复制当前生效配置作起点——换 Key / 换端点不用从零填；命名并立即切换过去。
+     * 空白起步、字段自填、对标参照 App：API Key / Base URL / 模型名三个文本字段全部置空，
+     * 由用户从头填写，不再继承复制当前生效配置的值；providerId 保留当前供应商
+     * （它是下拉选择器而非「已填数据」，配置页的智能预填与默认值提示会引导用户补全）。
+     * 命名并立即切换过去（编辑器同步显示空白配置）。
      *
      * @param name 用户在对话框里起的档案名；null / 空白回退自动命名「配置 N」
      *   （用户清空输入框时也走这条——绝不创建空白名档案）。
      * @return 新档案 id。
      */
     fun addProfile(name: String? = null): String {
-        val base = _config.value
+        val blank = _config.value.let {
+            ModelConfig(baseUrl = "", apiKey = "", model = "", providerId = it.providerId)
+        }
         val id = UUID.randomUUID().toString()
         val trimmed = name?.trim()
         val profile = ModelProfile(
             id,
             if (trimmed.isNullOrBlank()) "配置 ${_profiles.value.size + 1}" else trimmed,
-            base
+            blank
         )
         val updated = _profiles.value + profile
         _profiles.value = updated
         _activeProfileId.value = id
-        _config.value = base
+        _config.value = blank
         configStore.saveProfiles(updated, id)
         return id
     }
