@@ -10,13 +10,20 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Apps
+import androidx.compose.material.icons.outlined.Build
+import androidx.compose.material.icons.outlined.Cloud
 import androidx.compose.material.icons.outlined.Description
+import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.Extension
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Palette
 import androidx.compose.material.icons.outlined.Security
 import androidx.compose.material.icons.outlined.Shield
+import androidx.compose.material.icons.outlined.Storage
 import androidx.compose.material.icons.outlined.TouchApp
 import androidx.compose.material.icons.outlined.ViewInAr
+import androidx.compose.material.icons.outlined.Widgets
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
@@ -29,9 +36,12 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
  * 主题模式由 MainActivity 用 rememberSaveable 持有（进程内有效，不落盘——见 [ThemeMode] 注释），
  * 本页只负责把选择写回去。
  *
+ * 用户反馈侧边栏拥挤（15 个入口），参照 RikkaHub 极简风：抽屉只留 4+1，
+ * 其余 10 个入口全部收进本页的「工具与创作」「管理与数据」两组——路由不动，只搬家。
+ *
  * @param themeMode 当前明暗模式。
  * @param onThemeModeChange 切换回调（写回宿主持有的状态）。
- * @param onNavigate 跳转到抽屉里的其他一级目的地。
+ * @param onNavigate 跳转到其他一级目的地。
  */
 @Composable
 fun SettingsScreen(
@@ -82,7 +92,7 @@ fun SettingsScreen(
                 }
             }
 
-            // —— 自动化：总开关（与控制台同一开关，这里也留一份）——
+            // —— 自动化：总开关（与控制台同一开关，这里也留一份；权限中心入口留在这张卡里）——
             AkSectionCard(
                 title = "自动化",
                 icon = Icons.Outlined.TouchApp,
@@ -100,6 +110,7 @@ fun SettingsScreen(
                     }
                 )
                 Spacer(Modifier.height(AgentSpacing.space2))
+                // 权限中心入口：保留在自动化卡内（与管理组不重复——同一页面不放两个相同入口）
                 AkListItem(
                     icon = Icons.Outlined.Shield,
                     title = "权限中心",
@@ -108,8 +119,12 @@ fun SettingsScreen(
                 )
             }
 
-            // —— 其他一级页面入口：设置是收纳页，不复制它们的内容 ----
-            AkGroupCard {
+            // —— 工具与创作：从抽屉搬来的常用工具（用户反馈侧边栏拥挤，参照 RikkaHub 收纳）——
+            AkSectionCard(
+                title = "工具与创作",
+                icon = Icons.Outlined.Apps,
+                description = "模型、容器、编辑器与创作工坊等常用工具，抽屉里放不下的都在这。"
+            ) {
                 AkListItem(
                     icon = Icons.Outlined.ViewInAr,
                     title = "模型配置",
@@ -118,10 +133,66 @@ fun SettingsScreen(
                 )
                 AkDivider(Modifier.padding(start = AgentSpacing.space4))
                 AkListItem(
+                    icon = Icons.Outlined.Widgets,
+                    title = "容器",
+                    description = "Termux 容器会话与命令执行状态",
+                    onClick = { onNavigate(AppDest.CONTAINER) }
+                )
+                AkDivider(Modifier.padding(start = AgentSpacing.space4))
+                AkListItem(
+                    icon = Icons.Outlined.Edit,
+                    title = "编辑器",
+                    description = "查看与修改工作区内的代码文件",
+                    onClick = { onNavigate(AppDest.EDITOR) }
+                )
+                AkDivider(Modifier.padding(start = AgentSpacing.space4))
+                AkListItem(
+                    icon = Icons.Outlined.Cloud,
+                    title = "MCP",
+                    description = "管理外部 MCP 服务器与工具接入",
+                    onClick = { onNavigate(AppDest.MCP) }
+                )
+                AkDivider(Modifier.padding(start = AgentSpacing.space4))
+                AkListItem(
+                    icon = Icons.Outlined.Palette,
+                    title = "创作工坊",
+                    description = "生图、视频等多模态创作与结果管理",
+                    onClick = { onNavigate(AppDest.MEDIA) }
+                )
+                AkDivider(Modifier.padding(start = AgentSpacing.space4))
+                AkListItem(
+                    icon = Icons.Outlined.Build,
+                    title = "构建",
+                    description = "推源码到 GitHub、CI 构建并装回本机",
+                    onClick = { onNavigate(AppDest.BUILD) }
+                )
+            }
+
+            // —— 管理与数据：出事时才用的排查型页面 + 关于（同样从抽屉搬来）——
+            AkSectionCard(
+                title = "管理与数据",
+                icon = Icons.Outlined.Storage,
+                description = "技能、日志、记忆与版本信息；权限中心在「自动化」卡里。"
+            ) {
+                AkListItem(
+                    icon = Icons.Outlined.Extension,
+                    title = "技能中心",
+                    description = "已安装技能的启停、导入与信任等级",
+                    onClick = { onNavigate(AppDest.SKILLS) }
+                )
+                AkDivider(Modifier.padding(start = AgentSpacing.space4))
+                AkListItem(
                     icon = Icons.Outlined.Description,
                     title = "运行日志",
                     description = "LLM 请求、工具调用与错误记录",
                     onClick = { onNavigate(AppDest.LOGS) }
+                )
+                AkDivider(Modifier.padding(start = AgentSpacing.space4))
+                AkListItem(
+                    icon = Icons.Outlined.Storage,
+                    title = "记忆库",
+                    description = "Agent 的跨会话长期记忆，图谱式浏览",
+                    onClick = { onNavigate(AppDest.MEMORY) }
                 )
                 AkDivider(Modifier.padding(start = AgentSpacing.space4))
                 AkListItem(

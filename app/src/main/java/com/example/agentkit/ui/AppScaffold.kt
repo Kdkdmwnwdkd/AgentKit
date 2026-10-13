@@ -78,12 +78,14 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 
 /**
- * 抽屉一级目的地（视觉规范 §6.5.2「入口清单」的 9 项 + 九步流水线扩展 4 项：
- * 容器 / 编辑器 / MCP / 创作工坊——规范外扩是调研九步的显式要求，入口风格
- * 仍严格遵循 §6.5.2 的抽屉项规格）。
+ * 一级目的地全量路由表（UX v1 §1.7）：15 个值全部保留，页面都还能到。
+ *
+ * 用户反馈侧边栏拥挤（塞了 15 个入口），参照 RikkaHub 极简风只留 4 个常用入口在
+ * 抽屉里，其余（容器 / 编辑器 / MCP / 创作工坊 / 构建 / 权限 / 技能 / 日志 /
+ * 记忆 / 关于）整体收进设置页——入口搬家，路由一个不动。
  *
  * @param route 路由键（UX v1 §1.7 路由表直译，用于 rememberSaveable 持久化）。
- * @param label 抽屉菜单项文案（单行中文，§6.5.2）。
+ * @param label 菜单项文案（单行中文，§6.5.2）。
  * @param title 顶栏标题（§6.5.4；「模型」项的页面标题是「模型配置」）。
  * @param icon 24dp 线性图标（1.5dp stroke 语汇，禁 emoji）。
  */
@@ -114,21 +116,28 @@ enum class AppDest(
     }
 }
 
-/** 抽屉「主要」组：天天用（§6.5.2）。 */
+/**
+ * 抽屉「主要」组：天天用（§6.5.2）。
+ *
+ * 用户反馈侧边栏拥挤，参照 RikkaHub 极简风瘦身为 4 个：对话 / 模型 / 控制台 / 终端。
+ * 其余入口见设置页（[AppDest] 路由一个不少）。
+ */
 private val PrimaryGroup = listOf(
-    AppDest.CHAT, AppDest.MODEL, AppDest.CONSOLE, AppDest.TERMINAL, AppDest.CONTAINER, AppDest.EDITOR, AppDest.MCP, AppDest.MEDIA, AppDest.BUILD
+    AppDest.CHAT, AppDest.MODEL, AppDest.CONSOLE, AppDest.TERMINAL
 )
 
-/** 抽屉「管理」组：出事时用（§6.5.2）。 */
-private val ManageGroup = listOf(AppDest.PERMISSIONS, AppDest.SKILLS, AppDest.LOGS, AppDest.MEMORY)
-
-/** 抽屉底部位：装一次看一次，语义自知不配分组标题（§6.5.2）。 */
-private val BottomGroup = listOf(AppDest.SETTINGS, AppDest.ABOUT)
+/**
+ * 抽屉底部位：只放设置（§6.5.2）。
+ *
+ * 「关于」同批搬进设置页（设置页本来就有它的入口）——用户反馈侧边栏拥挤，
+ * 底部位留一个语义自知的齿轮就够了，不配分组标题。
+ */
+private val BottomGroup = listOf(AppDest.SETTINGS)
 
 /**
  * 待授权项数：无障碍服务 / 屏幕捕获 / 通知访问 / 使用情况访问 四项中未就绪的数量。
  *
- * 抽屉红点、抽屉就绪文字、权限中心页三处共用同一函数——同一状态源必须同一计数，
+ * 抽屉就绪文字、控制台三宫格、权限中心页三处共用同一函数——同一状态源必须同一计数，
  * 否则用户会看到「抽屉说 3 项、页面说 2 项」的信任裂缝（§6.5.2「与权限中心红点同源」）。
  */
 internal fun pendingGrantCount(
@@ -145,7 +154,8 @@ internal fun pendingGrantCount(
 internal fun String.isErrorLogLine(): Boolean = split(' ').getOrNull(1) == "ERROR"
 
 /**
- * App 级导航宿主（视觉规范 §6.5）：抽屉是唯一 App 级导航，承载 9 个一级目的地。
+ * App 级导航宿主（视觉规范 §6.5）：抽屉是唯一 App 级导航，承载 4 个常用一级目的地
+ * （其余入口收在设置页——用户反馈侧边栏拥挤，参照 RikkaHub 极简风）。
  *
  * 职责边界：本文件只做「路由 + 抽屉 + 顶栏装配 + 进入页面时的数据刷新」，
  * 页面视觉由各屏幕文件自持（共享基件见 Components.kt，页面用 [PageTopBar] 画顶栏）。
@@ -164,11 +174,12 @@ fun AppScaffold(
     themeMode: ThemeMode,
     onThemeModeChange: (ThemeMode) -> Unit
 ) {
-    // 路由态：抽屉 9 入口的唯一真相源；页面切换无转场动画（v3 无此 token，§6.5.2）
+    // 路由态：15 个一级目的地的唯一真相源（抽屉只见 4+1，其余经设置页 / 控制台快捷入口到达）；
+    // 页面切换无转场动画（v3 无此 token，§6.5.2）
     var route by rememberSaveable { mutableStateOf(AppDest.CHAT.route) }
     val dest = AppDest.fromRoute(route)
 
-    // —— 角标 / 就绪文字数据源（与权限中心页、日志页同源）——
+    // —— 就绪文字 / 未读 ERROR 数据源（与权限中心页、控制台同源）——
     val serviceConnected by vm.serviceConnected.collectAsStateWithLifecycle()
     val capturing by vm.capturing.collectAsStateWithLifecycle()
     val notificationGranted by vm.notificationGranted.collectAsStateWithLifecycle()
@@ -270,7 +281,6 @@ fun AppScaffold(
                             dest = dest,
                             serviceConnected = serviceConnected,
                             pendingGrants = pendingGrants,
-                            unreadErrors = unreadErrors,
                             onSelect = onSelect,
                             firstItemFocus = null
                         )
@@ -350,7 +360,6 @@ fun AppScaffold(
                                 dest = dest,
                                 serviceConnected = serviceConnected,
                                 pendingGrants = pendingGrants,
-                                unreadErrors = unreadErrors,
                                 onSelect = onSelect,
                                 firstItemFocus = firstItemFocus
                             )
@@ -432,7 +441,11 @@ internal fun PageTopBar(
 }
 
 /**
- * 抽屉内容：头部（应用标记 + 就绪文字三态）+ 两分组 + 底部位（§6.5.2）。
+ * 抽屉内容：头部（应用标记 + 就绪文字三态）+ 主要组 + 底部位（§6.5.2）。
+ *
+ * 用户反馈侧边栏拥挤，参照 RikkaHub 极简风：抽屉从「9+4+2」瘦身为「4+1」，
+ * 管理组与「关于」整体搬进设置页，只服务抽屉项的红点逻辑随之成为死代码一并删除
+ * （权限 / 日志角标在控制台快捷入口、权限中心页仍可见，同源不受影响）。
  *
  * @param firstItemFocus 焦点请求器：抽屉打开时移入第一项（§6.5.5）；宽屏常驻态传 null。
  */
@@ -441,7 +454,6 @@ private fun DrawerContent(
     dest: AppDest,
     serviceConnected: Boolean,
     pendingGrants: Int,
-    unreadErrors: Int,
     onSelect: (AppDest) -> Unit,
     firstItemFocus: FocusRequester?
 ) {
@@ -465,51 +477,10 @@ private fun DrawerContent(
             DrawerItem(
                 dest = item,
                 isSelected = dest == item,
-                badge = null,
                 talkBack = item.label,
                 onClick = { onSelect(item) },
                 modifier = if (item == PrimaryGroup.first() && firstItemFocus != null)
                     Modifier.focusRequester(firstItemFocus) else Modifier
-            )
-        }
-
-        Spacer(Modifier.height(AgentSpacing.space5))
-        DrawerGroupTitle("管理")
-        ManageGroup.forEach { item ->
-            val badge: (@Composable () -> Unit)? = when (item) {
-                // 角标规则：红点 = 待办（静态不脉冲）/ 计数 = 存量 / 零不显示（§6.5.2）
-                AppDest.PERMISSIONS -> if (pendingGrants > 0) {
-                    { AkStatusDot(MaterialTheme.colorScheme.error, 8.dp) }
-                } else null
-
-                AppDest.LOGS -> if (unreadErrors > 0) {
-                    {
-                        Text(
-                            text = "$unreadErrors",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                } else null
-
-                else -> null
-            }
-            // 红点/计数语义并入父项 TalkBack，不单独聚焦（§6.5.2）
-            val talkBack = when (item) {
-                AppDest.PERMISSIONS ->
-                    if (pendingGrants > 0) "${item.label}，${pendingGrants} 项待授权" else item.label
-
-                AppDest.LOGS ->
-                    if (unreadErrors > 0) "${item.label}，${unreadErrors} 条未读错误" else item.label
-
-                else -> item.label
-            }
-            DrawerItem(
-                dest = item,
-                isSelected = dest == item,
-                badge = badge,
-                talkBack = talkBack,
-                onClick = { onSelect(item) }
             )
         }
 
@@ -519,7 +490,6 @@ private fun DrawerContent(
             DrawerItem(
                 dest = item,
                 isSelected = dest == item,
-                badge = null,
                 talkBack = item.label,
                 onClick = { onSelect(item) }
             )
@@ -595,7 +565,6 @@ private fun DrawerGroupTitle(text: String) {
 private fun DrawerItem(
     dest: AppDest,
     isSelected: Boolean,
-    badge: (@Composable () -> Unit)?,
     talkBack: String,
     onClick: () -> Unit,
     modifier: Modifier = Modifier
@@ -661,10 +630,6 @@ private fun DrawerItem(
                 maxLines = 1,
                 modifier = Modifier.weight(1f)
             )
-            if (badge != null) {
-                Spacer(Modifier.width(AgentSpacing.space2))
-                badge()
-            }
         }
     }
 }
