@@ -128,7 +128,15 @@ object ScreenshotBridge {
         lastError = msg
         isCapturing = false
         AgentLogger.e("ScreenCapture", msg)
+        logLastError(msg)
     }
+
+    /**
+     * 真机第三轮 Bug C（只做确认 + 统一留痕）：用户靠日志报现象，故每次 [lastError]
+     * 落成非空值都补一条**统一关键字**的 WARN（原有各处日志前缀不一，不便 grep）。
+     */
+    private fun logLastError(value: String) =
+        AgentLogger.w("ScreenCapture", "lastError 落库：${AgentLogger.sanitize(value).take(200)}")
 
     fun setPermission(resultCode: Int, data: Intent?) {
         this.resultCode = resultCode
@@ -146,6 +154,7 @@ object ScreenshotBridge {
         if (data == null || resultCode == 0) {
             lastError = ScreenCaptureStartPolicy.failureMessage("尚未取得屏幕捕获授权")
             AgentLogger.w("ScreenCapture", "未取得授权就启动捕获服务：$lastError")
+            logLastError(lastError!!)
             return false
         }
         val failure = ScreenCaptureStartPolicy.guard {
@@ -159,6 +168,7 @@ object ScreenshotBridge {
         if (reason != null) {
             lastError = ScreenCaptureStartPolicy.failureMessage(reason)
             AgentLogger.e("ScreenCapture", "startForegroundService 失败：$lastError", failure.cause)
+            logLastError(lastError!!)
             isCapturing = false
             return false
         }

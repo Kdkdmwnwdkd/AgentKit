@@ -98,10 +98,17 @@ import java.util.concurrent.atomic.AtomicBoolean
  *   （默认 false = 按 provider 自动）。provider = local-llama 时默认把暴露给 LLM 的
  *   工具面裁剪到 [ToolExposurePolicy.LOCAL_CORE_TOOLS]（≤7 个）；置 true 可强制放行
  *   全量（开发者/设置项逃生门）。云端 provider 不受此开关影响（本就全量）。
+ * @param backoffPlan 第 n 次重试（1-based）应等待的计划毫秒数（默认
+ *   [RetryBackoffPolicy.backoffMillis]：3s → 10s → 25s 封顶的**可配常量序列**）。
+ *   测试可注入小值序列以保持 harness 毫秒级。
+ * @param networkRecovery 退避期间的网络恢复等待器（默认
+ *   [NetworkRecoveryWaiter.TIMER_ONLY] 纯定时降级；Android 侧由
+ *   [ConnectivityNetworkRecoveryWaiter] 注入）。等待期间网络恢复 → 立即结束等待、
+ *   马上重试（真机第三轮 Bug A2：关掉飞行模式后应「秒续」而不是干等）。
  * @param retryBackoff 重试退避钩子（「准备重试」事件抛出**之后**、下一次尝试**之前**
- *   调用，参数为 1-based 重试序号）。默认 [RetryBackoffPolicy.DEFAULT]（1s → 2s →
- *   封顶 4s 的指数退避）；测试可注入即时版以保持 harness 毫秒级。断网恢复了这种
- *   「等一会儿再试」才有意义的场景，全靠它区分「重试」与「原地冲锋」。
+ *   调用，参数为 1-based 重试序号）。默认由 [backoffPlan] + [networkRecovery] 组合而成
+ *   （[RetryBackoffPolicy.networkAware]）；测试可注入即时版以保持 harness 毫秒级。
+ *   断网恢复了这种「等一会儿再试」才有意义的场景，全靠它区分「重试」与「原地冲锋」。
  */
 class RealAgentLoop(
     private val llmProvider: () -> LLMClient,
@@ -120,7 +127,10 @@ class RealAgentLoop(
     private val hooks: Hooks = NoopHooks,
     private val executorFactory: (() -> ToolExecutor)? = null,
     private val forceFullTools: Boolean = false,
-    private val retryBackoff: suspend (attempt: Int) -> Unit = RetryBackoffPolicy.DEFAULT
+    private val networkRecovery: NetworkRecoveryWaiter = NetworkRecoveryWaiter.TIMER_ONLY,
+    private val backoffPlan: (attempt: Int) -> Long = RetryBackoffPolicy::backoffMillis,
+    private val retryBackoff: suspend (attempt: Int) -> Unit =
+        RetryBackoffPolicy.networkAware(backoffPlan, networkRecovery)
 ) : AgentLoop {
 
     /** T04：失败熔断 + 调用指纹去重（跨轮次持有，切会话不重置——直到成功清指纹）。 */
@@ -527,13 +537,20 @@ class RealAgentLoop(
      *  - 取消（CancellationException）原样上抛、绝不重试；`finally` 立即清状态——
      *    T05 不变量：用户点停止后不得残留「正在恢复」。
      *
-     * **退避（机实测 Bug 1 修复）**：每次宣布「准备重试」后、真正重发之前，先走
-     * [retryBackoff] 退避（默认 1000ms → 2000ms → 4000ms 封顶）。理由有二：
+     * **退避（机实测 Bug 1 修复 / 真机第三轮 Bug A1 加长）**：每次宣布「准备重试」后、
+     * 真正重发之前，先走 [retryBackoff] 退避（默认序列 3s → 10s → 25s 封顶）。
+     * 理由有二：
      *  1. **UI 可见性**：`UnknownHostException`（飞行模式）是**瞬时返回**的，无退避时
      *     3 次尝试几十毫秒内打完，`RetryStarted` 刚置位就被 `finally` 的 `RetryFinished`
      *     清掉——用户永远看不到「正在恢复（n/N）」横幅，只看到最后那个错误；
-     *  2. **恢复窗口**：退避给了网络实际的恢复时间，这才是「重试」的意义。
+     *  2. **恢复窗口**：退避给了网络实际的恢复时间，这才是「重试」的意义。上一轮
+     *     （1s/2s/4s，含请求耗时约 12s）被用户判为「太短」，故本轮加长到「半分钟」量级。
      * 不可重试错误（401/403/400）**不等待**、一次即失败（高频快败路径零新增延迟）。
+     *
+     * **网络恢复即刻重试（真机第三轮 Bug A2）**：默认退避钩子是「网络感知」的——
+     * 等待期间由 [NetworkRecoveryWaiter] 监听默认网络，一恢复就**提前结束等待**并立刻
+     * 发起下一次尝试（用户关掉飞行模式后「秒续」）。监听在等待结束（含取消路径）时
+     * 注销；拿不到网络服务 / 注册失败一律降级为纯定时等待，绝不崩。
      *
      * **取消优先**：退避期间若协程被取消，必须立刻退出（[delay] 自带取消语义）；
      * 退避钩子本身是否可取消是注入方的自由，故钩子返回后再补一次
@@ -693,10 +710,12 @@ class RealAgentLoop(
 /**
  * 供应商重试退避策略（纯函数，零 Android 依赖——QA harness 可直接对校验发货单）。
  *
- * 指数退避 1000ms → 2000ms → 4000ms，之后封顶 [MAX_MS]：
- *  - 第 1 次重试等 1s：足够 Compose 渲染「正在恢复（1/N）」横幅并完成一轮布局；
- *  - 第 2 次等 2s：给 Wi-Fi / 移动网络一个真实的重连窗口；
- *  - 后续一律 4s 封顶：避免长时间 value=0 的等待把整轮对话拖到不可忍受。
+ * **可配常量序列 [BACKOFF_SEQUENCE_MS] = 3s → 10s → 25s**（真机第三轮 Bug A1）：
+ *  - 第 1 次重试等 3s：足够 Compose 渲染「正在恢复（1/N）」横幅，也覆盖一次短暂抖动；
+ *  - 第 2 次等 10s：给 Wi-Fi / 移动网络一个真实的重连窗口（用户原话「等个半分钟一分钟」）；
+ *  - 第 3 次起 25s 封顶：配合「网络恢复即刻重试」，真正断网时不会干等满额。
+ * 注：默认 providerRetry=2 → 实际等待 3s + 10s（第 3 次失败后不再等待）；
+ * 序列三项之和 38s 需 providerRetry=3 才会走满（见 scripts/qa/HOTFIX3-NOTES.md）。
  *
  * 公开（而非 internal）：[RealAgentLoop] 的构造默认值需引用它，且 QA harness
  * 要脱离 Android 环境直接断言退避毫秒序列（故本对象零 Android / 零 ViewModel 依赖）。
@@ -704,24 +723,51 @@ class RealAgentLoop(
 object RetryBackoffPolicy {
 
     /** 退避基数（第 1 次重试的等待毫秒）。 */
-    const val BASE_MS: Long = 1_000L
+    const val BASE_MS: Long = 3_000L
 
-    /** 单次退避上限。 */
-    const val MAX_MS: Long = 4_000L
+    /** 单次退避上限（序列最后一项）。 */
+    const val MAX_MS: Long = 25_000L
 
     /**
-     * 第 [attempt] 次重试（1-based）前应等待的毫秒数：`BASE_MS * 2^(attempt-1)`，
-     * 封顶 [MAX_MS]；非法序号（≤0）按第 1 次处理，避免调用方传错导致永久忙等。
+     * 退避序列（可配常量）：第 n 次重试取第 n 项，超出长度一律取末项封顶。
+     * 改这一处即可整体调节「等多久」，无需动重试循环。
+     */
+    val BACKOFF_SEQUENCE_MS: List<Long> = listOf(3_000L, 10_000L, 25_000L)
+
+    /**
+     * 第 [attempt] 次重试（1-based）前应等待的毫秒数：取 [BACKOFF_SEQUENCE_MS] 的第
+     * [attempt] 项（越界取末项封顶）；非法序号（≤0）按第 1 次处理，避免调用方传错导致
+     * 永久忙等。
      */
     fun backoffMillis(attempt: Int): Long {
-        var ms = BASE_MS
-        repeat((attempt - 1).coerceAtLeast(0)) { ms = (ms * 2).coerceAtMost(MAX_MS) }
-        return ms.coerceAtMost(MAX_MS)
+        val index = (attempt - 1).coerceAtLeast(0)
+        return BACKOFF_SEQUENCE_MS.getOrElse(index) { MAX_MS }.coerceAtLeast(0L)
     }
 
     /**
-     * 默认退避钩子：按 [backoffMillis] 挂起等待（[kotlinx.coroutines.delay] 自带取消
-     * 语义——退避途中取消会立刻以 CancellationException 返回）。
+     * 默认退避钩子（纯定时，无网络监听）：按 [backoffMillis] 挂起等待
+     * （[kotlinx.coroutines.delay] 自带取消语义——退避途中取消会立刻以
+     * CancellationException 返回）。
      */
-    val DEFAULT: suspend (attempt: Int) -> Unit = { attempt -> delay(backoffMillis(attempt)) }
+    val DEFAULT: suspend (attempt: Int) -> Unit = networkAware(::backoffMillis, NetworkRecoveryWaiter.TIMER_ONLY)
+
+    /**
+     * 网络感知的退避钩子：[RealAgentLoop] 的默认退避由本函数组装。
+     *
+     * 计划等待 [plan] 毫秒，但期间交给 [waiter] 监听——网络恢复则**提前返回**并立刻
+     * 发起下一次尝试；返回前等待器负责注销监听。等待结束时记一条 INFO（计划时长 +
+     * 是被恢复打断还是等满），方便真机排查「等了多久、为什么提前重试」。
+     */
+    fun networkAware(
+        plan: (attempt: Int) -> Long,
+        waiter: NetworkRecoveryWaiter
+    ): suspend (attempt: Int) -> Unit = { attempt ->
+        val plannedMs = plan(attempt).coerceAtLeast(0L)
+        val interrupted = waiter.awaitRecovery(plannedMs)
+        AgentLogger.i(
+            "LLM",
+            "第 $attempt 次重试退避结束：计划 ${plannedMs}ms，" +
+                (if (interrupted) "网络已恢复 → 立即重试" else "等待满额 → 按序列重试")
+        )
+    }
 }
