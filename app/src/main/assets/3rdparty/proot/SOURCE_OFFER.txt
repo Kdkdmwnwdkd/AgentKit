@@ -31,3 +31,36 @@ proot 依赖 talloc（Samba 项目，LGPL-3.0），脚本会一并拉取并交�
 联系与书面要约：
   如无法通过 above 方式获取源码，可书面请求至本应用分发方，
   我们将在收到请求后提供源码（可能收取介质成本费，以 GPL 允许为限）。
+
+=====================================
+补充：当前随包分发版本（三件套，增量更新）
+=====================================
+
+自本次更新起，assets/bin/arm64-v8a/ 下随包分发的不再是 NDK 自建产物，
+而是以下三个上游预编译二进制（Termux 仓库官方构建，aarch64 Android）：
+
+  1) proot（主程序）
+     - 许可证：GPL-2.0-or-later（全文见同目录 COPYING）
+     - 上游仓库：https://github.com/proot-me/proot
+     - 版本：Termux 打包版本 5.1.107.96
+
+  2) libtalloc.so.2（proot 的 NEEDED 依赖）
+     - 许可证：LGPL-3.0-or-later
+     - 上游地址：https://www.samba.org/ftp/talloc/
+     - 版本：2.5.0（Termux 打包版本，SONAME libtalloc.so.2.5.0，
+       本应用以 SONAME 名 libtalloc.so.2 随 assets 分发）
+
+  3) libandroid-shmem.so（proot 的 NEEDED 依赖）
+     - 许可证条款见上游仓库
+     - 上游仓库：https://github.com/termux/libandroid-shmem
+     - 版本：0.7（Termux 打包版本）
+
+三个文件均为上游独立程序/独立库，未被静态链接进本应用自身的任何动态库；
+运行时由应用提取至私有目录后 execve（proot）/ 由动态链接器按
+LD_LIBRARY_PATH 加载（两个 .so），各自许可证义务以上游对应文本为准。
+
+上文「本应用所用提交 25dc6a3134891f98a79f57ce1c2c1b23ff15cad1」与
+scripts/build-proot.sh 描述的 NDK 交叉编译流程，适用于「从源码自建」
+这一路径；当前随包分发物为 Termux 上游预编译版本，复现方式为获取上述
+上游源码/仓库对应版本后按上游说明构建。若将来改回自建，以该脚本与
+commit 记录为准。
