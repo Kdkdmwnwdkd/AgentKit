@@ -2,6 +2,8 @@ package com.example.agentkit.core.container
 
 import android.content.Context
 import com.example.agentkit.core.AgentLogger
+import com.example.agentkit.core.terminal.backend.ProotBackend
+import com.example.agentkit.core.terminal.backend.TerminalBackend
 import com.example.agentkit.terminal.TerminalSession
 import java.io.File
 
@@ -21,6 +23,21 @@ import java.io.File
 object ContainerSession {
 
     private const val TAG = "ContainerSession"
+
+    /**
+     * T07 适配：把容器（proot）**适配成统一终端后端** [TerminalBackend]。
+     *
+     * [create]/[runCommand] 的对外行为与签名**保持不变**（UI 的 ContainerScreen 仍走它们）；
+     * 本函数只是把「proot 容器」纳入后端抽象，使会话池 / shell 工具能用同一个接口驱动
+     * 「容器」与「本机 user」两条路径，上层无需 `if (isContainer)` 分支。
+     *
+     * 惰性：返回的 [ProotBackend] 在 `start()` 时才真正调用 [create]（提取三件套 + 组装
+     * argv/env），避免工厂探测阶段白做重活。
+     *
+     * @return 统一的 proot 后端
+     */
+    fun backend(context: Context, distro: RootfsManager.Distro): TerminalBackend =
+        ProotBackend(context, distro)
 
     /**
      * 创建并配置一条容器终端会话（不自动 start，start 由 holder 在 UI 线程调用）。

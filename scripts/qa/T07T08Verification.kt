@@ -1,0 +1,715 @@
+#!/usr/bin/env kotlin
+/**
+ * Phase 1 · T07（终端后端抽象）+ T08（会话池）QA 行为验证 harness。
+ *
+ * 背景：仓库无测试源集、离线 Gradle 缓存无 JUnit，故用「纯 main() + 手写断言」，
+ * 直接对 assembleDebug 编译产物做行为验证（JVM 上跑不了真 Android / proot，故：
+ *   - 本机 user 后端用**真实 `/bin/sh` 进程**（[LocalUserBackend]）验证端到端；
+ *   - proot 后端用**假后端**（实现 [TerminalBackend] 同一接口）验证「两后端同构」；
+ *   - 工厂降级链 / 缓存用**假 provider** 验证。
+ *
+ * 覆盖：
+ *   1. 两后端走同一接口（假 proot + 真 /bin/sh，均经会话池）
+ *   2. getHighestAvailable() 降级链：proot 可用→proot；不可用→回落 user
+ *   3. 可用性缓存 + clearCache() 后重新求值
+ *   4. 句柄恒 4 位十六进制 + 碰撞处理（随机重试 / 顺序补位）
+ *   5. 身份冲突显式报错（open 复用 & run 声明不一致）
+ *   6. 并发会话输出不串（跨会话并行 + 同会话串行）
+ *   7. 多轮 shell 保持 cwd/env（假后端模拟 + 真 /bin/sh）
+ *   8. 僵尸会话自动释放别名并可重开
+ *   9. ToolOutputTruncator 边界（=上限 / 超限 / 多字节字符不切断）
+ *  10. 上层 shell 工具参数校验 + app_stop shell runner 桥
+ *
+ * 运行方式见 scripts/qa/run-t07t08-verification.sh。
+ */
+
+import com.example.agentkit.core.terminal.TERMINAL_HANDLE_REGEX
+import com.example.agentkit.core.terminal.TerminalSessionPool
+import com.example.agentkit.core.terminal.ToolOutputTruncator
+import com.example.agentkit.core.terminal.backend.LocalUserBackend
+import com.example.agentkit.core.terminal.backend.TerminalBackend
+import com.example.agentkit.core.terminal.backend.TerminalBackendFactory
+import com.example.agentkit.core.terminal.backend.TerminalBackendProvider
+import com.example.agentkit.core.terminal.backend.TerminalBackendSource
+import com.example.agentkit.core.terminal.backend.TerminalIdentity
+import com.example.agentkit.tools.ShellCloseTool
+import com.example.agentkit.tools.ShellRunTool
+import com.example.agentkit.tools.terminalShellCommandRunner
+import kotlinx.coroutines.async
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.receiveAsFlow
+import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import java.io.File
+import java.nio.file.Files
+
+/* ------------------------------ 迷你断言框架 ------------------------------ */
+
+private var passed = 0
+private val failures = mutableListOf<String>()
+
+private suspend fun check(name: String, block: suspend () -> Unit) {
+    try {
+        block()
+        passed++
+        println("  PASS  $name")
+    } catch (t: Throwable) {
+        failures += "$name -> ${t.message}"
+        println("  FAIL  $name -> ${t.message}")
+    }
+}
+
+private fun assertTrue(name: String, cond: Boolean) {
+    if (!cond) throw AssertionError("expected true: $name")
+}
+
+private fun assertEquals(name: String, expected: Any?, actual: Any?) {
+    if (expected != actual) throw AssertionError("[$name] expected <$expected> but was <$actual>")
+}
+
+private fun assertContains(name: String, haystack: String?, needle: String) {
+    if (haystack?.contains(needle) != true) {
+        throw AssertionError("[$name] expected to contain <$needle> in <${haystack?.take(120)}>")
+    }
+}
+
+private fun json(vararg kv: Pair<String, String>): JsonObject =
+    JsonObject(kv.associate { it.first to JsonPrimitive(it.second) })
+
+/* ================================================================== */
+/* 假后端：实现 TerminalBackend 同一接口，模拟一条带状态的小 shell        */
+/* ================================================================== */
+
+private data class FakeReply(val output: String, val exit: Int)
+
+/**
+ * 假 shell 后端：把池下发的「命令行」按一组最小规则求值，并**应答哨兵协议**
+ * （收到 `echo "__AGENTKIT_POOL_END__<token>__$?"` → 回吐 `__AGENTKIT_POOL_END__<token>__<退出码>`）。
+ *
+ * 模拟状态：cwd 与 env 在多次 send 之间**持久**（用于验证会话复用保持 cwd/env）。
+ * [chunkDelayMs] > 0 时把输出**分两片**并夹一段延迟，用于制造「未串行即交织」的窗口。
+ */
+private class FakeShellBackend(
+    override val backendKey: String,
+    override val identity: TerminalIdentity = TerminalIdentity.User,
+    private val chunkDelayMs: Long = 0,
+    private val startOk: Boolean = true
+) : TerminalBackend {
+
+    private val channel = Channel<String>(Channel.UNLIMITED)
+    override val output: Flow<String> = channel.receiveAsFlow()
+
+    @Volatile private var started = false
+    @Volatile private var closed = false
+    @Volatile var forceDead = false
+
+    private var cwd = "/root"
+    private val env = linkedMapOf<String, String>()
+    private var lastExit = 0
+
+    override val isAlive: Boolean get() = started && !closed && !forceDead
+
+    override suspend fun start(): Boolean {
+        if (startOk) started = true
+        return startOk
+    }
+
+    override suspend fun send(input: String): Boolean {
+        if (!isAlive) return false
+        val line = input.trimEnd('\n', '\r')
+        val markIdx = line.indexOf(TerminalSessionPool.SENTINEL_MARKER)
+        if (markIdx >= 0 && line.trimStart().startsWith("echo")) {
+            // 应答哨兵（模拟真 shell 执行 echo）
+            val token = line.substring(markIdx + TerminalSessionPool.SENTINEL_MARKER.length).substringBefore("__")
+            emit("${TerminalSessionPool.SENTINEL_MARKER}${token}__$lastExit")
+            return true
+        }
+        val (out, code) = eval(line)
+        lastExit = code
+        if (out.isNotEmpty()) emit(out)
+        return true
+    }
+
+    private suspend fun emit(s: String) {
+        if (chunkDelayMs <= 0 || s.length < 2) {
+            channel.send(s)
+            return
+        }
+        val mid = s.length / 2
+        channel.send(s.substring(0, mid))
+        delay(chunkDelayMs)
+        channel.send(s.substring(mid))
+    }
+
+    private fun eval(raw: String): FakeReply {
+        val t = raw.trim()
+        return when {
+            t.isEmpty() -> FakeReply("", 0)
+            t.startsWith("cd ") -> {
+                val d = t.removePrefix("cd ").trim().trim('"')
+                cwd = d.ifEmpty { "/" }
+                FakeReply("", 0)
+            }
+            t == "pwd" -> FakeReply(cwd, 0)
+            t.startsWith("export ") -> {
+                val kv = t.removePrefix("export ").trim()
+                val i = kv.indexOf('=')
+                if (i > 0) env[kv.substring(0, i)] = kv.substring(i + 1)
+                FakeReply("", 0)
+            }
+            t.startsWith("echo ") -> {
+                val arg = t.removePrefix("echo ").trim().trim('"')
+                val v = if (arg.startsWith("$")) env[arg.substring(1)].orEmpty() else arg
+                FakeReply(v, 0)
+            }
+            else -> FakeReply("$t: not found", 127)
+        }
+    }
+
+    override suspend fun close() {
+        closed = true
+        started = false
+        channel.close()
+    }
+
+    override suspend fun awaitExit(): Int = lastExit
+}
+
+/* ------------------------------------------------------------------ */
+/* 假 provider / source                                                 */
+/* ------------------------------------------------------------------ */
+
+/** 假后端提供者：`probe()` 计数用于验证「缓存命中 / clearCache 后重探」。 */
+private class FakeProvider(
+    override val identity: TerminalIdentity,
+    override val backendKey: String,
+    @Volatile var available: Boolean,
+    private val factory: () -> TerminalBackend
+) : TerminalBackendProvider {
+    var probeCount = 0
+    override fun probe(): Boolean {
+        probeCount++
+        return available
+    }
+    override fun create(): TerminalBackend = factory()
+}
+
+/** 假后端来源：proot 优先，未实现身份返回 null（与真工厂语义一致）。 */
+private class FakeSource(
+    private val proot: (() -> TerminalBackend?)? = null,
+    private val user: () -> TerminalBackend? = { null }
+) : TerminalBackendSource {
+    override fun obtain(identity: TerminalIdentity, preferProot: Boolean): TerminalBackend? {
+        if (identity != TerminalIdentity.User) return null
+        return if (preferProot) (proot?.invoke() ?: user()) else user()
+    }
+}
+
+/** 宽松来源：对 Su 身份也返回后端（key 仍为 user）——用于隔离验证「池层身份冲突」。 */
+private class PermissiveSource(
+    private val makeUser: () -> TerminalBackend,
+    private val makeSu: () -> TerminalBackend
+) : TerminalBackendSource {
+    override fun obtain(identity: TerminalIdentity, preferProot: Boolean): TerminalBackend? = when (identity) {
+        TerminalIdentity.User -> makeUser()
+        TerminalIdentity.Su -> makeSu()
+        else -> null
+    }
+}
+
+private fun userSource(): TerminalBackendSource =
+    FakeSource(user = { FakeShellBackend(TerminalBackend.KEY_USER) })
+
+/* ================================================================== */
+/* 1. 两后端走同一接口（假 proot + 真 /bin/sh）                          */
+/* ================================================================== */
+
+private fun testTwoBackendsSameInterface() = runBlocking {
+    println("\n== 两后端走同一接口（假 proot + 真 /bin/sh，均经会话池）==")
+
+    val tmp = Files.createTempDirectory("agentkit-t07t08").toFile()
+    val source = FakeSource(
+        proot = { FakeShellBackend(TerminalBackend.KEY_PROOT) },
+        user = { LocalUserBackend(shellPath = "/bin/sh", workingDir = tmp) }
+    )
+    val pool = TerminalSessionPool(source, commandTimeoutMs = 8000)
+
+    check("proot（假后端）经同一接口执行 pwd") {
+        val opened = pool.open(TerminalIdentity.User, alias = null, preferProot = true)
+        assertTrue("open ok", opened.ok)
+        assertEquals("pool=proot", TerminalBackend.KEY_PROOT, opened.backendKey)
+        val r = pool.run(opened.handle!!, "pwd")
+        assertTrue("run ok (${r.errorCode})", r.ok)
+        assertEquals("fake cwd", "/root", r.output)
+    }
+
+    check("本机（真 /bin/sh）经同一接口执行 cd && pwd") {
+        val opened = pool.open(TerminalIdentity.User, alias = null, preferProot = false)
+        assertTrue("open ok", opened.ok)
+        assertEquals("pool=user", TerminalBackend.KEY_USER, opened.backendKey)
+        val sub = File(tmp, "sub").apply { mkdirs() }
+        val cd = pool.run(opened.handle!!, "cd ${sub.absolutePath}")
+        assertTrue("cd ok", cd.ok)
+        val r = pool.run(opened.handle!!, "pwd")
+        assertTrue("run ok (${r.errorCode})", r.ok)
+        assertEquals("real cwd", sub.canonicalPath, File(r.output.trim()).canonicalPath)
+    }
+
+    pool.closeAll()
+}
+
+/* ================================================================== */
+/* 2 + 3. 工厂降级链 + 可用性缓存 + clearCache                          */
+/* ================================================================== */
+
+private fun testFactoryDegradeAndCache() = runBlocking {
+    println("\n== 工厂 getHighestAvailable 降级链 + 缓存 + clearCache ==")
+
+    check("proot 可用 → getHighestAvailable 返回 proot") {
+        val proot = FakeProvider(TerminalIdentity.User, TerminalBackend.KEY_PROOT, true) {
+            FakeShellBackend(TerminalBackend.KEY_PROOT)
+        }
+        val user = FakeProvider(TerminalIdentity.User, TerminalBackend.KEY_USER, true) {
+            FakeShellBackend(TerminalBackend.KEY_USER)
+        }
+        val factory = TerminalBackendFactory(listOf(proot, user))
+        assertEquals("highest=proot", TerminalBackend.KEY_PROOT, factory.getHighestAvailable()?.backendKey)
+        assertEquals("preferred=user", TerminalBackend.KEY_USER, factory.getUserPreferred()?.backendKey)
+    }
+
+    check("proot 不可用 → getHighestAvailable 回落 user") {
+        val proot = FakeProvider(TerminalIdentity.User, TerminalBackend.KEY_PROOT, false) {
+            FakeShellBackend(TerminalBackend.KEY_PROOT)
+        }
+        val user = FakeProvider(TerminalIdentity.User, TerminalBackend.KEY_USER, true) {
+            FakeShellBackend(TerminalBackend.KEY_USER)
+        }
+        val factory = TerminalBackendFactory(listOf(proot, user))
+        assertEquals("highest=user", TerminalBackend.KEY_USER, factory.getHighestAvailable()?.backendKey)
+    }
+
+    check("可用性判定被缓存；clearCache() 后重新探测并生效") {
+        val proot = FakeProvider(TerminalIdentity.User, TerminalBackend.KEY_PROOT, true) {
+            FakeShellBackend(TerminalBackend.KEY_PROOT)
+        }
+        val user = FakeProvider(TerminalIdentity.User, TerminalBackend.KEY_USER, true) {
+            FakeShellBackend(TerminalBackend.KEY_USER)
+        }
+        val factory = TerminalBackendFactory(listOf(proot, user))
+
+        assertEquals("first=proot", TerminalBackend.KEY_PROOT, factory.getHighestAvailable()?.backendKey)
+        assertEquals("probed once", 1, proot.probeCount)
+
+        // proot 变为不可用，但缓存仍命中 → 仍返回 proot，且未再 probe
+        proot.available = false
+        assertEquals("cached=proot", TerminalBackend.KEY_PROOT, factory.getHighestAvailable()?.backendKey)
+        assertEquals("still cached (no probe)", 1, proot.probeCount)
+
+        // clearCache 后重新探测 → 回落 user
+        factory.clearCache()
+        assertEquals("after clear=user", TerminalBackend.KEY_USER, factory.getHighestAvailable()?.backendKey)
+        assertTrue("probed again", proot.probeCount >= 2)
+    }
+
+    check("未实现身份对工厂不可用（不引入依赖）") {
+        val factory = TerminalBackendFactory(
+            listOf(
+                FakeProvider(TerminalIdentity.User, TerminalBackend.KEY_USER, true) { FakeShellBackend(TerminalBackend.KEY_USER) }
+            )
+        )
+        for (id in listOf(TerminalIdentity.Su, TerminalIdentity.Shizuku, TerminalIdentity.Ssh)) {
+            assertEquals("$id → null", null, factory.obtain(id, true))
+        }
+    }
+}
+
+/* ================================================================== */
+/* 4. 句柄格式 + 碰撞处理                                              */
+/* ================================================================== */
+
+private fun testHandleFormatAndCollision() = runBlocking {
+    println("\n== 句柄恒 4 位十六进制 + 碰撞处理 ==")
+
+    check("默认生成器：句柄恒匹配 ^[0-9a-f]{4}$ 且互不重复") {
+        val pool = TerminalSessionPool(userSource())
+        val handles = (1..8).map { i -> pool.open(TerminalIdentity.User, "h$i", preferProot = false).handle!! }
+        handles.forEach { assertTrue("match $it", it.matches(TERMINAL_HANDLE_REGEX)) }
+        assertEquals("unique", handles.size, handles.toSet().size)
+        pool.closeAll()
+    }
+
+    check("碰撞：随到重复句柄时重试到下一个不同值") {
+        val seq = ArrayDeque(listOf("abcd", "abcd", "abce"))
+        val pool = TerminalSessionPool(userSource(), handleGenerator = { seq.removeFirst() })
+        val h1 = pool.open(TerminalIdentity.User, "s1", preferProot = false).handle!!
+        val h2 = pool.open(TerminalIdentity.User, "s2", preferProot = false).handle!!
+        assertEquals("h1", "abcd", h1)
+        assertEquals("h2 避开碰撞", "abce", h2)
+        pool.closeAll()
+    }
+
+    check("反复碰撞 → 顺序补位（0x0000 起找首个空闲）") {
+        val pool = TerminalSessionPool(userSource(), handleGenerator = { "0000" })
+        val h1 = pool.open(TerminalIdentity.User, "f1", preferProot = false).handle!!
+        val h2 = pool.open(TerminalIdentity.User, "f2", preferProot = false).handle!!
+        assertEquals("h1", "0000", h1)
+        assertEquals("h2 顺序补位", "0001", h2)
+        pool.closeAll()
+    }
+}
+
+/* ================================================================== */
+/* 5. 身份冲突显式报错                                                 */
+/* ================================================================== */
+
+private fun testIdentityConflict() = runBlocking {
+    println("\n== 身份固化：后续冲突 identity 显式报错 ==")
+
+    val source = PermissiveSource(
+        makeUser = { FakeShellBackend(TerminalBackend.KEY_USER, TerminalIdentity.User) },
+        makeSu = { FakeShellBackend(TerminalBackend.KEY_USER, TerminalIdentity.Su) }
+    )
+    val pool = TerminalSessionPool(source)
+
+    val hUser = pool.open(TerminalIdentity.User, "shared", preferProot = false).handle!!
+
+    check("open 同别名冲突身份 → identity_conflict（不静默复用）") {
+        val r = pool.open(TerminalIdentity.Su, "shared", preferProot = false)
+        assertTrue("not ok", !r.ok)
+        assertEquals("code", "identity_conflict", r.errorCode)
+    }
+
+    check("run 声明身份与会话固化身份不符 → identity_conflict") {
+        val r = pool.run(hUser, "pwd", identity = TerminalIdentity.Su)
+        assertTrue("not ok", !r.ok)
+        assertEquals("code", "identity_conflict", r.errorCode)
+    }
+
+    check("run 身份一致 → 正常执行") {
+        val r = pool.run(hUser, "pwd", identity = TerminalIdentity.User)
+        assertTrue("ok (${r.errorCode})", r.ok)
+    }
+
+    check("open 同别名同身份 → 复用同一句柄（reused=true）") {
+        val r = pool.open(TerminalIdentity.User, "shared", preferProot = false)
+        assertTrue("ok", r.ok)
+        assertTrue("reused", r.reused)
+        assertEquals("same handle", hUser, r.handle)
+    }
+
+    pool.closeAll()
+}
+
+/* ================================================================== */
+/* 6. 并发输出不串                                                      */
+/* ================================================================== */
+
+private fun testConcurrentNoInterleave() = runBlocking {
+    println("\n== 并发会话输出不串（跨会话并行 / 同会话串行）==")
+
+    check("跨会话并发：各自输出归属正确") {
+        val pool = TerminalSessionPool(
+            FakeSource(user = { FakeShellBackend(TerminalBackend.KEY_USER, chunkDelayMs = 20) }),
+            commandTimeoutMs = 8000
+        )
+        val hA = pool.open(TerminalIdentity.User, "A", preferProot = false).handle!!
+        val hB = pool.open(TerminalIdentity.User, "B", preferProot = false).handle!!
+        coroutineScope {
+            val a = async { pool.run(hA, "echo AAAAAAAA") }
+            val b = async { pool.run(hB, "echo BBBBBBBB") }
+            val ra = a.await(); val rb = b.await()
+            assertTrue("A ok", ra.ok); assertTrue("B ok", rb.ok)
+            assertEquals("A output", "AAAAAAAA", ra.output)
+            assertEquals("B output", "BBBBBBBB", rb.output)
+        }
+        pool.closeAll()
+    }
+
+    check("同会话并发：每会话一把锁 → 串行、不交织") {
+        val pool = TerminalSessionPool(
+            FakeSource(user = { FakeShellBackend(TerminalBackend.KEY_USER, chunkDelayMs = 20) }),
+            commandTimeoutMs = 8000
+        )
+        val h = pool.open(TerminalIdentity.User, "S", preferProot = false).handle!!
+        coroutineScope {
+            val r1 = async { pool.run(h, "echo AAAAAAAA") }
+            val r2 = async { pool.run(h, "echo BBBBBBBB") }
+            val o1 = r1.await(); val o2 = r2.await()
+            assertTrue("r1 ok", o1.ok); assertTrue("r2 ok", o2.ok)
+            // 两条命令各自完整、互不含对方字符（若未串行会交织/串读）
+            assertTrue("r1 clean A", o1.output == "AAAAAAAA")
+            assertTrue("r2 clean B", o2.output == "BBBBBBBB")
+        }
+        pool.closeAll()
+    }
+}
+
+/* ================================================================== */
+/* 7. 多轮 shell 保持 cwd / env                                        */
+/* ================================================================== */
+
+private fun testMultiTurnState() = runBlocking {
+    println("\n== 多轮 shell 保持 cwd / env ==")
+
+    check("假后端：同一会话多轮保住 cwd 与 export 的环境变量") {
+        val pool = TerminalSessionPool(userSource(), commandTimeoutMs = 8000)
+        val h = pool.open(TerminalIdentity.User, "state", preferProot = false).handle!!
+        assertEquals("initial pwd", "/root", pool.run(h, "pwd").output)
+        pool.run(h, "cd /tmp")
+        assertEquals("after cd", "/tmp", pool.run(h, "pwd").output)
+        pool.run(h, "export GREETING=hello")
+        assertEquals("env persisted", "hello", pool.run(h, "echo \$GREETING").output)
+        pool.closeAll()
+    }
+
+    check("真 /bin/sh：同一会话多轮保住 cwd") {
+        val tmp = Files.createTempDirectory("agentkit-t07t08-sh").toFile()
+        val sub = File(tmp, "deep").apply { mkdirs() }
+        val pool = TerminalSessionPool(
+            FakeSource(user = { LocalUserBackend("/bin/sh", tmp) }),
+            commandTimeoutMs = 8000
+        )
+        val h = pool.open(TerminalIdentity.User, "sh", preferProot = false).handle!!
+        assertTrue("cd ok", pool.run(h, "cd ${sub.absolutePath}").ok)
+        val pwd = pool.run(h, "pwd")
+        assertTrue("pwd ok", pwd.ok)
+        assertEquals("cwd persisted", sub.canonicalPath, File(pwd.output.trim()).canonicalPath)
+        pool.closeAll()
+    }
+}
+
+/* ================================================================== */
+/* 8. 僵尸会话释放别名并可重开                                          */
+/* ================================================================== */
+
+private fun testZombieRelease() = runBlocking {
+    println("\n== 僵尸会话自动释放别名并可重开 ==")
+
+    check("会话后端死亡 → run 报 session_dead 且释放句柄；同别名可重开新会话") {
+        var last: FakeShellBackend? = null
+        val source = FakeSource(user = { FakeShellBackend(TerminalBackend.KEY_USER).also { last = it } })
+        val pool = TerminalSessionPool(source, commandTimeoutMs = 8000)
+
+        val h1 = pool.open(TerminalIdentity.User, "z", preferProot = false).handle!!
+        last!!.forceDead = true
+
+        val dead = pool.run(h1, "pwd")
+        assertTrue("not ok", !dead.ok)
+        assertEquals("code", "session_dead", dead.errorCode)
+        assertEquals("handle released", null, pool.lookup(h1))
+
+        val reopened = pool.open(TerminalIdentity.User, "z", preferProot = false)
+        assertTrue("reopen ok", reopened.ok)
+        assertTrue("new handle", reopened.handle != h1)
+        pool.closeAll()
+    }
+
+    check("open 命中僵尸别名 → 回收后新建（不返回僵尸句柄）") {
+        var last: FakeShellBackend? = null
+        val source = FakeSource(user = { FakeShellBackend(TerminalBackend.KEY_USER).also { last = it } })
+        val pool = TerminalSessionPool(source)
+
+        val h1 = pool.open(TerminalIdentity.User, "z2", preferProot = false).handle!!
+        last!!.forceDead = true
+        val h2 = pool.open(TerminalIdentity.User, "z2", preferProot = false).handle!!
+        assertTrue("new handle", h2 != h1)
+        assertEquals("old gone", null, pool.lookup(h1))
+        assertTrue("new alive", pool.lookup(h2)?.alive == true)
+        pool.closeAll()
+    }
+}
+
+/* ================================================================== */
+/* 9. ToolOutputTruncator 边界                                          */
+/* ================================================================== */
+
+/** UTF-8 往返稳定 ⇒ 无孤立代理（半截多字节码点）。 */
+private fun utf8Stable(s: String): Boolean =
+    String(s.toByteArray(Charsets.UTF_8), Charsets.UTF_8) == s
+
+private fun testTruncatorBoundaries() = runBlocking {
+    println("\n== ToolOutputTruncator 边界 ==")
+
+    check("恰好等于上限 → 不截断，原文返回") {
+        val t = ToolOutputTruncator(50)
+        val text = "x".repeat(50)
+        val r = t.truncate(text)
+        assertTrue("not truncated", !r.truncated)
+        assertEquals("original", text, r.text)
+    }
+
+    check("超限 → 截断且长度恒 ≤ 上限，含头部与尾部") {
+        val t = ToolOutputTruncator(200)
+        val text = "HEAD" + "m".repeat(1000) + "TAIL"
+        val r = t.truncate(text)
+        assertTrue("truncated", r.truncated)
+        assertTrue("len ≤ max (${r.text.length})", r.text.length <= 200)
+        assertContains("keeps head", r.text, "HEAD")
+        assertContains("keeps tail", r.text, "TAIL")
+        assertEquals("original length", text.length, r.originalLength)
+    }
+
+    check("多字节（BMP 中文）恰好截断：长度 ≤ 上限且不出现半截码点") {
+        val t = ToolOutputTruncator(120)
+        val text = "中".repeat(500)
+        val r = t.truncate(text)
+        assertTrue("truncated", r.truncated)
+        assertTrue("len ≤ max", r.text.length <= 120)
+        assertTrue("utf8 stable", utf8Stable(r.text))
+    }
+
+    check("表情（代理对）在多种上限下均不被切断") {
+        val base = "😀".repeat(300)
+        for (max in 20..140) {
+            val r = ToolOutputTruncator(max).truncate(base)
+            assertTrue("len ≤ $max (got ${r.text.length})", r.text.length <= max)
+            assertTrue("surrogate-safe at max=$max", utf8Stable(r.text))
+        }
+    }
+}
+
+/* ================================================================== */
+/* 10. shell 工具参数校验 + app_stop runner 桥                          */
+/* ================================================================== */
+
+private fun testShellToolAndBridge() = runBlocking {
+    println("\n== shell 工具参数校验 + app_stop shell runner 桥 ==")
+
+    val pool = TerminalSessionPool(userSource(), commandTimeoutMs = 8000)
+    val run = ShellRunTool(pool)
+    val close = ShellCloseTool(pool)
+
+    check("无 session → 自动开辟并执行") {
+        val r = run.execute(json("command" to "pwd"))
+        assertTrue("ok (${r.code}: ${r.message})", r.ok)
+        assertEquals("handle count", 1, pool.list().size)
+    }
+
+    check("带 session 句柄 → 复用会话执行") {
+        val h = pool.list().first().handle
+        val r = run.execute(json("command" to "pwd", "session" to h))
+        assertTrue("ok", r.ok)
+        assertContains("message has handle", r.message, h)
+    }
+
+    check("非法句柄格式 → bad_handle") {
+        val r = run.execute(json("command" to "pwd", "session" to "ZZZZ"))
+        assertTrue("not ok", !r.ok)
+        assertEquals("code", "bad_handle", r.code)
+    }
+
+    check("不存在的合法句柄 → no_such_session") {
+        val r = run.execute(json("command" to "pwd", "session" to "ffff"))
+        assertTrue("not ok", !r.ok)
+        assertEquals("code", "no_such_session", r.code)
+    }
+
+    check("缺 command / 空 command → 明确失败") {
+        assertEquals("missing", "missing_param", run.execute(JsonObject(emptyMap())).code)
+        assertEquals("empty", "empty_command", run.execute(json("command" to "  ")).code)
+    }
+
+    check("非法 identity → bad_identity") {
+        val r = run.execute(json("command" to "pwd", "identity" to "bogus"))
+        assertTrue("not ok", !r.ok)
+        assertEquals("code", "bad_identity", r.code)
+    }
+
+    check("shell_close 关闭会话；重复关闭 → no_such_session") {
+        val h = pool.list().first().handle
+        assertTrue("close ok", close.execute(json("session" to h)).ok)
+        assertEquals("gone", null, pool.lookup(h))
+        assertEquals("re-close", "no_such_session", close.execute(json("session" to h)).code)
+    }
+
+    pool.closeAll()
+
+    check("app_stop runner 桥：经会话池执行命令并回传退出码") {
+        val p = TerminalSessionPool(userSource(), commandTimeoutMs = 8000)
+        val runner = terminalShellCommandRunner(p)
+        val outcome = runner.exec("echo bridge-ok")
+        assertTrue("not null", outcome != null)
+        assertEquals("exit 0", 0, outcome!!.exitCode)
+        assertContains("output", outcome.output, "bridge-ok")
+        p.closeAll()
+    }
+
+    check("app_stop runner 桥：无可用后端时返回 null（诚实降级）") {
+        val p = TerminalSessionPool(FakeSource(user = { null }))
+        val runner = terminalShellCommandRunner(p)
+        assertEquals("null", null, runner.exec("am force-stop x"))
+        p.closeAll()
+    }
+}
+
+/* ================================================================== */
+/* 11. 资源生命周期：非挂起 releaseAllAsync 收口（QA Major 修复验收）      */
+/* ================================================================== */
+
+private fun testReleaseLifecycle() = runBlocking {
+    println("\n== 资源生命周期：releaseAllAsync 非挂起 best-effort 释放 ==")
+
+    check("releaseAllAsync：同步清空会话表（句柄立即失效）+ 异步关闭后端进程") {
+        val created = mutableListOf<FakeShellBackend>()
+        val source = FakeSource(user = {
+            FakeShellBackend(TerminalBackend.KEY_USER).also { created += it }
+        })
+        val pool = TerminalSessionPool(source, commandTimeoutMs = 8000)
+        val h1 = pool.open(TerminalIdentity.User, "r1", preferProot = false).handle!!
+        val h2 = pool.open(TerminalIdentity.User, "r2", preferProot = false).handle!!
+        assertEquals("2 sessions before release", 2, pool.list().size)
+
+        pool.releaseAllAsync()
+
+        // 同步部分（onCleared 返回后即可见）：旧句柄立即不可达
+        assertEquals("list empty after release", 0, pool.list().size)
+        assertEquals("lookup h1 → null", null, pool.lookup(h1))
+        assertEquals("lookup h2 → null", null, pool.lookup(h2))
+        assertEquals("run → no_such_session", "no_such_session", pool.run(h1, "pwd").errorCode)
+
+        // 异步部分（best-effort）：后端进程最终被关闭
+        val deadline = System.currentTimeMillis() + 2000
+        while (created.any { it.isAlive } && System.currentTimeMillis() < deadline) delay(20)
+        assertEquals("all backends closed", 0, created.count { it.isAlive })
+    }
+
+    check("releaseAllAsync：空池调用安全（不抛）") {
+        val pool = TerminalSessionPool(FakeSource(user = { null }))
+        pool.releaseAllAsync() // 不得抛
+        assertEquals("still empty", 0, pool.list().size)
+    }
+
+    check("releaseAllAsync 幂等：重复调用不抛且保持空") {
+        val pool = TerminalSessionPool(FakeSource(user = { FakeShellBackend(TerminalBackend.KEY_USER) }))
+        pool.open(TerminalIdentity.User, "x", preferProot = false)
+        pool.releaseAllAsync()
+        pool.releaseAllAsync() // 幂等
+        assertEquals("empty", 0, pool.list().size)
+    }
+}
+
+/* ================================================================== */
+
+fun main() {
+    println("=== Phase1 · T07/T08 终端后端抽象 + 会话池 QA 行为验证 ===")
+    testTwoBackendsSameInterface()
+    testFactoryDegradeAndCache()
+    testHandleFormatAndCollision()
+    testIdentityConflict()
+    testConcurrentNoInterleave()
+    testMultiTurnState()
+    testZombieRelease()
+    testTruncatorBoundaries()
+    testShellToolAndBridge()
+    testReleaseLifecycle()
+
+    println("\n=== 汇总: $passed passed, ${failures.size} failed ===")
+    if (failures.isNotEmpty()) {
+        failures.forEach { println("FAILED: $it") }
+        kotlin.system.exitProcess(1)
+    }
+}

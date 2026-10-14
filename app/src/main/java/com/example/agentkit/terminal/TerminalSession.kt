@@ -54,6 +54,17 @@ class TerminalSession(
     /** 屏幕有新输出（主线程回调；UI 在此重新快照渲染）。 */
     var onUpdate: (() -> Unit)? = null
 
+    /**
+     * 原始输出分片回调（**读线程**回调，非主线程）。
+     *
+     * 存在理由（T07）：终端后端接口 [com.example.agentkit.core.terminal.backend.TerminalBackend]
+     * 的 `output: Flow` 需要**流式原始文本**，而 [emulator] 只提供「屏幕快照」语义（丢失流式边界）。
+     * 这里在读循环把每个 pty chunk 原样透出，供 [com.example.agentkit.core.terminal.backend.ProotBackend]
+     * 桥接成输出流。**默认 null，不影响既有行为**；注意分片可能切断多字节 UTF-8 序列（仿真器内部
+     * 另有自己的增量解码，本回调仅供上层按哨兵做完成判定，不做字符边界保证）。
+     */
+    var onRawOutput: ((String) -> Unit)? = null
+
     /** 会话退出（主线程回调）；参数为退出码（信号杀死 = 128 + 信号，未获取 = -1）。 */
     var onExit: ((Int) -> Unit)? = null
 
@@ -143,6 +154,8 @@ class TerminalSession(
             }
             if (n > 0) {
                 emulator.append(buf, n)
+                // T07：原始分片透出给终端后端（默认 null，零行为变化）
+                onRawOutput?.let { cb -> runCatching { cb(String(buf, 0, n, Charsets.UTF_8)) } }
                 postUpdate()
                 continue
             }

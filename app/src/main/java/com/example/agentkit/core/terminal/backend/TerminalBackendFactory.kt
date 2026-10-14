@@ -1,0 +1,102 @@
+package com.example.agentkit.core.terminal.backend
+
+/**
+ * 终端后端工厂（T07，来源：zafiro B1 · libterm `createRuntimeManager`，净室重写）。
+ *
+ * 职责：
+ *  - **降级链** [getHighestAvailable]：proot 可用 → [TerminalBackend.KEY_PROOT]；
+ *    否则回落 [TerminalBackend.KEY_USER] 本机 user（零依赖 `ProcessBuilder`）；
+ *  - [getUserPreferred]：本机 user；
+ *  - [obtain]：会话池使用的按身份取后端入口；
+ *  - **可用性缓存 + [clearCache]**：proot 探测要碰文件系统，缓存判定；
+ *    **权限/可用性变化后调用 [clearCache] 即可让下一次判定重新探测**。
+ *
+ * 设计说明（与 zafiro 的差异，已在实现注释中标注）：
+ *  - 缓存的是「**可用性判定**」而非后端**实例**——一个后端 = 一条独立 shell 进程，
+ *    不能被多个会话共享，故 [obtain] 每次都构造**新实例**，只在探测这一步做缓存；
+ *  - `Su` / `Shizuku` / `Ssh` 未实现：本类对它们直接返回 null（不可用），
+ *    **不引入任何新依赖**（无 libsu / shizuku / ssh 库）。
+ *
+ * 零 Android 依赖：Android 探测全部经由注入的 [TerminalBackendProvider]，
+ * 本类可在 JVM harness 里用假 provider 直接验证降级链与缓存语义。
+ */
+class TerminalBackendFactory(
+    private val providers: List<TerminalBackendProvider>
+) : TerminalBackendSource {
+
+    /**
+     * 可用性缓存：backendKey → 是否可用。仅在 [probe] 结果上缓存，
+     * [clearCache] 后清空，下次 [obtain] 会重新探测。
+     */
+    private val availability = LinkedHashMap<String, Boolean>()
+
+    /**
+     * 按身份取后端。
+     *
+     * @param identity 声明身份；非 [TerminalIdentity.User] 一律返回 null（未实现）
+     * @param preferProot true = proot 优先，不可用回落本机 user；false = 仅本机 user
+     * @return 新构造的后端实例；无可用后端返回 null
+     */
+    override fun obtain(identity: TerminalIdentity, preferProot: Boolean): TerminalBackend? {
+        if (identity != TerminalIdentity.User) {
+            // Su / Shizuku / Ssh 首期只留接口不实现——显式返回不可用，绝不引入依赖
+            return null
+        }
+        val order = if (preferProot) {
+            listOf(TerminalBackend.KEY_PROOT, TerminalBackend.KEY_USER)
+        } else {
+            listOf(TerminalBackend.KEY_USER)
+        }
+        for (key in order) {
+            val provider = providers.firstOrNull { it.backendKey == key && it.identity == identity } ?: continue
+            if (isAvailable(provider)) {
+                val created = runCatching { provider.create() }.getOrNull()
+                if (created != null) return created
+            }
+        }
+        return null
+    }
+
+    /**
+     * 最高可用后端：proot 可用 → proot；否则回落本机 user。
+     * 仅返回单条实例（供不经过会话池的直接调用点使用）。
+     */
+    fun getHighestAvailable(): TerminalBackend? =
+        obtain(TerminalIdentity.User, preferProot = true)
+
+    /** 用户偏好（本机 user）后端。 */
+    fun getUserPreferred(): TerminalBackend? =
+        obtain(TerminalIdentity.User, preferProot = false)
+
+    /**
+     * 可用性查询（带缓存）：命中缓存直接返回；未命中则 [TerminalBackendProvider.probe]
+     * 一次并缓存（probe 抛异常按不可用处理，留日志由 provider 侧负责）。
+     */
+    fun isAvailable(provider: TerminalBackendProvider): Boolean =
+        availability.getOrPut(provider.backendKey) {
+            runCatching { provider.probe() }.getOrDefault(false)
+        }
+
+    /**
+     * 清空可用性缓存：权限/可用性变化（如刚授予 Shizuku、刚解压 rootfs）后调用，
+     * 让下一次 [obtain] / [getHighestAvailable] 重新探测。
+     */
+    fun clearCache() {
+        availability.clear()
+    }
+
+    companion object {
+        /** 默认别名（本机）/ proot 别名——**分池不串味**：两种后端各占独立别名，不互相复用。 */
+        const val ALIAS_DEFAULT = "default"
+
+        /** proot 会话的默认别名。 */
+        const val ALIAS_PROOT = "proot"
+
+        /**
+         * 按后端键取默认别名：proot 用 [ALIAS_PROOT]，其余（本机 user 等）用 [ALIAS_DEFAULT]。
+         * 纯函数：同样 key 两次调用结果相等。
+         */
+        fun defaultAliasFor(backendKey: String): String =
+            if (backendKey == TerminalBackend.KEY_PROOT) ALIAS_PROOT else ALIAS_DEFAULT
+    }
+}

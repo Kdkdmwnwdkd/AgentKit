@@ -70,11 +70,18 @@ import com.example.agentkit.memory.MemoryForgetTool
 import com.example.agentkit.memory.MemoryListTool
 import com.example.agentkit.memory.MemorySearchTool
 import com.example.agentkit.memory.MemoryWriteTool
+import com.example.agentkit.core.container.RootfsManager
+import com.example.agentkit.core.terminal.TerminalSessionPool
+import com.example.agentkit.core.terminal.backend.createTerminalBackendFactory
 import com.example.agentkit.tools.ClipboardTool
 import com.example.agentkit.tools.HttpRequestTool
 import com.example.agentkit.tools.NotificationTool
 import com.example.agentkit.tools.ReadFileTool
+import com.example.agentkit.tools.ShellCloseTool
+import com.example.agentkit.tools.ShellRunTool
 import com.example.agentkit.tools.WriteFileTool
+import com.example.agentkit.tools.registerAppControlTools
+import com.example.agentkit.tools.terminalShellCommandRunner
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -353,6 +360,14 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     private val _memories = MutableStateFlow<List<MemoryItem>>(emptyList())
     val memories: StateFlow<List<MemoryItem>> = _memories.asStateFlow()
 
+    /**
+     * 终端会话池（T08）：shell 工具的运行时底座。后端工厂 proot 优先、不可用回落本机 user；
+     * 上层（shell 工具）只认 4-hex 会话句柄，不存在「是容器还是本机」的分支。
+     */
+    private val terminalPool = TerminalSessionPool(
+        createTerminalBackendFactory(app) { RootfsManager.listAvailable(app).firstOrNull() }
+    )
+
     private val registry = ToolRegistry().apply {
         register(HttpRequestTool())
         register(ReadFileTool(workspace))
@@ -377,6 +392,14 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         register(MemorySearchTool(memoryStore))
         register(MemoryListTool(memoryStore))
         register(MemoryForgetTool(memoryStore))
+        // 终端 shell（T08）：会话池 + 短句柄；shell_run 执行命令、shell_close 释放会话
+        register(ShellRunTool(terminalPool))
+        register(ShellCloseTool(terminalPool))
+        // 应用操控（Phase 1 补口）：列出/启动/停止任意已安装应用——「叫它打开快手就能打开」。
+        // app_launch 走 Intent（零权限）；app_stop 接**真实 shell 通道**（会话池适配，见下），
+        // 通道不可用（池无可用后端）时仍走「诚实降级为需用户手动停止」，绝不静默假装成功。
+        // apply 内传 this（不能传 registry 自身，会触发类型推断递归）
+        registerAppControlTools(this, app, terminalShellCommandRunner(terminalPool))
     }
 
     /** JS 执行引擎（Rhino，纯 Java 无需 NDK）；初始化失败则降级为仅 prompt 形态。 */
@@ -406,6 +429,29 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         // L8/L9：首屏即有内容可看
         refreshLogs()
         refreshMemories()
+    }
+
+    /**
+     * 资源生命周期收口（QA 定级的 Major：资源泄漏修复）。
+     *
+     * ## 为什么必须释放
+     * [TerminalSessionPool] 持有一条条**真实子进程**（本机 `/system/bin/sh`、proot 会话）；
+     * 子进程**不随 GC 回收**，只有显式关闭才释放。Activity `finish()` 清理 ViewModel 时若不收口，
+     * 反复进出会累积泄漏 shell/proot 进程。
+     *
+     * ## 为什么用非挂起的 [TerminalSessionPool.releaseAllAsync]
+     * [onCleared] 是**同步**生命周期钩子（主线程执行）：挂起版 `closeAll()` 需要协程 `await`，
+     * 在这里 `runBlocking` 会卡主线程且关闭子进程可能耗时。`releaseAllAsync()` 做了「最小惊讶」
+     * 取舍——**同步**清空会话表（旧句柄立即失效）+ **异步**关闭后端进程 + 取消输出收集协程，
+     * 既非阻塞又达成防泄漏目标（详见该方法 KDoc）。
+     *
+     * ## 异常安全
+     * `releaseAllAsync()` 内部已对空池 / 后端 `close()` 抛错做 `runCatching`；此处再包一层，
+     * 保证生命周期回调绝不抛异常（回调抛错会拖垮进程收尾）。
+     */
+    override fun onCleared() {
+        runCatching { terminalPool.releaseAllAsync() }
+        super.onCleared()
     }
 
     /** 设置页：切换自动化总开关（同时持久化并同步到桥）。 */
