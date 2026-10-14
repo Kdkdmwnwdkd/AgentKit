@@ -71,7 +71,15 @@ import com.example.agentkit.memory.MemoryListTool
 import com.example.agentkit.memory.MemorySearchTool
 import com.example.agentkit.memory.MemoryWriteTool
 import com.example.agentkit.core.container.RootfsManager
+import com.example.agentkit.core.capability.Capability
+import com.example.agentkit.core.capability.CapabilityRequest
+import com.example.agentkit.core.capability.CapabilityResolution
+import com.example.agentkit.core.capability.logTrace
+import com.example.agentkit.core.capability.resolveCapability
+import com.example.agentkit.core.capability.shellCapabilitySnapshot
+import com.example.agentkit.automation.screenCapabilitySnapshot
 import com.example.agentkit.core.terminal.TerminalSessionPool
+import com.example.agentkit.core.terminal.backend.TerminalBackendFactory
 import com.example.agentkit.core.terminal.backend.createTerminalBackendFactory
 import com.example.agentkit.tools.ClipboardTool
 import com.example.agentkit.tools.HttpRequestTool
@@ -400,12 +408,41 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     val memories: StateFlow<List<MemoryItem>> = _memories.asStateFlow()
 
     /**
+     * 终端后端工厂（T07）：proot 优先、不可用回落本机 user。
+     * 单独持有引用，供能力链（DoD⑤）复用其带缓存的可用性判断，避免重复实现降级顺序与探测。
+     */
+    private val terminalBackendFactory: TerminalBackendFactory =
+        createTerminalBackendFactory(app) { RootfsManager.listAvailable(app).firstOrNull() }
+
+    /**
      * 终端会话池（T08）：shell 工具的运行时底座。后端工厂 proot 优先、不可用回落本机 user；
      * 上层（shell 工具）只认 4-hex 会话句柄，不存在「是容器还是本机」的分支。
      */
-    private val terminalPool = TerminalSessionPool(
-        createTerminalBackendFactory(app) { RootfsManager.listAvailable(app).firstOrNull() }
-    )
+    private val terminalPool = TerminalSessionPool(terminalBackendFactory)
+
+    /**
+     * 能力就绪度快照（DoD⑤）：逐条能力给出「选中的执行路径 + 降级轨迹 + 最终引导」。
+     * 供权限中心页「一次走完」地告诉用户需要做什么，而不是让用户逐条工具试错。
+     */
+    private val _capabilityPlans = MutableStateFlow<List<CapabilityResolution>>(emptyList())
+    val capabilityPlans: StateFlow<List<CapabilityResolution>> = _capabilityPlans.asStateFlow()
+
+    /**
+     * 重算全部能力的就绪度（进入权限页 / 权限或自动化状态变化时调用）。
+     *
+     * 纯函数 [resolveCapability] 只做「快照 → 裁决」，Android 侧探测（proot/rootfs 是否有、
+     * 无障碍是否就绪）由 [shellCapabilitySnapshot] / [screenCapabilitySnapshot] 先行完成；
+     * 裁决后把降级轨迹逐级落日志（可观测），**不静默**。
+     */
+    fun refreshCapabilityPlans() {
+        _capabilityPlans.value = Capability.entries.map { capability ->
+            val snapshot = when (capability) {
+                Capability.RUN_SHELL -> terminalBackendFactory.shellCapabilitySnapshot()
+                Capability.CONTROL_SCREEN -> screenCapabilitySnapshot()
+            }
+            resolveCapability(CapabilityRequest(capability, snapshot)).also { it.logTrace() }
+        }
+    }
 
     private val registry = ToolRegistry().apply {
         register(HttpRequestTool())
@@ -463,7 +500,10 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         }
         // 同步总开关到桥；并把服务连接变化回写到 UI 状态流
         AutomationBridge.enabled = automationPrefs.enabled
-        AutomationBridge.onConnectionChanged = { connected -> _serviceConnected.value = connected }
+        AutomationBridge.onConnectionChanged = { connected ->
+            _serviceConnected.value = connected
+            refreshCapabilityPlans() // 无障碍连接变化 → 能力就绪度随之刷新
+        }
         refreshGrants()
         // L8/L9：首屏即有内容可看
         refreshLogs()
@@ -498,6 +538,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         automationPrefs.enabled = v
         AutomationBridge.enabled = v
         _automationEnabled.value = v
+        refreshCapabilityPlans() // 总开关变化 → 刷新「操作手机界面」能力就绪度
     }
 
     /** 设置页：跳转系统无障碍设置页，引导用户开启本应用的服务。 */
@@ -543,6 +584,8 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         } catch (_: Throwable) { false }
         // L4 主动感知：刷新 UI 展示的设备上下文快照
         _deviceContext.value = DeviceContextStore.snapshot()
+        // DoD⑤：权限/环境变化后重算能力就绪度（能力链一次走完），并逐级落降级轨迹日志
+        refreshCapabilityPlans()
     }
 
     // —— 功能三：聊天记录（用户真机录屏反馈：「人家都有聊天记录对话记录，你这都没有」）——

@@ -38,23 +38,37 @@ class TerminalBackendFactory(
      * @return 新构造的后端实例；无可用后端返回 null
      */
     override fun obtain(identity: TerminalIdentity, preferProot: Boolean): TerminalBackend? {
-        if (identity != TerminalIdentity.User) {
-            // Su / Shizuku / Ssh 首期只留接口不实现——显式返回不可用，绝不引入依赖
-            return null
-        }
-        val order = if (preferProot) {
-            listOf(TerminalBackend.KEY_PROOT, TerminalBackend.KEY_USER)
-        } else {
-            listOf(TerminalBackend.KEY_USER)
-        }
-        for (key in order) {
-            val provider = providers.firstOrNull { it.backendKey == key && it.identity == identity } ?: continue
+        // 按候选顺序逐级尝试（顺序来自 providersFor，单一真源）
+        for (provider in providersFor(identity, preferProot)) {
             if (isAvailable(provider)) {
                 val created = runCatching { provider.create() }.getOrNull()
                 if (created != null) return created
             }
         }
         return null
+    }
+
+    /**
+     * 按（身份, proot 优先）给出**有序候选提供者**，顺序与 [obtain] 完全一致（单一真源）。
+     *
+     * 供需要「逐级可用性快照」的上层复用（例如统一的
+     * [com.example.agentkit.core.capability.shellCapabilitySnapshot]）：上层据此拿到
+     * proot → user 的候选序列，再用 [isAvailable] 求值即可，**不重复实现降级顺序与探测**。
+     *
+     * @param identity 声明身份；非 [TerminalIdentity.User] 返回空（首期未实现）
+     * @param preferProot true = `[proot, user]`；false = `[user]`
+     */
+    fun providersFor(identity: TerminalIdentity, preferProot: Boolean): List<TerminalBackendProvider> {
+        if (identity != TerminalIdentity.User) {
+            // Su / Shizuku / Ssh 首期只留接口不实现——显式返回空，绝不引入依赖
+            return emptyList()
+        }
+        val order = if (preferProot) {
+            listOf(TerminalBackend.KEY_PROOT, TerminalBackend.KEY_USER)
+        } else {
+            listOf(TerminalBackend.KEY_USER)
+        }
+        return order.mapNotNull { key -> providers.firstOrNull { it.backendKey == key && it.identity == identity } }
     }
 
     /**

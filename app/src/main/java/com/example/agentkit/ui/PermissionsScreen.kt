@@ -32,6 +32,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.example.agentkit.core.capability.CapabilityResolution
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -162,6 +163,24 @@ fun PermissionsScreen(vm: ChatViewModel) {
                 }
             }
 
+            // —— 能力链一次走完（DoD⑤）：预先告诉用户「需要做什么」，而非逐条工具试错 ——
+            val plans by vm.capabilityPlans.collectAsStateWithLifecycle()
+            if (plans.isNotEmpty()) {
+                AkSectionCard(
+                    title = "能力就绪度",
+                    icon = Icons.Outlined.Info,
+                    description = "Agent 执行某类动作时会自动选择可用路径（如「跑 shell 命令」：proot 容器 → 本机 " +
+                        "user shell）。这里一次说清当前会走哪条路、缺什么、你需要做什么，不用逐条工具试。"
+                ) {
+                    plans.forEachIndexed { index, plan ->
+                        if (index > 0) {
+                            AkDivider(Modifier.padding(start = AgentSpacing.space4))
+                        }
+                        CapabilityPlanRow(plan)
+                    }
+                }
+            }
+
             // —— 说明：每项权限的用途与数据去向 ——
             AkSectionCard(
                 title = "这些权限用来做什么",
@@ -230,6 +249,61 @@ private fun GrantRow(item: GrantItem) {
             )
         } else {
             AkTextButton(text = "去开启", onClick = item.onOpen)
+        }
+    }
+}
+
+/**
+ * 能力就绪度一行（DoD⑤）：逐条能力展示「选中的执行路径」或「缺什么 + 需要你做什么」。
+ *
+ * 与 [GrantRow] 的区别：授权行是「静态能力清单」，本行是**运行时的降级裁决**——告诉用户
+ * Agent 此刻实际会走哪条路，以及若要启用缺失路径，下一步该点哪里（文案来自能力链的 hint）。
+ */
+@Composable
+private fun CapabilityPlanRow(plan: CapabilityResolution) {
+    val ak = LocalAkColors
+    val ready = plan is CapabilityResolution.Selected
+    val onVar = MaterialTheme.colorScheme.onSurfaceVariant
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(vertical = AgentSpacing.space3)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            AkStatusDot(if (ready) ak.success else ak.warning)
+            Spacer(Modifier.width(AgentSpacing.space2))
+            Text(
+                text = plan.capability.title,
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Text(
+                text = if (ready) "就绪" else "需处理",
+                style = MaterialTheme.typography.labelMedium,
+                color = if (ready) ak.success else ak.warning
+            )
+        }
+        Spacer(Modifier.height(AgentSpacing.space1))
+        when (plan) {
+            is CapabilityResolution.Selected -> Text(
+                text = "将走：${plan.backend.label}",
+                style = MaterialTheme.typography.bodySmall,
+                color = onVar
+            )
+            is CapabilityResolution.Unavailable -> {
+                Text(
+                    text = plan.message,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = onVar
+                )
+                Spacer(Modifier.height(AgentSpacing.space1))
+                Text(
+                    text = "需要你：${plan.hint}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = ak.warning
+                )
+            }
         }
     }
 }
