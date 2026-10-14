@@ -623,16 +623,22 @@ private fun MessageBubble(
             modifier = Modifier.widthIn(max = maxWidth)
         ) {
             SelectionContainer {
-                if (streaming) {
-                    Row(
+                when {
+                    // 用户气泡保持纯文本（用户输入不作 Markdown 解释）
+                    isUser -> Text(
+                        text = text,
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onPrimary,
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)
+                    )
+                    // 助手气泡：Markdown 渲染；流式时末尾带光标（流式全 App 唯一循环动画，§6.2）
+                    streaming -> Row(
                         modifier = Modifier.widthIn(max = maxWidth),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text(
+                        MarkdownText(
                             text = text,
-                            style = MaterialTheme.typography.bodyLarge,
-                            color = if (isUser) MaterialTheme.colorScheme.onPrimary
-                            else MaterialTheme.colorScheme.onSurface,
+                            color = MaterialTheme.colorScheme.onSurface,
                             modifier = Modifier
                                 .weight(1f, fill = false)
                                 .padding(horizontal = 14.dp, vertical = 10.dp)
@@ -640,12 +646,9 @@ private fun MessageBubble(
                         StreamCursor()
                         Spacer(Modifier.width(14.dp))
                     }
-                } else {
-                    Text(
+                    else -> MarkdownText(
                         text = text,
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = if (isUser) MaterialTheme.colorScheme.onPrimary
-                        else MaterialTheme.colorScheme.onSurface,
+                        color = MaterialTheme.colorScheme.onSurface,
                         modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)
                     )
                 }
