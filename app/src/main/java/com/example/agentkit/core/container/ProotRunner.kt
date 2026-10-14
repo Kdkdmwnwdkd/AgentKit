@@ -8,24 +8,56 @@ import java.io.File
 import java.io.FileOutputStream
 
 /**
- * proot 运行时管理：把随包分发的 proot 独立可执行文件从 assets 提取到可写且可执行的
+ * proot 运行时管理：把随包分发的 proot **三件套**从 assets 提取到可写且可执行的
  * 路径，并拼出启动容器的**完整调用描述**（[ProotInvocation]）。
  *
- * 【GPL 合规】proot 是 GPL-2.0 授权的独立可执行文件，我们 **不** 把它静态链接进自己的
- * .so（那会触发 GPL 对整体代码的传染），而是作为独立程序随 APK 的
- * `assets/bin/arm64-v8a/proot` 分发，运行时提取后 `execve`。随包附带的
- * `assets/3rdparty/proot/COPYING`（GPLv3 全文）与 `SOURCE_OFFER.txt`（源码要约）即
- * 履行 GPL 的分发义务。
+ * 三件套 = `proot`（主程序）+ `libtalloc.so.2` + `libandroid-shmem.so`，三者必须落在
+ * **同一目录**（`<filesDir>/bin`）：proot 的 ELF `NEEDED` 是后两个库，而其
+ * `RUNPATH` 指向 Termux 私有目录（`/data/data/com.termux/files/usr/lib`），本机上
+ * 不存在——因此 [guestEnvMap] 会注入 `LD_LIBRARY_PATH=<libDir>` 覆盖宿主同名值，
+ * 否则动态链接器找不到 `libtalloc.so.2`，proot 启动即静默失败。
  *
- * 运行时若 proot 缺失（未执行 `scripts/build-proot.sh` 或未放入 assets），[isAvailable]
- * 返回 false，调用方据此显示降级文案，而不是静默崩溃。
+ * 【GPL/LGPL 合规】三件套均为上游**独立程序/独立库**，我们 **不** 把它们静态链接进
+ * 自己的 .so（那会触发 GPL/LGPL 对整体代码的传染），而是作为独立文件随 APK 的
+ * `assets/bin/arm64-v8a/` 分发，运行时提取后 `execve` / 由动态链接器加载：
+ * - proot：GPL-2.0-or-later（Termux 仓库官方构建，版本 5.1.107.96）；
+ * - libtalloc：LGPL-3.0-or-later（Samba talloc，Termux 打包版本 2.5.0）；
+ * - libandroid-shmem：Termux 仓库官方构建（版本 0.7）。
+ *
+ * 随包附带的 `assets/3rdparty/proot/COPYING`（GPLv3 全文）与
+ * `SOURCE_OFFER.txt`（源码要约，覆盖三个组件）即履行分发义务。
+ *
+ * 运行时若三件套不齐（未入 assets 或提取失败），[isAvailable] 返回 false，
+ * 调用方据此显示降级文案，而不是静默崩溃。
+ *
+ * 若将来要从源码自建 proot（NDK 交叉编译 talloc + proot），见仓库根目录脚本
+ * `scripts/build-proot.sh`；当前随包分发的是 Termux 上游预编译产物，不再走自建流程。
  */
 object ProotRunner {
 
     private const val TAG = "ProotRunner"
 
-    /** assets 内 proot 二进制（按 ABI 分目录，当前仅 arm64-v8a）。 */
+    /** assets 内 proot 三件套目录（按 ABI 分目录，当前仅 arm64-v8a）。 */
+    const val PROOT_ASSET_DIR = "bin/arm64-v8a"
+
+    /** assets 内 proot 主二进制完整路径（保留常量：调用方按「单文件」语义引用）。 */
     const val PROOT_ASSET = "bin/arm64-v8a/proot"
+
+    /** proot 三件套中主二进制的资产文件名。 */
+    const val PROOT_ASSET_NAME = "proot"
+
+    /** libtalloc 资产文件名（ELF SONAME 即 `libtalloc.so.2`，proot 按此名 NEEDED）。 */
+    const val LIBTALLOC_ASSET_NAME = "libtalloc.so.2"
+
+    /** libandroid-shmem 资产文件名（proot 的 NEEDED 之一）。 */
+    const val LIBANDROID_SHMEM_ASSET_NAME = "libandroid-shmem.so"
+
+    /** 三件套在 assets 目录下必须齐备的文件名（提取与就绪判定共用一份真源）。 */
+    private val REQUIRED_ASSET_NAMES = listOf(
+        PROOT_ASSET_NAME,
+        LIBTALLOC_ASSET_NAME,
+        LIBANDROID_SHMEM_ASSET_NAME
+    )
 
     /** proot 落位目录（相对 `filesDir`）——抽成常量，便于 D1 改造时只改一处。 */
     const val PROOT_BIN_DIR = "bin"
@@ -68,19 +100,37 @@ object ProotRunner {
     /** 提取后的宿主路径：`<filesDir>/bin/proot`。 */
     fun binaryFile(context: Context): File = File(context.filesDir, PROOT_RELATIVE_PATH)
 
-    /** proot 是否已就绪（文件存在且可执行）。 */
+    /**
+     * 三件套共同落位目录：`<filesDir>/bin`——proot 与两个 .so 放同一目录，
+     * `LD_LIBRARY_PATH` 即指这里（proot 的 RUNPATH 指向 Termux 私有目录，不可用）。
+     */
+    fun libDir(context: Context): File = File(context.filesDir, PROOT_BIN_DIR)
+
+    /**
+     * proot 是否已就绪：**三件套齐备**（proot + libtalloc.so.2 + libandroid-shmem.so）
+     * 且 proot 可执行。
+     *
+     * 不能只判 proot：so 缺失时 `execve` 动态链接器直接失败，表现为进程瞬间退出且
+     * 无清晰报错，只有三文件全齐才真正可启动。
+     */
     fun isAvailable(context: Context): Boolean {
-        val f = binaryFile(context)
-        return f.exists() && f.canExecute()
+        val dir = libDir(context)
+        return REQUIRED_ASSET_NAMES.all { File(dir, it).exists() } &&
+            binaryFile(context).canExecute()
     }
 
     /**
-     * 确保 proot 二进制就位：首次从 assets 提取并 `chmod 0700`（Android 对 filesDir
-     * 内的文件默认无执行位）。已存在且可执行则直接复用。
+     * 确保 proot 三件套就位：先对 [REQUIRED_ASSET_NAMES] 逐个 `assets.open` **探测**
+     * 判齐备（**不用 `assets.list`**：部分 Android 版本/ROM 上 `AssetManager.list()`
+     * 对 assets 子目录会返回不完整甚至空数组，把「三个文件都好好躺在 APK 里」误判成
+     * 「三件套不齐」，容器白白降级且日志误导；「能不能打开」才是可靠判据），通过后
+     * 逐个提取到 [libDir]，每个都 `chmod 0700`（Android 对 filesDir 内的文件默认
+     * 无执行位）。已齐备且 proot 可执行则直接复用（`force=true` 强制重提）。
      *
      * ## ⚠️ 风险说明（T09 / D1：proot 落位，必须在真机上验证）
      *
-     * 当前落位：`assets/bin/arm64-v8a/proot` → `<filesDir>/bin/proot` + `chmod 0700`。
+     * 当前落位：`assets/bin/arm64-v8a/{proot,libtalloc.so.2,libandroid-shmem.so}`
+     * → `<filesDir>/bin/` 同名三文件 + 各自 `chmod 0700`。
      *
      * **Android 10+（API 29+）对应用私有目录施加 W^X（Write XOR Execute）限制**，
      * 且部分 ROM / SELinux 策略会拒绝从 `filesDir` `execve` 三方可执行文件。一旦被拦：
@@ -96,27 +146,70 @@ object ProotRunner {
      *   **targetSdk 保持 34 不变**——参照仓库为了绕过该限制把 targetSdk 锁在 28，
      *   代价是上不了 Google Play，我们不接受这个代价。
      *
-     * @return 就绪的 proot 文件；任何失败返回 null（调用方降级）。
+     * @return 就绪的 proot 文件；任何失败（资产缺失 / 提取失败 / 校验不过）返回
+     *   null（调用方降级），并落 `AgentLogger.e` 点名缺哪个。
      */
     fun ensureBinary(context: Context, force: Boolean = false): File? {
         val out = binaryFile(context)
-        if (out.exists() && out.canExecute() && !force) return out
-        runCatching {
-            context.assets.open(PROOT_ASSET).use { ais ->
-                out.parentFile?.mkdirs()
-                FileOutputStream(out).use { fos -> ais.copyTo(fos) }
-            }
-            // 0700：仅本应用可读可执行（proot 内含完整路径重写逻辑，最小权限够用）
-            Os.chmod(out.absolutePath, 0b111000000)
-        }.onFailure { e ->
-            AgentLogger.e(TAG, "proot 二进制提取/赋权失败：${e.message}")
+        if (!force && isAvailable(context)) return out
+
+        val dir = libDir(context)
+        runCatching { dir.mkdirs() }.onFailure { e ->
+            AgentLogger.e(TAG, "创建 proot 落位目录 ${dir.absolutePath} 失败：${e.message}")
             return null
         }
+
+        // 齐备性判定逐个探测，不用 assets.list：部分 Android 版本/ROM 上
+        // AssetManager.list() 对 assets 子目录会返回不完整甚至空数组，会把「三个文件
+        // 都好好躺在 APK 里」误判成「三件套不齐」——容器白白降级且日志误导。
+        // 「能不能打开」才是可靠判据：打开成功 → 资产在位（用完立即 close）；
+        // 抛 IOException → 确实缺失，计入 missingAssets。
+        val missingAssets = REQUIRED_ASSET_NAMES.filter { name ->
+            runCatching {
+                context.assets.open("$PROOT_ASSET_DIR/$name").use { }
+            }.isFailure
+        }
+        if (missingAssets.isNotEmpty()) {
+            AgentLogger.e(
+                TAG,
+                "assets/$PROOT_ASSET_DIR 三件套不齐，缺少：${missingAssets.joinToString(", ")}" +
+                    "（proot 需要 libtalloc.so.2 与 libandroid-shmem.so 才能启动）"
+            )
+            return null
+        }
+
+        for (name in REQUIRED_ASSET_NAMES) {
+            val target = File(dir, name)
+            runCatching {
+                context.assets.open("$PROOT_ASSET_DIR/$name").use { ais ->
+                    FileOutputStream(target).use { fos -> ais.copyTo(fos) }
+                }
+                // 0700：仅本应用可读可执行（proot 内含完整路径重写逻辑，最小权限够用；
+                // 两个 .so 同权——动态链接器按调用者权限读，无需放宽到 0644）
+                Os.chmod(target.absolutePath, 0b111000000)
+            }.onFailure { e ->
+                AgentLogger.e(TAG, "提取 assets/$PROOT_ASSET_DIR/$name 失败：${e.message}")
+                return null
+            }
+        }
+
+        // 提取后校验：proot 可执行 + 两个 .so 在位（缺 .so 时 execve 会静默失败，
+        // 这里显式点名，避免把「动态链接器找不到库」误诊成 rootfs 问题）
         if (!out.canExecute()) {
             AgentLogger.w(
                 TAG,
                 "proot 已落位但不可执行（${out.absolutePath}）：" +
                     "可能是 Android 10+ W^X/SELinux 限制，见 ensureBinary 的 KDoc 改造方案"
+            )
+            return null
+        }
+        val missingLibs = REQUIRED_ASSET_NAMES
+            .filter { it != PROOT_ASSET_NAME && !File(dir, it).exists() }
+        if (missingLibs.isNotEmpty()) {
+            AgentLogger.e(
+                TAG,
+                "提取后运行库仍缺失：${missingLibs.joinToString(", ")}" +
+                    "（目录 ${dir.absolutePath}）"
             )
             return null
         }
@@ -156,6 +249,9 @@ object ProotRunner {
      *   缺它 proot 会在宿主根建临时文件失败；
      * - `TMPDIR=/tmp`：**guest 视角**，覆盖宿主指向 App cache 的值——容器内 `/data` 未挂载，
      *   沿用宿主 TMPDIR 会让 `mktemp` / `dpkg` 直接失败；
+     * - `LD_LIBRARY_PATH=<libDir>`（[libDir] 非空时）：proot 的 ELF RUNPATH 指向 Termux
+     *   私有目录 `/data/data/com.termux/files/usr/lib`，本机不存在，**必须用本项覆盖
+     *   宿主同名值**，动态链接器才能找到 `libtalloc.so.2` / `libandroid-shmem.so`；
      * - `PATH` 显式含 `/usr/local/bin`（见 [GUEST_PATH]）；
      * - `GIT_CONFIG_GLOBAL=<guest 路径>`：避免容器内 git 报 dubious ownership / 找不到全局配置；
      * - `CI=true` / `NO_COLOR=1` / `PAGER=cat`（T10 / rikkahub A13）：非交互三件套，
@@ -163,11 +259,14 @@ object ProotRunner {
      *
      * @param rootfs      已解压的 rootfs 宿主路径；传 null 则不带 `PROOT_TMP_DIR`
      * @param packageName 宿主包名（容器内脚本据此识别调用方）
+     * @param libDir      三件套落位目录（[libDir]）；传 null 则不带 `LD_LIBRARY_PATH`
+     *   （仅测试/降级路径用，正式调用必须传）
      */
     fun guestEnvMap(
         rootfs: File?,
         packageName: String,
-        nonInteractive: Boolean = true
+        nonInteractive: Boolean = true,
+        libDir: File? = null
     ): Map<String, String> {
         val env = LinkedHashMap<String, String>()
         env["HOME"] = GUEST_HOME
@@ -181,6 +280,11 @@ object ProotRunner {
             // 宿主绝对路径：proot 自身的临时目录（在 -r chroot 生效之前就要可用）
             env["PROOT_TMP_DIR"] = File(rootfs, "tmp").absolutePath
         }
+        if (libDir != null) {
+            // 必须放在自定义 env 里覆盖宿主同名值：proot 的 RUNPATH 指向 Termux 私有目录，
+            // 不覆盖则动态链接器找不到 libtalloc.so.2，execve 后静默失败
+            env["LD_LIBRARY_PATH"] = libDir.absolutePath
+        }
         if (nonInteractive) {
             env["CI"] = "true"
             env["NO_COLOR"] = "1"
@@ -193,9 +297,10 @@ object ProotRunner {
      * [guestEnvMap] 的列表出口（`KEY=VALUE`），供需要 `List<String>` 的调用点使用。
      *
      * @param rootfs 传 null 则不带 `PROOT_TMP_DIR`
+     * @param libDir 三件套落位目录；传 null 则不带 `LD_LIBRARY_PATH`
      */
-    fun guestEnv(rootfs: File?, packageName: String): List<String> =
-        ProcessEnv.toEnvList(guestEnvMap(rootfs, packageName))
+    fun guestEnv(rootfs: File?, packageName: String, libDir: File? = null): List<String> =
+        ProcessEnv.toEnvList(guestEnvMap(rootfs, packageName, libDir = libDir))
 
     /**
      * 构造完整的 proot 调用描述（T09 / C4+C5 的核心出口）。
@@ -204,7 +309,11 @@ object ProotRunner {
      *
      * `envArray` = `System.getenv()` + 自定义 env 的**并集**（自定义覆盖同名键）：
      * PTY `forkpty` 后子进程不继承 JVM 的 `System.getenv()`，只喂自定义 env 会让 proot
-     * 因缺 `ANDROID_ROOT` / `LD_LIBRARY_PATH` 瞬间退出**且日志无任何报错**。
+     * 因缺 `ANDROID_ROOT` 等宿主变量瞬间退出**且日志无任何报错**。自定义 env 里的
+     * `LD_LIBRARY_PATH` 同样以「覆盖」语义压掉宿主的 Termux 路径失效值。
+     *
+     * `libDir` 取 `prootBinary.parentFile`——三件套同目录落位（见 [libDir]），
+     * 与 [ensureBinary] 的提取布局保持一致。
      *
      * @param prootBinary 已就绪的 proot 二进制（[ensureBinary] 的返回值）
      * @param rootfs      已解压的 rootfs 宿主路径
@@ -217,9 +326,13 @@ object ProotRunner {
         workDir: String,
         packageName: String
     ): ProotInvocation {
-        // 尽力确保 guest /tmp 与宿主侧 proot 临时目录存在（失败不影响调用，仅日志）
-        runCatching { File(rootfs, "tmp").mkdirs() }
-            .onFailure { AgentLogger.w(TAG, "创建 <rootfs>/tmp 失败：${it.message}") }
+        // 尽力确保 guest /tmp 与宿主侧 proot 临时目录存在（失败不影响调用，仅日志）。
+        // mkdirs() 失败只返回 false 不抛异常（runCatching 抓不到），必须显式校验返回值。
+        val tmpDir = File(rootfs, "tmp")
+        val tmpOk = runCatching { tmpDir.mkdirs() || tmpDir.isDirectory }.getOrDefault(false)
+        if (!tmpOk) {
+            AgentLogger.w(TAG, "创建 <rootfs>/tmp 失败，PROOT_TMP_DIR 将指向不存在的目录")
+        }
 
         val executable = prootBinary.absolutePath
         val argv = buildList {
@@ -227,7 +340,7 @@ object ProotRunner {
             addAll(prootOptions(rootfs, workDir))
             add(GUEST_SHELL) // guest shell
         }
-        val envMap = guestEnvMap(rootfs, packageName)
+        val envMap = guestEnvMap(rootfs, packageName, libDir = prootBinary.parentFile)
         return ProotInvocation(
             executable = executable,
             argv = argv,
@@ -239,7 +352,8 @@ object ProotRunner {
     /**
      * [buildInvocation] 的 Context 便捷重载：路径与包名都从 [context] 取。
      *
-     * @return 调用描述；proot 未就位（未提取 / 不可执行）时返回 null，由调用方降级。
+     * @return 调用描述；proot 三件套未就位（未提取 / 不可执行 / .so 缺失）时返回
+     *   null，由调用方降级。
      */
     fun buildInvocation(
         context: Context,
@@ -247,11 +361,12 @@ object ProotRunner {
         workDir: String = GUEST_HOME
     ): ProotInvocation? {
         val bin = binaryFile(context)
-        if (!bin.exists() || !bin.canExecute()) {
+        if (!isAvailable(context)) {
             AgentLogger.w(
                 TAG,
-                "proot 未就位（${bin.absolutePath}）：请先 ensureBinary；" +
-                    "若存在但不可执行，见 ensureBinary 的 KDoc（Android 10+ W^X 风险）"
+                "proot 三件套未就位（proot=${bin.absolutePath}，libDir=${libDir(context)}）：" +
+                    "请先 ensureBinary；若 proot 存在但不可执行，见 ensureBinary 的 KDoc" +
+                    "（Android 10+ W^X 风险）；若 .so 缺失，proot 会启动即静默失败"
             )
             return null
         }
@@ -340,7 +455,10 @@ data class ProotInvocation(
             add("envArray 为空：PTY 不继承父进程环境，proot 会因缺 ANDROID_ROOT 等静默退出")
         } else {
             val arr = envArray.map { it.substringBefore('=') }.toSet()
-            for (key in listOf("PATH", "TMPDIR", "PROOT_TMP_DIR", "CI", "NO_COLOR", "PAGER")) {
+            for (key in listOf(
+                "PATH", "TMPDIR", "PROOT_TMP_DIR", "LD_LIBRARY_PATH",
+                "CI", "NO_COLOR", "PAGER"
+            )) {
                 if (key !in arr) add("envArray 缺少 $key")
             }
             if (!arr.contains("ANDROID_ROOT") && !arr.contains("ANDROID_DATA")) {
