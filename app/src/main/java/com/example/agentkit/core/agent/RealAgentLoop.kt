@@ -483,31 +483,73 @@ class RealAgentLoop(
      *
      * 401/403/400 这类鉴权与参数错误重试多少次都不会变，必须一次性快速失败，
      * 否则用户填错 Key 时会白等 providerRetry 次请求才看到报错。
+     *
+     * **Phase 2 DoD③：重试过程对 UI 可见**。每次「准备重试」抛
+     * [AgentEvent.RetryStarted]（attempt/max/reason）；本轮最终成功 / 最终失败 /
+     * 用户取消时**恰好一次**抛 [AgentEvent.RetryFinished] 收尾——由 `finally`
+     * 统一保证（含取消路径），UI 据此清除「正在恢复」横幅。
+     *
+     * 语义边界：
+     *  - 「准备重试」只在**确实还有下一次尝试**时抛出（`attempt < providerRetry`），
+     *    故 attempt 序号 1..providerRetry，绝不出现 attempt > max；总请求数 ≤ max + 1。
+     *  - 首次即成功、或非可重试错误快败时**从不**抛 RetryStarted（无状态可清），
+     *    收尾的 `retrying` 标志同时守护 RetryFinished 不空抛。
+     *  - 取消（CancellationException）原样上抛、绝不重试；`finally` 立即清状态——
+     *    T05 不变量：用户点停止后不得残留「正在恢复」。
      */
     private suspend fun <T> callWithRetry(block: suspend () -> T): T {
         var last: Throwable? = null
-        repeat(providerRetry + 1) { attempt ->
-            try {
-                return block()
-            } catch (cancel: CancellationException) {
-                // 取消立即上抛，绝不重试
-                throw cancel
-            } catch (e: Throwable) {
-                last = e
-                if (!isRetryable(e)) {
+        // 本轮是否对外抛出过重试状态（决定收尾是否要抛 RetryFinished）
+        var retrying = false
+        try {
+            repeat(providerRetry + 1) { attempt ->
+                try {
+                    return block()
+                } catch (cancel: CancellationException) {
+                    // 取消立即上抛，绝不重试；finally 会立刻清掉「正在恢复」
+                    throw cancel
+                } catch (e: Throwable) {
+                    last = e
+                    if (!isRetryable(e)) {
+                        AgentLogger.w(
+                            "LLM",
+                            "不可重试错误，快速失败（第 ${attempt + 1} 次尝试）：${e.message?.take(160)}"
+                        )
+                        throw e
+                    }
                     AgentLogger.w(
                         "LLM",
-                        "不可重试错误，快速失败（第 ${attempt + 1} 次尝试）：${e.message?.take(160)}"
+                        "第 ${attempt + 1} 次调用失败，准备重试：${e.message?.take(160)}"
                     )
-                    throw e
+                    // 仅当确实还有下一次尝试时才通知 UI「准备重试」（attempt 为 1-based 重试序号）
+                    if (attempt < providerRetry) {
+                        onEvent?.invoke(
+                            AgentEvent.RetryStarted(attempt + 1, providerRetry, retryReason(e))
+                        )
+                        retrying = true
+                    }
                 }
-                AgentLogger.w(
-                    "LLM",
-                    "第 ${attempt + 1} 次调用失败，准备重试：${e.message?.take(160)}"
-                )
             }
+            throw last ?: IllegalStateException("未知错误")
+        } finally {
+            // 成功 / 最终失败 / 取消——只要抛出过重试状态就必须收尾清除（T05：取消不残留「正在恢复」）
+            if (retrying) onEvent?.invoke(AgentEvent.RetryFinished)
         }
-        throw last ?: IllegalStateException("未知错误")
+    }
+
+    /**
+     * 可重试错误 → 面向用户的一句话原因（横幅「正在恢复（n/N）· 原因」用）。
+     * 纯函数：仅依赖异常类型与 HTTP 状态码，**绝不回显**可能夹带 Key 的原始 message。
+     */
+    private fun retryReason(e: Throwable): String = when {
+        e is LlmHttpException && e.code == 429 -> "请求过于频繁（429）"
+        e is LlmHttpException && e.code >= 500 -> "服务端错误（${e.code}）"
+        e is LlmHttpException -> "HTTP ${e.code}"
+        e is java.net.UnknownHostException -> "网络不可达"
+        e is java.net.SocketTimeoutException -> "网络超时"
+        e is java.net.ConnectException -> "连接失败"
+        e is java.io.IOException -> "网络异常"
+        else -> "暂时故障"
     }
 
     /**

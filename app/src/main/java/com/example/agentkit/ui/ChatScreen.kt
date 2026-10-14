@@ -112,6 +112,7 @@ fun ChatScreen(
 ) {
     val messages by vm.messages.collectAsStateWithLifecycle()
     val streamDraft by vm.streamDraft.collectAsStateWithLifecycle()
+    val retryState by vm.retryState.collectAsStateWithLifecycle()
     val conversations by vm.conversations.collectAsStateWithLifecycle()
     val activeConversationId by vm.activeConversationId.collectAsStateWithLifecycle()
     val input by vm.input.collectAsStateWithLifecycle()
@@ -217,6 +218,9 @@ fun ChatScreen(
                 }
             }
         }
+        // Phase 2 DoD③：断网/失败自动恢复横幅——重试中显示「正在恢复（n/N）· 原因」，
+        // 恢复成功 / 最终失败 / 取消时置 null 即消失（最终失败仍走既有错误气泡，不重复提示）
+        retryState?.let { RetryBanner(it) }
         ChatInputBar(
             text = input,
             running = running,
@@ -258,6 +262,36 @@ fun ChatScreen(
     val currentApproval = approvalReq
     if (currentApproval != null) {
         ApprovalDialog(request = currentApproval, visible = approvalVisible, vm = vm)
+    }
+}
+
+/**
+ * 「正在恢复」横幅（Phase 2 DoD③）：供应商瞬时失败自动重试时显示
+ * 「正在恢复（n/N）· 原因」；恢复成功 / 最终失败 / 取消时由 VM 将 [ChatViewModel.retryState]
+ * 置 null，横幅自动消失。轻量单行（secondaryContainer 底色 + 小号转圈），不抢气泡与输入栏焦点。
+ */
+@Composable
+private fun RetryBanner(state: RetryState) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.secondaryContainer)
+            .padding(horizontal = AgentSpacing.space4, vertical = AgentSpacing.space2),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        CircularProgressIndicator(
+            modifier = Modifier.size(14.dp),
+            strokeWidth = 2.dp,
+            color = MaterialTheme.colorScheme.onSecondaryContainer
+        )
+        Spacer(Modifier.width(AgentSpacing.space2))
+        Text(
+            text = "正在恢复（${state.attempt}/${state.max}）· ${state.reason}",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSecondaryContainer,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
     }
 }
 

@@ -18,9 +18,17 @@ internal const val MEMORY_USAGE_PROMPT =
  * 黑盒里干等，AI 调过什么工具、被什么拦截，一概不可见。现在关键节点实时抛事件，
  * UI 边跑边渲染（工具卡「执行中 → 已完成/已失败/已拒绝」）。
  *
- * T01：本类型**留在 core 包原位置原形状**——不许挪、不许加子类型。Kotlin 1.9 下
- * sealed when 穷尽性是硬约束，ChatViewModel 的 when 会炸；新 loop（RealAgentLoop）
- * 与适配层共用本定义，事件语义不变。
+ * T01：本类型**留在 core 包原位置**（不许挪）。新 loop（RealAgentLoop）与适配层
+ * 共用本定义。
+ *
+ * Phase 2 DoD③（断网/失败自动恢复且 UI 可见）：新增 [RetryStarted] / [RetryFinished]
+ * 两个子类型，把供应商瞬时失败的重试过程从「黑盒干等」变为可见——UI 据此显示
+ * 「正在恢复（n/N）· 原因」横幅，恢复成功 / 最终失败 / 用户取消时清除。
+ *
+ * ⚠️ Kotlin 1.9 对 sealed 的 `when` 有**穷尽性硬约束**：新增子类型后，所有对
+ * [AgentEvent] 做穷尽 `when` 的地方（当前唯一一处为 `ui/ChatViewModel.kt` 的
+ * `handleAgentEvent`）必须**同步补分支**，否则编译失败。改动本类型时请全仓搜索
+ * `is AgentEvent` / `when (ev)` 逐个核对。
  */
 sealed interface AgentEvent {
     /** 工具调用开始执行（参数已定，结果未出）。 */
@@ -28,6 +36,23 @@ sealed interface AgentEvent {
 
     /** 工具调用结束（成功 / 失败 / 审批被拒 / 被熔断 / 取消闭合，携带回填的 ToolMessage）。 */
     data class ToolFinished(val message: ToolMessage) : AgentEvent
+
+    /**
+     * 一次 LLM 调用遭遇**可重试**错误、即将发起第 [attempt] 次重试（共 [max] 次）。
+     *
+     * @param attempt 1-based 重试序号（第 1 次重试 = 上一次调用失败后的下一次尝试）。
+     * @param max 配置的最大重试次数（= providerRetry）；总请求数上限 = max + 1。
+     * @param reason 面向用户的可读原因（如「服务端错误（500）」「网络超时」）。
+     */
+    data class RetryStarted(val attempt: Int, val max: Int, val reason: String) : AgentEvent
+
+    /**
+     * 重试过程收尾：LLM 调用最终成功、最终失败、或用户取消。
+     *
+     * 语义 = 「重试状态已结束，UI 可清除『正在恢复』横幅」。**取消也算收尾**——
+     * T05 不变量：用户点停止后不得残留「正在恢复」（取消不是失败，但重试状态必须清）。
+     */
+    data object RetryFinished : AgentEvent
 }
 
 /**

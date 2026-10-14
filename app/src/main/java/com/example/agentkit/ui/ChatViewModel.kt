@@ -170,6 +170,23 @@ data class ApprovalRequest(
     val deferred: CompletableDeferred<Boolean>
 )
 
+/**
+ * 供应商瞬时失败的「自动恢复」进行态（Phase 2 DoD③）。
+ *
+ * 由 [ChatViewModel.retryState] 暴露：非 null 时 UI 显示「正在恢复（n/N）· 原因」横幅，
+ * 恢复成功 / 最终失败 / 用户取消时清回 null。**取消不算失败，但必须立即清状态**
+ * （T05 不变量：点停止后不得残留「正在恢复」）。
+ *
+ * @param attempt 1-based 重试序号（第几次重试）。
+ * @param max 最大重试次数（= providerRetry）。
+ * @param reason 面向用户的可读原因（已脱敏，不含原始异常 message）。
+ */
+data class RetryState(
+    val attempt: Int,
+    val max: Int,
+    val reason: String
+)
+
 /** 「测试连接」的诊断结果：配置页卡片直接消费。 */
 data class TestResult(
     /** 是否连通（HTTP 2xx）。 */
@@ -622,6 +639,8 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         AgentLogger.i("Chat", "用户请求停止运行")
         job.cancel()
         runJob = null
+        // Phase 2 DoD③/T05：取消立即清「正在恢复」——不等协程收到取消再清，UI 即刻复原
+        _retryState.value = null
     }
 
     // —— Phase 2 DoD②：消息分支（重新生成 / 左右切换 / 从中间轮重新发问）——
@@ -685,6 +704,8 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
                 runJob = null
                 isRunning.value = false
                 _streamDraft.value = null
+                // Phase 2 DoD③：兜底清「正在恢复」（与 send 同一保险）
+                _retryState.value = null
                 refreshLogs()
             }
         }
@@ -808,6 +829,14 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     private val _streamDraft = MutableStateFlow<String?>(null)
     val streamDraft: StateFlow<String?> = _streamDraft.asStateFlow()
 
+    /**
+     * 供应商瞬时失败的「自动恢复」进行态（Phase 2 DoD③）：非 null 时 UI 显示
+     * 「正在恢复（n/N）· 原因」横幅。由 [handleAgentEvent] 的 RetryStarted/RetryFinished
+     * 驱动置位/清除；[send] / [regenerate] / [stop] 收尾处再兜底清空，杜绝残留。
+     */
+    private val _retryState = MutableStateFlow<RetryState?>(null)
+    val retryState: StateFlow<RetryState?> = _retryState.asStateFlow()
+
     /** 过程事件 → UI 实时更新（Hotfix2）。工具并行执行时多线程回调，读写列表加锁防丢更新。 */
     private fun handleAgentEvent(ev: AgentEvent) = synchronized(msgLock) {
         when (ev) {
@@ -841,6 +870,16 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
                     appendToStore(done)
                 }
                 // idx < 0（理论上不该发生）：终态由 send() 的 history 兜底补上
+            }
+
+            // Phase 2 DoD③：准备重试 → 置位「正在恢复」横幅（U 显示 n/N + 原因）
+            is AgentEvent.RetryStarted -> {
+                _retryState.value = RetryState(ev.attempt, ev.max, ev.reason)
+            }
+
+            // Phase 2 DoD③：重试收尾（成功 / 最终失败 / 取消）→ 清除横幅
+            is AgentEvent.RetryFinished -> {
+                _retryState.value = null
             }
         }
     }
@@ -1259,6 +1298,8 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
                 runJob = null
                 isRunning.value = false
                 _streamDraft.value = null
+                // Phase 2 DoD③：兜底清「正在恢复」——重试收尾事件之外的最后一道保险
+                _retryState.value = null
                 // Phase 2 DoD②：用轮次变体结构重建 _messages——补上助手气泡的变体游标元数据
                 // （首条回答变体数=1，切换器不显示；重新生成后才会 >1）
                 reloadActiveMessages()
