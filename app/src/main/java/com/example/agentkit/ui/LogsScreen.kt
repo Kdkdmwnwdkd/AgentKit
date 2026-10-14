@@ -27,6 +27,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Description
+import androidx.compose.material.icons.outlined.Error
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -46,7 +47,12 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.agentkit.core.CrashLogger
+import com.example.agentkit.core.CrashRecord
 import kotlinx.coroutines.delay
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 /**
  * 运行日志页（视觉规范 §3.7 日志级别四色 + UX v1 §1.6）。
@@ -69,6 +75,25 @@ fun LogsScreen(vm: ChatViewModel) {
     var exportHint by remember { mutableStateOf<String?>(null) }
     var showClear by remember { mutableStateOf(false) }
 
+    // —— 最近崩溃（真机第四轮：进程被杀时内存日志来不及落盘，崩溃报告是唯一证据）——
+    var crashes by remember { mutableStateOf<List<CrashRecord>>(emptyList()) }
+    var crashExpanded by rememberSaveable { mutableStateOf("") }
+    var crashDirPath by remember { mutableStateOf("") }
+
+    /** 重新扫描崩溃目录，并把崩溃记录回放到 AgentLogger（此刻日志目录已就绪，可落盘）。 */
+    fun reloadCrashes() {
+        crashes = CrashLogger.listCrashFiles(ctx)
+        crashDirPath = CrashLogger.crashDir(ctx).absolutePath
+        CrashLogger.replayPendingIntoLogger(ctx)
+    }
+
+    // 进页面即扫一次：CrashLogger 在 Application 里安装，回放时日志目录尚未就绪，
+    // 这里补一次，崩溃内容才会随当日日志真正落盘并出现在下面的列表里。
+    LaunchedEffect(Unit) {
+        reloadCrashes()
+        vm.refreshLogs()
+    }
+
     // 导出回执 3s 后自动消失：不引入 Snackbar 宿主，页面自己的一句话反馈足够
     LaunchedEffect(exportHint) {
         if (exportHint != null) {
@@ -86,8 +111,28 @@ fun LogsScreen(vm: ChatViewModel) {
             title = AppDest.LOGS.title,
             actionIcon = Icons.Outlined.Refresh,
             actionDescription = "刷新",
-            onAction = { vm.refreshLogs() }
+            onAction = {
+                vm.refreshLogs()
+                reloadCrashes()
+            }
         )
+
+        // —— 最近崩溃（有记录才出现；进程崩溃时内存日志会丢，崩溃报告是唯一证据）——
+        if (crashes.isNotEmpty()) {
+            Spacer(Modifier.height(AgentSpacing.space3))
+            CrashSection(
+                records = crashes,
+                dirPath = crashDirPath,
+                expandedName = crashExpanded,
+                onToggle = { crashExpanded = if (crashExpanded == it) "" else it },
+                onClear = {
+                    CrashLogger.clearCrashFiles(ctx)
+                    crashExpanded = ""
+                    reloadCrashes()
+                    vm.refreshLogs()
+                }
+            )
+        }
 
         // —— 级别筛选 chips（§6.7：选中 primary@12% + on-primary-container）——
         Row(
@@ -214,6 +259,99 @@ fun LogsScreen(vm: ChatViewModel) {
         )
     }
 }
+
+/**
+ * 最近崩溃区块（真机第四轮新增）。
+ *
+ * **为什么必须有**：进程崩溃时内存里的日志缓冲来不及落盘，日志列表里一条异常都没有，
+ * 只能靠猜。崩溃报告由 CrashLogger 在进程死之前同步写进 `filesDir/crash/`，
+ * 这里是用户能直接看到它们的地方：一行汇总（N 次 + 文件名 + 目录）+ 可展开全文。
+ *
+ * 崩溃记录最多保留 [CrashLogger.MAX_KEEP] 份，故直接用 Column 渲染（不用 LazyColumn）。
+ */
+@Composable
+private fun CrashSection(
+    records: List<CrashRecord>,
+    dirPath: String,
+    expandedName: String,
+    onToggle: (String) -> Unit,
+    onClear: () -> Unit
+) {
+    val ctx = LocalContext.current
+    AkSectionCard(
+        title = "最近崩溃（${records.size}）",
+        icon = Icons.Outlined.Error,
+        description = "检测到 ${records.size} 次崩溃记录：" +
+            "${records.first().fileName} 位于 $dirPath",
+        modifier = Modifier.padding(horizontal = AgentSpacing.space5)
+    ) {
+        records.forEachIndexed { index, record ->
+            val expanded = expandedName == record.fileName
+            AkPressSurface(
+                onClick = { onToggle(record.fileName) },
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Column(Modifier.fillMaxWidth().padding(AgentSpacing.space3)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = formatCrashClock(record.timeMs),
+                            style = machineSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(Modifier.width(AgentSpacing.space2))
+                        Text(
+                            text = record.exceptionType.substringAfterLast('.'),
+                            style = machineSmall.copy(fontWeight = FontWeight.SemiBold),
+                            color = MaterialTheme.colorScheme.error,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                    Spacer(Modifier.height(AgentSpacing.space1))
+                    Text(
+                        text = record.summary,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = if (expanded) Int.MAX_VALUE else 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    if (expanded) {
+                        Spacer(Modifier.height(AgentSpacing.space2))
+                        Text(
+                            text = record.text.ifBlank { "（报告为空）" },
+                            style = machineSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(Modifier.height(AgentSpacing.space1))
+                        AkTextButton(
+                            text = "复制全文",
+                            icon = Icons.Outlined.ContentCopy,
+                            onClick = {
+                                val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                cm.setPrimaryClip(ClipData.newPlainText("AgentKit 崩溃报告", record.text))
+                            }
+                        )
+                    }
+                }
+            }
+            if (index != records.lastIndex) Spacer(Modifier.height(AgentSpacing.space1))
+        }
+        Spacer(Modifier.height(AgentSpacing.space1))
+        AkTextButton(
+            text = "清空崩溃记录",
+            icon = Icons.Outlined.Delete,
+            tint = MaterialTheme.colorScheme.error,
+            onClick = onClear
+        )
+    }
+}
+
+/** 崩溃记录时间：`MM-dd HH:mm:ss`（崩溃是低频事件，年份可省，秒级足够定位）。 */
+private fun formatCrashClock(timeMs: Long): String =
+    if (timeMs <= 0L) "--" else runCatching {
+        SimpleDateFormat("MM-dd HH:mm:ss", Locale.getDefault()).format(Date(timeMs))
+    }.getOrDefault("--")
 
 /** 筛选 chip 的「全部」项。 */
 private const val LEVEL_ALL = "全部"

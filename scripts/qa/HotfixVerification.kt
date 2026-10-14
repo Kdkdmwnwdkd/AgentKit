@@ -128,17 +128,23 @@ private class RetryProbe {
 
 /* ------------------------------ Bug 1 用例 ------------------------------ */
 
-/** 用例 A：退避策略本身的序列（纯函数，毫秒级）。 */
+/**
+ * 用例 A：退避策略本身的序列（纯函数，毫秒级）。
+ *
+ * 真机第三轮 Hotfix3（Bug A1）把序列从 1s/2s/4s 加长到 3s/10s/25s（用户原话「太短，
+ * 人家平常用都等个半分钟一分钟」），故这里的期望值同步改成新常量序列。
+ */
 private suspend fun testBackoffPolicySequence() {
-    println("\n== Bug1-A：退避毫秒序列 1s → 2s → 4s 封顶 ==")
+    println("\n== Bug1-A：退避毫秒序列 3s → 10s → 25s 封顶 ==")
 
-    check("backoffMillis 序列符合 1000/2000/4000 且封顶") {
-        assertEquals("第 1 次重试", 1_000L, RetryBackoffPolicy.backoffMillis(1))
-        assertEquals("第 2 次重试", 2_000L, RetryBackoffPolicy.backoffMillis(2))
-        assertEquals("第 3 次重试", 4_000L, RetryBackoffPolicy.backoffMillis(3))
-        assertEquals("第 4 次重试（封顶）", 4_000L, RetryBackoffPolicy.backoffMillis(4))
-        assertEquals("第 9 次重试（仍封顶）", 4_000L, RetryBackoffPolicy.backoffMillis(9))
-        assertEquals("非法序号按第 1 次处理", 1_000L, RetryBackoffPolicy.backoffMillis(0))
+    check("backoffMillis 序列符合 3000/10000/25000 且封顶") {
+        assertEquals("第 1 次重试", 3_000L, RetryBackoffPolicy.backoffMillis(1))
+        assertEquals("第 2 次重试", 10_000L, RetryBackoffPolicy.backoffMillis(2))
+        assertEquals("第 3 次重试", 25_000L, RetryBackoffPolicy.backoffMillis(3))
+        assertEquals("第 4 次重试（封顶）", 25_000L, RetryBackoffPolicy.backoffMillis(4))
+        assertEquals("第 9 次重试（仍封顶）", 25_000L, RetryBackoffPolicy.backoffMillis(9))
+        assertEquals("非法序号按第 1 次处理", 3_000L, RetryBackoffPolicy.backoffMillis(0))
+        assertEquals("常量序列（可配）", listOf(3_000L, 10_000L, 25_000L), RetryBackoffPolicy.BACKOFF_SEQUENCE_MS)
     }
 }
 
@@ -214,7 +220,7 @@ private suspend fun testRealBackoffActuallyWaits() {
         assertEquals("重试两次", listOf(1 to 2, 2 to 2), probe.retryAttempts())
         assertTrue("单次等待 ≥ 50ms（实际 $worstWait ms）", worstWait >= 50L)
         assertTrue("整轮耗时 ≥ 150ms（实际 $elapsed ms；无退避时是毫秒级）", elapsed >= 150L)
-        assertTrue("默认策略第 1 次就等 1s（远大于 harness 注入值）", RetryBackoffPolicy.backoffMillis(1) >= 1_000L)
+        assertTrue("默认策略第 1 次就等 3s（远大于 harness 注入值）", RetryBackoffPolicy.backoffMillis(1) >= 1_000L)
     }
 }
 

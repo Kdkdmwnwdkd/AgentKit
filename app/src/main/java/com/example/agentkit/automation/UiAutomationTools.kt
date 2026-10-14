@@ -326,10 +326,15 @@ class UiClickTool : AgentTool {
             if (ok) {
                 ToolResult.ok(code = "click_ok", message = "已点击「${text ?: rid}」")
             } else {
+                // 真机第三轮 Bug B：失败必须带候选（归一化/包含/前缀都落空时，把屏幕上最相近
+                // 的标签告诉模型），否则模型只能瞎换成 ui_tap 硬点坐标。
+                val candidates = svc.lastClickCandidates
+                val extra = if (candidates.isEmpty()) "" else "屏幕上最相近的候选：${candidates.joinToString("、")}；"
                 ToolResult.fail(
                     code = "click_not_found",
                     message = "未找到匹配元素或点击失败",
-                    hint = "先 ui_tree 确认元素文本/resource-id 是否变化，再用最新值重试。"
+                    hint = "先 ui_tree 确认元素文本/resource-id 是否变化，再用最新值重试。" + extra +
+                        "已做归一化（去空白/全角↔半角/忽略大小写）+ 包含 + 前缀匹配。"
                 )
             }
         } catch (e: Exception) {

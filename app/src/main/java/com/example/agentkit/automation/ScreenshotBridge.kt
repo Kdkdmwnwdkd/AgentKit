@@ -90,6 +90,195 @@ object ScreenCaptureStartPolicy {
 }
 
 /**
+ * 屏幕捕获**运行时**防御策略（纯函数，零 Android 依赖——QA harness 可直接断言）。
+ *
+ * **为什么还需要它（真机第四轮 Bug「开屏幕捕捉就闪退」第二刀）**：
+ * 上一轮只修了「取 token → 进前台」的**顺序**与 [ScreenCaptureStartPolicy.guard] 兜底，
+ * 但用户仍然闪退——说明崩点在顺序之外：`createVirtualDisplay` / `ImageReader.newInstance` /
+ * `setOnImageAvailableListener` / `acquireLatestImage` / `stopSelf` 以及**尺寸为 0** 这些
+ * 位置都可能抛（SecurityException / IllegalArgumentException / IllegalStateException /
+ * 厂商 ROM 的奇葩异常），而它们当时全都**裸调用**，异常一路逃到系统 → 进程死。
+ *
+ * 本对象把两件事抽成可断言的纯函数：
+ *  1. [sanitizeSize]：尺寸/密度参数防御（0、负数、超大分辨率）；
+ *  2. [cleanupPlan]：任何异常发生后应执行的**安全停止步骤序列**（顺序敏感）。
+ *
+ * 服务层只负责「照着计划执行」，判断逻辑集中在这里，QA 无需加载 Android 类即可验证。
+ */
+object ScreenCaptureGuard {
+
+    /** 捕获流程的阶段（仅用于日志/上报文案与步骤计划的入参，步骤集合本身与阶段无关）。 */
+    enum class Stage {
+        /** 取 MediaProjection token / 建 ImageReader / 建 VirtualDisplay。 */
+        INIT_PROJECTION,
+
+        /** 进前台。 */
+        START_FOREGROUND,
+
+        /** 抓一帧。 */
+        CAPTURE,
+
+        /** 用户从控制中心停止投屏（MediaProjection.Callback.onStop）。 */
+        PROJECTION_STOPPED,
+
+        /** 服务销毁。 */
+        DESTROY
+    }
+
+    /** 当前持有的、需要显式释放的资源（决定 [cleanupPlan] 里出现哪些释放步骤）。 */
+    enum class Resource {
+        /** MediaProjection（需 stop()）。 */
+        PROJECTION,
+
+        /** VirtualDisplay（需 release()）。 */
+        VIRTUAL_DISPLAY,
+
+        /** ImageReader（需 close()）。 */
+        IMAGE_READER
+    }
+
+    /**
+     * 安全停止的一步（**顺序敏感**：先释放下游资源，再停投影，最后停服务）。
+     */
+    enum class CleanupStep {
+        /** `VirtualDisplay.release()`。 */
+        RELEASE_VIRTUAL_DISPLAY,
+
+        /** `ImageReader.close()`。 */
+        CLOSE_IMAGE_READER,
+
+        /** `MediaProjection.stop()`（并注销 Callback）。 */
+        STOP_PROJECTION,
+
+        /** 清 `activeInstance` / `isCapturing`，避免悬挂实例与泄漏。 */
+        CLEAR_STATE,
+
+        /** 写入 `ScreenshotBridge.lastError`（UI 可见的唯一失败出口）。 */
+        REPORT_LAST_ERROR,
+
+        /** `AgentLogger.e(...)` 带堆栈落日志。 */
+        LOG_ERROR,
+
+        /** `stopSelf()` 收摊；任何一步失败都不能阻止它执行。 */
+        STOP_SELF
+    }
+
+    /** 分辨率上限：超过会撞 ImageReader/硬件合成器上限（IllegalArgumentException 高发区）。 */
+    const val MAX_DIM: Int = 4096
+
+    /** 密度兜底值：`metrics.densityDpi` 为 0 或负数时用（0 会让 VirtualDisplay 直接抛）。 */
+    const val DEFAULT_DENSITY: Int = 320
+
+    /** 尺寸校验结果：[ok] 为 false 时**不得**继续建 VirtualDisplay；[width]/[height]/[density] 是**应当使用**的值。 */
+    data class SizeCheck(
+        val ok: Boolean,
+        val width: Int,
+        val height: Int,
+        val density: Int,
+        val reason: String? = null,
+        val clamped: Boolean = false
+    )
+
+    /**
+     * 尺寸/密度防御（纯函数）。
+     *
+     * - 宽或高 ≤ 0（真机冷启动/分屏/折叠屏切换瞬间 `displayMetrics` 会给 0）→ [ok] = false，
+     *   调用方**必须**走安全停止，绝不能拿 0 去建 ImageReader（必崩）；
+     * - 密度 ≤ 0 → 回退 [DEFAULT_DENSITY]（不影响可用性）；
+     * - 任一边超过 [MAX_DIM] → **等比缩放**到上限内（保持宽高比，避免变形），[clamped] = true。
+     */
+    fun sanitizeSize(width: Int, height: Int, density: Int): SizeCheck {
+        if (width <= 0 || height <= 0) {
+            return SizeCheck(
+                ok = false,
+                width = width,
+                height = height,
+                density = density,
+                reason = "屏幕尺寸非法（width=$width height=$height）"
+            )
+        }
+        val safeDensity = if (density > 0) density else DEFAULT_DENSITY
+        val maxSide = maxOf(width, height)
+        if (maxSide <= MAX_DIM) {
+            return SizeCheck(ok = true, width = width, height = height, density = safeDensity)
+        }
+        val scale = MAX_DIM.toDouble() / maxSide.toDouble()
+        val w = (width * scale).toInt().coerceAtLeast(1)
+        val h = (height * scale).toInt().coerceAtLeast(1)
+        return SizeCheck(
+            ok = true,
+            width = w,
+            height = h,
+            density = safeDensity,
+            clamped = true
+        )
+    }
+
+    /**
+     * 异常发生后的**安全停止步骤序列**（纯函数，顺序敏感）。
+     *
+     * 顺序理由：VirtualDisplay 依赖 ImageReader 的 Surface → 先 release 再 close；
+     * 两者都依赖 Projection → 再 stop；随后立刻把 `activeInstance`/`isCapturing` 清掉
+     * （防止外部拿到悬挂实例）；**先上报再记日志**（保证 UI 一定能看到原因，日志写失败
+     * 不影响 lastError）；最后 `stopSelf()`（放在最后，前面的清理必须有机会执行）。
+     *
+     * @param stage 出错阶段（决定日志文案，不影响步骤集合）。
+     * @param held 当前持有的资源；未持有的资源不产生对应释放步骤（避免 NPE 与重复释放）。
+     */
+    fun cleanupPlan(stage: Stage, held: Set<Resource> = emptySet()): List<CleanupStep> {
+        val steps = mutableListOf<CleanupStep>()
+        if (Resource.VIRTUAL_DISPLAY in held) steps += CleanupStep.RELEASE_VIRTUAL_DISPLAY
+        if (Resource.IMAGE_READER in held) steps += CleanupStep.CLOSE_IMAGE_READER
+        if (Resource.PROJECTION in held) steps += CleanupStep.STOP_PROJECTION
+        steps += CleanupStep.CLEAR_STATE
+        steps += CleanupStep.REPORT_LAST_ERROR
+        steps += CleanupStep.LOG_ERROR
+        steps += CleanupStep.STOP_SELF
+        // stage 参与计算（保证调用方传参被真实使用，也便于将来按阶段裁剪步骤）
+        return if (stage == Stage.DESTROY) steps.filter { it != CleanupStep.STOP_SELF } else steps
+    }
+
+    /** 阶段 → 中文名（日志文案用）。 */
+    fun stageLabel(stage: Stage): String = when (stage) {
+        Stage.INIT_PROJECTION -> "初始化投影"
+        Stage.START_FOREGROUND -> "启动前台"
+        Stage.CAPTURE -> "抓取屏幕帧"
+        Stage.PROJECTION_STOPPED -> "用户停止投屏"
+        Stage.DESTROY -> "服务销毁"
+    }
+
+    /** 异常摘要（复用 [ScreenCaptureStartPolicy.describe]，保证全链路文案同一来源）。 */
+    fun describe(t: Throwable?): String = ScreenCaptureStartPolicy.describe(t)
+
+    /**
+     * **带返回值**的兜底执行：与 [ScreenCaptureStartPolicy.guard] 同 philosophy，
+     * 但保留成功时的返回值（建对象这种「要么拿到、要么失败」的动作需要它）。
+     *
+     * @return [GuardValue.value] 非空即成功；失败时 [GuardValue.failure] 为原因摘要。
+     */
+    fun <T> guardValue(block: () -> T): GuardValue<T> =
+        try {
+            GuardValue(block(), null, null)
+        } catch (t: Throwable) {
+            GuardValue(null, describe(t), t)
+        }
+
+    /**
+     * 兜底执行（无返回值版）：与 [ScreenCaptureStartPolicy.guard] 同一实现，
+     * 放在这里是为了让服务层「守卫」只 import 一个名字（可读性），
+     * 失败原因文案也走同一个 [describe]。
+     */
+    fun guard(block: () -> Unit): ScreenCaptureStartPolicy.GuardResult =
+        ScreenCaptureStartPolicy.guard(block)
+
+    /** [guardValue] 的结果。 */
+    data class GuardValue<T>(val value: T?, val failure: String?, val cause: Throwable?) {
+        /** 是否成功拿到非空值。 */
+        val succeeded: Boolean get() = value != null
+    }
+}
+
+/**
  * 屏幕捕获桥：持有 MediaProjection 授权结果（resultCode + data），
  * 供 UI 在用户授予屏幕捕获权限后启动前台服务，并对外暴露捕获状态。
  *
@@ -137,6 +326,17 @@ object ScreenshotBridge {
      */
     private fun logLastError(value: String) =
         AgentLogger.w("ScreenCapture", "lastError 落库：${AgentLogger.sanitize(value).take(200)}")
+
+    /**
+     * 清掉上一次的一次性失败文案：捕获**成功建立**后调用，
+     * 避免上一次的失败横幅一直挂在 UI 上（第四轮加固新增）。
+     */
+    fun clearError() {
+        if (lastError != null) {
+            AgentLogger.i("ScreenCapture", "lastError 已清除（捕获恢复正常）")
+        }
+        lastError = null
+    }
 
     fun setPermission(resultCode: Int, data: Intent?) {
         this.resultCode = resultCode
