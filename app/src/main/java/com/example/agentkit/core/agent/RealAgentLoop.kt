@@ -2,6 +2,7 @@ package com.example.agentkit.core.agent
 
 import com.example.agentkit.core.AgentEvent
 import com.example.agentkit.core.AgentLogger
+import com.example.agentkit.core.AgentTool
 import com.example.agentkit.core.AssistantMessage
 import com.example.agentkit.core.ChatMessage
 import com.example.agentkit.core.DEFAULT_SYSTEM_PROMPT
@@ -12,6 +13,8 @@ import com.example.agentkit.core.MEMORY_USAGE_PROMPT
 import com.example.agentkit.core.SystemMessage
 import com.example.agentkit.core.ToolApproval
 import com.example.agentkit.core.ToolCall
+import com.example.agentkit.core.ToolExposure
+import com.example.agentkit.core.ToolExposurePolicy
 import com.example.agentkit.core.ToolMessage
 import com.example.agentkit.core.ToolRegistry
 import com.example.agentkit.core.ToolResult
@@ -90,6 +93,10 @@ import java.util.concurrent.atomic.AtomicBoolean
  * @param executorFactory executor 工厂：每批工具执行前取一次（null = 按当前字段
  *   构造 [RegistryToolExecutor]）。测试可注入违约 executor 验证回合级兜底；
  *   update(registry) 也因此对默认 executor 即时生效。
+ * @param forceFullTools Phase 2 DoD④「本地模型工具暴露降级」：强制全量工具开关
+ *   （默认 false = 按 provider 自动）。provider = local-llama 时默认把暴露给 LLM 的
+ *   工具面裁剪到 [ToolExposurePolicy.LOCAL_CORE_TOOLS]（≤7 个）；置 true 可强制放行
+ *   全量（开发者/设置项逃生门）。云端 provider 不受此开关影响（本就全量）。
  */
 class RealAgentLoop(
     private val llmProvider: () -> LLMClient,
@@ -106,7 +113,8 @@ class RealAgentLoop(
     private val shouldContinue: (() -> Boolean)? = null,
     private val onTextDelta: ((String) -> Unit)? = null,
     private val hooks: Hooks = NoopHooks,
-    private val executorFactory: (() -> ToolExecutor)? = null
+    private val executorFactory: (() -> ToolExecutor)? = null,
+    private val forceFullTools: Boolean = false
 ) : AgentLoop {
 
     /** T04：失败熔断 + 调用指纹去重（跨轮次持有，切会话不重置——直到成功清指纹）。 */
@@ -168,8 +176,16 @@ class RealAgentLoop(
     /** [send] 的回合体（抽出的目的是让 stop 标志的重置/在飞标记包住整个回合，含异常路径）。 */
     private suspend fun runTurn(userInput: String): List<ChatMessage> {
         val loopStart = System.currentTimeMillis()
+        // Phase 2 DoD④：按当前 provider 计算本回合的「工具暴露面」——provider = local-llama
+        // 时裁剪到核心集（≤7 个）。每回合算一次：系统提示拼接与发给 LLM 的工具列表共用同一
+        // [exposure]，保证「给了哪些工具」与「提示里教了哪些工具」始终一致。
+        val exposure = currentExposure()
+        logExposure(exposure)
+        // 回合级工具视图：未裁剪时为原 registry（零开销、行为不变）；裁剪时仅含暴露工具——
+        // 被裁工具即便被本地模型瞎编调用，也在此视图中「查无此工具」，走 T02 未知工具路径。
+        val turnRegistry = scopedRegistry(exposure)
         val messages = mutableListOf<ChatMessage>(
-            SystemMessage(buildSystemPrompt()),
+            SystemMessage(buildSystemPrompt(exposure.tools)),
             UserMessage(userInput)
         )
         checkpoint?.invoke(messages)
@@ -181,7 +197,7 @@ class RealAgentLoop(
             hooks.beforeSerialization(messages.toList())
             val stepStart = System.currentTimeMillis()
             val resp = try {
-                callWithRetry { chatOnce(messages) }
+                callWithRetry { chatOnce(messages, exposure) }
             } catch (e: Throwable) {
                 AgentLogger.e("LLM", "调用失败", e)
                 throw e
@@ -206,12 +222,12 @@ class RealAgentLoop(
             // T01 三段式之执行 + commit：本批工具执行（T03 并发判据在 executor/loop 协作下生效）
             val stepImages = mutableListOf<String>()
             val results = try {
-                executeBatch(resp.toolCalls, stepImages)
+                executeBatch(resp.toolCalls, stepImages, turnRegistry)
             } catch (cancel: CancellationException) {
                 // T05 树尾闭合：不信任取消时 execute() 的返回值——工具被 kill 后可能返回假成功。
                 // 在 NonCancellable 内给本 Assistant 里所有**未配对**的 ToolCall 补错误 ToolResult，
                 // 保证「已 commit 的 ToolCall 必有配对 ToolResult」，再重抛取消。
-                withContext(NonCancellable) { closePendingToolResults(resp.toolCalls, messages) }
+                withContext(NonCancellable) { closePendingToolResults(resp.toolCalls, messages, turnRegistry) }
                 throw cancel
             }
             // 注：ToolExecutionFailedException 不在此捕获——回合级失败语义就是
@@ -291,28 +307,33 @@ class RealAgentLoop(
      * - 含写操作（任一工具 !readOnly）→ 整批**串行**（for 顺序执行，日志可见顺序）；
      *    全批只读 → async + awaitAll **并行**（按 maxParallelTools 分块限流）。
      * - 保序 commit：两种路径的结果列表都与调用序一一对应（块序 + 块内 awaitAll 保序）。
+     *
+     * Phase 2 DoD④：[turnRegistry] 为本回合的工具视图（未裁剪 = 原 registry；裁剪时仅含
+     * 暴露工具）。descriptor 解析、并发判据、executor 一律以它为界——被裁工具据此「查无此工具」。
      */
     private suspend fun executeBatch(
         calls: List<ToolCall>,
-        images: MutableList<String>
+        images: MutableList<String>,
+        turnRegistry: ToolRegistry
     ): List<ToolMessage> {
         val seenFingerprints = HashSet<String>()
         val duplicateFlags = calls.map { call ->
             val fp = failureGuard.fingerprint(call.name, call.arguments)
             !seenFingerprints.add(fp) // 已出现过 -> 同批重复
         }
-        // T01 三段式之解析：descriptor 快照（未知工具 -> 合成占位，executor 内走模糊匹配文案）
-        val descriptors = calls.map { registry.descriptorOf(it.name) }
+        // T01 三段式之解析：descriptor 快照（未知工具 -> 合成占位，executor 内走模糊匹配文案）。
+        // Phase 2 DoD④：以「回合级工具视图」解析——被裁工具在此为 null，走未知工具路径。
+        val descriptors = calls.map { turnRegistry.descriptorOf(it.name) }
         val unknownCount = descriptors.count { it == null }
         if (unknownCount > 0) {
             AgentLogger.w("AgentLoop", "本批含 $unknownCount 个未知工具调用（走 T02 模糊匹配文案）")
         }
-        val hasMutation = registry.batchHasMutation(calls)
+        val hasMutation = turnRegistry.batchHasMutation(calls)
         AgentLogger.i(
             "AgentLoop",
             "本批 ${calls.size} 个调用：hasMutation=$hasMutation（${if (hasMutation) "串行" else "并行"}）"
         )
-        val executor = toolExecutor()
+        val executor = toolExecutor(turnRegistry)
         return if (hasMutation) {
             // 含写整批串行：单协程顺序执行，直接写 images 无并发问题；顺序确定，
             // 便于日志审计与用户预期
@@ -407,14 +428,15 @@ class RealAgentLoop(
      */
     private suspend fun closePendingToolResults(
         calls: List<ToolCall>,
-        messages: MutableList<ChatMessage>
+        messages: MutableList<ChatMessage>,
+        turnRegistry: ToolRegistry
     ) {
         val paired = messages.filterIsInstance<ToolMessage>().mapTo(HashSet()) { it.id }
-        val executor = toolExecutor()
+        val executor = toolExecutor(turnRegistry)
         var filled = 0
         for (call in calls) {
             if (call.id in paired) continue
-            val descriptor = registry.descriptorOf(call.name) ?: ToolDescriptor(call.name, call.name, "{}")
+            val descriptor = turnRegistry.descriptorOf(call.name) ?: ToolDescriptor(call.name, call.name, "{}")
             val verdict = executor.onInterrupt(call, descriptor)
             val msg = interruptToolMessage(call, verdict)
             messages.add(msg)
@@ -466,9 +488,11 @@ class RealAgentLoop(
      * 错误时重新收集，已发出的 TextDelta 会重复下发（UI 侧按追加渲染可接受）；
      * 换来的是供应商瞬时故障不丢轮次。默认（非流式）实现无此问题。
      */
-    private suspend fun chatOnce(messages: List<ChatMessage>): AssistantMessage {
+    private suspend fun chatOnce(messages: List<ChatMessage>, exposure: ToolExposure): AssistantMessage {
         var completed: AssistantMessage? = null
-        llmProvider().streamChat(messages, registry.list()).collect { event ->
+        // Phase 2 DoD④：发给 LLM 的工具定义用本回合的暴露面（本地小模型 ≤7 个），
+        // 与系统提示拼接的 exposure.tools 同源，保证「给的工具」与「教的工具」一致。
+        llmProvider().streamChat(messages, exposure.tools).collect { event ->
             when (event) {
                 is ChatStreamEvent.TextDelta -> onTextDelta?.invoke(event.text)
                 is ChatStreamEvent.Completed -> completed = event.message
@@ -559,9 +583,50 @@ class RealAgentLoop(
     private fun isRetryable(e: Throwable): Boolean =
         (e as? LlmHttpException)?.retryable ?: true
 
-    /** 每批工具执行前取一次 executor（默认按**当前**字段构造，update(registry) 即时生效）。 */
-    private fun toolExecutor(): ToolExecutor =
-        executorFactory?.invoke() ?: RegistryToolExecutor(registry, failureGuard, approval, hooks)
+    /**
+     * 每批工具执行前取一次 executor（默认按**当前**字段构造，update(registry) 即时生效）。
+     *
+     * Phase 2 DoD④：默认 executor 绑定的 registry 为「回合级工具视图」[reg]——未裁剪时
+     * 即原 `registry`（行为不变）；裁剪时仅含暴露工具，被裁工具走未知工具路径。
+     * executorFactory 注入（测试替身）优先级不变，忽略 [reg]。
+     */
+    private fun toolExecutor(reg: ToolRegistry): ToolExecutor =
+        executorFactory?.invoke() ?: RegistryToolExecutor(reg, failureGuard, approval, hooks)
+
+    /**
+     * 计算本回合的工具暴露面（Phase 2 DoD④，纯委托 [ToolExposurePolicy.exposureFor]）。
+     * provider 取 `llmProvider().id`；[forceFullTools] = true 时强制全量。
+     */
+    private fun currentExposure(): ToolExposure =
+        ToolExposurePolicy.exposureFor(registry.list(), llmProvider().id, forceFullTools)
+
+    /**
+     * 由暴露面构造「回合级工具视图 registry」：
+     *  - 未裁剪（[ToolExposure.trimmed] = false）→ 原样返回 [registry]，**零开销、行为完全不变**；
+     *  - 发生裁剪 → 新建仅含 [ToolExposure.tools] 的 registry，使被裁工具在该视图内「查无此工具」，
+     *    从而 descriptor 解析为 null、executor 走 T02 未知工具路径（模糊匹配 + 自纠 hint），不抛异常。
+     *
+     * 注：仅影响本回合的「工具视图」，全局 [registry]（Skill 桥等复用）不变。
+     */
+    private fun scopedRegistry(exposure: ToolExposure): ToolRegistry =
+        if (!exposure.trimmed) {
+            registry
+        } else {
+            ToolRegistry().apply { exposure.tools.forEach { register(it) } }
+        }
+
+    /**
+     * 裁剪发生时打一条 INFO（Phase 2 DoD④ 诊断要求）：写明 provider + 暴露数量 + 裁剪掉的数量。
+     * 未裁剪（暴露数 = 全量数）时不打——避免每回合刷屏。日志文本经 [AgentLogger.sanitize] 无害化。
+     */
+    private fun logExposure(exposure: ToolExposure) {
+        if (!exposure.trimmed) return
+        AgentLogger.i(
+            "ToolExposure",
+            "按 provider 裁剪工具：provider=${exposure.providerId} 暴露 ${exposure.exposedCount} 个，" +
+                "裁剪掉 ${exposure.trimmedCount} 个（暴露：${exposure.exposedNames.joinToString(",")}）"
+        )
+    }
 
     /**
      * 续跑判定（T05）：显式 shouldContinue 优先；stop() 的优雅停止通道与之并列
@@ -572,9 +637,15 @@ class RealAgentLoop(
         return shouldContinue?.invoke() ?: true
     }
 
-    /** 把工具自带的 systemPrompt 片段拼进系统提示；启用记忆时再追加当前记忆摘要与使用引导。 */
-    private fun buildSystemPrompt(): String {
-        val hints = registry.list().mapNotNull { it.systemPrompt.takeIf { s -> s.isNotBlank() } }
+    /**
+     * 把「本回合暴露的」工具自带 systemPrompt 片段拼进系统提示；启用记忆时再追加当前记忆摘要与使用引导。
+     *
+     * Phase 2 DoD④：以 [tools]（= [ToolExposure.tools]，本地小模型已裁剪）而非全量
+     * `registry.list()` 拼接——工具被裁掉后，其 systemPrompt 片段也一并消失，
+     * 避免出现「你可以调 ui_swipe」这类已经不给的提示（否则模型会调不存在的工具）。
+     */
+    private fun buildSystemPrompt(tools: List<AgentTool>): String {
+        val hints = tools.mapNotNull { it.systemPrompt.takeIf { s -> s.isNotBlank() } }
         var prompt = if (hints.isEmpty()) systemPrompt else "$systemPrompt\n\n" + hints.joinToString("\n\n")
         val provider = memoryProvider ?: return prompt
         val summary = runCatching { provider() }.getOrDefault("")

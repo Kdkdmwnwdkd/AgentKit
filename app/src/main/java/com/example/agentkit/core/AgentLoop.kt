@@ -104,7 +104,12 @@ class AgentLoop(
      * 在此上抛，供 UI 做「打字机」式流式填入（TextDelta 不进历史，进历史的只有 Completed
      * 整条）。null = 关闭（默认，保持旧行为）。
      */
-    onTextDelta: ((String) -> Unit)? = null
+    onTextDelta: ((String) -> Unit)? = null,
+    /**
+     * Phase 2 DoD④「本地模型工具暴露降级」：强制全量工具开关（默认 false = 按 provider 自动）。
+     * provider = local-llama 时默认把暴露给 LLM 的工具面裁剪到核心集（≤7）；置 true 强制全量。
+     */
+    forceFullTools: Boolean = false
 ) : AgentLoopContract {
 
     /** 真实实现（T01 抽出的运行时内核）；本类所有公开 API 逐条转调至此。 */
@@ -121,7 +126,8 @@ class AgentLoop(
         memoryProvider = memoryProvider,
         onEvent = onEvent,
         shouldContinue = shouldContinue,
-        onTextDelta = onTextDelta
+        onTextDelta = onTextDelta,
+        forceFullTools = forceFullTools
     )
 
     /** 执行一轮对话，返回完整消息历史（语义 = [AgentLoopContract.send]，保留原名）。 */
