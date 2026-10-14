@@ -25,10 +25,14 @@ import java.util.concurrent.Executors
  * 避免 VM 里散落「内存格式 / 存储格式 / 历史格式」三家转换；core 不反向依赖 ui 的其他东西。
  */
 
-/** role 常量：字符串散落各处必然拼写漂移，收成文件级常量。 */
-private const val ROLE_USER = "user"
-private const val ROLE_ASSISTANT = "assistant"
-private const val ROLE_TOOL = "tool"
+/**
+ * role 常量：字符串散落各处必然拼写漂移，收成文件级常量。
+ * `internal`（而非 `private`）：[ConversationBranch]（同包另一文件）迁移/展开时也复用同一常量，
+ * 避免两处各写一份 "user"/"assistant" 字符串漂移。
+ */
+internal const val ROLE_USER = "user"
+internal const val ROLE_ASSISTANT = "assistant"
+internal const val ROLE_TOOL = "tool"
 
 /** 新对话默认标题：首条 user 消息到达时按内容前 [TITLE_CHARS] 字自动命名。 */
 private const val DEFAULT_TITLE = "新对话"
@@ -73,14 +77,24 @@ data class MsgRecord(
     val isError: Boolean = false
 )
 
-/** 一个完整会话（含全部消息）。 */
+/**
+ * 一个完整会话（含全部消息）。
+ *
+ * ## 双字段 = 向后兼容 + 分支能力（Phase 2 DoD②）
+ * @param messages 平坦消息历史（**旧格式字段，保持不变**）：线性渲染与「未分叉会话」的权威来源。
+ *   新版仍写它（值 = [turns] 的 [ConversationBranch.flatten]），故**旧版本 App 读新文件**时不认识
+ *   `turns` 也能照常显示（ignoreUnknownKeys），新旧双向兼容。
+ * @param turns 轮次变体结构（**新增字段，默认空**）：重新生成/左右切换的真源。旧文件缺此字段时
+ *   `load()` 用 [ConversationBranch.fromMessages] 从 [messages] 迁移补齐（变体数=1、游标=0，历史不丢）。
+ */
 @Serializable
 data class ConversationRecord(
     val id: String,
     val title: String,
     val createdAt: Long,
     val updatedAt: Long,
-    val messages: List<MsgRecord>
+    val messages: List<MsgRecord> = emptyList(),
+    val turns: List<TurnRecord> = emptyList()
 )
 
 /**
@@ -133,6 +147,34 @@ internal fun MsgRecord.toUiItem(): UiItem = when (role) {
 
 /** List<MsgRecord> → List<UiItem>（VM 载入会话用）。 */
 internal fun List<MsgRecord>.toUiItems(): List<UiItem> = map { it.toUiItem() }
+
+/**
+ * ConversationRecord → List<UiItem>（**基于 [ConversationRecord.turns] 渲染**，Phase 2 DoD②）。
+ *
+ * 为什么不再用 `messages.toUiItems()`：变体切换后 UI 必须体现「当前选中变体」，而
+ * `messages` 只是 flatten 缓存；逐轮渲染 [TurnRecord] 才能给助手气泡带上
+ * `variantIndex / variantCount / turnIndex` 元数据，供切换器 `← 2/3 →` 消费。
+ *
+ * 单轮顺序：`user → trace（工具卡等）→ 选中变体`，与 [ConversationBranch.flatten] 一致。
+ * trace 里的消息按 [MsgRecord.toUiItem] 还原（工具卡元数据默认，不参与切换）。
+ */
+internal fun ConversationRecord.toUiItems(): List<UiItem> = buildList {
+    turns.forEachIndexed { turnIndex, turn ->
+        add(UiItem.User(turn.user.content, turnIndex))
+        turn.trace.forEach { add(it.toUiItem()) }
+        val sel = turn.variants.getOrNull(turn.selectedIndex)
+        if (sel != null) {
+            add(
+                UiItem.Assistant(
+                    sel.content,
+                    variantIndex = turn.selectedIndex,
+                    variantCount = turn.variants.size,
+                    turnIndex = turnIndex
+                )
+            )
+        }
+    }
+}
 
 /** 解析落盘的 toolArgs；损坏/为空时退回空 object（工具卡入参块显示空白而非崩溃）。 */
 private fun parseToolArgs(raw: String?): JsonObject {
@@ -217,15 +259,9 @@ class ConversationStore(file: File) {
             // 会话已被删：静默丢弃，不崩溃（VM 有运行中守卫，双保险）
             if (idx < 0) return
             val conv = items[idx]
-            val messages = conv.messages.toMutableList()
-            if (rec.role == ROLE_TOOL) {
-                val existing = messages.indexOfFirst { it.role == ROLE_TOOL && it.id == rec.id }
-                if (existing >= 0) messages[existing] = rec else messages.add(rec)
-            } else {
-                messages.add(rec)
-            }
-            // 单会话消息数封顶：超出丢最旧，防文件无限膨胀
-            while (messages.size > MAX_MESSAGES) messages.removeAt(0)
+            // Phase 2 DoD②：先并入轮次变体结构，再据其展开为平坦缓存 messages
+            val turns = appendToTurns(conv.turns, rec)
+            val messages = ConversationBranch.flatten(turns)
             var title = conv.title
             if (title == DEFAULT_TITLE && rec.role == ROLE_USER && rec.content.isNotBlank()) {
                 title = rec.content.trim().take(TITLE_CHARS)
@@ -233,10 +269,119 @@ class ConversationStore(file: File) {
             items[idx] = conv.copy(
                 title = title,
                 updatedAt = System.currentTimeMillis(),
-                messages = messages
+                messages = messages,
+                turns = turns
             )
         }
         schedulePersist()
+    }
+
+    /**
+     * 把一条新消息并入轮次变体结构（纯函数，Phase 2 DoD②）：
+     *  - user → 新开一轮（[TurnRecord.user]）；
+     *  - assistant → 作为**当前轮**的助手变体追加并把游标指向它（重新生成也走这条：追加=新变体，
+     *    原变体保留可切回）；
+     *  - tool → 按 id upsert 进**当前轮的 trace**（ToolStarted 空结果占位 → ToolFinished 终态覆盖，
+     *    语义与旧 `messages` 的 replace 一致）。
+     * 轮数超 [MAX_MESSAGES] 丢最旧轮；无当前轮（异常数据）时安静忽略，绝不崩溃。
+     */
+    private fun appendToTurns(turns: List<TurnRecord>, rec: MsgRecord): List<TurnRecord> {
+        val out = turns.toMutableList()
+        when (rec.role) {
+            ROLE_USER -> out.add(TurnRecord(user = rec))
+            ROLE_ASSISTANT -> {
+                val i = out.lastIndex
+                if (i >= 0) {
+                    val t = out[i]
+                    val variants = t.variants + rec
+                    out[i] = t.copy(variants = variants, selectedIndex = variants.lastIndex)
+                }
+            }
+            ROLE_TOOL -> {
+                val i = out.lastIndex
+                if (i >= 0) {
+                    val t = out[i]
+                    val trace = t.trace.toMutableList()
+                    val e = trace.indexOfFirst { it.role == ROLE_TOOL && it.id == rec.id }
+                    if (e >= 0) trace[e] = rec else trace.add(rec)
+                    out[i] = t.copy(trace = trace)
+                }
+            }
+            else -> Unit
+        }
+        while (out.size > MAX_MESSAGES) out.removeAt(0)
+        return out
+    }
+
+    /**
+     * 左右切换某轮的选中变体（Phase 2 DoD②），[delta] = -1 左 / +1 右。
+     * 委托 [ConversationBranch.select]（边界 clamp：首个左移、末个右移原地不动；单变体轮不响应）。
+     * 切换后同步写回 `messages = flatten(turns)`，保证「下一次请求的历史」用的是选中变体。
+     * 会话不存在或轮次越界时静默 no-op（不崩）。
+     *
+     * @return 切换后该轮选中的变体下标（无法定位时为 0）。
+     */
+    fun selectVariant(convId: String, turnIndex: Int, delta: Int): Int {
+        var selected = 0
+        synchronized(lock) {
+            val idx = items.indexOfFirst { it.id == convId }
+            if (idx < 0) return 0
+            val conv = items[idx]
+            val turns = ConversationBranch.select(conv.turns, turnIndex, delta)
+            selected = turns.getOrNull(turnIndex)?.selectedIndex ?: 0
+            items[idx] = conv.copy(
+                updatedAt = System.currentTimeMillis(),
+                turns = turns,
+                messages = ConversationBranch.flatten(turns)
+            )
+        }
+        schedulePersist()
+        return selected
+    }
+
+    /**
+     * 为第 [turnIndex] 轮追加一个助手变体并选中（重新生成的持久化写入口）。
+     * 轮次越界时 no-op（[ConversationBranch.appendVariant] 原样返回），不崩。
+     */
+    fun appendVariant(convId: String, turnIndex: Int, variant: MsgRecord) {
+        synchronized(lock) {
+            val idx = items.indexOfFirst { it.id == convId }
+            if (idx < 0) return
+            val conv = items[idx]
+            val turns = ConversationBranch.appendVariant(conv.turns, turnIndex, variant)
+            items[idx] = conv.copy(
+                updatedAt = System.currentTimeMillis(),
+                turns = turns,
+                messages = ConversationBranch.flatten(turns)
+            )
+        }
+        schedulePersist()
+    }
+
+    /**
+     * 「从中间轮重新发问」的截断半程：保留 `turns[0..keepThroughIndex]`（含该轮），丢弃其后所有轮。
+     * 新问题由调用方（VM）随后以 user 消息开一轮（与 send 路径一致）。
+     * KDoc 裁决见 [ConversationBranch.reaskAfter]。
+     *
+     * @return 截断后剩余的轮次数（会话不存在时为 0）。
+     */
+    fun truncateAfter(convId: String, keepThroughIndex: Int): Int {
+        var remaining = 0
+        synchronized(lock) {
+            val idx = items.indexOfFirst { it.id == convId }
+            if (idx < 0) return 0
+            val conv = items[idx]
+            val end = (keepThroughIndex + 1).coerceIn(0, conv.turns.size)
+            val turns = conv.turns.take(end)
+            remaining = turns.size
+            items[idx] = conv.copy(
+                updatedAt = System.currentTimeMillis(),
+                turns = turns,
+                messages = ConversationBranch.flatten(turns)
+            )
+        }
+        schedulePersist()
+        return remaining
     }
 
     /** 重命名（空名回落默认标题，防用户清空文本框后按确定）。 */
@@ -274,15 +419,42 @@ class ConversationStore(file: File) {
     /**
      * 读盘：优先主文件，缺失或损坏时回退 .bak；两者都不可用退化为空列表
      * （宁可没有聊天记录，也不能因为文件坏掉崩掉主流程）。
+     * 读入的每条会话都过 [migrate]（旧格式 → 轮次变体，向后兼容）。
      */
     private fun load() {
         val parsed = parseOrNull(readTextOrEmpty(file)) ?: parseOrNull(readTextOrEmpty(bakFile))
         if (parsed != null) {
             synchronized(lock) {
                 items.clear()
-                items.addAll(parsed)
+                items.addAll(parsed.map { migrate(it) })
             }
         }
+    }
+
+    /**
+     * 单条会话的旧格式迁移（纯函数，Phase 2 DoD②）：
+     *  - [ConversationRecord.turns] 非空（新格式）→ 只做 [ConversationBranch.normalize]（夹游标）；
+     *  - turns 为空、messages 非空（**旧格式，无 variants 字段**）→ [ConversationBranch.fromMessages]
+     *    迁移：每个旧会话变体数=1、selectedIndex=0，历史内容进 trace/variants，**不丢**；
+     *  - messages 也为空 → 空会话，turns 仍为空。
+     *
+     * messages 权威保留（不重算）——良构旧数据 `flatten(fromMessages(messages)) == messages`，
+     * 故迁移后再落盘内容零变化；仅当新格式文件 messages 意外为空时用 flatten 回填做兜底。
+     */
+    private fun migrate(rec: ConversationRecord): ConversationRecord {
+        val turns = if (rec.turns.isNotEmpty()) {
+            ConversationBranch.normalize(rec.turns)
+        } else if (rec.messages.isNotEmpty()) {
+            ConversationBranch.normalize(ConversationBranch.fromMessages(rec.messages))
+        } else {
+            emptyList()
+        }
+        val messages = if (rec.messages.isEmpty() && turns.isNotEmpty()) {
+            ConversationBranch.flatten(turns)
+        } else {
+            rec.messages
+        }
+        return rec.copy(messages = messages, turns = turns)
     }
 
     /** 预约一次异步落盘（执行器 FIFO，多次预约变成有序的多次全量写，最终态一致）。 */

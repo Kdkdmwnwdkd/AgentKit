@@ -73,7 +73,13 @@ class AgentLoop(
      * （优雅收尾：补一条停止说明后返回历史）。null = 关闭。
      * 协程取消（Job.cancel）是另一条独立通道，两者互不依赖。
      */
-    shouldContinue: (() -> Boolean)? = null
+    shouldContinue: (() -> Boolean)? = null,
+    /**
+     * T01 流式文本增量回调（Phase 2 DoD② 接入）：[LLMClient.streamChat] 的 TextDelta
+     * 在此上抛，供 UI 做「打字机」式流式填入（TextDelta 不进历史，进历史的只有 Completed
+     * 整条）。null = 关闭（默认，保持旧行为）。
+     */
+    onTextDelta: ((String) -> Unit)? = null
 ) : AgentLoopContract {
 
     /** 真实实现（T01 抽出的运行时内核）；本类所有公开 API 逐条转调至此。 */
@@ -89,7 +95,8 @@ class AgentLoop(
         checkpoint = checkpoint,
         memoryProvider = memoryProvider,
         onEvent = onEvent,
-        shouldContinue = shouldContinue
+        shouldContinue = shouldContinue,
+        onTextDelta = onTextDelta
     )
 
     /** 执行一轮对话，返回完整消息历史（语义 = [AgentLoopContract.send]，保留原名）。 */

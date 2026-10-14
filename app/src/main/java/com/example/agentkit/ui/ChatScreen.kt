@@ -111,6 +111,7 @@ fun ChatScreen(
     onOpenPermissions: () -> Unit
 ) {
     val messages by vm.messages.collectAsStateWithLifecycle()
+    val streamDraft by vm.streamDraft.collectAsStateWithLifecycle()
     val conversations by vm.conversations.collectAsStateWithLifecycle()
     val activeConversationId by vm.activeConversationId.collectAsStateWithLifecycle()
     val input by vm.input.collectAsStateWithLifecycle()
@@ -129,10 +130,15 @@ fun ChatScreen(
     val modelReady =
         config.baseUrl.isNotBlank() && config.apiKey.isNotBlank() && config.model.isNotBlank()
 
-    // 新消息入场后贴底滚动（无 spring 无位移，只做位置归位）
-    LaunchedEffect(messages.size) {
-        if (messages.isNotEmpty()) listState.animateScrollToItem(messages.size - 1)
+    // 新消息入场后贴底滚动（无 spring 无位移，只做位置归位）；
+    // 流式草稿出现/消失也算一次「新项」，一并归位到尾部。
+    LaunchedEffect(messages.size, streamDraft != null) {
+        val count = messages.size + if (streamDraft != null) 1 else 0
+        if (count > 0) listState.animateScrollToItem(count - 1)
     }
+
+    // 「从中间轮重新发问」待编辑的用户气泡（长按/点击「重新发问」入口置位，确认后截断+重问）
+    var reaskTarget by remember { mutableStateOf<UiItem.User?>(null) }
 
     Column(Modifier.fillMaxSize()) {
         PageTopBar(
@@ -145,7 +151,7 @@ fun ChatScreen(
             actionEnabled = messages.isNotEmpty(),
             onAction = { vm.newConversation() }
         )
-        if (messages.isEmpty()) {
+        if (messages.isEmpty() && streamDraft == null) {
             EmptyGuide(
                 modifier = Modifier
                     .weight(1f)
@@ -176,8 +182,37 @@ fun ChatScreen(
                         sameSender(prev, item) -> AgentSpacing.space2
                         else -> AgentSpacing.space4
                     }
-                    Box(Modifier.padding(top = gap)) {
-                        MessageRow(item, streaming = running && index == messages.lastIndex)
+                    Column(Modifier.padding(top = gap)) {
+                        MessageRow(
+                            item,
+                            // 流式光标只在「末尾且无草稿气泡」时显示；有草稿时草稿自己带光标
+                            streaming = running && index == messages.lastIndex && streamDraft == null
+                        )
+                        // Phase 2 DoD②：助手气泡操作区（变体切换器 + 重新生成）
+                        if (item is UiItem.Assistant) {
+                            val showSwitch = item.variantCount > 1
+                            val showRegen = !running && index == messages.lastIndex && item.turnIndex >= 0
+                            if (showSwitch || showRegen) {
+                                AssistantActions(
+                                    variantIndex = item.variantIndex,
+                                    variantCount = item.variantCount,
+                                    showSwitch = showSwitch,
+                                    showRegen = showRegen,
+                                    onSwitch = { delta -> vm.switchVariant(item.turnIndex, delta) },
+                                    onRegenerate = { vm.regenerate() }
+                                )
+                            }
+                        }
+                        // 「从中间轮重新发问」入口：用户气泡下方一行小字（运行中隐藏）
+                        if (item is UiItem.User && !running && item.turnIndex >= 0) {
+                            UserReaskAction(onClick = { reaskTarget = item })
+                        }
+                    }
+                }
+                // 流式草稿气泡（重新生成/发送时 T01 增量实时填入，尚未落库）
+                if (streamDraft != null) {
+                    item(key = "stream-draft") {
+                        MessageRow(UiItem.Assistant(streamDraft.orEmpty()), streaming = true)
                     }
                 }
             }
@@ -188,6 +223,20 @@ fun ChatScreen(
             onTextChange = { vm.input.value = it },
             onSend = { vm.send() },
             onStop = { vm.stop() }
+        )
+    }
+
+    // —— Phase 2 DoD②：从中间轮重新发问的编辑对话框 ——
+    val reask = reaskTarget
+    if (reask != null) {
+        ReaskDialog(
+            initial = reask.text,
+            onDismiss = { reaskTarget = null },
+            onConfirm = { newText ->
+                val turn = reask.turnIndex
+                reaskTarget = null
+                vm.reaskFromTurn(turn, newText)
+            }
         )
     }
 
@@ -218,6 +267,176 @@ private fun sameSender(a: UiItem, b: UiItem): Boolean = when {
     a is UiItem.Assistant && b is UiItem.Assistant -> true
     a is UiItem.Tool && b is UiItem.Tool -> true
     else -> false
+}
+
+/**
+ * 助手气泡操作区（Phase 2 DoD②）：变体切换器 `← n/m →` + 「重新生成」。
+ *
+ * 缩进对齐助手气泡（头像 28dp + 间距 8dp = 36dp）；`←`/`→` 用文字而非图标，
+ * 规避 material-icons-extended 依赖（本模块只依赖核心图标集）。
+ * 序号 1-based 展示（「2/3」比「1/2」更符合用户直觉）。
+ */
+@Composable
+private fun AssistantActions(
+    variantIndex: Int,
+    variantCount: Int,
+    showSwitch: Boolean,
+    showRegen: Boolean,
+    onSwitch: (Int) -> Unit,
+    onRegenerate: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 36.dp, top = 2.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        if (showSwitch) {
+            SwitchArrow(label = "←", enabled = variantIndex > 0) { onSwitch(-1) }
+            Text(
+                text = "${variantIndex + 1}/$variantCount",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = AgentSpacing.space2)
+            )
+            SwitchArrow(label = "→", enabled = variantIndex < variantCount - 1) { onSwitch(1) }
+        }
+        if (showRegen) {
+            if (showSwitch) Spacer(Modifier.width(AgentSpacing.space3))
+            Text(
+                text = "重新生成",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(8.dp))
+                    .clickable(onClick = onRegenerate)
+                    .padding(horizontal = AgentSpacing.space2, vertical = 6.dp)
+            )
+        }
+    }
+}
+
+/** 变体切换箭头：可点文字，禁用时置灰 38%；触控 48dp 由外层 Row 高度与点击热区共同承载。 */
+@Composable
+private fun SwitchArrow(label: String, enabled: Boolean, onClick: () -> Unit) {
+    Text(
+        text = label,
+        style = MaterialTheme.typography.titleMedium,
+        color = if (enabled) {
+            MaterialTheme.colorScheme.primary
+        } else {
+            MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.38f)
+        },
+        modifier = Modifier
+            .clip(RoundedCornerShape(8.dp))
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(horizontal = AgentSpacing.space1, vertical = 2.dp)
+    )
+}
+
+/** 「重新发问」入口：用户气泡下方右对齐小字（点击打开编辑对话框）。 */
+@Composable
+private fun UserReaskAction(onClick: () -> Unit) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.End
+    ) {
+        Text(
+            text = "重新发问",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier
+                .clip(RoundedCornerShape(8.dp))
+                .clickable(onClick = onClick)
+                .padding(horizontal = AgentSpacing.space2, vertical = 2.dp)
+        )
+    }
+}
+
+/**
+ * 「从中间轮重新发问」编辑对话框（Phase 2 DoD②）。
+ *
+ * 预填该轮原提问，用户可改后发送；确认即截断该轮之后的对话并新开一轮
+ * （见 `ChatViewModel.reaskFromTurn`）。样式对齐审批弹窗的简洁卡面。
+ */
+@Composable
+private fun ReaskDialog(
+    initial: String,
+    onDismiss: () -> Unit,
+    onConfirm: (String) -> Unit
+) {
+    var text by remember(initial) { mutableStateOf(initial) }
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Box(
+            Modifier
+                .fillMaxSize()
+                .padding(24.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Surface(
+                shape = RoundedCornerShape(20.dp),
+                color = MaterialTheme.colorScheme.surface,
+                modifier = Modifier.widthIn(max = 344.dp)
+            ) {
+                Column(Modifier.padding(24.dp)) {
+                    Text(
+                        text = "从此处重新发问",
+                        style = MaterialTheme.typography.titleLarge,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        text = "确认后将截断这一轮之后的对话，并以新问题开一轮。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(AgentSpacing.space4))
+                    Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 48.dp, max = 140.dp)
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(MaterialTheme.colorScheme.surfaceVariant)
+                            .padding(
+                                horizontal = AgentSpacing.space3,
+                                vertical = AgentSpacing.space2
+                            )
+                    ) {
+                        BasicTextField(
+                            value = text,
+                            onValueChange = { text = it },
+                            modifier = Modifier.fillMaxWidth(),
+                            textStyle = MaterialTheme.typography.bodyLarge.copy(
+                                color = MaterialTheme.colorScheme.onSurface
+                            ),
+                            maxLines = 5,
+                            cursorBrush = SolidColor(MaterialTheme.colorScheme.primary)
+                        )
+                    }
+                    Spacer(Modifier.height(AgentSpacing.space4))
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(AgentSpacing.space3)
+                    ) {
+                        AkOutlinedButton(
+                            text = "取消",
+                            onClick = onDismiss,
+                            modifier = Modifier.weight(1f)
+                        )
+                        AkPrimaryButton(
+                            text = "发送",
+                            onClick = { onConfirm(text) },
+                            enabled = text.isNotBlank(),
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                }
+            }
+        }
+    }
 }
 
 /**

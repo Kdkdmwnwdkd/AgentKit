@@ -122,8 +122,30 @@ data class SkillUiInfo(
 
 /** UI 渲染用的消息项（与核心层 ChatMessage 解耦）。 */
 sealed interface UiItem {
-    data class User(val text: String) : UiItem
-    data class Assistant(val text: String) : UiItem
+    /**
+     * 用户气泡。
+     * @param turnIndex 该提问所属轮次下标；重新发问（截断其后轮次）按它定位；< 0 表示未归属（实时上屏的草稿）。
+     */
+    data class User(val text: String, val turnIndex: Int = -1) : UiItem
+
+    /**
+     * 助手气泡。
+     *
+     * Phase 2 DoD②：额外携带「变体游标」元数据，供气泡旁切换器 `← 2/3 →` 消费。
+     * 默认值保证旧构造点（只有 text）零改动即兼容——单变体、无切换器。
+     *
+     * @param variantIndex 当前选中变体下标（0-based）；< 0 表示非分叉消息（旧数据/中间助手）。
+     * @param variantCount 该轮变体总数；<= 1 时不显示切换器。
+     * @param turnIndex 该轮在会话 [com.example.agentkit.core.TurnRecord] 列表中的下标；
+     *   重新生成 / 切换 / 重新发问都按它定位轮次；< 0 表示未归属任何轮。
+     */
+    data class Assistant(
+        val text: String,
+        val variantIndex: Int = -1,
+        val variantCount: Int = 1,
+        val turnIndex: Int = -1
+    ) : UiItem
+
     data class Tool(
         val call: ToolCall,
         val result: String,
@@ -520,10 +542,12 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
 
     /**
      * 当前会话的消息；启动时从会话存储载入（功能三：重启 App 后对话还在）。
+     * Phase 2 DoD②：改由 [ConversationRecord.toUiItems] 逐轮渲染（带变体游标元数据），
+     * 使变体切换后助手气泡能正确反映当前选中变体。
      * 声明序保证 [conversationStore] / [_activeConversationId] 已就绪。
      */
     private val _messages = MutableStateFlow(
-        conversationStore.load(_activeConversationId.value)?.messages?.toUiItems() ?: emptyList()
+        conversationStore.load(_activeConversationId.value)?.toUiItems() ?: emptyList()
     )
     val messages: StateFlow<List<UiItem>> = _messages.asStateFlow()
 
@@ -600,6 +624,100 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         runJob = null
     }
 
+    // —— Phase 2 DoD②：消息分支（重新生成 / 左右切换 / 从中间轮重新发问）——
+
+    /**
+     * 重新生成**最后一轮**的助手回答：走 T01 流式路径（[com.example.agentkit.core.LLMClient.streamChat]，
+     * 经 [AgentLoop] 的 onTextDelta 打字机上屏到 [_streamDraft]），完成后**追加**一个新变体并选中
+     * （旧变体保留、可左右切回）——覆盖 DoD②「重新生成 3 次可左右切换」。
+     *
+     * 运行中忽略（UI 禁用只是双保险）。持久化经 [ConversationStore.appendVariant]，杀进程后仍在。
+     */
+    fun regenerate() {
+        if (isRunning.value) return
+        val rec = conversationStore.load(_activeConversationId.value) ?: return
+        val turns = rec.turns
+        val turnIndex = turns.lastIndex
+        if (turnIndex < 0) return
+        val userText = turns[turnIndex].user.content
+        if (userText.isBlank()) return
+
+        isRunning.value = true
+        _streamDraft.value = ""
+        AgentLogger.i("Chat", "重新生成：第 ${turnIndex + 1} 轮")
+        runJob = viewModelScope.launch {
+            try {
+                val outcome = runCatching { loop.run(userText) }
+                // 流式草稿使命结束：最终回答以整条变体落库，先清草稿避免与整条同时显示
+                _streamDraft.value = null
+                outcome.onSuccess { history ->
+                    // 过程事件已实时渲染；未渲染的工具卡兜底补上（与 send 同策略）
+                    history.forEach { msg ->
+                        if (msg is ToolMessage) {
+                            val shown = _messages.value.any { it is UiItem.Tool && it.call.id == msg.id }
+                            if (!shown) append(msg)
+                        }
+                    }
+                    val final = history.filterIsInstance<AssistantMessage>()
+                        .lastOrNull()?.content.orEmpty()
+                    val variant = UiItem.Assistant(if (final.isBlank()) "（模型未返回内容）" else final)
+                    conversationStore.appendVariant(
+                        _activeConversationId.value, turnIndex, variant.toMsgRecord()
+                    )
+                    reloadActiveMessages()
+                    refreshConversations()
+                }
+                outcome.onFailure {
+                    if (it is CancellationException) {
+                        // 用户主动停止：不算失败，也不追加空变体（草稿已清）
+                        AgentLogger.i("Chat", "重新生成已停止")
+                    } else {
+                        AgentLogger.e("Chat", "重新生成失败", it)
+                        val err = UiItem.Assistant(friendlyMessage(it))
+                        conversationStore.appendVariant(
+                            _activeConversationId.value, turnIndex, err.toMsgRecord()
+                        )
+                        reloadActiveMessages()
+                        refreshConversations()
+                    }
+                }
+            } finally {
+                runJob = null
+                isRunning.value = false
+                _streamDraft.value = null
+                refreshLogs()
+            }
+        }
+    }
+
+    /**
+     * 左右切换第 [turnIndex] 轮的选中变体（[delta] = -1 左 / +1 右）。
+     * 委托 [ConversationStore.selectVariant]（边界 clamp：首个左移/末个右移原地不动）；
+     * 切换后重建 [_messages]，保证 UI 与「下一次请求的历史」都用选中变体。运行中忽略。
+     */
+    fun switchVariant(turnIndex: Int, delta: Int) {
+        if (isRunning.value) return
+        conversationStore.selectVariant(_activeConversationId.value, turnIndex, delta)
+        reloadActiveMessages()
+        refreshConversations()
+    }
+
+    /**
+     * 从第 [turnIndex] 轮重新发问（UI：用户气泡长按 → 编辑对话框）。
+     * 先截断该轮**之后**的所有轮次（[ConversationStore.truncateAfter]，保留该轮），再把新问题
+     * 填入输入框走 [send]（与正常发问同一路径，新开一轮）——轮次下标天然连续。运行中忽略。
+     */
+    fun reaskFromTurn(turnIndex: Int, text: String) {
+        if (isRunning.value) return
+        val t = text.trim()
+        if (t.isBlank()) return
+        conversationStore.truncateAfter(_activeConversationId.value, turnIndex)
+        reloadActiveMessages()
+        refreshConversations()
+        input.value = t
+        send()
+    }
+
     // —— L10 危险操作审批：Agent 想操控手机必须先过人 ——
 
     /** 当前待用户确认的危险工具调用；非 null 时 UI 弹出审批 Dialog。 */
@@ -670,8 +788,25 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         memoryProvider = { memoryStore.summaryForPrompt(12, 1200) },
         // Hotfix2：工具调用过程实时上屏（执行中卡 → 终态卡），
         // 修掉「AI 干完什么都在黑盒里、跑完才甩结果」的体验缺陷
-        onEvent = ::handleAgentEvent
+        onEvent = ::handleAgentEvent,
+        // Phase 2 DoD②：T01 流式文本增量 → 打字机草稿气泡（重新生成的新变体流式填入）
+        onTextDelta = ::handleTextDelta
     )
+
+    /**
+     * T01 流式文本增量 → [_streamDraft] 草稿（打字机）。TextDelta 不进历史，
+     * 仅用于「正在生成」的实时气泡；[send] / [regenerate] 结束时清空并落库最终整条。
+     * 回调来自 LLM 收集协程，单独用 [streamDraftLock] 串行化（与 [msgLock] 解耦）。
+     */
+    private val streamDraftLock = Any()
+
+    private fun handleTextDelta(delta: String) = synchronized(streamDraftLock) {
+        _streamDraft.value = (_streamDraft.value ?: "") + delta
+    }
+
+    /** 流式草稿文本：非 null 时 UI 在消息末尾渲染一个「正在生成」的助手气泡（尚未落库）。 */
+    private val _streamDraft = MutableStateFlow<String?>(null)
+    val streamDraft: StateFlow<String?> = _streamDraft.asStateFlow()
 
     /** 过程事件 → UI 实时更新（Hotfix2）。工具并行执行时多线程回调，读写列表加锁防丢更新。 */
     private fun handleAgentEvent(ev: AgentEvent) = synchronized(msgLock) {
@@ -1050,6 +1185,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         if (text.isBlank() || isRunning.value) return
         input.value = ""
         isRunning.value = true
+        _streamDraft.value = null
         AgentLogger.i("Chat", "用户发送：${text.take(120)}")
 
         // L4 主动感知：把当前设备上下文自动拼进用户输入，让模型“知道”手机在干什么
@@ -1066,6 +1202,8 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
                 appendToStore(userItem) // 功能三：聊天记录同步落盘
                 // 先拿到 Result，再在同一个挂起体里做后续 IO：Result.onSuccess 的 lambda 不是 suspend
                 val outcome = runCatching { loop.run(fullInput) }
+                // 流式草稿使命结束：最终回答以整条消息落库（防草稿与整条同时显示）
+                _streamDraft.value = null
                 outcome.onSuccess { history ->
                     history.forEach { msg ->
                         when (msg) {
@@ -1120,6 +1258,10 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
                 // finally 保证取消路径（withContext 直接抛 CancellationException）也能复位
                 runJob = null
                 isRunning.value = false
+                _streamDraft.value = null
+                // Phase 2 DoD②：用轮次变体结构重建 _messages——补上助手气泡的变体游标元数据
+                // （首条回答变体数=1，切换器不显示；重新生成后才会 >1）
+                reloadActiveMessages()
                 refreshLogs()
             }
         }
@@ -1219,8 +1361,13 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     /** 载入指定会话为当前会话（设 id + 读消息进 _messages + 刷新摘要）。 */
     private fun loadConversation(id: String) {
         _activeConversationId.value = id
-        _messages.value = conversationStore.load(id)?.messages?.toUiItems() ?: emptyList()
+        _messages.value = conversationStore.load(id)?.toUiItems() ?: emptyList()
         refreshConversations()
+    }
+
+    /** 用当前会话的轮次变体结构重建 [_messages]（变体切换/重新生成/重新发问后调用）。 */
+    private fun reloadActiveMessages() {
+        _messages.value = conversationStore.load(_activeConversationId.value)?.toUiItems() ?: emptyList()
     }
 
     /**
