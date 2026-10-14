@@ -30,17 +30,25 @@ class UiScreenshotTool(private val workspace: File) : AgentTool {
         "你可以用 ui_screenshot 截取当前屏幕画面并“看见”它（图片会自动附到下一轮对话）。当需要理解屏幕上的视觉内容、确认操作结果、或 UI 树信息不足时，调用它。"
     override val parameters = JsonSchema.objectSchema()
 
+    /** 只读（按 roadmap 首批标注）：仅采集屏幕画面供观看，不改变设备状态。 */
+    override val readOnly = true
+
     override suspend fun execute(args: JsonObject): ToolResult = withContext(Dispatchers.IO) {
         val svc = ScreenCaptureService.activeInstance
         if (!ScreenshotBridge.isCapturing || svc == null) {
-            return@withContext ToolResult(
-                "屏幕捕获未启用：请在「设置 → 自动化」中点「开始屏幕捕获」并授予屏幕录制权限。",
-                isError = true
+            return@withContext ToolResult.fail(
+                code = "capture_not_enabled",
+                message = "屏幕捕获未启用：请在「设置 → 自动化」中点「开始屏幕捕获」并授予屏幕录制权限。",
+                hint = "引导用户开启屏幕捕获授权后重试；或改用 ui_tree 读取界面结构。"
             )
         }
         val bmp = svc.captureBitmap()
         if (bmp == null) {
-            return@withContext ToolResult("截屏失败：未能获取屏幕帧（请确认捕获已开启）", isError = true)
+            return@withContext ToolResult.fail(
+                code = "capture_failed",
+                message = "截屏失败：未能获取屏幕帧（请确认捕获已开启）",
+                hint = "确认屏幕捕获服务运行中后重试。"
+            )
         }
         try {
             val dir = File(workspace, "screenshots").apply { mkdirs() }
@@ -57,7 +65,12 @@ class UiScreenshotTool(private val workspace: File) : AgentTool {
             val dataUrl = "data:image/jpeg;base64," + Base64.encodeToString(jpg.toByteArray(), Base64.NO_WRAP)
 
             val meta = """{"path":"${file.absolutePath}","width":${bmp.width},"height":${bmp.height},"type":"png"}"""
-            ToolResult(listOf(ToolPart.Text(meta), ToolPart.Image(dataUrl, "当前屏幕截图")))
+            ToolResult.ok(
+                code = "screenshot_ok",
+                message = "已截屏并保存：${file.name}（${bmp.width}x${bmp.height}）",
+                data = meta,
+                parts = listOf(ToolPart.Text(meta), ToolPart.Image(dataUrl, "当前屏幕截图"))
+            )
         } finally {
             bmp.recycle()
         }

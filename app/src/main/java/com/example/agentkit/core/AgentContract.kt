@@ -10,7 +10,10 @@ import kotlinx.serialization.json.JsonObject
  * 设计借鉴（净室重写，非抄源码）：
  *  - [systemPrompt]：工具可自带一段提示词，注入到系统提示里（RikkaHub 思路）。
  *  - [needsApproval]：危险工具可声明调用前需用户审批（RikkaHub / Coomi approval 思路）。
- *  - execute 返回多片段结果 [ToolResult]，支持文本与图片，方便 UI 直接渲染（RikkaHub 思路）。
+ *  - [readOnly]：是否只读（无副作用）。并发判据用——本批任一工具非只读即整批串行，
+ *    全批只读才并行（T03，coomi A2 has_mutation 思路）。默认 false（未知工具按写处理，
+ *    走向串行这一安全侧）。
+ *  - execute 返回统一契约 [ToolResult]（T02：ok/code/message/hint/data，失败 hint 必填）。
  */
 interface AgentTool {
     val name: String
@@ -23,7 +26,13 @@ interface AgentTool {
     /** 是否危险操作，调用前需要用户审批。默认 false。 */
     val needsApproval: Boolean get() = false
 
-    /** 执行工具，返回多片段结果。 */
+    /**
+     * 是否只读（T03）：true = 无副作用可并行；false = 写操作须串行。
+     * 不标注 = false（保守走串行）。
+     */
+    val readOnly: Boolean get() = false
+
+    /** 执行工具，返回统一契约结果（T02）。 */
     suspend fun execute(args: JsonObject): ToolResult
 }
 
@@ -37,18 +46,6 @@ sealed interface ToolPart {
     data class Image(val url: String, val alt: String = "") : ToolPart {
         override val text get() = "[图片: $alt]"
     }
-}
-
-/** 单个工具执行后的返回结果（不含调用 id）。向后兼容旧用法 [ToolResult]("文本", isError)。 */
-data class ToolResult private constructor(
-    val parts: List<ToolPart>,
-    val isError: Boolean
-) {
-    /** 便捷文本视图：拼接所有文本片段，供 UI 折叠卡片展示。 */
-    val content: String = parts.filterIsInstance<ToolPart.Text>().joinToString("\n") { it.content }
-
-    constructor(parts: List<ToolPart>) : this(parts, parts.any { it.isError })
-    constructor(text: String, isError: Boolean = false) : this(listOf(ToolPart.Text(text, isError)))
 }
 
 /** 工具审批回调：返回 true 表示允许执行。 */

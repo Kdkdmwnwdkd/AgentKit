@@ -13,6 +13,10 @@ import kotlinx.serialization.json.jsonPrimitive
  * L9 记忆库的四个 AgentTool：写 / 检索 / 列表 / 遗忘。
  * 风格对齐 tools/BuiltInTools.kt：AgentTool + JsonSchema.objectSchema + runCatching 兜底，
  * 且**可选参数必须显式传 required**，否则 objectSchema 默认把所有参数都置为必填。
+ *
+ * T02：统一契约 ToolResult{ok, code, message, hint, data}，失败 hint 必填。
+ * T03：readOnly 标注——memory_search / memory_list 只读；
+ * memory_write / memory_forget 为写操作（改记忆库状态）。
  */
 
 /* ------------------------------------------------------------------ */
@@ -35,11 +39,24 @@ class MemoryWriteTool(private val store: MemoryStore) : AgentTool {
         "当你从对话中得知用户的长期偏好、稳定事实或重要约定时，用 memory_write 记下来，" +
             "这样即便开启新会话也能保持一致；不要记录一次性临时信息。"
 
+    /** 写操作：向记忆库新增数据。 */
+    override val readOnly = false
+
     override suspend fun execute(args: JsonObject): ToolResult = withContext(Dispatchers.IO) {
         runCatching {
             val content = args["content"]?.jsonPrimitive?.contentOrNull?.trim()
-                ?: return@withContext ToolResult("缺少 content", isError = true)
-            if (content.isBlank()) return@withContext ToolResult("content 不能为空", isError = true)
+                ?: return@withContext ToolResult.fail(
+                    code = "missing_param",
+                    message = "缺少 content",
+                    hint = "memory_write 必须提供 content（要记住的一句话内容）。"
+                )
+            if (content.isBlank()) {
+                return@withContext ToolResult.fail(
+                    code = "invalid_param",
+                    message = "content 不能为空",
+                    hint = "请提供要记录的非空白内容（一句话说清事实或偏好）。"
+                )
+            }
             val kind = args["kind"]?.jsonPrimitive?.contentOrNull?.trim()?.takeIf { it.isNotBlank() } ?: "note"
             val tags = args["tags"]?.jsonPrimitive?.contentOrNull
                 ?.split(",", "，", "、", " ")
@@ -53,8 +70,17 @@ class MemoryWriteTool(private val store: MemoryStore) : AgentTool {
 
             val item = store.add(content, kind, tags, salience)
             val tagText = if (item.tags.isEmpty()) "无" else item.tags.joinToString(",")
-            ToolResult("已记住 [${item.kind}] id=${item.id}｜重要度=${item.salience}｜标签=$tagText\n内容：${item.content}")
-        }.getOrElse { ToolResult("写入记忆失败：${it.message}", isError = true) }
+            ToolResult.ok(
+                code = "memory_written",
+                message = "已记住 [${item.kind}] id=${item.id}｜重要度=${item.salience}｜标签=$tagText\n内容：${item.content}"
+            )
+        }.getOrElse {
+            ToolResult.fail(
+                code = "io_error",
+                message = "写入记忆失败：${it.message}",
+                hint = "确认存储可写；可换用更短的 content 重试。"
+            )
+        }
     }
 }
 
@@ -72,21 +98,44 @@ class MemorySearchTool(private val store: MemoryStore) : AgentTool {
         required = listOf("query")
     )
 
+    /** 只读：仅检索记忆库，无副作用。 */
+    override val readOnly = true
+
     override suspend fun execute(args: JsonObject): ToolResult = withContext(Dispatchers.IO) {
         runCatching {
             val query = args["query"]?.jsonPrimitive?.contentOrNull?.trim()
-                ?: return@withContext ToolResult("缺少 query", isError = true)
+                ?: return@withContext ToolResult.fail(
+                    code = "missing_param",
+                    message = "缺少 query",
+                    hint = "memory_search 必须提供 query（检索关键词，可中英文混写）。"
+                )
             val topK = args["topK"]?.jsonPrimitive?.contentOrNull?.trim()
                 ?.toIntOrNull()?.coerceIn(1, 50) ?: 10
 
             val hits = store.search(query, topK)
-            if (hits.isEmpty()) return@withContext ToolResult("未找到相关记忆（query=$query）")
+            if (hits.isEmpty()) {
+                return@withContext ToolResult.ok(
+                    code = "memory_no_hit",
+                    message = "未找到相关记忆（query=$query）",
+                    data = ""
+                )
+            }
             val body = hits.joinToString("\n") { item ->
                 val tagText = if (item.tags.isEmpty()) "" else " #${item.tags.joinToString(" #")}"
                 "[${item.kind}] ${item.id} ${item.content}$tagText"
             }
-            ToolResult("命中 ${hits.size} 条（共 ${store.size()} 条记忆）：\n$body")
-        }.getOrElse { ToolResult("检索记忆失败：${it.message}", isError = true) }
+            ToolResult.ok(
+                code = "memory_hits",
+                message = "命中 ${hits.size} 条（共 ${store.size()} 条记忆）",
+                data = body
+            )
+        }.getOrElse {
+            ToolResult.fail(
+                code = "io_error",
+                message = "检索记忆失败：${it.message}",
+                hint = "更换关键词后重试；持续失败请告知用户记忆库暂不可用。"
+            )
+        }
     }
 }
 
@@ -102,15 +151,34 @@ class MemoryListTool(private val store: MemoryStore) : AgentTool {
         required = emptyList()
     )
 
+    /** 只读：仅列举记忆库，无副作用。 */
+    override val readOnly = true
+
     override suspend fun execute(args: JsonObject): ToolResult = withContext(Dispatchers.IO) {
         runCatching {
             val limit = args["limit"]?.jsonPrimitive?.contentOrNull?.trim()
                 ?.toIntOrNull()?.coerceIn(1, 100) ?: 20
             val items = store.list(limit)
-            if (items.isEmpty()) return@withContext ToolResult("记忆库为空，还没有任何记忆。")
+            if (items.isEmpty()) {
+                return@withContext ToolResult.ok(
+                    code = "memory_empty",
+                    message = "记忆库为空，还没有任何记忆。",
+                    data = ""
+                )
+            }
             val body = items.joinToString("\n") { item -> "[${item.kind}] ${item.id} ${item.content}" }
-            ToolResult("共 ${store.size()} 条记忆，以下为最近 ${items.size} 条：\n$body")
-        }.getOrElse { ToolResult("读取记忆失败：${it.message}", isError = true) }
+            ToolResult.ok(
+                code = "memory_listed",
+                message = "共 ${store.size()} 条记忆，以下为最近 ${items.size} 条",
+                data = body
+            )
+        }.getOrElse {
+            ToolResult.fail(
+                code = "io_error",
+                message = "读取记忆失败：${it.message}",
+                hint = "稍后重试；持续失败请告知用户记忆库暂不可用。"
+            )
+        }
     }
 }
 
@@ -126,13 +194,36 @@ class MemoryForgetTool(private val store: MemoryStore) : AgentTool {
         required = listOf("id")
     )
 
+    /** 写操作：永久删除记忆数据。 */
+    override val readOnly = false
+
     override suspend fun execute(args: JsonObject): ToolResult = withContext(Dispatchers.IO) {
         runCatching {
             val id = args["id"]?.jsonPrimitive?.contentOrNull?.trim()
-                ?: return@withContext ToolResult("缺少 id", isError = true)
+                ?: return@withContext ToolResult.fail(
+                    code = "missing_param",
+                    message = "缺少 id",
+                    hint = "memory_forget 必须提供 id（可从 memory_search / memory_list 获得）。"
+                )
             val ok = store.forget(id)
-            if (ok) ToolResult("已忘记该记忆：$id（剩余 ${store.size()} 条）")
-            else ToolResult("未找到 id 对应的记忆：$id", isError = true)
-        }.getOrElse { ToolResult("删除记忆失败：${it.message}", isError = true) }
+            if (ok) {
+                ToolResult.ok(
+                    code = "memory_forgotten",
+                    message = "已忘记该记忆：$id（剩余 ${store.size()} 条）"
+                )
+            } else {
+                ToolResult.fail(
+                    code = "not_found",
+                    message = "未找到 id 对应的记忆：$id",
+                    hint = "先用 memory_search / memory_list 确认有效 id，再重试。"
+                )
+            }
+        }.getOrElse {
+            ToolResult.fail(
+                code = "io_error",
+                message = "删除记忆失败：${it.message}",
+                hint = "确认 id 有效后重试；持续失败请告知用户。"
+            )
+        }
     }
 }

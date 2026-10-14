@@ -133,6 +133,12 @@ fun createUseSkillTool(
             "加载并应用某个技能以获取专用指令或执行其脚本能力。当用户需求匹配某个可用技能时调用。"
         override val systemPrompt: String get() = buildSkillSystemPrompt(skillsProvider())
 
+        /**
+         * 写操作（T03）：script 形态技能会真实执行 main.js，可能产生副作用
+         * （文件/网络/设备操作），含 use_skill 的批次整批串行。
+         */
+        override val readOnly = false
+
         override val parameters = JsonSchema.objectSchema(
             JsonSchema.prop("name", "string", "要使用的技能名称"),
             JsonSchema.prop(
@@ -146,15 +152,24 @@ fun createUseSkillTool(
             val skills = skillsProvider()
             val byName = skills.associateBy { it.name }
             val name = args["name"]?.jsonPrimitive?.contentOrNull
-                ?: return ToolResult("缺少 name", isError = true)
+                ?: return ToolResult.fail(
+                    code = "missing_param",
+                    message = "缺少 name",
+                    hint = "use_skill 必须提供 name（可用技能名称，见系统提示中的 available_skills 列表）。"
+                )
             val skill = byName[name] ?: byName[name.escapeXml()]
-                ?: return ToolResult(
-                    "未找到技能：$name。可用：${byName.keys.joinToString()}",
-                    isError = true
+                ?: return ToolResult.fail(
+                    code = "skill_not_found",
+                    message = "未找到技能：$name。可用：${byName.keys.joinToString()}",
+                    hint = "从 available_skills 列表中选择正确名称重新调用。"
                 )
             // 把模型传入的 name/path 等参数整包 JSON 透传给脚本作为 input
             val text = executor.runSkill(skill, args.toString()).text
-            return ToolResult(text.take(MAX_SKILL_CONTEXT_BYTES))
+            return ToolResult.ok(
+                code = "skill_applied",
+                message = "技能「${skill.name}」已加载/执行",
+                data = text.take(MAX_SKILL_CONTEXT_BYTES)
+            )
         }
     }
 }

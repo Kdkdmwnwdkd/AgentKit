@@ -22,9 +22,16 @@ class DeviceForegroundAppTool(private val context: Context) : AgentTool {
         "你可以用 device_foreground_app 获取当前前台应用，感知用户此刻在哪个 App 里。当任务需要判断当前界面归属、或“用户在用什么 App”时调用它。"
     override val parameters = JsonSchema.objectSchema()
 
+    /** 只读：仅查询使用统计，无副作用。 */
+    override val readOnly = true
+
     override suspend fun execute(args: JsonObject): ToolResult {
         val usm = context.getSystemService(Context.USAGE_STATS_SERVICE) as? UsageStatsManager
-            ?: return ToolResult("无法获取 UsageStatsManager。", isError = true)
+            ?: return ToolResult.fail(
+                code = "service_unavailable",
+                message = "无法获取 UsageStatsManager。",
+                hint = "当前设备不支持使用情况统计；请改用 ui_tree 判断当前界面。"
+            )
 
         val now = System.currentTimeMillis()
         val stats = usm.queryUsageStats(
@@ -37,9 +44,10 @@ class DeviceForegroundAppTool(private val context: Context) : AgentTool {
             .maxByOrNull { it.lastTimeUsed }
 
         if (recent == null) {
-            return ToolResult(
-                "未能确定前台应用：可能尚未授予“使用情况访问权限”（PACKAGE_USAGE_STATS）。请在「自动化」页引导开启。",
-                isError = true
+            return ToolResult.fail(
+                code = "permission_missing",
+                message = "未能确定前台应用：可能尚未授予“使用情况访问权限”（PACKAGE_USAGE_STATS）。请在「自动化」页引导开启。",
+                hint = "引导用户授予使用情况访问权限后重试；或改用 ui_tree 读取界面。"
             )
         }
         val label = try {
@@ -50,6 +58,9 @@ class DeviceForegroundAppTool(private val context: Context) : AgentTool {
         } catch (_: PackageManager.NameNotFoundException) {
             recent.packageName
         }
-        return ToolResult("当前前台应用：$label（包名：${recent.packageName}）")
+        return ToolResult.ok(
+            code = "foreground_app_ok",
+            message = "当前前台应用：$label（包名：${recent.packageName}）"
+        )
     }
 }

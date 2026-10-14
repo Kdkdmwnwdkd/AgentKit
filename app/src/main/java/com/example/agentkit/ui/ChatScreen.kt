@@ -43,6 +43,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.ExpandMore
@@ -185,7 +186,8 @@ fun ChatScreen(
             text = input,
             running = running,
             onTextChange = { vm.input.value = it },
-            onSend = { vm.send() }
+            onSend = { vm.send() },
+            onStop = { vm.stop() }
         )
     }
 
@@ -395,7 +397,8 @@ private fun ChatInputBar(
     text: String,
     running: Boolean,
     onTextChange: (String) -> Unit,
-    onSend: () -> Unit
+    onSend: () -> Unit,
+    onStop: () -> Unit
 ) {
     Surface(color = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f)) {
         Column(
@@ -462,17 +465,9 @@ private fun ChatInputBar(
                 }
                 Spacer(Modifier.width(AgentSpacing.space2))
                 if (running) {
-                    // 运行中：按钮位显示加载指示（VM 无中止接口，不提供「停止」假按钮）
-                    Box(
-                        modifier = Modifier.size(AgentDimens.touchTarget),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(24.dp),
-                            strokeWidth = 2.dp,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                    }
+                    // T05：运行中按钮位升级为「停止」——点它取消 runJob，
+                    // AgentLoop ≤1 轮内退出并闭合所有待决 ToolResult（无未闭合 tool_call）
+                    ChatStopButton(onClick = onStop)
                 } else {
                     ChatSendButton(
                         enabled = text.isNotBlank(),
@@ -480,6 +475,44 @@ private fun ChatInputBar(
                     )
                 }
             }
+        }
+    }
+}
+
+/** 停止按钮：触控 48dp / 视觉 40dp，error 底 + 24dp on-error 停止图标；运行时常驻可点。 */
+@Composable
+private fun ChatStopButton(onClick: () -> Unit) {
+    val interaction = remember { MutableInteractionSource() }
+    val pressed by interaction.collectIsPressedAsState()
+    val scale by animateFloatAsState(
+        targetValue = if (pressed) 0.97f else 1f,
+        animationSpec = AkMotionPress
+    )
+    Box(
+        modifier = Modifier
+            .size(AgentDimens.touchTarget)
+            .scale(scale)
+            .clip(CircleShape)
+            .clickable(
+                interactionSource = interaction,
+                indication = null,
+                onClick = onClick
+            ),
+        contentAlignment = Alignment.Center
+    ) {
+        Box(
+            modifier = Modifier
+                .size(AgentDimens.topBarButtonVisual)
+                .clip(CircleShape)
+                .background(MaterialTheme.colorScheme.error),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = Icons.Filled.Stop,
+                contentDescription = "停止",
+                tint = MaterialTheme.colorScheme.onError,
+                modifier = Modifier.size(18.dp)
+            )
         }
     }
 }

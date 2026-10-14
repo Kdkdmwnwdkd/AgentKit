@@ -535,6 +535,25 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     val input = MutableStateFlow("")
     val isRunning = MutableStateFlow(false)
 
+    /**
+     * T05：当前运行任务的 Job 句柄（send() 内置，stop() 取消）。
+     * 取消后 AgentLoop 会在 ≤1 轮内退出，并在 NonCancellable 内补全所有待决
+     * ToolResult（树尾闭合）——历史里不会留下未闭合 tool_call。
+     */
+    private var runJob: Job? = null
+
+    /**
+     * T05：停止当前运行（流式中点「停止」）。
+     * 取消 runJob → AgentLoop 每轮边界 ensureActive 退出 + 树尾闭合补结果。
+     * 未在运行时调用为 no-op。
+     */
+    fun stop() {
+        val job = runJob ?: return
+        AgentLogger.i("Chat", "用户请求停止运行")
+        job.cancel()
+        runJob = null
+    }
+
     // —— L10 危险操作审批：Agent 想操控手机必须先过人 ——
 
     /** 当前待用户确认的危险工具调用；非 null 时 UI 弹出审批 Dialog。 */
@@ -991,57 +1010,72 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         val ctxPrompt = DeviceContextStore.snapshot().toPrompt()
         val fullInput = if (ctxPrompt.isBlank()) text else "$ctxPrompt\n\n用户当前请求：$text"
 
-        viewModelScope.launch {
-            // Hotfix2：用户消息立即上屏；工具调用过程由 handleAgentEvent 实时渲染
-            // （执行中卡 → 终态卡）；最终历史只补文本回答，工具卡按 call.id 去重
-            val userItem = UiItem.User(text)
-            _messages.value = _messages.value + userItem
-            appendToStore(userItem) // 功能三：聊天记录同步落盘
-            // 先拿到 Result，再在同一个挂起体里做后续 IO：Result.onSuccess 的 lambda 不是 suspend
-            val outcome = runCatching { loop.run(fullInput) }
-            outcome.onSuccess { history ->
-                history.forEach { msg ->
-                    when (msg) {
-                        // 发送时已实时上屏，跳过防重复
-                        is UserMessage -> Unit
-                        // 过程事件已渲染过同 id 的工具卡；未渲染的才兜底补上
-                        is ToolMessage -> {
-                            val shown = _messages.value.any { it is UiItem.Tool && it.call.id == msg.id }
-                            if (!shown) append(msg)
+        // T05：句柄置入 runJob，供 stop() 取消；finally 保证 isRunning/日志必收
+        runJob = viewModelScope.launch {
+            try {
+                // Hotfix2：用户消息立即上屏；工具调用过程由 handleAgentEvent 实时渲染
+                // （执行中卡 → 终态卡）；最终历史只补文本回答，工具卡按 call.id 去重
+                val userItem = UiItem.User(text)
+                _messages.value = _messages.value + userItem
+                appendToStore(userItem) // 功能三：聊天记录同步落盘
+                // 先拿到 Result，再在同一个挂起体里做后续 IO：Result.onSuccess 的 lambda 不是 suspend
+                val outcome = runCatching { loop.run(fullInput) }
+                outcome.onSuccess { history ->
+                    history.forEach { msg ->
+                        when (msg) {
+                            // 发送时已实时上屏，跳过防重复
+                            is UserMessage -> Unit
+                            // 过程事件已渲染过同 id 的工具卡；未渲染的才兜底补上
+                            is ToolMessage -> {
+                                val shown = _messages.value.any { it is UiItem.Tool && it.call.id == msg.id }
+                                if (!shown) append(msg)
+                            }
+                            // 中间轮 Assistant 可能只有 toolCalls 无文本，空内容不出气泡
+                            is AssistantMessage -> if (msg.content.isNotBlank()) append(msg)
+                            else -> Unit
                         }
-                        // 中间轮 Assistant 可能只有 toolCalls 无文本，空内容不出气泡
-                        is AssistantMessage -> if (msg.content.isNotBlank()) append(msg)
-                        else -> Unit
                     }
                 }
-            }
-            outcome.onFailure {
-                AgentLogger.e("Chat", "运行失败", it)
-                // 气泡面向用户：技术异常在此映射成可读文案（完整堆栈已在日志里落盘）
-                val errItem = UiItem.Assistant(friendlyMessage(it))
-                _messages.value = _messages.value + errItem
-                appendToStore(errItem) // 功能三：失败气泡也进聊天记录
-            }
-            // L9：把本轮对话沉淀成低权重 event 记忆，下次会话也能回忆起来
-            val finalAnswer = outcome.getOrNull()
-                ?.filterIsInstance<AssistantMessage>()
-                ?.lastOrNull()?.content
-                .orEmpty()
-            if (finalAnswer.isNotBlank()) {
-                withContext(Dispatchers.IO) {
-                    runCatching {
-                        memoryStore.add(
-                            "用户请求：${text.take(80)}｜结果：${finalAnswer.take(120)}",
-                            "event",
-                            emptyList(),
-                            3
-                        )
+                outcome.onFailure {
+                    // T05：取消是用户主动停止，不是错误——树尾闭合后历史已完整，给停止提示
+                    if (it is CancellationException) {
+                        AgentLogger.i("Chat", "运行已停止（历史已闭合，可继续提问）")
+                        val stopItem = UiItem.Assistant("⏹ 已停止。已完成的历史保留，可基于它继续提问。")
+                        _messages.value = _messages.value + stopItem
+                        appendToStore(stopItem)
+                        return@onFailure
                     }
+                    AgentLogger.e("Chat", "运行失败", it)
+                    // 气泡面向用户：技术异常在此映射成可读文案（完整堆栈已在日志里落盘）
+                    val errItem = UiItem.Assistant(friendlyMessage(it))
+                    _messages.value = _messages.value + errItem
+                    appendToStore(errItem) // 功能三：失败气泡也进聊天记录
                 }
-                refreshMemories()
+                // L9：把本轮对话沉淀成低权重 event 记忆，下次会话也能回忆起来
+                // （取消时 finalAnswer 为空，自然跳过）
+                val finalAnswer = outcome.getOrNull()
+                    ?.filterIsInstance<AssistantMessage>()
+                    ?.lastOrNull()?.content
+                    .orEmpty()
+                if (finalAnswer.isNotBlank()) {
+                    withContext(Dispatchers.IO) {
+                        runCatching {
+                            memoryStore.add(
+                                "用户请求：${text.take(80)}｜结果：${finalAnswer.take(120)}",
+                                "event",
+                                emptyList(),
+                                3
+                            )
+                        }
+                    }
+                    refreshMemories()
+                }
+            } finally {
+                // finally 保证取消路径（withContext 直接抛 CancellationException）也能复位
+                runJob = null
+                isRunning.value = false
+                refreshLogs()
             }
-            isRunning.value = false
-            refreshLogs()
         }
     }
 
