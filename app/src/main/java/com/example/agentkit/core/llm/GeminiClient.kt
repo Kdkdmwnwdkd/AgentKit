@@ -38,6 +38,9 @@ import java.util.UUID
  *  - functionCall **没有调用 id**（Claude/OpenAI 都有）——ToolCall.id 由本地合成，
  *    回传时靠 name 匹配，AgentLoop 不依赖 id 的唯一跨轮语义；
  *  - 图片只认 inlineData（base64），http URL 由 [ImageUris] 预下载转换。
+ *
+ * 流式（T01）：[LLMClient.streamChat] 暂用默认实现（chat() 整条 + 单条 Completed）；
+ * 后续可接 SSE（?alt=sse 的 candidates[0].content.parts 增量 + functionCall 分片累积）。
  */
 class GeminiClient(
     private val config: LLMConfig,

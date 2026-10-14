@@ -38,6 +38,9 @@ import java.util.UUID
  *    在 [ToolMessage] 里附了图片，这里也只取文本，UI 层已单独渲染）。
  *
  * 实例生命周期在 [LocalLlamaEngine]（进程级复用，避免每轮重新加载模型）。
+ *
+ * 流式（T01）：[LLMClient.streamChat] 暂用默认实现（chat() 整条 + 单条 Completed）；
+ * 后续可接 SSE（llama.cpp 的 token 级增量回调转 TextDelta，工具调用仍走提示词协议解析）。
  */
 class LocalLlamaClient(
     private val engine: LocalLlamaEngine,

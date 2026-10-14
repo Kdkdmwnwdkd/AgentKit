@@ -41,6 +41,10 @@ import java.util.UUID
  *  - 图片只认 base64（http URL 由 [ImageUris] 预下载转换）。
  *
  * 日志与脱敏复用 OpenAIClient 的同一套 AgentLogger / ConfigSanitizer 机制。
+ *
+ * 流式（T01）：[LLMClient.streamChat] 暂用默认实现（chat() 整条 + 单条 Completed）；
+ * 后续可接 SSE（content_block_delta 增量 + input_json_delta 工具参数分片累积，
+ * 参照 OpenAIClient 的 readSseDataObjects / OpenAiToolCallAccumulator 模式）。
  */
 class ClaudeClient(
     private val config: LLMConfig,
