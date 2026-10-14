@@ -26,6 +26,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.withContext
@@ -97,6 +98,10 @@ import java.util.concurrent.atomic.AtomicBoolean
  *   （默认 false = 按 provider 自动）。provider = local-llama 时默认把暴露给 LLM 的
  *   工具面裁剪到 [ToolExposurePolicy.LOCAL_CORE_TOOLS]（≤7 个）；置 true 可强制放行
  *   全量（开发者/设置项逃生门）。云端 provider 不受此开关影响（本就全量）。
+ * @param retryBackoff 重试退避钩子（「准备重试」事件抛出**之后**、下一次尝试**之前**
+ *   调用，参数为 1-based 重试序号）。默认 [RetryBackoffPolicy.DEFAULT]（1s → 2s →
+ *   封顶 4s 的指数退避）；测试可注入即时版以保持 harness 毫秒级。断网恢复了这种
+ *   「等一会儿再试」才有意义的场景，全靠它区分「重试」与「原地冲锋」。
  */
 class RealAgentLoop(
     private val llmProvider: () -> LLMClient,
@@ -114,7 +119,8 @@ class RealAgentLoop(
     private val onTextDelta: ((String) -> Unit)? = null,
     private val hooks: Hooks = NoopHooks,
     private val executorFactory: (() -> ToolExecutor)? = null,
-    private val forceFullTools: Boolean = false
+    private val forceFullTools: Boolean = false,
+    private val retryBackoff: suspend (attempt: Int) -> Unit = RetryBackoffPolicy.DEFAULT
 ) : AgentLoop {
 
     /** T04：失败熔断 + 调用指纹去重（跨轮次持有，切会话不重置——直到成功清指纹）。 */
@@ -520,6 +526,19 @@ class RealAgentLoop(
      *    收尾的 `retrying` 标志同时守护 RetryFinished 不空抛。
      *  - 取消（CancellationException）原样上抛、绝不重试；`finally` 立即清状态——
      *    T05 不变量：用户点停止后不得残留「正在恢复」。
+     *
+     * **退避（机实测 Bug 1 修复）**：每次宣布「准备重试」后、真正重发之前，先走
+     * [retryBackoff] 退避（默认 1000ms → 2000ms → 4000ms 封顶）。理由有二：
+     *  1. **UI 可见性**：`UnknownHostException`（飞行模式）是**瞬时返回**的，无退避时
+     *     3 次尝试几十毫秒内打完，`RetryStarted` 刚置位就被 `finally` 的 `RetryFinished`
+     *     清掉——用户永远看不到「正在恢复（n/N）」横幅，只看到最后那个错误；
+     *  2. **恢复窗口**：退避给了网络实际的恢复时间，这才是「重试」的意义。
+     * 不可重试错误（401/403/400）**不等待**、一次即失败（高频快败路径零新增延迟）。
+     *
+     * **取消优先**：退避期间若协程被取消，必须立刻退出（[delay] 自带取消语义）；
+     * 退避钩子本身是否可取消是注入方的自由，故钩子返回后再补一次
+     * `ensureActive()`——即使是 `{ Thread.sleep(n) }` 这种不可取消钩子，取消也不会
+     * 让它多跑一次无用请求（T05：点停止不得残留「正在恢复」，也不得多等）。
      */
     private suspend fun <T> callWithRetry(block: suspend () -> T): T {
         var last: Throwable? = null
@@ -551,6 +570,9 @@ class RealAgentLoop(
                             AgentEvent.RetryStarted(attempt + 1, providerRetry, retryReason(e))
                         )
                         retrying = true
+                        // 先公告再退避：让「正在恢复（n/N）」有稳定可见时长，并留出恢复窗口
+                        retryBackoff(attempt + 1)
+                        currentCoroutineContext().ensureActive()
                     }
                 }
             }
@@ -666,4 +688,40 @@ class RealAgentLoop(
             if (idx < messages.size && messages[idx] is ToolMessage) messages.removeAt(idx)
         }
     }
+}
+
+/**
+ * 供应商重试退避策略（纯函数，零 Android 依赖——QA harness 可直接对校验发货单）。
+ *
+ * 指数退避 1000ms → 2000ms → 4000ms，之后封顶 [MAX_MS]：
+ *  - 第 1 次重试等 1s：足够 Compose 渲染「正在恢复（1/N）」横幅并完成一轮布局；
+ *  - 第 2 次等 2s：给 Wi-Fi / 移动网络一个真实的重连窗口；
+ *  - 后续一律 4s 封顶：避免长时间 value=0 的等待把整轮对话拖到不可忍受。
+ *
+ * 公开（而非 internal）：[RealAgentLoop] 的构造默认值需引用它，且 QA harness
+ * 要脱离 Android 环境直接断言退避毫秒序列（故本对象零 Android / 零 ViewModel 依赖）。
+ */
+object RetryBackoffPolicy {
+
+    /** 退避基数（第 1 次重试的等待毫秒）。 */
+    const val BASE_MS: Long = 1_000L
+
+    /** 单次退避上限。 */
+    const val MAX_MS: Long = 4_000L
+
+    /**
+     * 第 [attempt] 次重试（1-based）前应等待的毫秒数：`BASE_MS * 2^(attempt-1)`，
+     * 封顶 [MAX_MS]；非法序号（≤0）按第 1 次处理，避免调用方传错导致永久忙等。
+     */
+    fun backoffMillis(attempt: Int): Long {
+        var ms = BASE_MS
+        repeat((attempt - 1).coerceAtLeast(0)) { ms = (ms * 2).coerceAtMost(MAX_MS) }
+        return ms.coerceAtMost(MAX_MS)
+    }
+
+    /**
+     * 默认退避钩子：按 [backoffMillis] 挂起等待（[kotlinx.coroutines.delay] 自带取消
+     * 语义——退避途中取消会立刻以 CancellationException 返回）。
+     */
+    val DEFAULT: suspend (attempt: Int) -> Unit = { attempt -> delay(backoffMillis(attempt)) }
 }

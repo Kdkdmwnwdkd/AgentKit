@@ -11,9 +11,16 @@
  *
  * 仓库无测试源集（离线缓存无 JUnit），沿用纯 main() + 手写断言（形态学
  * scripts/qa/T02T06Verification.kt）。运行方式见 scripts/qa/run-retry-verification.sh。
+ *
+ * **退避注入（机实测 Bug 1 修复后）**：callWithRetry 现在会在「宣布重试」后真正退避
+ * （默认 1s→2s→封顶 4s）。本 harness 的假 client 是瞬时返回的，若不注入即时版钩子，
+ * 整套用例会被拉慢数秒且没必要。故各处构造统一传 [INSTANT_BACKOFF]；真退避
+ * 自己的行为（确实等待 / 退避中取消 / 不可重试零等待）由
+ * scripts/qa/HotfixVerification.kt 覆盖。
  */
 
 import com.example.agentkit.core.*
+import com.example.agentkit.core.agent.RealAgentLoop
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.coroutineScope
@@ -21,6 +28,13 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+
+/**
+ * 即时退避钩子：把「宣布重试」之后的等待压到 0（本项目真退避见
+ * [com.example.agentkit.core.agent.RetryBackoffPolicy]）。Harness 只关心事件序列与
+ * 语义边界，不关心真实等待时长——否则 providerRetry=2 的每个用例都要多等 3 秒。
+ */
+private val INSTANT_BACKOFF: suspend (Int) -> Unit = { }
 
 /* ------------------------------ 迷你断言框架 ------------------------------ */
 
@@ -148,11 +162,12 @@ private suspend fun testRetryThenSuccess() {
                 { AssistantMessage("恢复成功") }                  // 第 3 次
             )
         )
-        val loop = AgentLoop(
+        val loop = RealAgentLoop(
             llmProvider = { llm },
             registry = ToolRegistry(),
             providerRetry = 2,
-            onEvent = probe::onEvent
+            onEvent = probe::onEvent,
+            retryBackoff = INSTANT_BACKOFF
         )
 
         val history = loop.send("hi")
@@ -178,11 +193,12 @@ private suspend fun testNonRetryableFastFail() {
     check("401 → 请求 1 次、无重试事件、原异常上抛") {
         val probe = RetryProbe()
         val llm = FaultLlm(listOf({ throw LlmHttpException(401, "unauthorized") }))
-        val loop = AgentLoop(
+        val loop = RealAgentLoop(
             llmProvider = { llm },
             registry = ToolRegistry(),
             providerRetry = 2,
-            onEvent = probe::onEvent
+            onEvent = probe::onEvent,
+            retryBackoff = INSTANT_BACKOFF
         )
 
         val thrown = catchThrowable("send 应抛 401") { loop.send("hi") }
@@ -214,11 +230,12 @@ private suspend fun testCancelDuringRetry() {
                     { delay(60_000); AssistantMessage("never") }    // 第 2 次：挂起直到被取消
                 )
             )
-            val loop = AgentLoop(
+            val loop = RealAgentLoop(
                 llmProvider = { llm },
                 registry = ToolRegistry(),
                 providerRetry = 2,
-                onEvent = onEvent
+                onEvent = onEvent,
+                retryBackoff = INSTANT_BACKOFF
             )
 
             var thrown: Throwable? = null
@@ -255,11 +272,12 @@ private suspend fun testExhaustRetries() {
     check("全部 503 → 请求 3 次、(1/2)(2/2)、最终失败一次、状态清除、异常上抛") {
         val probe = RetryProbe()
         val llm = FaultLlm(listOf({ throw LlmHttpException(503, "unavailable") }))
-        val loop = AgentLoop(
+        val loop = RealAgentLoop(
             llmProvider = { llm },
             registry = ToolRegistry(),
             providerRetry = 2,
-            onEvent = probe::onEvent
+            onEvent = probe::onEvent,
+            retryBackoff = INSTANT_BACKOFF
         )
 
         val thrown = catchThrowable("send 应抛 503") { loop.send("hi") }
@@ -280,11 +298,12 @@ private suspend fun testBoundaries() {
     check("providerRetry=0 + 可重试失败 → 1 次请求、无重试事件") {
         val probe = RetryProbe()
         val llm = FaultLlm(listOf({ throw LlmHttpException(500, "boom") }))
-        val loop = AgentLoop(
+        val loop = RealAgentLoop(
             llmProvider = { llm },
             registry = ToolRegistry(),
             providerRetry = 0,
-            onEvent = probe::onEvent
+            onEvent = probe::onEvent,
+            retryBackoff = INSTANT_BACKOFF
         )
         catchThrowable("send 应抛 500") { loop.send("hi") }
         assertEquals("请求次数", 1, llm.calls)
@@ -295,11 +314,12 @@ private suspend fun testBoundaries() {
     check("providerRetry=1 + 首次成功 → 1 次请求、无重试事件") {
         val probe = RetryProbe()
         val llm = FaultLlm(listOf({ AssistantMessage("ok") }))
-        val loop = AgentLoop(
+        val loop = RealAgentLoop(
             llmProvider = { llm },
             registry = ToolRegistry(),
             providerRetry = 1,
-            onEvent = probe::onEvent
+            onEvent = probe::onEvent,
+            retryBackoff = INSTANT_BACKOFF
         )
         loop.send("hi")
         assertEquals("请求次数", 1, llm.calls)
@@ -315,11 +335,12 @@ private suspend fun testBoundaries() {
                 { AssistantMessage("ok") }
             )
         )
-        val loop = AgentLoop(
+        val loop = RealAgentLoop(
             llmProvider = { llm },
             registry = ToolRegistry(),
             providerRetry = 1,
-            onEvent = probe::onEvent
+            onEvent = probe::onEvent,
+            retryBackoff = INSTANT_BACKOFF
         )
         loop.send("hi")
         assertEquals("请求次数", 2, llm.calls)
@@ -335,11 +356,12 @@ private suspend fun testBoundaries() {
                 { AssistantMessage("网络恢复") }
             )
         )
-        val loop = AgentLoop(
+        val loop = RealAgentLoop(
             llmProvider = { llm },
             registry = ToolRegistry(),
             providerRetry = 2,
-            onEvent = probe::onEvent
+            onEvent = probe::onEvent,
+            retryBackoff = INSTANT_BACKOFF
         )
         val history = loop.send("hi")
         assertEquals(
@@ -359,11 +381,12 @@ private suspend fun testBoundaries() {
                 { AssistantMessage("ok") }
             )
         )
-        val loop = AgentLoop(
+        val loop = RealAgentLoop(
             llmProvider = { llm },
             registry = ToolRegistry(),
             providerRetry = 2,
-            onEvent = probe::onEvent
+            onEvent = probe::onEvent,
+            retryBackoff = INSTANT_BACKOFF
         )
         loop.send("hi")
         assertEquals("重试序号序列", listOf(1 to 2), probe.retryAttempts())

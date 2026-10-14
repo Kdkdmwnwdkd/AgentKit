@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.Context
 import android.media.projection.MediaProjectionManager
 import android.provider.Settings
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.animateColorAsState
@@ -74,6 +75,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import com.example.agentkit.automation.ScreenshotBridge
 import kotlinx.coroutines.delay
 
 /**
@@ -955,6 +957,12 @@ fun AkTextField(
  *
  * 控制台与权限中心两处入口共用同一实现，避免两处各写一遍 resultCode / Intent 判空而漂移。
  *
+ * **Bug 2（给权限后回 App 就闪退）修复后的 UI 契约**：启动是**可能失败**的动作
+ * （Android 14 的顺序约束、后台启动限制、厂商 ROM 限制都会让它失败），失败必须可见——
+ * 读取 [ScreenshotBridge.lastError] 弹一条「屏幕捕获启动失败：<原因>，可重试」的长 Toast，
+ * 而不是静默（静默的后果是 ui_screenshot 一直失败，用户却不知道为什么）。
+ * 另外 `ScreenshotBridge.startService` 本身不抛异常（内部已兜底），故这里不再 try/catch。
+ *
  * @return 点击「开始屏幕捕获」时调用的动作。
  */
 @Composable
@@ -966,6 +974,11 @@ internal fun rememberScreenCaptureLauncher(vm: ChatViewModel): () -> Unit {
         if (res.resultCode == Activity.RESULT_OK && res.data != null) {
             vm.setScreenCapturePermission(res.resultCode, res.data)
             vm.startScreenCapture(ctx)
+            val failure = ScreenshotBridge.lastError
+            if (failure != null) {
+                ScreenshotBridge.lastError = null // 一次性：读走即清，避免下一次成功还提示旧错
+                Toast.makeText(ctx, failure, Toast.LENGTH_LONG).show()
+            }
         }
     }
     return {
