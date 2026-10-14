@@ -48,19 +48,31 @@ object ProcessEnv {
     /**
      * 宿主环境 + 列表形式自定义 env 的并集（自定义覆盖同名键）。
      *
-     * `System.getenv()` 在极端环境下可能抛异常（安全策略 / 沙箱），此处吞掉异常
-     * 退化为「只有自定义 env」，保证调用方不会因取环境而崩溃。
+     * `System.getenv()` 在极端环境下可能抛异常（安全策略 / 沙箱），此处记录 WARN 后
+     * 退化为「只有自定义 env」，保证调用方不会因取环境而崩溃；**静默退化正是 T09
+     * 要消灭的故障模式**（proot 缺宿主变量瞬间退出且无报错），所以必须留日志。
      *
      * @return `KEY=VALUE` 数组，可直接交给 `execve` / JNI `createSubprocess*`。
      */
     fun mergeHostEnv(custom: Iterable<String>): Array<String> {
         val merged = LinkedHashMap<String, String>()
-        val host: Map<String, String> = runCatching { System.getenv() }.getOrDefault(emptyMap())
+        val host: Map<String, String> = runCatching { System.getenv() }
+            .onFailure {
+                AgentLogger.w(
+                    "ProcessEnv",
+                    "宿主 env 读取失败，已退化为仅自定义 env：${it.message}"
+                )
+            }
+            .getOrDefault(emptyMap())
         merged.putAll(host)
         merged.putAll(parse(custom))
         return toEnvList(merged).toTypedArray()
     }
 
     /** 宿主环境变量个数（仅供日志自检使用）。 */
-    fun hostEnvSize(): Int = runCatching { System.getenv().size }.getOrDefault(0)
+    fun hostEnvSize(): Int = runCatching { System.getenv().size }
+        .onFailure {
+            AgentLogger.w("ProcessEnv", "宿主 env 读取失败，hostEnvSize 退化为 0：${it.message}")
+        }
+        .getOrDefault(0)
 }
