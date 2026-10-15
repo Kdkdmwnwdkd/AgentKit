@@ -12,9 +12,9 @@ SERIALIZATION=$CACHE/org.jetbrains.kotlinx/kotlinx-serialization-json-jvm/1.6.3/
 SER_CORE=$(find $CACHE/org.jetbrains.kotlinx/kotlinx-serialization-core-jvm -name "kotlinx-serialization-core-jvm-*.jar" | grep -v sources | head -1)
 TROVE=$CACHE/org.jetbrains.intellij.deps/trove4j/1.0.20200330/3afb14d5f9ceb459d724e907a21145e8ff394f02/trove4j-1.0.20200330.jar
 # JB_ANNOTATIONS 用 QA 本地稳定副本（scripts/qa/lib/）：避免并发 Gradle 进程瞬时扰动缓存副本
-JB_ANNOTATIONS=/workspace/scripts/qa/lib/annotations-23.0.0.jar
+JB_ANNOTATIONS=/root/.gradle/caches/modules-2/files-2.1/org.jetbrains/annotations/23.0.0/8cc20c07506ec18e0834947b84a864bfc094484e/annotations-23.0.0.jar
 
-CLASSES=/workspace/app/build/tmp/kotlin-classes/debug
+CLASSES=/workspace/AgentKit/app/build/tmp/kotlin-classes/debug
 OUT=/tmp/qa-verify-crashlog
 DEPS=$CLASSES:$STDLIB:$COROUTINES:$SERIALIZATION:$SER_CORE
 
@@ -25,7 +25,7 @@ java -cp "$KOTLINC:$STDLIB:$TROVE:$JB_ANNOTATIONS" org.jetbrains.kotlin.cli.jvm.
   -no-stdlib -no-reflect \
   -Xfriend-paths="$CLASSES" \
   -classpath "$DEPS" \
-  -d "$OUT" /workspace/scripts/qa/CrashLogVerification.kt
+  -d "$OUT" /workspace/AgentKit/scripts/qa/CrashLogVerification.kt
 
 echo "[2/2] running ..."
 java -cp "$OUT:$DEPS" \

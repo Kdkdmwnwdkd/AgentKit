@@ -8,9 +8,9 @@ STDLIB=$CACHE/org.jetbrains.kotlin/kotlin-stdlib/1.9.25/f700a2f2b8f0d6d0fde48f56
 COROUTINES=$CACHE/org.jetbrains.kotlinx/kotlinx-coroutines-core-jvm/1.8.1/bb0e192bd7c2b6b8217440d36e9758e377e450/kotlinx-coroutines-core-jvm-1.8.1.jar
 TROVE=$CACHE/org.jetbrains.intellij.deps/trove4j/1.0.20200330/3afb14d5f9ceb459d724e907a21145e8ff394f02/trove4j-1.0.20200330.jar
 # JB_ANNOTATIONS 用 QA 本地稳定副本（scripts/qa/lib/）：避免并发 Gradle 进程瞬时扰动缓存副本
-JB_ANNOTATIONS=/workspace/scripts/qa/lib/annotations-23.0.0.jar
+JB_ANNOTATIONS=/root/.gradle/caches/modules-2/files-2.1/org.jetbrains/annotations/23.0.0/8cc20c07506ec18e0834947b84a864bfc094484e/annotations-23.0.0.jar
 
-CLASSES=/workspace/app/build/tmp/kotlin-classes/debug
+CLASSES=/workspace/AgentKit/app/build/tmp/kotlin-classes/debug
 OUT=/tmp/qa-verify-markdown
 DEPS=$CLASSES:$STDLIB:$COROUTINES:$JB_ANNOTATIONS
 
@@ -22,7 +22,7 @@ java -cp "$KOTLINC:$STDLIB:$TROVE:$JB_ANNOTATIONS" org.jetbrains.kotlin.cli.jvm.
   -no-stdlib -no-reflect \
   -Xfriend-paths="$CLASSES" \
   -classpath "$DEPS" \
-  -d "$OUT" /workspace/scripts/qa/MarkdownVerification.kt
+  -d "$OUT" /workspace/AgentKit/scripts/qa/MarkdownVerification.kt
 
 echo "[2/2] running ..."
 java -cp "$OUT:$DEPS" \

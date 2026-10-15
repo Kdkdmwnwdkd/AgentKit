@@ -17,6 +17,7 @@
  * **C（接线，源码扫描，不加载 Android 类）**：
  *  - Manifest 声明了 AgentKitApplication、Application.onCreate 里装了 CrashLogger；
  *  - ScreenCaptureService 里每个危险调用都在 guard/guardValue/runCatching 内；
+ *    （W-7 起 getMediaProjection 移桥层：服务代码零调用、桥层调用有兜底，见 E5b）
  *  - 日志页有崩溃区块且调用了 CrashLogger。
  *
  * 运行方式见 scripts/qa/run-crashlog-verification.sh。
@@ -487,8 +488,8 @@ private fun testScreenCaptureGuard() {
 
 /* ------------------------------ E. 接线（源码扫描，不加载 Android 类） ------------------------------ */
 
-private val SRC = File("/workspace/app/src/main/java/com/example/agentkit")
-private val MANIFEST = File("/workspace/app/src/main/AndroidManifest.xml")
+private val SRC = File("/workspace/AgentKit/app/src/main/java/com/example/agentkit")
+private val MANIFEST = File("/workspace/AgentKit/app/src/main/AndroidManifest.xml")
 
 private fun read(rel: String): String = File(SRC, rel).readText()
 
@@ -499,6 +500,7 @@ private fun testWiring() {
     val app = read("AgentKitApplication.kt")
     val crashLogger = read("core/CrashLogger.kt")
     val service = read("automation/ScreenCaptureService.kt")
+    val bridge = read("automation/ScreenshotBridge.kt")
     val logs = read("ui/LogsScreen.kt")
 
     check("E1 Manifest 声明了 AgentKitApplication") {
@@ -519,7 +521,8 @@ private fun testWiring() {
     }
     check("E5 危险调用全部在 guard/guardValue/runCatching 内（服务层零裸调用）") {
         val risky = listOf(
-            "getMediaProjection(",
+            // W-7 修复后 getMediaProjection 已移桥层 obtainProjection（服务生命周期之前），
+            // 服务层不再调用——改由下方 E5b 在桥层侧断言其兜底与「服务零调用」
             "ImageReader.newInstance(",
             "setOnImageAvailableListener(",
             "createVirtualDisplay(",
@@ -545,6 +548,30 @@ private fun testWiring() {
                 if (!guarded) {
                     throw AssertionError("E5 裸调用未被兜底：$call @第 ${idx + 1} 行 -> ${line.trim()}")
                 }
+            }
+        }
+    }
+    check("E5b 取 token 已移桥层：服务代码零 getMediaProjection，桥层调用在 guard 内") {
+        // W-7 修复（ForegroundServiceDidNotStartInTimeException 崩 4 次的根治）：
+        // token 获取移到服务生命周期之前（桥层 obtainProjection，授权回调后立即执行）。
+        // 服务**代码**（KDoc 除外）不得再出现 getMediaProjection——重复消费一次性 token
+        // 正是老代码「服务内现取 → 失败收摊 → startForeground 从未执行 → 5 秒超时杀进程」的根因。
+        val isCode = { s: String ->
+            val t = s.trim()
+            t.isNotEmpty() && !t.startsWith("*") && !t.startsWith("//") && !t.startsWith("/*")
+        }
+        val serviceCode = service.lines().filter { isCode(it) }
+        assertFalse("服务代码不得取 token", serviceCode.any { it.contains("getMediaProjection(") })
+        // 桥层是 token 的唯一获取点：必须真实出现，且包在 guard/runCatching/try 内
+        val bridgeLines = bridge.lines()
+        val bridgeHits = bridgeLines.withIndex().filter { it.value.contains("getMediaProjection(") && isCode(it.value) }
+        assertTrue("桥层应出现 getMediaProjection（唯一获取点）", bridgeHits.isNotEmpty())
+        for ((idx, line) in bridgeHits) {
+            val window = bridgeLines.subList((idx - 4).coerceAtLeast(0), idx + 1).joinToString("\n")
+            val guarded = window.contains("guard") || window.contains("runCatching") ||
+                window.contains("try {") || window.contains("catch (")
+            if (!guarded) {
+                throw AssertionError("E5b 桥层取 token 裸调用：@第 ${idx + 1} 行 -> ${line.trim()}")
             }
         }
     }

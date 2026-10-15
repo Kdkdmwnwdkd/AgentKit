@@ -13,12 +13,12 @@ TROVE=$CACHE/org.jetbrains.intellij.deps/trove4j/1.0.20200330/3afb14d5f9ceb459d7
 # 参数生成空值注解时要加载 org.jetbrains.annotations.NotNull；QA 实测直接引用 Gradle 缓存
 # 里的副本会被并发 Gradle 进程瞬时扰动（classpath entry points to a non-existent location
 # warning + 偶发 NoClassDefFoundError 崩在 IR lowering，非确定性），故固化本地副本。
-JB_ANNOTATIONS=/workspace/scripts/qa/lib/annotations-23.0.0.jar
+JB_ANNOTATIONS=/root/.gradle/caches/modules-2/files-2.1/org.jetbrains/annotations/23.0.0/8cc20c07506ec18e0834947b84a864bfc094484e/annotations-23.0.0.jar
 # 内存脚本化 SSE 响应（应用层拦截器短路）：OkHttp + Okio，均来自 Gradle 离线缓存
 OKHTTP=$CACHE/com.squareup.okhttp3/okhttp/4.12.0/2f4525d4a200e97e1b87449c2cd9bd2e25b7e8cd/okhttp-4.12.0.jar
 OKIO=$CACHE/com.squareup.okio/okio-jvm/3.6.0/5600569133b7bdefe1daf9ec7f4abeb6d13e1786/okio-jvm-3.6.0.jar
 
-CLASSES=/workspace/app/build/tmp/kotlin-classes/debug
+CLASSES=/workspace/AgentKit/app/build/tmp/kotlin-classes/debug
 OUT=/tmp/qa-verify-t01-probe2
 DEPS=$CLASSES:$STDLIB:$COROUTINES:$SERIALIZATION:$SER_CORE:$OKHTTP:$OKIO:$JB_ANNOTATIONS
 
@@ -32,7 +32,7 @@ compile_probe2() {
     -no-stdlib -no-reflect \
     -Xfriend-paths="$CLASSES" \
     -classpath "$DEPS" \
-    -d "$OUT" /workspace/scripts/qa/T01AdversarialProbe2.kt 2>&1) || true
+    -d "$OUT" /workspace/AgentKit/scripts/qa/T01AdversarialProbe2.kt 2>&1) || true
   if echo "$out" | grep -q "error:"; then
     echo "$out"; return 1
   fi

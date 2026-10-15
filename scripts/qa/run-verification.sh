@@ -11,7 +11,7 @@ SER_CORE=$(find $CACHE/org.jetbrains.kotlinx/kotlinx-serialization-core-jvm -nam
 TROVE=$CACHE/org.jetbrains.intellij.deps/trove4j/1.0.20200330/3afb14d5f9ceb459d724e907a21145e8ff394f02/trove4j-1.0.20200330.jar
 JB_ANNOTATIONS=$CACHE/org.jetbrains/annotations/23.0.0/8cc20c07506ec18e0834947b84a864bfc094484e/annotations-23.0.0.jar
 
-CLASSES=/workspace/app/build/tmp/kotlin-classes/debug
+CLASSES=/workspace/AgentKit/app/build/tmp/kotlin-classes/debug
 OUT=/tmp/qa-verify
 
 rm -rf "$OUT" && mkdir -p "$OUT"
@@ -21,7 +21,7 @@ java -cp "$KOTLINC:$STDLIB:$TROVE:$JB_ANNOTATIONS" org.jetbrains.kotlin.cli.jvm.
   -no-stdlib -no-reflect \
   -Xfriend-paths="$CLASSES" \
   -classpath "$CLASSES:$STDLIB:$COROUTINES:$SERIALIZATION:$SER_CORE" \
-  -d "$OUT" /workspace/scripts/qa/T02T06Verification.kt
+  -d "$OUT" /workspace/AgentKit/scripts/qa/T02T06Verification.kt
 
 echo "[2/2] running ..."
 java -cp "$OUT:$CLASSES:$STDLIB:$COROUTINES:$SERIALIZATION:$SER_CORE" \

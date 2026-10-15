@@ -2,6 +2,8 @@ package com.example.agentkit.automation
 
 import android.content.Context
 import android.content.Intent
+import android.media.projection.MediaProjection
+import android.media.projection.MediaProjectionManager
 import com.example.agentkit.core.AgentLogger
 
 /**
@@ -298,6 +300,19 @@ object ScreenshotBridge {
     /** MediaProjection 授权返回的 Intent（含投影 token）。 */
     var permissionData: Intent? = null
 
+    /**
+     * 已取出的 MediaProjection 实例（**一次性 token，取到即消费**）。
+     *
+     * 第五轮 Bug 修复（ForegroundServiceDidNotStartInTimeException，崩 4 次）的核心：
+     * token 获取必须发生在服务生命周期**之前**——放在 [startService] 前由桥层完成，
+     * 失败就不启动服务（`startForegroundService` 的 5 秒超时计时根本不会开始，
+     * 从源头消除「服务收摊但 startForeground 从未执行 → 系统杀进程」）。
+     * 老代码在服务 onStartCommand 里现取 token，重复开启（token 已消费）时
+     * getMediaProjection 失败 → failSafe 直接收摊 → 5 秒超时崩进程。
+     */
+    @Volatile
+    var mediaProjection: MediaProjection? = null
+
     /** 当前是否正在捕获屏幕。 */
     var isCapturing: Boolean = false
 
@@ -339,35 +354,91 @@ object ScreenshotBridge {
     }
 
     fun setPermission(resultCode: Int, data: Intent?) {
+        // 新授权到达：旧 projection 作废（token 一次性），先停旧的和新授权配对，
+        // 防止「拿着新 resultCode 用着旧 projection」的串味。
+        releaseProjection()
         this.resultCode = resultCode
         this.permissionData = data
     }
 
     /**
-     * 启动前台捕获服务（顺序见 [ScreenCaptureStartPolicy]：取 token → 立即进前台 →
-     * 再建投影；两条红线：Android 14 类型强校验 + startForegroundService 5s 超时）。
+     * 立即取出 MediaProjection token（**服务生命周期之前**，第五轮 Bug 修复核心）。
      *
-     * @return true = 已把 Intent 交给系统且未出错；false = 未授权 / 系统拒绝，见 [lastError]。
-     * **绝不抛异常**：任何失败都转成 false + [lastError]（Bug 2 底线）。
+     * 授权回调到来时调用最稳妥（token 最新鲜）；[startService] 也会在必要时兜调。
+     * 失败只落 [lastError] + 返回 false，**绝不抛异常**——调用方（UI）据此引导
+     * 用户重新授权，服务永远不会被拉起，5 秒超时计时不会开始。
      */
-    fun startService(context: Context): Boolean {
+    fun obtainProjection(context: Context): Boolean {
         val data = permissionData
-        ScreenCaptureTrace.log(
-            ScreenCaptureTrace.START_SERVICE,
-            "请求 startForegroundService resultCode=$resultCode data=${if (data == null) "null" else "ok"}"
-        )
         if (data == null || resultCode == 0) {
             lastError = ScreenCaptureStartPolicy.failureMessage("尚未取得屏幕捕获授权")
-            AgentLogger.w("ScreenCapture", "未取得授权就启动捕获服务：$lastError")
             logLastError(lastError!!)
-            ScreenCaptureTrace.log(ScreenCaptureTrace.START_SERVICE, "失败（未授权）")
             return false
         }
         val failure = ScreenCaptureStartPolicy.guard {
-            val intent = Intent(context, ScreenCaptureService::class.java).apply {
-                putExtra("resultCode", resultCode)
-                putExtra("data", data)
-            }
+            mediaProjection =
+                context.getSystemService(MediaProjectionManager::class.java)
+                    .getMediaProjection(resultCode, data)
+        }
+        val reason = failure.failure
+        if (reason != null) {
+            mediaProjection = null
+            lastError = ScreenCaptureStartPolicy.failureMessage("获取屏幕捕获令牌失败：$reason")
+            AgentLogger.e("ScreenCapture", "getMediaProjection 失败：$reason", failure.cause)
+            logLastError(lastError!!)
+            return false
+        }
+        if (mediaProjection == null) {
+            lastError = ScreenCaptureStartPolicy.failureMessage("获取屏幕捕获令牌失败：系统返回空")
+            logLastError(lastError!!)
+            return false
+        }
+        lastError = null
+        AgentLogger.i("ScreenCapture", "getMediaProjection 成功（token 已取出，待启动服务）")
+        ScreenCaptureTrace.log(ScreenCaptureTrace.OBTAIN_TOKEN, "桥层取 token 成功")
+        return true
+    }
+
+    /** 停掉并清空当前 projection（token 一次性：停止后再开启必须重新授权）。 */
+    fun releaseProjection() {
+        mediaProjection?.let { p ->
+            ScreenCaptureStartPolicy.guard { p.stop() }
+        }
+        mediaProjection = null
+    }
+
+    /**
+     * 启动前台捕获服务（第五轮 Bug 修复后的契约：**token 必须在服务外取好**）。
+     *
+     * 前置条件（按序检查，任一不满足都不启动服务——`startForegroundService`
+     * 的 5 秒超时计时不会开始，从源头杜绝 ForegroundServiceDidNotStartInTimeException）：
+     *  1. [mediaProjection] 已由 [obtainProjection] 取好（授权回调后立即取，最新鲜）；
+     *     没有则兜调一次 [obtainProjection]，仍失败 → 引导重新授权；
+     *  2. 已在捕获中（[isCapturing] 且服务实例活着）→ 幂等返回 true，不重复拉起。
+     *
+     * @return true = 已把 Intent 交给系统且未出错；false = 未授权 / token 失效，见 [lastError]。
+     * **绝不抛异常**：任何失败都转成 false + [lastError]（Bug 2 底线）。
+     */
+    fun startService(context: Context): Boolean {
+        // ① 幂等：已在捕获就不重复拉起（重复 startForegroundService 会让服务
+        //    二次 onStartCommand，老代码在那里二次消费 token 崩进程）
+        if (isCapturing && ScreenCaptureService.activeInstance != null) {
+            AgentLogger.i("ScreenCapture", "已在捕获中，跳过重复启动")
+            ScreenCaptureTrace.log(ScreenCaptureTrace.START_SERVICE, "跳过（已在捕获中）")
+            return true
+        }
+        // ② token 兜底：授权回调里没取成功（或已被停止清掉）时，这里最后试一次
+        if (mediaProjection == null && !obtainProjection(context)) {
+            ScreenCaptureTrace.log(ScreenCaptureTrace.START_SERVICE, "失败（token 不可得）")
+            isCapturing = false
+            return false
+        }
+        ScreenCaptureTrace.log(
+            ScreenCaptureTrace.START_SERVICE,
+            "token 已就绪，请求 startForegroundService"
+        )
+        val failure = ScreenCaptureStartPolicy.guard {
+            val intent = Intent(context, ScreenCaptureService::class.java)
             context.startForegroundService(intent)
         }
         val reason = failure.failure
@@ -390,6 +461,9 @@ object ScreenshotBridge {
         ScreenCaptureStartPolicy.guard {
             context.stopService(Intent(context, ScreenCaptureService::class.java))
         }
+        // token 一次性：停止即作废，下次开启必须重新授权（Android 硬限制，
+        // 所有大厂 App 同理；UI 侧由重新授权弹窗承接，好过崩进程）
+        releaseProjection()
         isCapturing = false
         lastError = null
     }

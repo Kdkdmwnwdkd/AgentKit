@@ -17,6 +17,11 @@
  *  - 崩溃横幅 [AkCrashBanner] 定义 + 在 AppScaffold 顶部接线；
  *  - 日志页展示 lastError（与崩溃并排）。
  *
+ * **D W-7 token 生命周期（第五轮修复，ForegroundServiceDidNotStartInTimeException 根治）**：
+ *  - 源码扫描断言：token 获取已移桥层（服务**代码**零 `getMediaProjection` 调用）、
+ *    服务先进前台再建重活、收摊统一走桥层 `releaseProjection`、
+ *    授权回调即时取 token、桥层 token 不可得就不启动服务（5 秒计时不开始）。
+ *
  * 运行方式见 scripts/qa/run-capture-path-verification.sh。
  */
 
@@ -63,7 +68,7 @@ private fun assertContains(name: String, haystack: String, needle: String) {
 
 /* ------------------------------ 源码读取（纯文本扫描） ------------------------------ */
 
-private const val APP_SRC = "/workspace/app/src/main/java/com/example/agentkit"
+private const val APP_SRC = "/workspace/AgentKit/app/src/main/java/com/example/agentkit"
 
 private fun readSource(rel: String): String = File(APP_SRC, rel).readText()
 
@@ -203,7 +208,9 @@ private fun testWiring() {
         "ScreenCaptureTrace.START_SERVICE" to viewModel,
         "ScreenCaptureTrace.SERVICE_ON_CREATE" to service,
         "ScreenCaptureTrace.SERVICE_ON_START" to service,
-        "ScreenCaptureTrace.OBTAIN_TOKEN" to service,
+        // W-7 修复后：取 token 移到桥层 ScreenshotBridge.obtainProjection
+        // （服务生命周期之前，失败不启动服务），OBTAIN_TOKEN 面包屑发出点随之改为 bridge
+        "ScreenCaptureTrace.OBTAIN_TOKEN" to bridge,
         "ScreenCaptureTrace.SIZE" to service,
         "ScreenCaptureTrace.IMAGE_READER" to service,
         "ScreenCaptureTrace.CREATE_VIRTUAL_DISPLAY" to service,
@@ -303,14 +310,76 @@ private fun testUnseenCrashFiles() {
     }
 }
 
+/* =============================== D W-7 token 生命周期（第五轮修复） =============================== */
+
+private fun testW7TokenLifecycle() {
+    println("— D W-7：token 服务外预取 + 一次性生命周期（ForegroundServiceDidNotStartInTimeException 根治） —")
+
+    val bridge = readSource("automation/ScreenshotBridge.kt")
+    val service = readSource("automation/ScreenCaptureService.kt")
+    val viewModel = readSource("ui/ChatViewModel.kt")
+
+    check("D1 桥层提供 obtainProjection（服务生命周期之前取 token）") {
+        assertContains("定义", bridge, "fun obtainProjection(context: Context): Boolean")
+    }
+
+    check("D2 桥层提供 releaseProjection（token 一次性：停止即作废）") {
+        assertContains("定义", bridge, "fun releaseProjection()")
+    }
+
+    check("D3 服务**代码**不再调用 getMediaProjection（token 只在桥层取一次；KDoc 提及不算）") {
+        val codeLines = service.lines().filter { line ->
+            val t = line.trim()
+            t.isNotEmpty() && !t.startsWith("*") && !t.startsWith("//") && !t.startsWith("/*")
+        }
+        assertFalse("服务代码内取 token", codeLines.any { it.contains("getMediaProjection(") })
+    }
+
+    check("D4 服务从桥读 token（ScreenshotBridge.mediaProjection）") {
+        assertContains("读取", service, "ScreenshotBridge.mediaProjection")
+    }
+
+    check("D5 服务内 startForeground 早于 setupCapture（先进前台，再建重活）") {
+        val fgIdx = service.indexOf("startForegroundSafely(projection")
+        val capIdx = service.indexOf("setupCapture(projection")
+        assertTrue("调用点均存在", fgIdx >= 0 && capIdx >= 0)
+        assertTrue("startForeground($fgIdx) 早于 setupCapture($capIdx)", fgIdx < capIdx)
+    }
+
+    check("D6 服务收摊统一走桥层 releaseProjection（failSafe + onDestroy 两处）") {
+        val hits = Regex("ScreenshotBridge\\.releaseProjection\\(\\)").findAll(service).count()
+        assertTrue("实际 $hits 处（应 ≥2）", hits >= 2)
+    }
+
+    check("D7 授权回调后立即取 token（ChatViewModel → ScreenshotBridge.obtainProjection(app)）") {
+        assertContains("调用", viewModel, "ScreenshotBridge.obtainProjection(app)")
+    }
+
+    check("D8 桥层 startService：token 不可得就不启动服务（5 秒计时不开始）") {
+        val startSvc = bridge
+            .substringAfter("fun startService(context: Context): Boolean")
+            .substringBefore("fun stopService(")
+        assertContains("兜调 obtainProjection", startSvc, "mediaProjection == null && !obtainProjection(context)")
+        assertContains("token 不可得即返回 false", startSvc, "return false")
+    }
+
+    check("D9 setPermission 先清旧投影再存新授权（防新旧 resultCode 串味）") {
+        val setPerm = bridge
+            .substringAfter("fun setPermission(")
+            .substringBefore("fun obtainProjection(")
+        assertContains("先 releaseProjection", setPerm, "releaseProjection()")
+    }
+}
+
 /* =============================== 主入口 =============================== */
 
 fun main() {
-    println("========== CapturePathVerification（真机第四轮最后一刀） ==========")
+    println("========== CapturePathVerification（真机第四轮最后一刀 + 第五轮 W-7） ==========")
     testAuthGuard()
     testCaptureFlag()
     testBreadcrumbs()
     testWiring()
+    testW7TokenLifecycle()
     testUnseenCrashFiles()
 
     println("------------------------------------------------------------------")

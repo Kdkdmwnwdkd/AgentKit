@@ -609,7 +609,7 @@ private suspend fun testScreenshotBridgeLastErrorLogged() {
     println("\n== C：ScreenshotBridge.lastError 是否进日志（源码扫描） ==")
 
     check("每处 lastError 非空写入后 4 行内必有日志出口") {
-        val file = File("/workspace/app/src/main/java/com/example/agentkit/automation/ScreenshotBridge.kt")
+        val file = File("/workspace/AgentKit/app/src/main/java/com/example/agentkit/automation/ScreenshotBridge.kt")
         assertTrue("源码存在", file.exists())
         val lines = file.readLines()
         val writes = lines.indices.filter {
