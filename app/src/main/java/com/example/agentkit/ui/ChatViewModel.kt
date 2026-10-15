@@ -552,13 +552,11 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * 屏幕捕获：缓存 MediaProjection 授权结果（来自系统授权回调），并**立即取出 token**。
-     * 失败 → lastError + ERROR 日志。
+     * 屏幕捕获：缓存 MediaProjection 授权结果（来自系统授权回调）。失败 → lastError + ERROR 日志。
      *
-     * **第五轮崩溃修复（ForegroundServiceDidNotStartInTimeException，崩 4 次）核心接线**：
-     * token 获取必须发生在服务生命周期**之前**——授权回调这里 token 最新鲜，立即取；
-     * 失败只落 [ScreenshotBridge.lastError] 返回 false，服务不会被拉起
-     * （`startForegroundService` 的 5 秒超时计时不会开始），UI 读 lastError 引导重新授权。
+     * **只缓存，不取 token**（第六轮修复）：Android 14 规则 A 要求 FGS 先以 mediaProjection
+     * 类型进前台才允许 `getMediaProjection`，故 token 由服务在 onStartCommand 第一句进前台
+     * 之后自取；桥只缓存授权 extras，随后 [startScreenCapture] 把它随 intent 传给服务。
      */
     fun setScreenCapturePermission(resultCode: Int, data: android.content.Intent?) {
         try {
@@ -566,13 +564,6 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
             ScreenCaptureTrace.log(
                 ScreenCaptureTrace.CACHE_PERMISSION,
                 "resultCode=$resultCode data=${if (data == null) "null" else "ok"}"
-            )
-            // 授权回调后立即取 token（服务生命周期之前）：失败不抛，lastError 已落
-            val tokenOk = ScreenshotBridge.obtainProjection(app)
-            ScreenCaptureTrace.log(
-                ScreenCaptureTrace.OBTAIN_TOKEN,
-                if (tokenOk) "授权回调即时取 token 成功"
-                else "授权回调即时取 token 失败：${ScreenshotBridge.lastError}"
             )
         } catch (t: Throwable) {
             // 缓存授权结果本身不该失败，但厂商 ROM 可能在此抛——吞掉并上报，绝不逃逸到主线程。

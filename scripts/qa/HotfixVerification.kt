@@ -379,31 +379,32 @@ private suspend fun testNonRetryableDoesNotWait() {
 
 /* ------------------------------ Bug 2 用例 ------------------------------ */
 
-/** 用例 F：启动顺序纯函数（有 token / 无 token × Android 14 / Android 10）。 */
+/** 用例 F：启动顺序纯函数（有授权数据 / 无授权数据 × Android 14 / Android 10）。 */
 private suspend fun testStartOrderPolicy() {
-    println("\n== Bug2-F：token → 服务启动 → startForeground 顺序 ==")
+    println("\n== Bug2-F：先进前台（带类型）→ 再取 token（Android 14 规则 A/B，第六轮确证） ==")
 
-    check("有 token（Android 14）→ 先取 token 再进前台，且不反过来") {
+    check("有授权数据（Android 14）→ 先进前台再取 token，且不反过来") {
         val plan = ScreenCaptureStartPolicy.plan(hasToken = true, sdkInt = 34)
         assertEquals(
             "步骤序列",
-            listOf(Step.OBTAIN_TOKEN, Step.START_FOREGROUND),
+            listOf(Step.START_FOREGROUND, Step.OBTAIN_TOKEN),
             plan
         )
-        assertTrue("取 token 早于 startForeground", plan.indexOf(Step.OBTAIN_TOKEN) < plan.indexOf(Step.START_FOREGROUND))
+        // 规则 A：getMediaProjection 要求 FGS 已以 mediaProjection 类型运行（Operit 实证）
+        assertTrue("startForeground 早于取 token", plan.indexOf(Step.START_FOREGROUND) < plan.indexOf(Step.OBTAIN_TOKEN))
     }
 
-    check("无 token（Android 14）→ 直接放弃，绝不声称 mediaProjection 类型") {
+    check("无授权数据（Android 14）→ 直接放弃，不启动服务") {
         val plan = ScreenCaptureStartPolicy.plan(hasToken = false, sdkInt = 34)
         assertEquals("步骤序列", listOf(Step.ABORT), plan)
         assertTrue("不含 START_FOREGROUND", Step.START_FOREGROUND !in plan)
     }
 
-    check("Android 10/11/12/13（29-33）同样先取 token 再进前台（建议顺序，无副作用）") {
-        assertEquals("有 token @29", listOf(Step.OBTAIN_TOKEN, Step.START_FOREGROUND), ScreenCaptureStartPolicy.plan(true, 29))
-        assertEquals("有 token @33", listOf(Step.OBTAIN_TOKEN, Step.START_FOREGROUND), ScreenCaptureStartPolicy.plan(true, 33))
-        assertEquals("无 token @29", listOf(Step.ABORT), ScreenCaptureStartPolicy.plan(false, 29))
-        assertEquals("无 token @33", listOf(Step.ABORT), ScreenCaptureStartPolicy.plan(false, 33))
+    check("Android 10/11/12/13（29-33）同样先进前台再取 token（建议顺序，无副作用）") {
+        assertEquals("有授权数据 @29", listOf(Step.START_FOREGROUND, Step.OBTAIN_TOKEN), ScreenCaptureStartPolicy.plan(true, 29))
+        assertEquals("有授权数据 @33", listOf(Step.START_FOREGROUND, Step.OBTAIN_TOKEN), ScreenCaptureStartPolicy.plan(true, 33))
+        assertEquals("无授权数据 @29", listOf(Step.ABORT), ScreenCaptureStartPolicy.plan(false, 29))
+        assertEquals("无授权数据 @33", listOf(Step.ABORT), ScreenCaptureStartPolicy.plan(false, 33))
     }
 }
 

@@ -17,10 +17,11 @@
  *  - 崩溃横幅 [AkCrashBanner] 定义 + 在 AppScaffold 顶部接线；
  *  - 日志页展示 lastError（与崩溃并排）。
  *
- * **D W-7 token 生命周期（第五轮修复，ForegroundServiceDidNotStartInTimeException 根治）**：
- *  - 源码扫描断言：token 获取已移桥层（服务**代码**零 `getMediaProjection` 调用）、
- *    服务先进前台再建重活、收摊统一走桥层 `releaseProjection`、
- *    授权回调即时取 token、桥层 token 不可得就不启动服务（5 秒计时不开始）。
+ * **D 第六轮启动顺序（hotfix6 顺序回正，Android 14 规则 A/B）**：
+ *  - 源码扫描断言：onStartCommand 依次「先进前台（带 mediaProjection 类型）→ 取 token →
+ *    建投影」；带类型失败退化无类型保命；取 token 仅对 SecurityException 有限重试；
+ *    失败走 failSafe 不崩；桥层零 token 获取（hotfix6 教训）；授权 extras 随 intent 传服务；
+ *    无授权数据不启动服务；授权回调只缓存。
  *
  * 运行方式见 scripts/qa/run-capture-path-verification.sh。
  */
@@ -208,9 +209,9 @@ private fun testWiring() {
         "ScreenCaptureTrace.START_SERVICE" to viewModel,
         "ScreenCaptureTrace.SERVICE_ON_CREATE" to service,
         "ScreenCaptureTrace.SERVICE_ON_START" to service,
-        // W-7 修复后：取 token 移到桥层 ScreenshotBridge.obtainProjection
-        // （服务生命周期之前，失败不启动服务），OBTAIN_TOKEN 面包屑发出点随之改为 bridge
-        "ScreenCaptureTrace.OBTAIN_TOKEN" to bridge,
+        // 第六轮修复后：取 token 回到服务内（进前台之后，Android 14 规则 A），
+        // OBTAIN_TOKEN 面包屑发出点随之回到 service
+        "ScreenCaptureTrace.OBTAIN_TOKEN" to service,
         "ScreenCaptureTrace.SIZE" to service,
         "ScreenCaptureTrace.IMAGE_READER" to service,
         "ScreenCaptureTrace.CREATE_VIRTUAL_DISPLAY" to service,
@@ -310,76 +311,107 @@ private fun testUnseenCrashFiles() {
     }
 }
 
-/* =============================== D W-7 token 生命周期（第五轮修复） =============================== */
+/* =============================== D 第六轮：启动顺序（Android 14 规则 A/B） =============================== */
 
-private fun testW7TokenLifecycle() {
-    println("— D W-7：token 服务外预取 + 一次性生命周期（ForegroundServiceDidNotStartInTimeException 根治） —")
+private fun testW6StartupOrder() {
+    println("— D 第六轮：先进前台（带类型）→ 再取 token → 再建投影（hotfix6 顺序回正） —")
 
     val bridge = readSource("automation/ScreenshotBridge.kt")
     val service = readSource("automation/ScreenCaptureService.kt")
     val viewModel = readSource("ui/ChatViewModel.kt")
 
-    check("D1 桥层提供 obtainProjection（服务生命周期之前取 token）") {
-        assertContains("定义", bridge, "fun obtainProjection(context: Context): Boolean")
+    // 代码行过滤：KDoc/注释里提 API 名是「为什么」的说明，不算调用
+    val isCode = { s: String ->
+        val t = s.trim()
+        t.isNotEmpty() && !t.startsWith("*") && !t.startsWith("//") && !t.startsWith("/*")
+    }
+    val serviceCode = service.lines().filter { isCode(it) }
+    val bridgeCode = bridge.lines().filter { isCode(it) }
+
+    check("D1 onStartCommand：startForegroundSafely → 取 token → setupCapture 依次序") {
+        val cmd = service
+            .substringAfter("override fun onStartCommand")
+            .substringBefore("private fun obtainProjectionWithRetry")
+        val fgIdx = cmd.indexOf("startForegroundSafely()")
+        val tokenIdx = cmd.indexOf("obtainProjectionWithRetry(")
+        val setupIdx = cmd.indexOf("setupCapture(")
+        assertTrue("startForegroundSafely 调用存在", fgIdx >= 0)
+        assertTrue("取 token 调用存在", tokenIdx >= 0)
+        assertTrue("setupCapture 调用存在", setupIdx >= 0)
+        assertTrue("startForegroundSafely($fgIdx) 最先于取 token($tokenIdx)", fgIdx < tokenIdx)
+        assertTrue("取 token($tokenIdx) 先于 setupCapture($setupIdx)", tokenIdx < setupIdx)
     }
 
-    check("D2 桥层提供 releaseProjection（token 一次性：停止即作废）") {
-        assertContains("定义", bridge, "fun releaseProjection()")
+    check("D2 进前台带 mediaProjection 类型（getMediaProjection 前置条件，Android 14 规则 A）") {
+        assertContains(
+            "带类型 startForeground",
+            serviceCode.joinToString("\n"),
+            "FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION"
+        )
     }
 
-    check("D3 服务**代码**不再调用 getMediaProjection（token 只在桥层取一次；KDoc 提及不算）") {
-        val codeLines = service.lines().filter { line ->
-            val t = line.trim()
-            t.isNotEmpty() && !t.startsWith("*") && !t.startsWith("//") && !t.startsWith("/*")
-        }
-        assertFalse("服务代码内取 token", codeLines.any { it.contains("getMediaProjection(") })
+    check("D3 带类型进前台失败 → 退化无类型保命（5s 红线优先，startForeground 绝不缺席）") {
+        val fg = service
+            .substringAfter("private fun startForegroundSafely()")
+            .substringBefore("private fun buildForegroundNotification()")
+        assertContains("无类型兜底", fg, "startForeground(NOTIF_ID, notification)")
     }
 
-    check("D4 服务从桥读 token（ScreenshotBridge.mediaProjection）") {
-        assertContains("读取", service, "ScreenshotBridge.mediaProjection")
+    check("D4 取 token 仅对 SecurityException 有限重试（前台状态传播窗口，Operit 同款思路）") {
+        assertContains("重试函数", service, "private fun obtainProjectionWithRetry(")
+        assertContains("仅 SecurityException 可重试", service, "r.cause is SecurityException")
+        assertContains("重试上限常量", service, "MAX_TOKEN_RETRY")
     }
 
-    check("D5 服务内 startForeground 早于 setupCapture（先进前台，再建重活）") {
-        val fgIdx = service.indexOf("startForegroundSafely(projection")
-        val capIdx = service.indexOf("setupCapture(projection")
-        assertTrue("调用点均存在", fgIdx >= 0 && capIdx >= 0)
-        assertTrue("startForeground($fgIdx) 早于 setupCapture($capIdx)", fgIdx < capIdx)
+    check("D5 取 token/extras 失败 → failSafe 收摊 + 引导重新授权（前台已起，不崩）") {
+        val cmd = service
+            .substringAfter("override fun onStartCommand")
+            .substringBefore("private fun obtainProjectionWithRetry")
+        assertContains("失败收摊", cmd, "failSafe(")
+        assertContains("重新授权文案", cmd, "请重新授予屏幕捕获权限")
     }
 
-    check("D6 服务收摊统一走桥层 releaseProjection（failSafe + onDestroy 两处）") {
-        val hits = Regex("ScreenshotBridge\\.releaseProjection\\(\\)").findAll(service).count()
-        assertTrue("实际 $hits 处（应 ≥2）", hits >= 2)
+    check("D6 桥层不取 token（hotfix6 教训：服务外取 token 必抛 SecurityException，功能全废）") {
+        assertFalse("桥代码无 getMediaProjection", bridgeCode.any { it.contains("getMediaProjection(") })
+        assertFalse("桥无 obtainProjection 函数", bridgeCode.any { it.contains("fun obtainProjection") })
     }
 
-    check("D7 授权回调后立即取 token（ChatViewModel → ScreenshotBridge.obtainProjection(app)）") {
-        assertContains("调用", viewModel, "ScreenshotBridge.obtainProjection(app)")
-    }
-
-    check("D8 桥层 startService：token 不可得就不启动服务（5 秒计时不开始）") {
-        val startSvc = bridge
-            .substringAfter("fun startService(context: Context): Boolean")
+    check("D7 授权 extras 随 intent 传入服务（resultCode + data）") {
+        val start = bridge
+            .substringAfter("fun startService(")
             .substringBefore("fun stopService(")
-        assertContains("兜调 obtainProjection", startSvc, "mediaProjection == null && !obtainProjection(context)")
-        assertContains("token 不可得即返回 false", startSvc, "return false")
+        assertContains("带 resultCode", start, "putExtra(\"resultCode\", resultCode)")
+        assertContains("带 data", start, "putExtra(\"data\", permissionData)")
     }
 
-    check("D9 setPermission 先清旧投影再存新授权（防新旧 resultCode 串味）") {
-        val setPerm = bridge
-            .substringAfter("fun setPermission(")
-            .substringBefore("fun obtainProjection(")
-        assertContains("先 releaseProjection", setPerm, "releaseProjection()")
+    check("D8 无授权数据 → 不启动服务（ABORT，落 lastError 引导重新授权）") {
+        val start = bridge
+            .substringAfter("fun startService(")
+            .substringBefore("fun stopService(")
+        assertContains("ABORT 检查", start, "resultCode == 0 || permissionData == null")
+        assertContains("落 lastError", start, "logLastError(lastError!!)")
+    }
+
+    check("D9 授权回调只缓存不取 token（ChatViewModel 不得再出现 obtainProjection）") {
+        assertContains("只调 setPermission", viewModel, "ScreenshotBridge.setPermission(resultCode, data)")
+        assertFalse("不得再调 obtainProjection", viewModel.contains("obtainProjection"))
+    }
+
+    check("D10 服务自行 stop 投影（failSafe + onDestroy 各一处，收口服务生命周期）") {
+        val stops = serviceCode.count { it.contains("mediaProjection?.stop()") }
+        assertTrue("failSafe + onDestroy 两处，实际 $stops", stops >= 2)
     }
 }
 
 /* =============================== 主入口 =============================== */
 
 fun main() {
-    println("========== CapturePathVerification（真机第四轮最后一刀 + 第五轮 W-7） ==========")
+    println("========== CapturePathVerification（真机第四轮最后一刀 + 第六轮启动顺序回正） ==========")
     testAuthGuard()
     testCaptureFlag()
     testBreadcrumbs()
     testWiring()
-    testW7TokenLifecycle()
+    testW6StartupOrder()
     testUnseenCrashFiles()
 
     println("------------------------------------------------------------------")

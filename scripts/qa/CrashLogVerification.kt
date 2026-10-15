@@ -521,8 +521,9 @@ private fun testWiring() {
     }
     check("E5 危险调用全部在 guard/guardValue/runCatching 内（服务层零裸调用）") {
         val risky = listOf(
-            // W-7 修复后 getMediaProjection 已移桥层 obtainProjection（服务生命周期之前），
-            // 服务层不再调用——改由下方 E5b 在桥层侧断言其兜底与「服务零调用」
+            // 第六轮起 getMediaProjection 回到服务内（进前台之后），重新纳入本清单；
+            // 桥层不得取 token（hotfix6 教训）由 E5b 断言
+            "getMediaProjection(",
             "ImageReader.newInstance(",
             "setOnImageAvailableListener(",
             "createVirtualDisplay(",
@@ -551,29 +552,29 @@ private fun testWiring() {
             }
         }
     }
-    check("E5b 取 token 已移桥层：服务代码零 getMediaProjection，桥层调用在 guard 内") {
-        // W-7 修复（ForegroundServiceDidNotStartInTimeException 崩 4 次的根治）：
-        // token 获取移到服务生命周期之前（桥层 obtainProjection，授权回调后立即执行）。
-        // 服务**代码**（KDoc 除外）不得再出现 getMediaProjection——重复消费一次性 token
-        // 正是老代码「服务内现取 → 失败收摊 → startForeground 从未执行 → 5 秒超时杀进程」的根因。
+    check("E5b 第六轮顺序：服务 startForeground 先于 getMediaProjection；桥层零取 token") {
+        // hotfix6 教训（真机日志实证）：把取 token 挪到服务生命周期之前 →
+        // getMediaProjection 抛 SecurityException「Media projections require a foreground
+        // service of type FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION」，功能全废。
+        // Android 14 规则 A：必须先有该类型 FGS 运行，才允许取 token（Operit 同款实证）。
         val isCode = { s: String ->
             val t = s.trim()
             t.isNotEmpty() && !t.startsWith("*") && !t.startsWith("//") && !t.startsWith("/*")
         }
-        val serviceCode = service.lines().filter { isCode(it) }
-        assertFalse("服务代码不得取 token", serviceCode.any { it.contains("getMediaProjection(") })
-        // 桥层是 token 的唯一获取点：必须真实出现，且包在 guard/runCatching/try 内
-        val bridgeLines = bridge.lines()
-        val bridgeHits = bridgeLines.withIndex().filter { it.value.contains("getMediaProjection(") && isCode(it.value) }
-        assertTrue("桥层应出现 getMediaProjection（唯一获取点）", bridgeHits.isNotEmpty())
-        for ((idx, line) in bridgeHits) {
-            val window = bridgeLines.subList((idx - 4).coerceAtLeast(0), idx + 1).joinToString("\n")
-            val guarded = window.contains("guard") || window.contains("runCatching") ||
-                window.contains("try {") || window.contains("catch (")
-            if (!guarded) {
-                throw AssertionError("E5b 桥层取 token 裸调用：@第 ${idx + 1} 行 -> ${line.trim()}")
-            }
-        }
+        val bridge = read("automation/ScreenshotBridge.kt")
+        val bridgeCode = bridge.lines().filter { isCode(it) }
+        assertFalse("桥代码不得取 token", bridgeCode.any { it.contains("getMediaProjection(") })
+        assertFalse("桥不得定义 obtainProjection", bridgeCode.any { it.contains("fun obtainProjection") })
+        // 服务内：startForeground 必须早于取 token（规则 A 前置条件）。
+        // 检索词用调用点而非 API 名——onStartCommand 的注释里会提到 getMediaProjection
+        // （那是「为什么」的说明），真实取 token 调用是 obtainProjectionWithRetry(...)。
+        val cmd = service
+            .substringAfter("override fun onStartCommand")
+            .substringBefore("private fun obtainProjectionWithRetry")
+        val fgIdx = cmd.indexOf("startForegroundSafely()")
+        val tokenIdx = cmd.indexOf("obtainProjectionWithRetry(")
+        assertTrue("调用点均存在", fgIdx >= 0 && tokenIdx >= 0)
+        assertTrue("startForeground($fgIdx) 早于取 token($tokenIdx)", fgIdx < tokenIdx)
     }
     check("E6 服务层不再有裸 stopSelf（failSafe 之外）") {
         val count = service.lines().count { it.contains("stopSelf()") }

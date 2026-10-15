@@ -13,6 +13,7 @@ import android.hardware.display.VirtualDisplay
 import android.media.Image
 import android.media.ImageReader
 import android.media.projection.MediaProjection
+import android.media.projection.MediaProjectionManager
 import com.example.agentkit.core.AgentLogger
 import android.os.Build
 import android.os.Handler
@@ -30,22 +31,20 @@ import android.os.Looper
  *    MediaProjection 才能正常创建（API 34 强制）。
  *  - 服务实例以 companion 暴露，工具层只依赖 ScreenshotBridge，不直接持有服务。
  *
- * **启动顺序（两条红线 + 一次性 token 硬约束，务必保持）**：
- *  - 红线 A（Android 14 类型强校验）：`startForeground(..., type =
- *    FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)` 要求本次捕获的 MediaProjection token
- *    **已经取出**（用户已同意且 `getMediaProjection()` 已成功），否则抛 SecurityException。
- *  - 红线 B（Android 12+ 前台服务超时）：`startForegroundService()` 之后系统只给约 5s
+ * **启动顺序（Android 14 两条硬规则，务必保持——第六轮修复确证）**：
+ *  - 规则 A（`getMediaProjection` 前置条件）：Android 14（targetSdk 34）上
+ *    `getMediaProjection()` 要求本应用**已有以 `FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION`
+ *    类型运行的前台服务**，否则系统在投影 start 时抛 SecurityException
+ *    （"Media projections require a foreground service of type ..."——hotfix6 把
+ *    取 token 挪到服务生命周期之前，功能直接不可用，教训）。Operit 同款实证：
+ *    先起 FGS 进前台，再取 token。
+ *  - 规则 B（前台服务超时）：`startForegroundService()` 之后系统只给约 5s
  *    必须 `startForeground()`，否则抛 `ForegroundServiceDidNotStartInTimeException`
- *    ——**该异常不可捕获，进程直接被杀**（真机「反复开启 → 崩 4 次」的根因）。
- *  - **token 一次性硬约束（第五轮修复核心）**：`getMediaProjection()` 消费后即失效，
- *    重复开启复用已消费 token 必失败。故 token 获取**移到服务生命周期之前**——由桥层
- *    [ScreenshotBridge.obtainProjection] 在授权回调后立即执行；**失败就不启动服务**
- *    （`startForegroundService` 根本不会被调用，5 秒超时计时无从开始，红线 B 无从触发）。
- *  - 服务 `onStartCommand` 只做三件事：① 从桥读 [ScreenshotBridge.mediaProjection]
- *    （null = 异常拉起，先保命再收摊）→ ② **第一件事**就是带类型进前台
- *    （[startForegroundSafely]，毫秒级完成，红线 A 与 B 同时满足）→ ③ 才建
- *    ImageReader / VirtualDisplay（[setupCapture]，重活放最后，失败有全兜底）。
- *    顺序策略见 [ScreenCaptureStartPolicy.plan]。
+ *    ——**该异常不可捕获，进程直接被杀**（前几轮「反复开启崩 4 次」的根因）。
+ *  - **唯一正确顺序**：`onStartCommand` ① **先进前台（带 mediaProjection 类型）**→
+ *    ② `getMediaProjection`（规则 A 此时已满足）→ ③ 才建 ImageReader / VirtualDisplay。
+ *    ① 在入口第一句完成，与后续成败无关（规则 B 稳如磐石）；②③ 的任何失败都发生在
+ *    ① 之后，只走 [failSafe] 可见失败，**不可能**再触发超时崩溃。
  *  - Android 10～13（API 29-33）：同样的顺序没有副作用（类型已支持但无强制校验），
  *    <29：`startForeground` 无 type 参数，顺序无意义。**全版本共用一条路径**，不做分支。
  *  - 无论哪个版本，前台启动失败都**只允许**「记日志 + 上报 lastError + stopSelf」，
@@ -103,11 +102,10 @@ class ScreenCaptureService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        // 刻意不在这里启动前台：onCreate 里桥层可能还没有 token（服务被异常拉起时
-        // 根本没有授权），此时声称 mediaProjection 类型会在 Android 14 上被
-        // SecurityException 拦下。前台启动统一放到 onStartCommand（从桥读到 token 之后），
-        // 见类 KDoc。
-        AgentLogger.i("ScreenCapture", "服务创建，等待桥层 token 就绪后进前台")
+        // 刻意不在这里启动前台：onCreate 里还没有授权数据（extras 随 onStartCommand
+        // 才到），且前台启动统一放在 onStartCommand 第一句——这是 Android 14 两条
+        // 硬规则（getMediaProjection 前置条件 + 5s 超时红线）的共同解，见类 KDoc。
+        AgentLogger.i("ScreenCapture", "服务创建，等待 onStartCommand 第一句进前台")
         ScreenCaptureTrace.log(ScreenCaptureTrace.SERVICE_ON_CREATE, "onCreate 进入（尚未进前台）")
         // 看门狗：startForegroundService 后若 2s 仍未进前台，说明 onStartCommand 链路过长，
         // 记 ERROR 面包屑并自尽——赶在系统 5s 超时（ForegroundServiceDidNotStartInTimeException，
@@ -132,43 +130,61 @@ class ScreenCaptureService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        // 第五轮 Bug 修复（ForegroundServiceDidNotStartInTimeException，崩 4 次）：
-        // token 改由桥层在服务生命周期**之前**取好（ScreenshotBridge.obtainProjection，
-        // 授权回调后立即执行）。服务里不再调 getMediaProjection——token 一次性，
-        // 重复开启时二次消费必失败，老代码失败即收摊、startForeground 从未执行，
-        // 撞系统 5s 超时（不可捕获，进程直接杀）。
+        // 第六轮 Bug 修复（hotfix6 把取 token 挪到服务生命周期之前 → getMediaProjection
+        // 抛 SecurityException「Media projections require a foreground service of type
+        // FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION」，功能直接不可用——用户真机日志实证）。
         //
-        // 新顺序：① 从桥读 projection（null = 异常拉起，先保命再收摊）→
-        // ② **立即**带 mediaProjection 类型进前台（token 已在手满足红线 A，
-        // 且在 onStartCommand 入口毫秒级完成满足红线 B）→ ③ 才建 ImageReader/VirtualDisplay。
-        val projection = ScreenshotBridge.mediaProjection
+        // Android 14 真规则（Operit 源码实证：ScreenCaptureActivity 注释「Android 14
+        // requirement: Start foreground service with mediaProjection type BEFORE calling
+        // getMediaProjection」+ 轮询 isMediaProjectionForegroundReady 再取 token）：
+        //   **getMediaProjection() 要求本应用已有以 mediaProjection 类型运行的前台服务**。
+        // 唯一正确顺序：① **先进前台（带 mediaProjection 类型）**→ ② getMediaProjection
+        //   → ③ 建 ImageReader/VirtualDisplay。两个红线同时满足：
+        //   - 5s 超时红线（不可捕获）：① 在入口第一句完成，与后续成败无关；
+        //   - getMediaProjection 前置条件：① 已满足；
+        //   - ②③ 任何失败都只走 failSafe 可见失败，不可能再触发超时杀进程。
+        val resultCode = intent?.getIntExtra(EXTRA_RESULT_CODE, 0) ?: 0
+        val data = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            intent?.getParcelableExtra(EXTRA_DATA, Intent::class.java)
+        } else {
+            @Suppress("DEPRECATION") intent?.getParcelableExtra(EXTRA_DATA)
+        }
         ScreenCaptureTrace.log(
             ScreenCaptureTrace.SERVICE_ON_START,
-            "onStartCommand 进入 projection=${if (projection == null) "null" else "ok"}"
+            "onStartCommand 进入 resultCode=$resultCode data=${if (data == null) "null" else "ok"}"
         )
 
-        // ② 立即进前台（**防闪退生死线**）：startForegroundService 之后系统只给 ~5s，
-        //    必须赶在创建 ImageReader/VirtualDisplay 这些重活之前完成，否则进程被
-        //    ForegroundServiceDidNotStartInTimeException 击杀（该异常不可捕获）。
-        startForegroundSafely(projection != null)
+        // ① **先进前台**（防闪退生死线 + getMediaProjection 前置条件：两条规则的共同解）
+        startForegroundSafely()
         if (!foregroundStarted) {
             // startForegroundSafely 内部失败已 failSafe + stopSelf，这里只挡后续流程
             AgentLogger.w("ScreenCapture", "前台未就绪，放弃后续投影建立")
             return START_NOT_STICKY
         }
 
-        // ① 的 null 分支：被异常拉起（无 token 却进了前台）——保命已完成，安全收摊。
-        //    注意：此时 startForeground 已执行（无类型），系统 5s 计时已被满足。
-        if (projection == null) {
-            AgentLogger.e("ScreenCapture", "无 MediaProjection token 却被拉起：保命后收摊")
+        // ② 取 token（此时 FGS 已以 mediaProjection 类型运行，Android 14 才允许）。
+        //    extras 缺失 = 异常拉起；取失败 = 授权失效/已被消费——都走 failSafe，
+        //    但 startForeground 已执行、5s 计时已满足，**不会崩进程**。
+        if (resultCode == 0 || data == null) {
             failSafe(
                 ScreenCaptureGuard.Stage.INIT_PROJECTION,
-                "无 MediaProjection token（授权可能已失效，请重新授予屏幕捕获权限）",
+                "缺少屏幕捕获授权数据（请重新授予屏幕捕获权限）",
+                null
+            )
+            return START_NOT_STICKY
+        }
+        val projection = obtainProjectionWithRetry(resultCode, data)
+        if (projection == null) {
+            // obtainProjectionWithRetry 内部已落失败面包屑；这里收摊并引导重新授权
+            failSafe(
+                ScreenCaptureGuard.Stage.INIT_PROJECTION,
+                "获取屏幕捕获令牌失败（授权可能已失效，请重新授予屏幕捕获权限）",
                 null
             )
             return START_NOT_STICKY
         }
         mediaProjection = projection
+        ScreenCaptureTrace.log(ScreenCaptureTrace.OBTAIN_TOKEN, "getMediaProjection 成功")
 
         // ③ 才建 ImageReader + VirtualDisplay（重活放最后；失败走 failSafe，已有全兜底）
         setupCapture(projection)
@@ -180,54 +196,128 @@ class ScreenCaptureService : Service() {
     }
 
     /**
-     * 进前台 + 失败兜底。**任何异常都不从这里逃出**（捕获 Throwable，含 Error）：
-     * 失败时按 [ScreenCaptureGuard.cleanupPlan] 记 ERROR 日志（含堆栈）、通过
-     * [ScreenshotBridge.lastError] 暴露给 UI、`stopSelf()` 收摊——
-     * 宁可「启动失败可见」，也不要「闪退」。
+     * 取 MediaProjection token（**仅限 SecurityException 有限重试**）。
      *
-     * @param hasToken 桥层是否已备好本次捕获的 MediaProjection token（token 在服务
-     *   生命周期之前由 [ScreenshotBridge.obtainProjection] 预取）；false 时（无授权却被
-     *   系统拉起）不带类型地启动前台，避免撞 Android 14 的类型强校验。
+     * 为什么重试：`startForeground()` 返回后，个别 ROM 上前台状态传播有极小异步窗口，
+     * `getMediaProjection` 可能先抛一次 SecurityException。Operit 的做法是轮询
+     * `isMediaProjectionForegroundReady`（30ms 间隔、1.5s 超时）再取；本服务内等价做法
+     * 就是「带类型 startForeground 返回后直接取，遇 SecurityException 稍候重试」。
+     *
+     * 重试边界：仅 SecurityException 可重试（最多 [MAX_TOKEN_RETRY] 次，每次间隔
+     * [TOKEN_RETRY_DELAY_MS]）；其余异常 / 返回 null / 服务不可用 → 直接算失败，
+     * 落失败面包屑返回 null，由调用方走 failSafe（前台已起，不崩）。
      */
-    private fun startForegroundSafely(hasToken: Boolean) {
-        val guarded = ScreenCaptureStartPolicy.guard {
-            val nm = getSystemService(NotificationManager::class.java)
-            val chan = NotificationChannel(CHANNEL_ID, "屏幕捕获", NotificationManager.IMPORTANCE_LOW)
-            nm.createNotificationChannel(chan)
-            val notification = Notification.Builder(this, CHANNEL_ID)
-                .setContentTitle("AgentKit 屏幕捕获中")
-                .setContentText("正在为 Agent 捕捉屏幕画面")
-                .setSmallIcon(android.R.drawable.ic_menu_camera)
-                .build()
-            if (hasToken && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                // 规范要求：声称 mediaProjection 类型 → 此前必须已取得 token（Android 14 起强制）
-                startForeground(
-                    NOTIF_ID,
-                    notification,
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
-                )
-            } else {
-                // 无 token 时不声称该类型（否则 API 34 必然 SecurityException），
-                // 但仍然必须进前台：startForegroundService 后 5s 内不调用会触发 RemoteServiceException
-                startForeground(NOTIF_ID, notification)
-            }
+    private fun obtainProjectionWithRetry(resultCode: Int, data: Intent): MediaProjection? {
+        val manager = ScreenCaptureGuard.guardValue {
+            getSystemService(MediaProjectionManager::class.java)
+        }.value
+        if (manager == null) {
+            ScreenCaptureTrace.logFailure(
+                ScreenCaptureTrace.OBTAIN_TOKEN,
+                "MediaProjectionManager 不可用",
+                null
+            )
+            return null
         }
-        val failure = guarded.failure
-        if (failure != null) {
-            val reason = if (!hasToken) "未取得 MediaProjection 授权（$failure）" else failure
-            ScreenCaptureTrace.logFailure(ScreenCaptureTrace.START_FOREGROUND, reason, guarded.cause)
-            failSafe(ScreenCaptureGuard.Stage.START_FOREGROUND, reason, guarded.cause)
-        } else {
-            foregroundStarted = true
-            foregroundWatchdog?.let { it.removeCallbacksAndMessages(null) }
-            AgentLogger.i("ScreenCapture", "已进入前台（hasToken=$hasToken）")
-            ScreenCaptureTrace.log(ScreenCaptureTrace.START_FOREGROUND, "成功 hasToken=$hasToken")
+        var attempt = 0
+        while (true) {
+            attempt++
+            val r = ScreenCaptureGuard.guardValue { manager.getMediaProjection(resultCode, data) }
+            val projection = r.value
+            if (projection != null) return projection
+            val retriable = r.cause is SecurityException && attempt <= MAX_TOKEN_RETRY
+            if (!retriable) {
+                ScreenCaptureTrace.logFailure(
+                    ScreenCaptureTrace.OBTAIN_TOKEN,
+                    "getMediaProjection 失败（第 $attempt 次）：${r.failure}",
+                    r.cause
+                )
+                AgentLogger.e("ScreenCapture", "getMediaProjection 失败：${r.failure}", r.cause)
+                return null
+            }
+            // SecurityException：等前台状态传播后再试（仅主线程睡百毫级，无 ANR 风险）
+            AgentLogger.w(
+                "ScreenCapture",
+                "getMediaProjection 第 $attempt 次遇 SecurityException，${TOKEN_RETRY_DELAY_MS}ms 后重试"
+            )
+            ScreenCaptureTrace.logFailure(
+                ScreenCaptureTrace.OBTAIN_TOKEN,
+                "第 $attempt 次遇 SecurityException（前台状态传播中），重试",
+                r.cause
+            )
+            try {
+                Thread.sleep(TOKEN_RETRY_DELAY_MS)
+            } catch (e: InterruptedException) {
+                Thread.currentThread().interrupt()
+                return null
+            }
         }
     }
 
     /**
-     * 建立 ImageReader / VirtualDisplay（token 已由桥层在服务启动前备好，
-     * [onStartCommand] 从 [ScreenshotBridge.mediaProjection] 读取后传入）。
+     * 进前台 + 失败兜底。**任何异常都不从这里逃出**（捕获 Throwable，含 Error）。
+     *
+     * 带 `FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION` 类型进前台是本服务的第一要务：
+     *  - 满足 5s 超时红线（不可捕获，进程级）；
+     *  - 更是随后 [obtainProjectionWithRetry]（`getMediaProjection`）的前置条件
+     *    （Android 14 规则 A：无该类型 FGS 则投影 start 抛 SecurityException）。
+     * manifest 已声明 `foregroundServiceType="mediaProjection"` +
+     * `FOREGROUND_SERVICE_MEDIA_PROJECTION` 权限，正常路径必带类型。
+     *
+     * 万一带类型进前台在个别 ROM 上被拒：**退化无类型进前台保命**（5s 红线 B 优先于一切），
+     * 随后 getMediaProjection 会因缺类型可见地失败（failSafe），可接受降级；
+     * 绝不让异常逃逸，更绝不让 startForeground 从未执行（那才会触发不可捕获的超时崩溃）。
+     */
+    private fun startForegroundSafely() {
+        val notification = ScreenCaptureGuard.guardValue { buildForegroundNotification() }.value
+        if (notification == null) {
+            ScreenCaptureTrace.logFailure(ScreenCaptureTrace.START_FOREGROUND, "前台通知构建失败", null)
+            failSafe(ScreenCaptureGuard.Stage.START_FOREGROUND, "前台通知构建失败", null)
+            return
+        }
+        val typed = ScreenCaptureStartPolicy.guard {
+            startForeground(
+                NOTIF_ID,
+                notification,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+            )
+        }
+        if (typed.failure != null) {
+            AgentLogger.w("ScreenCapture", "带类型进前台失败，退化无类型保命：${typed.failure}")
+            ScreenCaptureTrace.logFailure(
+                ScreenCaptureTrace.START_FOREGROUND,
+                "带类型失败（${typed.failure}），退化无类型保命",
+                typed.cause
+            )
+            val plain = ScreenCaptureStartPolicy.guard { startForeground(NOTIF_ID, notification) }
+            if (plain.failure != null) {
+                val reason = "前台启动失败：${plain.failure}"
+                ScreenCaptureTrace.logFailure(ScreenCaptureTrace.START_FOREGROUND, reason, plain.cause)
+                failSafe(ScreenCaptureGuard.Stage.START_FOREGROUND, reason, plain.cause)
+                return
+            }
+        }
+        foregroundStarted = true
+        foregroundWatchdog?.let { it.removeCallbacksAndMessages(null) }
+        AgentLogger.i("ScreenCapture", "已进入前台（mediaProjection 类型）")
+        ScreenCaptureTrace.log(ScreenCaptureTrace.START_FOREGROUND, "成功")
+    }
+
+    /** 构建前台通知（channel + Notification）；异常由调用方的 guardValue 兜底转换。 */
+    private fun buildForegroundNotification(): Notification {
+        val nm = getSystemService(NotificationManager::class.java)
+        val chan = NotificationChannel(CHANNEL_ID, "屏幕捕获", NotificationManager.IMPORTANCE_LOW)
+        nm.createNotificationChannel(chan)
+        return Notification.Builder(this, CHANNEL_ID)
+            .setContentTitle("AgentKit 屏幕捕获中")
+            .setContentText("正在为 Agent 捕捉屏幕画面")
+            .setSmallIcon(android.R.drawable.ic_menu_camera)
+            .build()
+    }
+
+    /**
+     * 建立 ImageReader / VirtualDisplay（token 已由 [obtainProjectionWithRetry] 在
+     * 进前台之后取好，随参数传入）。
      *
      * **每一步都单独兜底**（第四轮加固）：任何一步失败都走 [failSafe]，
      * 且释放范围精确等于「已经建出来的那些资源」——见 [heldResources]。
@@ -392,9 +482,8 @@ class ScreenCaptureService : Service() {
                     runCatching {
                         projectionCallback?.let { mediaProjection?.unregisterCallback(it) }
                     }
-                    // token 一次性：停止即作废，桥层同步清（下次开启须重新授权，
-                    // Android 硬限制；好过「拿着失效 token 二次消费崩进程」）
-                    runCatching { ScreenshotBridge.releaseProjection() }
+                    // token 一次性：停止即作废（重开必须重新授权，Android 硬限制）
+                    runCatching { mediaProjection?.stop() }
                 }
                 ScreenCaptureGuard.CleanupStep.CLEAR_STATE -> {
                     // 只清自己：避免把另一个正在运行的实例状态抹掉
@@ -491,9 +580,7 @@ class ScreenCaptureService : Service() {
         runCatching {
             projectionCallback?.let { mediaProjection?.unregisterCallback(it) }
         }
-        // token 一次性：与 failSafe 的 STOP_PROJECTION 对齐，统一走桥层停止并同步清桥
-        // （服务不再自行 mediaProjection?.stop()——停止语义收口到 ScreenshotBridge 一处）
-        runCatching { ScreenshotBridge.releaseProjection() }
+        runCatching { mediaProjection?.stop() }
         virtualDisplay = null
         imageReader = null
         mediaProjection = null
@@ -515,6 +602,22 @@ class ScreenCaptureService : Service() {
 
         private const val CHANNEL_ID = "agentkit_screen_capture"
         private const val NOTIF_ID = 1001
+
+        /** Intent extras 键：授权 resultCode（由桥层 setPermission 缓存后经 startService 传入）。 */
+        private const val EXTRA_RESULT_CODE = "resultCode"
+
+        /** Intent extras 键：授权 data（含投影 token 的 Intent，一次性）。 */
+        private const val EXTRA_DATA = "data"
+
+        /**
+         * getMediaProjection 的 SecurityException 重试上限：仅用于「startForeground 返回后
+         * 个别 ROM 前台状态传播的极小异步窗口」。初始 + 2 次重试 = 最多 3 次，
+         * 总阻塞 ≤ ~200ms（主线程，远低于 ANR 阈值）。
+         */
+        private const val MAX_TOKEN_RETRY = 2
+
+        /** SecurityException 重试间隔（ms）。 */
+        private const val TOKEN_RETRY_DELAY_MS = 100L
 
         /**
          * 前台启动看门狗阈值：`startForegroundService()` 之后系统只给约 5s
