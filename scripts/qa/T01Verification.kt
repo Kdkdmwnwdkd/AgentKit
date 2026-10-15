@@ -757,6 +757,46 @@ private suspend fun testT01FailureGuard() {
     }
 }
 
+/* ------------------------------ H2 回归：默认 maxSteps ------------------------------ */
+
+private suspend fun testT01MaxStepsDefault() {
+    println("\n== T01 H2 回归：适配层 AgentLoop 默认 maxSteps=40（hotfix5 漏改点）==")
+
+    check("不传 maxSteps：恒工具调用打满默认 40 步后收尾（防退化回 16）") {
+        val tool = object : AgentTool {
+            override val name = "noop"
+            override val description = ""
+            override val parameters = JsonSchema.objectSchema()
+            override suspend fun execute(args: JsonObject): ToolResult =
+                ToolResult.ok(message = "done")
+        }
+        val reg = ToolRegistry().apply { register(tool) }
+        val call = ToolCall("c0", "noop", argsOf("path" to "same.txt"))
+        val fake = FakeLlm(List(60) { AssistantMessage("", listOf(call)) })
+        val loop = AgentLoop(llmProvider = { fake }, registry = reg, providerRetry = 0)
+        val history = loop.run("x")
+        val toolMsgs = history.filterIsInstance<ToolMessage>().size
+        assertEquals("default maxSteps tool executions", 40, toolMsgs)
+    }
+
+    check("显式传 maxSteps=5 仍以传入值为准（默认值不劫持显式传参）") {
+        val tool = object : AgentTool {
+            override val name = "noop"
+            override val description = ""
+            override val parameters = JsonSchema.objectSchema()
+            override suspend fun execute(args: JsonObject): ToolResult =
+                ToolResult.ok(message = "done")
+        }
+        val reg = ToolRegistry().apply { register(tool) }
+        val call = ToolCall("c0", "noop", argsOf("path" to "same.txt"))
+        val fake = FakeLlm(List(20) { AssistantMessage("", listOf(call)) })
+        val loop = AgentLoop(llmProvider = { fake }, registry = reg, maxSteps = 5, providerRetry = 0)
+        val history = loop.run("x")
+        val toolMsgs = history.filterIsInstance<ToolMessage>().size
+        assertEquals("explicit maxSteps respected", 5, toolMsgs)
+    }
+}
+
 /* ------------------------------ Hooks 四时机 ------------------------------ */
 
 private suspend fun testT01Hooks() {
@@ -1357,6 +1397,7 @@ fun main() = runBlocking {
     testT01BusinessFailure()
     testT01CancelClosure()
     testT01FailureGuard()
+    testT01MaxStepsDefault()
     testT01Hooks()
     testT01Update()
     testT01Descriptor()

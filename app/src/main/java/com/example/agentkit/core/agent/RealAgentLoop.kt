@@ -80,7 +80,8 @@ import java.util.concurrent.atomic.AtomicBoolean
  * @param llmProvider lambda 而非实例：模型配置可在运行时变化（每轮调用时取最新）。
  * @param registry 当前可用工具集合（受 Project 工具白名单约束）。
  * @param systemPrompt 基础系统提示（工具自带提示与记忆摘要在其上拼接）。
- * @param maxSteps 单轮最大步数（默认 16）。
+ * @param maxSteps 单轮最大步数（默认 40；与 core/AgentLoop.kt 适配层默认值必须一致，
+ *   hotfix5 起两处均为 40，改一处务必同步另一处）。
  * @param maxParallelTools 全只读批次并行上限（分块限流，默认 5）。
  * @param providerRetry 供应商瞬时失败重试次数（默认 2，共 3 次尝试）。
  * @param maxHistoryMessages 上下文滑动窗口上限（默认 40）。
