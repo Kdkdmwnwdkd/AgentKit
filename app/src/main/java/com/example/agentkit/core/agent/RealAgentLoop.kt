@@ -196,21 +196,27 @@ class RealAgentLoop(
      * **stop 标志回合作用域（Round1 QA Minor 修复）**：入口无条件重置
      * [stopRequested]——第 1 回合 stop 后，第 2 回合不被残留标志优雅停止。
      */
-    override suspend fun send(userInput: String): List<ChatMessage> {
+    override suspend fun send(
+        userInput: String,
+        images: List<String>
+    ): List<ChatMessage> {
         AgentLogger.i("AgentLoop", "开始运行，输入：${userInput.take(120)}")
         // Round1 QA Minor 修复：stop 标志回合作用域化——入口先重置（上一回合的
         // 停止请求绝不被本轮继承），再标记在飞；finally 保证异常路径也清零。
         stopRequested.set(false)
         turnActive.set(true)
         try {
-            return runTurn(userInput)
+            return runTurn(userInput, images)
         } finally {
             turnActive.set(false)
         }
     }
 
     /** [send] 的回合体（抽出的目的是让 stop 标志的重置/在飞标记包住整个回合，含异常路径）。 */
-    private suspend fun runTurn(userInput: String): List<ChatMessage> {
+    private suspend fun runTurn(
+        userInput: String,
+        images: List<String> = emptyList()
+    ): List<ChatMessage> {
         val loopStart = System.currentTimeMillis()
         // Phase 2 DoD④：按当前 provider 计算本回合的「工具暴露面」——provider = local-llama
         // 时裁剪到核心集（≤7 个）。每回合算一次：系统提示拼接与发给 LLM 的工具列表共用同一
@@ -222,7 +228,8 @@ class RealAgentLoop(
         val turnRegistry = scopedRegistry(exposure)
         val messages = mutableListOf<ChatMessage>(
             SystemMessage(buildSystemPrompt(exposure.tools)),
-            UserMessage(userInput)
+            // 功能四（P0-2）：用户手动附带的图片随首条用户消息一起发
+            UserMessage(userInput, images)
         )
         checkpoint?.invoke(messages)
 

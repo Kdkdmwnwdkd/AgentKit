@@ -116,9 +116,86 @@ private fun testModelQuickSwitch() {
     }
 }
 
+/**
+ * H 区：功能四 P0-1「消息一键复制」——四家参照（RikkaHub ChatMessageActions /
+ * Operit ChatArea）均把「复制」作为消息级一等操作；AgentKit 此前只有
+ * SelectionContainer（需手动选字），气泡上没有复制入口。
+ */
+private fun testMessageCopy() {
+    println("— H 区：消息一键复制（功能四 P0-1） —")
+    val chat = readSource("ui/ChatScreen.kt")
+
+    check("H1 助手气泡操作行带复制入口（showCopy 参数贯通）") {
+        assertContains("H1", chat, "showCopy = showCopy")
+        assertContains("H1", chat, "onCopy = { copyMessage(ctx, item.text) }")
+    }
+    check("H2 助手行复制位次在「重新生成」之前（对齐 RikkaHub 顺序）") {
+        val block = chat.substringAfter("private fun AssistantActions(")
+        val copyAt = block.indexOf("text = \"复制\"")
+        val regenAt = block.indexOf("text = \"重新生成\"")
+        assertTrue(
+            "H2 复制应排在重新生成之前（copy=$copyAt regen=$regenAt）",
+            copyAt >= 0 && regenAt > copyAt
+        )
+    }
+    check("H3 用户气泡操作行（UserMessageActions）带复制 + 重新发问") {
+        assertContains("H3", chat, "private fun UserMessageActions(")
+        assertContains("H3", chat, "UserMessageActions(")
+        assertContains("H3", chat, "onCopy = { copyMessage(ctx, item.text) }")
+    }
+    check("H4 复制工具函数：写剪贴板 + Toast 反馈（静默成功不可接受）") {
+        assertContains("H4", chat, "private fun copyMessage(context: Context, text: String)")
+        assertContains("H4", chat, "ClipData.newPlainText")
+        assertContains("H4", chat, "Toast.makeText")
+    }
+    check("H5 运行中隐藏操作行（避免点到旧轮）") {
+        assertContains("H5", chat, "val showCopy = !running")
+        assertContains("H5", chat, "if (item is UiItem.User && !running)")
+    }
+}
+
+/**
+ * I 区：功能四 P0-2「输入栏图片附件」——多模态请求侧早已支持
+ * （LLMClient.toApiMessage: UserMessage.images → image_url part），缺的是输入端通路。
+ */
+private fun testImageAttachment() {
+    println("— I 区：输入栏图片附件（功能四 P0-2） —")
+    val chat = readSource("ui/ChatScreen.kt")
+    val vm = readSource("ui/ChatViewModel.kt")
+    val llm = readSource("core/LLMClient.kt")
+
+    check("I1 待发图片状态流存在（pendingImages）") {
+        assertContains("I1", vm, "val pendingImages: StateFlow<List<String>>")
+    }
+    check("I2 选图落盘走 IO 线程（不在主线程编码）") {
+        assertContains("I2", vm, "suspend fun attachImageFromUri(uri: Uri): Boolean = withContext(Dispatchers.IO)")
+    }
+    check("I3 附件压缩：长边 ≤ 1024 + JPEG 质量 80（控制请求体积）") {
+        assertContains("I3", vm, "const val MAX_EDGE = 1024")
+        assertContains("I3", vm, "Bitmap.CompressFormat.JPEG, 80")
+    }
+    check("I4 输入栏渲染缩略图行 + 可移除（UI 在 ChatScreen，API 在 ViewModel）") {
+        assertContains("I4", chat, "AttachedImagesRow(images, onRemoveImage)")
+        assertContains("I4", vm, "fun removePendingImage(url: String)")
+    }
+    check("I5 发送时带走附件并清空输入区") {
+        val body = vm.substringAfter("fun send()")
+        assertContains("I5", body, "val images = _pendingImages.value")
+        assertContains("I5", body, "_pendingImages.value = emptyList()")
+        assertContains("I5", body, "loop.run(fullInput, images)")
+    }
+    check("I6 多模态请求侧原本就支持（本次不是新造轮子）") {
+        assertContains("I6", llm, "put(\"type\", \"image_url\")")
+    }
+}
+
 fun main() {
-    println("== hotfix11 模型快速切换验证 ==")
+    println("== hotfix11 模型快速切换 + 功能四 P0 验证 ==")
     testModelQuickSwitch()
+    println()
+    testMessageCopy()
+    println()
+    testImageAttachment()
     println()
     println("== 汇总 ==")
     println("PASS: $passed  FAIL: ${failures.size}  TOTAL: ${passed + failures.size}")

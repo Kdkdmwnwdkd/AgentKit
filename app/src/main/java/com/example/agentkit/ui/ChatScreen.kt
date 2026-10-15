@@ -1,5 +1,9 @@
 package com.example.agentkit.ui
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.util.Base64
 import android.widget.Toast
@@ -14,6 +18,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
@@ -34,6 +39,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -70,6 +77,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -85,6 +93,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -95,6 +104,7 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.agentkit.core.ModelProfile
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 
@@ -155,6 +165,21 @@ fun ChatScreen(
     var showModelSwitch by remember { mutableStateOf(false) }
     val ctx = LocalContext.current
     val activeProfile = profiles.firstOrNull { it.id == activeProfileId }
+    // 功能四（P0-2）：待发附件
+    val pendingImages by vm.pendingImages.collectAsStateWithLifecycle()
+    val inputScope = rememberCoroutineScope()
+    val pickImage = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        uri?.let {
+            inputScope.launch {
+                val ok = vm.attachImageFromUri(it)
+                Toast.makeText(
+                    ctx,
+                    if (ok) "已添加图片" else "图片读取失败，请重选",
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
+        }
+    }
 
     Column(Modifier.fillMaxSize()) {
         PageTopBar(
@@ -215,24 +240,32 @@ fun ChatScreen(
                             // 流式光标只在「末尾且无草稿气泡」时显示；有草稿时草稿自己带光标
                             streaming = running && index == messages.lastIndex && streamDraft == null
                         )
-                        // Phase 2 DoD②：助手气泡操作区（变体切换器 + 重新生成）
+                        // Phase 2 DoD②：助手气泡操作区（变体切换器 + 重新生成 + 复制）
                         if (item is UiItem.Assistant) {
                             val showSwitch = item.variantCount > 1
                             val showRegen = !running && index == messages.lastIndex && item.turnIndex >= 0
-                            if (showSwitch || showRegen) {
+                            val showCopy = !running && item.text.isNotBlank()
+                            if (showSwitch || showRegen || showCopy) {
                                 AssistantActions(
                                     variantIndex = item.variantIndex,
                                     variantCount = item.variantCount,
                                     showSwitch = showSwitch,
                                     showRegen = showRegen,
+                                    showCopy = showCopy,
                                     onSwitch = { delta -> vm.switchVariant(item.turnIndex, delta) },
-                                    onRegenerate = { vm.regenerate() }
+                                    onRegenerate = { vm.regenerate() },
+                                    onCopy = { copyMessage(ctx, item.text) }
                                 )
                             }
                         }
-                        // 「从中间轮重新发问」入口：用户气泡下方一行小字（运行中隐藏）
-                        if (item is UiItem.User && !running && item.turnIndex >= 0) {
-                            UserReaskAction(onClick = { reaskTarget = item })
+                        // 功能四（P0-1）：用户气泡操作行——复制 + 从中间轮重新发问
+                        // （运行中隐藏；turnIndex < 0 的草稿态气泡只给复制）
+                        if (item is UiItem.User && !running) {
+                            UserMessageActions(
+                                showReask = item.turnIndex >= 0,
+                                onCopy = { copyMessage(ctx, item.text) },
+                                onReask = { reaskTarget = item }
+                            )
                         }
                     }
                 }
@@ -250,9 +283,12 @@ fun ChatScreen(
         ChatInputBar(
             text = input,
             running = running,
+            images = pendingImages,
             onTextChange = { vm.input.value = it },
             onSend = { vm.send() },
-            onStop = { vm.stop() }
+            onStop = { vm.stop() },
+            onPickImage = { pickImage.launch("image/*") },
+            onRemoveImage = { vm.removePendingImage(it) }
         )
     }
 
@@ -486,6 +522,21 @@ private fun ModelSwitchDialog(
     }
 }
 
+/**
+ * 功能四（P0-1）：复制消息正文到剪贴板并给 Toast 反馈。
+ *
+ * 复制的是**原文**（助手消息为 Markdown 源文本，用户消息为其输入原文）——
+ * 与 RikkaHub「copy all」一致；想只拷一段仍可用系统长按选字。
+ * 复制到剪贴板是系统行为，用户看不到变化，因此**必须有 Toast**，
+ * 否则点了没反应（这类「静默成功」正是之前开关状态回写缺失的同类问题）。
+ */
+private fun copyMessage(context: Context, text: String) {
+    val manager = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+    if (manager == null || text.isBlank()) return
+    manager.setPrimaryClip(ClipData.newPlainText("message", text))
+    Toast.makeText(context, "已复制", Toast.LENGTH_SHORT).show()
+}
+
 /** 功能四：从 Base URL 提取域名（去 scheme、去路径）；空 URL 返回空串。 */
 private fun hostOf(baseUrl: String): String =
     baseUrl.trim()
@@ -533,11 +584,14 @@ private fun sameSender(a: UiItem, b: UiItem): Boolean = when {
 }
 
 /**
- * 助手气泡操作区（Phase 2 DoD②）：变体切换器 `← n/m →` + 「重新生成」。
+ * 助手气泡操作区（Phase 2 DoD② + 功能四 P0-1）：变体切换器 `← n/m →` + 「复制」+「重新生成」。
  *
  * 缩进对齐助手气泡（头像 28dp + 间距 8dp = 36dp）；`←`/`→` 用文字而非图标，
  * 规避 material-icons-extended 依赖（本模块只依赖核心图标集）。
  * 序号 1-based 展示（「2/3」比「1/2」更符合用户直觉）。
+ *
+ * 复制位次：放在「重新生成」**之前**（RikkaHub `ChatMessageActions.kt:99-105` 同序）——
+ * 两者都是「作用于本条消息」的高频动作，复制比重新生成更常用且无副作用。
  */
 @Composable
 private fun AssistantActions(
@@ -545,8 +599,10 @@ private fun AssistantActions(
     variantCount: Int,
     showSwitch: Boolean,
     showRegen: Boolean,
+    showCopy: Boolean,
     onSwitch: (Int) -> Unit,
-    onRegenerate: () -> Unit
+    onRegenerate: () -> Unit,
+    onCopy: () -> Unit
 ) {
     Row(
         modifier = Modifier
@@ -554,6 +610,18 @@ private fun AssistantActions(
             .padding(start = 36.dp, top = 2.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
+        if (showCopy) {
+            Text(
+                text = "复制",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(8.dp))
+                    .clickable(onClick = onCopy)
+                    .padding(horizontal = AgentSpacing.space2, vertical = 6.dp)
+            )
+            if (showSwitch || showRegen) Spacer(Modifier.width(AgentSpacing.space3))
+        }
         if (showSwitch) {
             SwitchArrow(label = "←", enabled = variantIndex > 0) { onSwitch(-1) }
             Text(
@@ -597,22 +665,45 @@ private fun SwitchArrow(label: String, enabled: Boolean, onClick: () -> Unit) {
     )
 }
 
-/** 「重新发问」入口：用户气泡下方右对齐小字（点击打开编辑对话框）。 */
+/**
+ * 功能四（P0-1）：用户气泡操作行——「复制」+「重新发问」（右对齐小字）。
+ *
+ * 与助手行共享同一套「可点小字」视觉：labelSmall/labelMedium + primary 主色、
+ * radius 8dp clip + 4dp 横向内边距；运行中整行隐藏（避免点到旧轮）。
+ * [showReask] = false 的草稿态气泡只保留复制——没有轮次可重问。
+ */
 @Composable
-private fun UserReaskAction(onClick: () -> Unit) {
+private fun UserMessageActions(
+    showReask: Boolean,
+    onCopy: () -> Unit,
+    onReask: () -> Unit
+) {
     Row(
         modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.End
+        horizontalArrangement = Arrangement.End,
+        verticalAlignment = Alignment.CenterVertically
     ) {
         Text(
-            text = "重新发问",
+            text = "复制",
             style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            color = MaterialTheme.colorScheme.primary,
             modifier = Modifier
                 .clip(RoundedCornerShape(8.dp))
-                .clickable(onClick = onClick)
+                .clickable(onClick = onCopy)
                 .padding(horizontal = AgentSpacing.space2, vertical = 2.dp)
         )
+        if (showReask) {
+            Spacer(Modifier.width(AgentSpacing.space3))
+            Text(
+                text = "重新发问",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(8.dp))
+                    .clickable(onClick = onReask)
+                    .padding(horizontal = AgentSpacing.space2, vertical = 2.dp)
+            )
+        }
     }
 }
 
@@ -878,9 +969,12 @@ private fun SuggestionCard(text: String, icon: ImageVector, onPick: (String) -> 
 private fun ChatInputBar(
     text: String,
     running: Boolean,
+    images: List<String>,
     onTextChange: (String) -> Unit,
     onSend: () -> Unit,
-    onStop: () -> Unit
+    onStop: () -> Unit,
+    onPickImage: () -> Unit,
+    onRemoveImage: (String) -> Unit
 ) {
     Surface(color = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f)) {
         Column(
@@ -896,6 +990,8 @@ private fun ChatInputBar(
                     .height(1.dp)
                     .background(MaterialTheme.colorScheme.outline)
             )
+            // 功能四（P0-2）：待发附件缩略图行（有图才占位，避免常态留白）
+            if (images.isNotEmpty()) AttachedImagesRow(images, onRemoveImage)
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -906,6 +1002,9 @@ private fun ChatInputBar(
                     .padding(horizontal = AgentSpacing.space3),
                 verticalAlignment = Alignment.Bottom
             ) {
+                // 功能四（P0-2）：附件入口——「＋」圆按钮，运行中禁用（与发送/停止互斥）
+                AttachImageButton(enabled = !running, onClick = onPickImage)
+                Spacer(Modifier.width(AgentSpacing.space2))
                 // 输入框：surface-var 底 radius 20dp，最小高 48dp，多行自增（max 120dp 内滚动）
                 Box(
                     modifier = Modifier
@@ -959,6 +1058,102 @@ private fun ChatInputBar(
             }
         }
     }
+}
+
+/**
+ * 功能四（P0-2）：待发附件缩略图行。
+ *
+ * 横向滚动的 64dp 圆角缩略图 + 右上角移除按钮（外描边圆点 20dp，× 用文字规避
+ * material-icons-extended）。放在输入框上方——附件是「随消息一起走的东西」，
+ * 视觉上必须贴着输入框，不能丢到别处。
+ *
+ * 缩略图只做预览；真正发给模型的是 [images] 里的 data URL 原文。
+ */
+@Composable
+private fun AttachedImagesRow(images: List<String>, onRemove: (String) -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState())
+            .padding(horizontal = AgentSpacing.space3, vertical = AgentSpacing.space2),
+        horizontalArrangement = Arrangement.spacedBy(AgentSpacing.space2)
+    ) {
+        images.forEach { dataUrl ->
+            val bitmap = remember(dataUrl) { decodeDataUrl(dataUrl) }
+            Box(modifier = Modifier.size(64.dp)) {
+                if (bitmap != null) {
+                    Image(
+                        bitmap = bitmap.asImageBitmap(),
+                        contentDescription = "待发图片",
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .clip(RoundedCornerShape(12.dp))
+                    )
+                }
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .size(20.dp)
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.surface)
+                        .clickable { onRemove(dataUrl) },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "×",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                }
+            }
+        }
+    }
+}
+
+/** 功能四（P0-2）：附件入口圆按钮——「＋」图标，禁用时置灰。 */
+@Composable
+private fun AttachImageButton(enabled: Boolean, onClick: () -> Unit) {
+    val interaction = remember { MutableInteractionSource() }
+    val pressed by interaction.collectIsPressedAsState()
+    val scale by animateFloatAsState(
+        targetValue = if (pressed) 0.97f else 1f,
+        animationSpec = AkMotionPress
+    )
+    Box(
+        modifier = Modifier
+            .size(AgentDimens.touchTarget)
+            .scale(scale)
+            .clip(CircleShape)
+            .background(MaterialTheme.colorScheme.surfaceVariant)
+            .clickable(
+                interactionSource = interaction,
+                indication = null,
+                enabled = enabled,
+                onClick = onClick
+            )
+            .then(if (enabled) Modifier else Modifier.alpha(0.38f)),
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(
+            imageVector = Icons.Outlined.Add,
+            contentDescription = "添加图片附件",
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(20.dp)
+        )
+    }
+}
+
+/**
+ * 功能四（P0-1/P0-2）：把 data URL 解码成缩略图位图。
+ *
+ * 缩略图只用于预览，不参与请求——请求始终带 data URL 原文，避免二次编码损耗。
+ */
+private fun decodeDataUrl(dataUrl: String): Bitmap? {
+    val comma = dataUrl.indexOf(',')
+    if (!dataUrl.startsWith("data:") || comma < 0) return null
+    val bytes = Base64.decode(dataUrl.substring(comma + 1), Base64.DEFAULT)
+    return BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
 }
 
 /** 停止按钮：触控 48dp / 视觉 40dp，error 底 + 24dp on-error 停止图标；运行时常驻可点。 */

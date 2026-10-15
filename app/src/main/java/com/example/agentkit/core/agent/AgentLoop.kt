@@ -26,10 +26,16 @@ interface AgentLoop {
      * 执行一轮对话，返回完整消息历史（含系统提示、工具调用与结果）。
      *
      * @param userInput 用户输入（已由调用方拼接设备上下文等前缀）。
+     * @param images 用户手动附带的图片（data URL 列表），作为本轮首条
+     *   [UserMessage] 的多模态内容一起发——让「截图问模型」成为一条自然路径
+     *   （视觉能力此前只在工具返回里用，输入端没有入口）。
      * @return 完整历史；正常结束 / 优雅收尾 / 达到 maxSteps 时返回，
      *   取消时抛 CancellationException（T05 树尾闭合后重抛）。
      */
-    suspend fun send(userInput: String): List<ChatMessage>
+    suspend fun send(
+        userInput: String,
+        images: List<String> = emptyList()
+    ): List<ChatMessage>
 
     /**
      * 请求停止（优雅收尾通道）：本轮工具批次结束、下一轮 LLM 调用前生效，

@@ -3,7 +3,11 @@ package com.example.agentkit.ui
 import android.app.Application
 import android.app.AppOpsManager
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.net.Uri
+import android.util.Base64
+import java.io.ByteArrayOutputStream
 import android.content.Intent
 import android.content.ComponentName
 import android.provider.Settings
@@ -1310,13 +1314,73 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     /** 复用 importStatus 展示一次性提示（如“已复制到剪贴板”）。 */
     fun setImportStatus(msg: String) { _importStatus.value = msg }
 
+    /**
+     * 功能四（P0-2）：等待发送的图片（data URL 列表）。
+     *
+     * 选图在 UI 线程拿 Uri，转 base64 是重活——放 IO 线程由 [attachImageFromUri] 处理，
+     * 完成后统一落到这里，发送时一次性带走。UI 只读这个流渲染缩略图，不碰编码细节。
+     */
+    private val _pendingImages = MutableStateFlow<List<String>>(emptyList())
+    val pendingImages: StateFlow<List<String>> = _pendingImages.asStateFlow()
+
+    /**
+     * 功能四（P0-2）：把相册选中的图片读成 data URL 挂到待发列表。
+     *
+     * 压缩到长边 ≤ [MAX_EDGE]、JPEG 质量 80——1080×2214 原始截图 base64 约好几 MB，
+     * 直接塞进请求会超上下文且慢。失败（权限撤销/文件被删）返回 false，由调用方提示。
+     */
+    suspend fun attachImageFromUri(uri: Uri): Boolean = withContext(Dispatchers.IO) {
+        runCatching {
+            val bitmap = app.contentResolver.openInputStream(uri)?.use { stream ->
+                BitmapFactory.decodeStream(stream)
+            } ?: return@runCatching false
+            val scaled = scaleDown(bitmap)
+            val bytes = ByteArrayOutputStream().use { out ->
+                scaled.compress(Bitmap.CompressFormat.JPEG, 80, out)
+                out.toByteArray()
+            }
+            val encoded = Base64.encodeToString(bytes, Base64.NO_WRAP)
+            _pendingImages.value = _pendingImages.value + "data:image/jpeg;base64,$encoded"
+            true
+        }.getOrDefault(false)
+    }
+
+    /** 功能四（P0-2）：附件图片长边上限——兼顾视觉模型识别效果与请求体积。 */
+    private companion object {
+        const val MAX_EDGE = 1024
+    }
+
+    /** 功能四（P0-2）：长边超过 [MAX_EDGE] 等比缩小（两阶段解码在调用方已完成）。 */
+    private fun scaleDown(bitmap: Bitmap): Bitmap {
+        val max = maxOf(bitmap.width, bitmap.height)
+        if (max <= MAX_EDGE) return bitmap
+        val ratio = MAX_EDGE.toFloat() / max
+        return Bitmap.createScaledBitmap(
+            bitmap,
+            (bitmap.width * ratio).toInt(),
+            (bitmap.height * ratio).toInt(),
+            true
+        )
+    }
+
+    /** 功能四（P0-2）：移除待发图片。 */
+    fun removePendingImage(url: String) {
+        _pendingImages.value = _pendingImages.value.filter { it != url }
+    }
+
     fun send() {
         val text = input.value.trim()
         if (text.isBlank() || isRunning.value) return
+        // 功能四（P0-2）：先摘走待发图片并清空，避免本轮发出后仍留在输入区
+        val images = _pendingImages.value
+        _pendingImages.value = emptyList()
         input.value = ""
         isRunning.value = true
         _streamDraft.value = null
-        AgentLogger.i("Chat", "用户发送：${text.take(120)}")
+        AgentLogger.i(
+            "Chat",
+            "用户发送：${text.take(120)}${if (images.isNotEmpty()) "（含 ${images.size} 张图片）" else ""}"
+        )
 
         // L4 主动感知：把当前设备上下文自动拼进用户输入，让模型“知道”手机在干什么
         val ctxPrompt = DeviceContextStore.snapshot().toPrompt()
@@ -1331,7 +1395,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
                 _messages.value = _messages.value + userItem
                 appendToStore(userItem) // 功能三：聊天记录同步落盘
                 // 先拿到 Result，再在同一个挂起体里做后续 IO：Result.onSuccess 的 lambda 不是 suspend
-                val outcome = runCatching { loop.run(fullInput) }
+                val outcome = runCatching { loop.run(fullInput, images) }
                 // 流式草稿使命结束：最终回答以整条消息落库（防草稿与整条同时显示）
                 _streamDraft.value = null
                 outcome.onSuccess { history ->
