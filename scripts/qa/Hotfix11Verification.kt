@@ -111,7 +111,7 @@ private fun testModelQuickSwitch() {
         assertContains("G11", fn, "configStore.saveProfiles(_profiles.value, id)")
     }
     check("G12 hostOf 域名提取函数存在（去 scheme / 去路径）") {
-        assertContains("G12", chat, "private fun hostOf(baseUrl: String): String")
+        assertContains("G12", chat, "internal fun hostOf(baseUrl: String): String")
         assertContains("G12", chat, "removePrefix(\"https://\")")
     }
 }
@@ -189,6 +189,38 @@ private fun testImageAttachment() {
     }
 }
 
+/**
+ * J 区：功能四 P0-3「提供商列表一级入口」——对标 Coomi `ProvidersView.vue` /
+ * RikkaHub `SettingPage`：把所有配置档案列成可点选的清单，当前生效项高亮，
+ * 点一下即切换生效；AgentKit 此前只有一行横向芯片条（多档案被挤出屏幕）。
+ */
+private fun testProviderListEntry() {
+    println("— J 区：提供商列表一级入口（功能四 P0-3） —")
+    val cfg = readSource("ui/ModelConfigScreen.kt")
+
+    check("J1 模型配置页顶部有 ProviderPickerSection 区块") {
+        assertContains("J1", cfg, "ProviderPickerSection(")
+    }
+    check("J2 列表列出全部档案，当前项 selected 高亮 + 对勾") {
+        assertContains("J2", cfg, "profiles.forEach { profile ->")
+        assertContains("J2", cfg, "selected = isActive")
+        assertContains("J2", cfg, "Icons.Outlined.Check")
+    }
+    check("J3 行显示「模型名 · 域名」，未设置时给可读兜底") {
+        assertContains("J3", cfg, "未设置模型名")
+        assertContains("J3", cfg, "hostOf(profile.config.baseUrl)")
+    }
+    check("J4 点选即 switchProfile 生效 + Toast 反馈") {
+        val body = cfg.substringAfter("ProviderPickerSection(")
+        assertContains("J4", body, "vm.switchProfile(id)")
+        assertContains("J4", body, "Toast.makeText")
+    }
+    check("J5 新建提供商入口（VM 自动命名兜底）") {
+        assertContains("J5", cfg, "＋ 新建提供商")
+        assertContains("J5", cfg, "vm.addProfile(null)")
+    }
+}
+
 fun main() {
     println("== hotfix11 模型快速切换 + 功能四 P0 验证 ==")
     testModelQuickSwitch()
@@ -196,6 +228,8 @@ fun main() {
     testMessageCopy()
     println()
     testImageAttachment()
+    println()
+    testProviderListEntry()
     println()
     println("== 汇总 ==")
     println("PASS: $passed  FAIL: ${failures.size}  TOTAL: ${passed + failures.size}")

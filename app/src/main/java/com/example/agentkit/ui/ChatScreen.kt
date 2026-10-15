@@ -538,7 +538,7 @@ private fun copyMessage(context: Context, text: String) {
 }
 
 /** 功能四：从 Base URL 提取域名（去 scheme、去路径）；空 URL 返回空串。 */
-private fun hostOf(baseUrl: String): String =
+internal fun hostOf(baseUrl: String): String =
     baseUrl.trim()
         .removePrefix("https://")
         .removePrefix("http://")

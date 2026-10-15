@@ -3,6 +3,7 @@ package com.example.agentkit.ui
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.widget.Toast
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.BorderStroke
@@ -33,6 +34,7 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Delete
@@ -103,6 +105,7 @@ fun ModelConfigScreen(vm: ChatViewModel, onBack: () -> Unit) {
     // 功能二：新建档案对话框开关（用户录屏反馈「点＋新增没有任何 visible 反馈」——
     // 旧行为直接静默建副本，新 chip 还被横向滚动条挤到屏外；参照 App 改为先弹命名框）
     var showAdd by rememberSaveable { mutableStateOf(false) }
+    val ctx = LocalContext.current
 
     val dirty = baseUrl != config.baseUrl || apiKey != config.apiKey ||
         model != config.model || providerId != config.providerId
@@ -135,38 +138,54 @@ fun ModelConfigScreen(vm: ChatViewModel, onBack: () -> Unit) {
             verticalArrangement = Arrangement.spacedBy(AgentSpacing.space4)
         ) {
             when (tab) {
-                0 -> ModelTab(
-                    vm = vm,
-                    baseUrl = baseUrl,
-                    onBaseUrl = { baseUrl = it },
-                    apiKey = apiKey,
-                    onApiKey = { apiKey = it },
-                    model = model,
-                    onModel = { model = it },
-                    providerId = providerId,
-                    onProviderChange = { id ->
-                        if (id != providerId) {
-                            // 智能预填：仅当当前值是旧供应商默认值或空时才填新默认值，
-                            // 用户手工改过的一律不覆盖（可预期 > 聪明）
-                            if (baseUrl == ProviderDefaults.defaultUrl(providerId) || baseUrl.isBlank()) {
-                                baseUrl = ProviderDefaults.defaultUrl(id)
-                            }
-                            if (model == ProviderDefaults.defaultModel(providerId) || model.isBlank()) {
-                                model = ProviderDefaults.defaultModel(id)
-                            }
-                            providerId = id
+                0 -> {
+                    // 功能四（P0-3）：提供商列表 = 「换模型」的一级入口
+                    ProviderPickerSection(
+                        profiles = profiles,
+                        activeId = activeProfileId,
+                        onSelect = { id ->
+                            vm.switchProfile(id)
+                            val name = profiles.firstOrNull { it.id == id }?.name ?: "该配置"
+                            Toast.makeText(ctx, "已切换到「$name」", Toast.LENGTH_SHORT).show()
+                        },
+                        onCreate = {
+                            vm.addProfile(null)
+                            Toast.makeText(ctx, "已新建配置", Toast.LENGTH_SHORT).show()
                         }
-                    },
-                    dirty = dirty,
-                    onSave = {
-                        // 保存时统一过 ConfigSanitizer：剔除不可见字符、规范化 URL，避免带着 \u00A0 落盘
-                        vm.updateConfig(
-                            ConfigSanitizer.sanitized(baseUrl, apiKey, model, providerId)
+                    )
+                    ModelTab(
+                        vm = vm,
+                        baseUrl = baseUrl,
+                        onBaseUrl = { baseUrl = it },
+                        apiKey = apiKey,
+                        onApiKey = { apiKey = it },
+                        model = model,
+                        onModel = { model = it },
+                        providerId = providerId,
+                        onProviderChange = { id ->
+                            if (id != providerId) {
+                                // 智能预填：仅当当前值是旧供应商默认值或空时才填新默认值，
+                                // 用户手工改过的一律不覆盖（可预期 > 聪明）
+                                if (baseUrl == ProviderDefaults.defaultUrl(providerId) || baseUrl.isBlank()) {
+                                    baseUrl = ProviderDefaults.defaultUrl(id)
+                                }
+                                if (model == ProviderDefaults.defaultModel(providerId) || model.isBlank()) {
+                                    model = ProviderDefaults.defaultModel(id)
+                                }
+                                providerId = id
+                            }
+                        },
+                        dirty = dirty,
+                        onSave = {
+                            // 保存时统一过 ConfigSanitizer：剔除不可见字符、规范化 URL，避免带着 \u00A0 落盘
+                            vm.updateConfig(
+                                ConfigSanitizer.sanitized(baseUrl, apiKey, model, providerId)
                         )
-                        onBack()
-                    },
-                    onCancel = onBack
-                )
+                            onBack()
+                        },
+                        onCancel = onBack
+                    )
+                }
 
                 1 -> LocalModelsTab(vm = vm)
 
@@ -608,6 +627,64 @@ private fun ModelTab(
             onConfirm = { vm.deleteProfile(id); showDelete = false },
             onDismiss = { showDelete = false }
         )
+    }
+}
+
+/**
+ * 功能四（P0-3）：提供商列表——「换模型」的一级入口。
+ *
+ * 对标 Coomi `ProvidersView.vue` / RikkaHub `SettingPage`：把「有哪些提供商 +
+ * 当前用哪个 + 点一下就换」放在同一层，而不是让用户先认出顶部那排横向
+ * 芯片条、再横向找被挤出去的那个。
+ *
+ * 每行：图标底座 + 配置名 +「模型名 · 域名」；当前生效项 selected（primary
+ * 图标底座 + primary 标题 + 右侧对勾）。点选即 [ChatViewModel.switchProfile]
+ * 生效——VM 同步 _config 并落盘，下一轮请求即走新配置，无需先点保存。
+ *
+ * 布局用 Column 而非 LazyColumn：档案数量级是个位数，纵向滚动交给宿主
+ * Column（本页已有 verticalScroll），避免嵌套滚动。
+ */
+@Composable
+private fun ProviderPickerSection(
+    profiles: List<ModelProfile>,
+    activeId: String,
+    onSelect: (String) -> Unit,
+    onCreate: () -> Unit
+) {
+    AkSectionCard(
+        title = "提供商",
+        description = "共 ${profiles.size} 个配置 · 点选即时生效，无需先保存"
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(AgentSpacing.space1)) {
+            profiles.forEach { profile ->
+                val isActive = profile.id == activeId
+                val host = hostOf(profile.config.baseUrl)
+                val modelText = profile.config.model.ifBlank { "未设置模型名" }
+                AkListItem(
+                    icon = Icons.Outlined.AutoAwesome,
+                    title = profile.name,
+                    description = if (host.isBlank()) modelText else "$modelText · $host",
+                    selected = isActive,
+                    onClick = { onSelect(profile.id) },
+                    trailing = if (isActive) {
+                        {
+                            Icon(
+                                imageVector = Icons.Outlined.Check,
+                                contentDescription = "当前生效",
+                                tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(20.dp)
+                            )
+                        }
+                    } else null
+                )
+            }
+            Spacer(Modifier.height(AgentSpacing.space2))
+            AkTextButton(
+                text = "＋ 新建提供商",
+                onClick = onCreate,
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
     }
 }
 
