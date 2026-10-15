@@ -172,10 +172,14 @@ class AgentLoop(
     )
 
     /** 执行一轮对话，返回完整消息历史（语义 = [AgentLoopContract.send]，保留原名）。 */
-    suspend fun run(userInput: String): List<ChatMessage> = impl.send(userInput)
+    suspend fun run(
+        userInput: String,
+        images: List<String> = emptyList()
+    ): List<ChatMessage> = impl.send(userInput, images)
 
     /** 契约入口：与 [run] 等价（T01 后新代码优先用本名）。 */
-    override suspend fun send(userInput: String): List<ChatMessage> = impl.send(userInput)
+    override suspend fun send(userInput: String, images: List<String>): List<ChatMessage> =
+        impl.send(userInput, images)
 
     /** 契约入口：优雅停止通道（转调 impl，不杀协程）。 */
     override fun stop() = impl.stop()
