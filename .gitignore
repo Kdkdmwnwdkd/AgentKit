@@ -11,3 +11,6 @@ captures/
 
 # llama.cpp 源码（MIT）在构建时由 scripts/fetch-llama.sh 拉取固定 tag，不进仓库
 app/src/main/cpp/llama.cpp/
+
+# CMake/native 构建中间产物
+app/.cxx/
