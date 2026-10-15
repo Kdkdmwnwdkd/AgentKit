@@ -10,6 +10,16 @@
 | **写** | **MCP github 插件** | 端点 `https://api.githubcopilot.com/mcp/`（**不在拦截名单**，真实 IP 140.82.113.21），JSON-RPC over HTTP |
 | ❌ 已废 | 沙箱 shell `curl` / `git push` / `gh` | 一律 000（DNS 无应答 + 出网被拦） |
 
+## 新增通道（2026-10-15 实测，拉取外部仓库源码用）
+
+| 用途 | 通道 | 实测 |
+|------|------|------|
+| **拉仓库 tarball（快）** | `https://gh-proxy.com/https://github.com/<owner>/<repo>/archive/refs/heads/<branch>.tar.gz` | ~18 MB/s，四家参照仓库 11~94MB 全部秒下。⚠️ 不要带 Authorization 头 |
+| 拉仓库 tarball（慢） | `https://codeload.github.com/<owner>/<repo>/tar.gz/refs/heads/<branch>` | DNS 解析到真实 IP（20.205.243.165）**未被劫持**，但只有 ~72 KB/s，大仓库会超时；可 `-C -` 断点续传 |
+| git clone | `https://github.com/...` | ❌ 挂起（TCP 连上不传数据，重试 5 次均失败，勿再浪费时间） |
+
+注意：`rikkahub` 默认分支是 **master** 不是 main；其余三家是 main。codeload 用 HEAD 探分支：404 即分支名错。
+
 **写通道配置已就位**：`/root/.codebuddy/.mcp.json` 已加入
 ```json
 "github": {

@@ -14,7 +14,7 @@ JB_ANNOTATIONS=$CACHE/org.jetbrains/annotations/23.0.0/8cc20c07506ec18e0834947b8
 OKHTTP=$CACHE/com.squareup.okhttp3/okhttp/4.12.0/2f4525d4a200e97e1b87449c2cd9bd2e25b7e8cd/okhttp-4.12.0.jar
 OKIO=$CACHE/com.squareup.okio/okio-jvm/3.6.0/5600569133b7bdefe1daf9ec7f4abeb6d13e1786/okio-jvm-3.6.0.jar
 
-CLASSES=/workspace/app/build/tmp/kotlin-classes/debug
+CLASSES=/workspace/AgentKit/app/build/tmp/kotlin-classes/debug
 OUT=/tmp/qa-verify-t01
 DEPS=$CLASSES:$STDLIB:$COROUTINES:$SERIALIZATION:$SER_CORE:$OKHTTP:$OKIO
 
@@ -25,7 +25,7 @@ java -cp "$KOTLINC:$STDLIB:$TROVE:$JB_ANNOTATIONS" org.jetbrains.kotlin.cli.jvm.
   -no-stdlib -no-reflect \
   -Xfriend-paths="$CLASSES" \
   -classpath "$DEPS" \
-  -d "$OUT" /workspace/scripts/qa/T01Verification.kt
+  -d "$OUT" /workspace/AgentKit/scripts/qa/T01Verification.kt
 
 echo "[2/2] running ..."
 java -cp "$OUT:$DEPS" \

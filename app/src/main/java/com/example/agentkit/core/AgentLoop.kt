@@ -109,7 +109,15 @@ class AgentLoop(
     llmProvider: () -> LLMClient,
     registry: ToolRegistry,
     systemPrompt: String = DEFAULT_SYSTEM_PROMPT,
-    maxSteps: Int = 16,
+    /**
+     * H2 修复（W-7）：默认值必须与 [RealAgentLoop] 保持单一真源（40）。
+     *
+     * hotfix5 只改了 `core/agent/RealAgentLoop.kt` 的默认值（40），本适配层默认值漏改；
+     * 而适配层在下方 [impl] 构造处**显式透传** maxSteps（L149），`ui/ChatViewModel.kt:879`
+     * 构造适配层时未传该参数——生产实际生效值因此一直是 16，跨应用多步任务被提前截断。
+     * 两处默认值必须一致（40）：改这里或改 RealAgentLoop 时，务必同步另一处。
+     */
+    maxSteps: Int = 40,
     maxParallelTools: Int = 5,
     providerRetry: Int = 2,
     maxHistoryMessages: Int = 40,

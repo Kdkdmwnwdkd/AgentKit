@@ -7,11 +7,19 @@
  * **纯函数**做行为验证（JVM 上跑不了真 PackageManager，故只测可脱离 Android 的逻辑）。
  *
  * 覆盖三类解析结果 + 歧义不启动 + 失败 hint 含可用工具提示 + app_list 文本格式化与
- * limit 截断（含上限 100 钳制）。
+ * limit 截断（含上限 100 钳制）+ app_stop shell 结果映射。
+ *
+ * W-7 P0-2 追加覆盖（启动后沉降 + 前台确认）：
+ *  - [DeviceContextStore.awaitForegroundPackage]：立即命中 / 第 N 次轮询命中（含 sleeper
+ *    时延序列）/ 一直不中超时 / 空串短路四类时序分支（假 provider + 假 sleeper 驱动）；
+ *  - [launchConfirmationResult]：confirmed 真/假两种输入的 code + message 断言；
+ *  - [deviceContextEverUpdated]：空白/非空白两种输入的行为（无障碍未喂数据时的短路判据）。
  *
  * 运行方式见 scripts/qa/run-appcontrol-verification.sh（kotlin-compiler-embeddable 编译 + java 运行）。
  */
 
+import com.example.agentkit.automation.DeviceContextStore
+import com.example.agentkit.automation.deviceContextEverUpdated
 import com.example.agentkit.tools.*
 import kotlinx.coroutines.runBlocking
 
@@ -274,6 +282,113 @@ private fun testAppStopResultMapping() {
     }
 }
 
+/* ------------------------------ W-7 P0-2：启动后沉降 + 前台确认 ------------------------------ */
+
+/**
+ * [DeviceContextStore.awaitForegroundPackage] 四类时序分支。
+ *
+ * 用假 provider（按序返回模拟窗口切换）+ 假 sleeper（收集时延参数、不真睡）驱动：
+ * 轮询预算计时语义确定，毫秒级跑完全部分支，不依赖宿主机时钟。
+ */
+private fun testAwaitForegroundTiming() {
+    println("\n== W-7 P0-2 awaitForegroundPackage 四类时序分支（假 provider + 假 sleeper）==")
+
+    check("立即命中：provider 恒返回 target → true，sleeper 0 次") {
+        runBlocking {
+            val sleeps = mutableListOf<Long>()
+            val hit = DeviceContextStore.awaitForegroundPackage(
+                targetPackage = "com.smile.gifmaker",
+                timeoutMs = 3_000,
+                pollIntervalMs = 250,
+                foregroundProvider = { "com.smile.gifmaker" },
+                sleeper = { ms -> sleeps.add(ms) }
+            )
+            assertTrue("hit", hit)
+            assertEquals("sleeper calls", 0, sleeps.size)
+        }
+    }
+
+    check("第 N 次命中：前两次空串、第三次中 → true，sleeper 2 次且时延序列 [250, 250]") {
+        runBlocking {
+            val seq = listOf("", "", "com.smile.gifmaker").iterator()
+            val sleeps = mutableListOf<Long>()
+            val hit = DeviceContextStore.awaitForegroundPackage(
+                targetPackage = "com.smile.gifmaker",
+                timeoutMs = 3_000,
+                pollIntervalMs = 250,
+                foregroundProvider = { if (seq.hasNext()) seq.next() else "" },
+                sleeper = { ms -> sleeps.add(ms) }
+            )
+            assertTrue("hit", hit)
+            assertEquals("sleeper sequence", listOf(250L, 250L), sleeps)
+        }
+    }
+
+    check("一直不中：provider 恒空串 → false，时延 [250,250,250,250] 共 4 次、总 1000 = timeoutMs 后退出") {
+        runBlocking {
+            val sleeps = mutableListOf<Long>()
+            val hit = DeviceContextStore.awaitForegroundPackage(
+                targetPackage = "com.smile.gifmaker",
+                timeoutMs = 1_000,
+                pollIntervalMs = 250,
+                foregroundProvider = { "" },
+                sleeper = { ms -> sleeps.add(ms) }
+            )
+            assertTrue("miss", !hit)
+            assertEquals("sleeper sequence", listOf(250L, 250L, 250L, 250L), sleeps)
+            assertTrue("total <= timeoutMs (got ${sleeps.sum()})", sleeps.sum() <= 1_000L)
+        }
+    }
+
+    check("空串 target：立即 false（短路不查 provider），sleeper 0 次") {
+        runBlocking {
+            val sleeps = mutableListOf<Long>()
+            val hit = DeviceContextStore.awaitForegroundPackage(
+                targetPackage = "",
+                timeoutMs = 3_000,
+                pollIntervalMs = 250,
+                foregroundProvider = { error("空串短路分支不应查询 provider") },
+                sleeper = { ms -> sleeps.add(ms) }
+            )
+            assertTrue("miss", !hit)
+            assertEquals("sleeper calls", 0, sleeps.size)
+        }
+    }
+}
+
+/** [launchConfirmationResult] 两种输入（confirmed 真/假）的 code + message 断言。 */
+private fun testLaunchConfirmationMapping() {
+    println("\n== W-7 P0-2 launchConfirmationResult 两种输入（confirmed 真/假）==")
+
+    val entry = AppEntry(label = "快手", packageName = "com.smile.gifmaker")
+
+    check("confirmed=true → app_launched，message 含「已确认切换到前台」") {
+        val (code, message) = launchConfirmationResult(entry, confirmed = true)
+        assertEquals("code", "app_launched", code)
+        assertContains("confirmed msg", message, "已确认切换到前台")
+    }
+
+    check("confirmed=false → app_launched_unconfirmed，提示 device_foreground_app 复核且不谎称「已启动」") {
+        val (code, message) = launchConfirmationResult(entry, confirmed = false)
+        assertEquals("code", "app_launched_unconfirmed", code)
+        assertContains("foreground recheck hint", message, "device_foreground_app")
+        assertTrue("no misleading 已启动", !message.contains("已启动"))
+    }
+}
+
+/** [deviceContextEverUpdated]：空白/非空白两种输入（无障碍未喂数据时的短路判据）。 */
+private fun testDeviceContextEverUpdated() {
+    println("\n== W-7 P0-2 deviceContextEverUpdated（无障碍喂数据短路判据）==")
+
+    check("空白 foregroundPackage → false（从未喂过，确认无从谈起）") {
+        assertEquals("empty", false, deviceContextEverUpdated(""))
+    }
+
+    check("非空白 foregroundPackage → true") {
+        assertEquals("wechat pkg", true, deviceContextEverUpdated("com.tencent.mm"))
+    }
+}
+
 fun main() {
     println("=== Phase1 补口 · 应用操控工具集（app_list/app_launch/app_stop）QA 行为验证 ===")
     testResolution()
@@ -281,6 +396,9 @@ fun main() {
     testListFormatting()
     testFiltering()
     testAppStopResultMapping()
+    testAwaitForegroundTiming()
+    testLaunchConfirmationMapping()
+    testDeviceContextEverUpdated()
     println("\n=== 汇总: $passed passed, ${failures.size} failed ===")
     if (failures.isNotEmpty()) {
         failures.forEach { println("FAILED: $it") }

@@ -3,6 +3,7 @@ package com.example.agentkit.automation
 import android.content.Context
 import android.content.pm.PackageManager
 import java.util.concurrent.ConcurrentLinkedQueue
+import kotlinx.coroutines.delay
 
 /**
  * 设备上下文聚合（L4 主动感知层）。
@@ -17,6 +18,17 @@ import java.util.concurrent.ConcurrentLinkedQueue
  *  - 所有写操作都在系统回调线程之外做轻量只读（PackageManager 转应用名），失败静默降级。
  */
 object DeviceContextStore {
+
+    /**
+     * 启动后前台确认的最长等待（毫秒，W-7 P0-2）。
+     *
+     * 取值对齐 Operit PhoneAgent POST_LAUNCH_DELAY_MS=1000L 的思路（设计参考，非代码复制）：
+     * 3s 覆盖「慢启动」应用的窗口切换，又不让调用方干等过久。
+     */
+    private const val LAUNCH_CONFIRM_TIMEOUT_MS = 3_000L
+
+    /** 前台确认的轮询间隔（毫秒）：250ms 足够快地发现窗口切换，开销可忽略。 */
+    private const val LAUNCH_CONFIRM_POLL_MS = 250L
 
     @Volatile private var foregroundPackage: String = ""
     @Volatile private var foregroundLabel: String = ""
@@ -47,7 +59,57 @@ object DeviceContextStore {
         recentNotifications = recentNotifs.toList().asReversed(),
         updatedAt = System.currentTimeMillis()
     )
+
+    /**
+     * 轮询等待 [targetPackage] 成为前台应用（W-7 P0-2：app_launch 启动后的前台确认）。
+     *
+     * 背景：`startActivity` 成功只代表「意图已发出」，窗口切换需要时间；启动后不确认
+     * 前台，`ui_tree`（rootInActiveWindow）会读到旧窗口，模型误判「没打开」而放弃。
+     * 本方法把「等到目标到前台」收敛为单一可复用入口，供 app_launch 调用。
+     *
+     * 计时语义：以**轮询预算**计时（累计已请求的休眠量，上限 [timeoutMs]）——行为确定、
+     * 不依赖宿主机时钟，JVM harness 可用假 sleeper 毫秒级断言全部时序分支。
+     *
+     * 可注入性（JVM harness 可测）：[foregroundProvider] / [sleeper] 默认走真实
+     * [snapshot] 与 [kotlinx.coroutines.delay]；harness 注入假 provider（按序返回
+     * 模拟窗口切换）+ 假 sleeper（收集时延参数、不真睡）即可驱动全部分支。
+     *
+     * @param targetPackage 目标包名；空串直接返回 false（防空串误配）。
+     * @param timeoutMs 最长等待毫秒（默认 [LAUNCH_CONFIRM_TIMEOUT_MS]）。
+     * @param pollIntervalMs 轮询间隔毫秒（默认 [LAUNCH_CONFIRM_POLL_MS]）。
+     * @return true = 已在 [timeoutMs] 内确认到前台；false = 超时仍未确认（或入参为空）。
+     */
+    suspend fun awaitForegroundPackage(
+        targetPackage: String,
+        timeoutMs: Long = LAUNCH_CONFIRM_TIMEOUT_MS,
+        pollIntervalMs: Long = LAUNCH_CONFIRM_POLL_MS,
+        foregroundProvider: () -> String = { snapshot().foregroundPackage },
+        sleeper: suspend (Long) -> Unit = { delay(it) }
+    ): Boolean {
+        if (targetPackage.isEmpty()) return false
+        var waitedMs = 0L
+        while (true) {
+            if (foregroundProvider() == targetPackage) return true
+            if (waitedMs >= timeoutMs) return false
+            // 休眠量取「间隔与剩余预算的较小值」：既保持 250ms 的轮询节奏，
+            // 又保证总等待不超过 timeoutMs（收尾那次可能不足一个间隔）。
+            val sleepMs = minOf(pollIntervalMs, timeoutMs - waitedMs)
+            sleeper(sleepMs)
+            waitedMs += sleepMs
+        }
+    }
 }
+
+/**
+ * 设备上下文是否已被无障碍服务喂过数据（W-7 P0-2 短路判据，**纯函数**）。
+ *
+ * 入参为 [DeviceContextStore.snapshot] 的 foregroundPackage：空白说明
+ * [AgentAccessibilityService] 从未喂过（此时 ui_tree 同样不可用），启动后的
+ * 沉降 + 前台确认无从谈起，调用方应短路返回、避免白等。抽成纯函数是为 JVM
+ * harness 可对空白/非空白两种输入直接断言（无 Android 依赖）。
+ */
+internal fun deviceContextEverUpdated(foregroundPackage: String): Boolean =
+    foregroundPackage.isNotBlank()
 
 /**
  * 设备上下文快照（值对象）。[toPrompt] 输出可直接拼进 LLM 系统提示/用户输入的文本段落。

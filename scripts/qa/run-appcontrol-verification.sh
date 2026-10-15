@@ -9,10 +9,10 @@ COROUTINES=$CACHE/org.jetbrains.kotlinx/kotlinx-coroutines-core-jvm/1.8.1/bb0e19
 SERIALIZATION=$CACHE/org.jetbrains.kotlinx/kotlinx-serialization-json-jvm/1.6.3/2241746853abf04073e3ab0dcd9e6729d363b313/kotlinx-serialization-json-jvm-1.6.3.jar
 SER_CORE=$(find $CACHE/org.jetbrains.kotlinx/kotlinx-serialization-core-jvm -name "kotlinx-serialization-core-jvm-*.jar" | grep -v sources | head -1)
 TROVE=$CACHE/org.jetbrains.intellij.deps/trove4j/1.0.20200330/3afb14d5f9ceb459d724e907a21145e8ff394f02/trove4j-1.0.20200330.jar
-# JB_ANNOTATIONS 用 QA 本地稳定副本（scripts/qa/lib/）：避免并发 Gradle 进程瞬时扰动缓存副本
-JB_ANNOTATIONS=/workspace/scripts/qa/lib/annotations-23.0.0.jar
+# JB_ANNOTATIONS 直接取 Gradle 离线缓存（与 run-t01-verification.sh 同一路径模式）
+JB_ANNOTATIONS=$CACHE/org.jetbrains/annotations/23.0.0/8cc20c07506ec18e0834947b84a864bfc094484e/annotations-23.0.0.jar
 
-CLASSES=/workspace/app/build/tmp/kotlin-classes/debug
+CLASSES=/workspace/AgentKit/app/build/tmp/kotlin-classes/debug
 OUT=/tmp/qa-verify-appcontrol
 DEPS=$CLASSES:$STDLIB:$COROUTINES:$SERIALIZATION:$SER_CORE:$JB_ANNOTATIONS
 
@@ -26,7 +26,7 @@ compile_appcontrol() {
     -no-stdlib -no-reflect \
     -Xfriend-paths="$CLASSES" \
     -classpath "$DEPS" \
-    -d "$OUT" /workspace/scripts/qa/AppControlVerification.kt 2>&1) || true
+    -d "$OUT" /workspace/AgentKit/scripts/qa/AppControlVerification.kt 2>&1) || true
   if echo "$out" | grep -q "error:"; then
     echo "$out"; return 1
   fi

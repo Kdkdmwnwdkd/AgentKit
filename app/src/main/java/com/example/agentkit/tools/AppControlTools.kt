@@ -9,7 +9,10 @@ import com.example.agentkit.core.AgentTool
 import com.example.agentkit.core.JsonSchema
 import com.example.agentkit.core.ToolRegistry
 import com.example.agentkit.core.ToolResult
+import com.example.agentkit.automation.DeviceContextStore
+import com.example.agentkit.automation.deviceContextEverUpdated
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
@@ -60,6 +63,14 @@ internal const val APP_LIST_DEFAULT_LIMIT: Int = 30
 
 /** app_list 返回条数硬上限（钳制防刷屏）。 */
 internal const val APP_LIST_MAX_LIMIT: Int = 100
+
+/**
+ * app_launch 启动后的沉降等待（毫秒，W-7 P0-2）。
+ *
+ * 对齐 Operit PhoneAgent POST_LAUNCH_DELAY_MS=1000L 的思路（设计参考，非代码复制）：
+ * startActivity 后系统窗口切换需要时间，先沉降再确认前台，避免 ui_tree 读到旧窗口。
+ */
+internal const val POST_LAUNCH_SETTLE_MS: Long = 1_000L
 
 /**
  * 把用户传入的 limit 钳制到 [1, [APP_LIST_MAX_LIMIT]]：
@@ -194,6 +205,30 @@ internal fun appAmbiguousHint(target: String, candidates: List<AppEntry>): Strin
 }
 
 /**
+ * app_launch「启动 + 前台确认」结果 → (code, message) 映射（**纯函数**，JVM harness 可断言）。
+ *
+ * 三分支语义（W-7 P0-2，绝不分不清「发了」和「成了」）：
+ *  - confirmed=true → 硬成功 `app_launched`：已启动并确认切换到前台；
+ *  - confirmed=false → `app_launched_unconfirmed`：启动意图确已发出（调用方仍按 **ok**
+ *    返回），但未在前台确认到（可能被系统拦截、应用异常或无障碍服务未开启），提示模型用
+ *    device_foreground_app 复核、或用 ui_tree 查看当前界面。
+ * 抽出为纯函数的动机：与 [appStopResult] 同构——让结果映射在无 Android Context 的 JVM
+ * harness 里可被真实断言。
+ *
+ * @param entry 目标应用条目（仅用于文案）
+ * @param confirmed 是否已由 [DeviceContextStore.awaitForegroundPackage] 确认到前台
+ * @return (code, message) 二元组；调用方包成 ok 结果（未确认也是 ok——意图确已发出）
+ */
+internal fun launchConfirmationResult(entry: AppEntry, confirmed: Boolean): Pair<String, String> =
+    if (confirmed) {
+        "app_launched" to "已启动「${entry.label}」（包名 ${entry.packageName}）并已确认切换到前台。"
+    } else {
+        "app_launched_unconfirmed" to
+            "已发出启动「${entry.label}」的意图，但未在前台确认到（可能被系统拦截、应用异常或无障碍服务未开启）。" +
+            "建议用 device_foreground_app 复核，或用 ui_tree 查看当前界面。"
+    }
+
+/**
  * app_stop 降级 hint（纯函数）：shell 通道不可用或无权时，写清用户手动替代路径，
  * **不静默假装成功**。
  */
@@ -314,7 +349,7 @@ class AppLaunchTool(private val context: Context) : AgentTool {
     override val name = "app_launch"
     override val description =
         "启动任意已安装应用。target 传应用名（如「快手」）或包名（如 com.smile.gifmaker），支持模糊匹配；" +
-            "若已知具体 Activity，可传 activity 直接按组件启动。启动后用 device_foreground_app 确认是否切换成功。"
+            "若已知具体 Activity，可传 activity 直接按组件启动。启动后会自动等待并确认前台切换，未确认时会明确提示。"
     override val systemPrompt =
         "用 app_launch 打开目标应用（零权限）。操作任意应用的第一步就是它。" + APPCONTROL_ROUTINE
     override val parameters = JsonSchema.objectSchema(
@@ -360,7 +395,7 @@ class AppLaunchTool(private val context: Context) : AgentTool {
     }
 
     /** 真正执行启动：优先按指定组件，其次 getLaunchIntentForPackage。 */
-    private fun launchResolved(entry: AppEntry, activity: String?): ToolResult {
+    private suspend fun launchResolved(entry: AppEntry, activity: String?): ToolResult {
         val pm = context.packageManager
         val intent = if (!activity.isNullOrBlank()) {
             Intent().setComponent(ComponentName(entry.packageName, activity))
@@ -377,10 +412,9 @@ class AppLaunchTool(private val context: Context) : AgentTool {
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         return try {
             context.startActivity(intent)
-            ToolResult.ok(
-                code = "app_launched",
-                message = "已启动「${entry.label}」（包名 ${entry.packageName}）。建议用 device_foreground_app 确认是否已切换到目标应用。"
-            )
+            // W-7 P0-2：startActivity 成功 ≠ 已切换到前台——启动后先沉降、再确认
+            // （见 confirmLaunch），杜绝「假成功」让模型拿着旧 ui_tree 误判「没打开」而放弃。
+            confirmLaunch(entry)
         } catch (e: Exception) {
             ToolResult.fail(
                 code = "launch_failed",
@@ -388,6 +422,32 @@ class AppLaunchTool(private val context: Context) : AgentTool {
                 hint = "确认应用已安装且未被停用、Agent 处于前台；可改用精确包名重试；如仍失败请告知用户手动打开。"
             )
         }
+    }
+
+    /**
+     * W-7 P0-2：启动意图发出后的「沉降 + 前台确认」。
+     *
+     * 1. **短路**：`DeviceContextStore.snapshot().foregroundPackage` 空白说明无障碍服务
+     *    从未喂过数据（ui_tree 同样不可用），确认无从谈起——直接返回旧语义的 ok，
+     *    避免无障碍没开时白等约 4 秒（判据纯函数见 [deviceContextEverUpdated]）。
+     * 2. **沉降**：等 [POST_LAUNCH_SETTLE_MS] 毫秒，给系统窗口切换留时间（对齐 Operit
+     *    PhoneAgent POST_LAUNCH_DELAY_MS=1000L 的思路，设计参考非代码复制）。
+     * 3. **前台确认**：[DeviceContextStore.awaitForegroundPackage] 轮询直到目标包名到前台。
+     * 4. **三分支**（映射纯函数见 [launchConfirmationResult]）：已确认 → 硬成功；
+     *    未确认 → 仍是 ok（意图已发出）但 code 区分开，提示模型用 device_foreground_app
+     *    复核——「发了」与「成了」绝不含混。
+     */
+    private suspend fun confirmLaunch(entry: AppEntry): ToolResult {
+        if (!deviceContextEverUpdated(DeviceContextStore.snapshot().foregroundPackage)) {
+            return ToolResult.ok(
+                code = "app_launched",
+                message = "已启动「${entry.label}」（包名 ${entry.packageName}）。建议用 device_foreground_app 确认是否已切换到目标应用。"
+            )
+        }
+        delay(POST_LAUNCH_SETTLE_MS)
+        val confirmed = DeviceContextStore.awaitForegroundPackage(entry.packageName)
+        val (code, message) = launchConfirmationResult(entry, confirmed)
+        return ToolResult.ok(code = code, message = message)
     }
 }
 
