@@ -141,7 +141,15 @@ class GeminiClient(
                 val errBody = runCatching { resp.body?.string() }.getOrDefault("") ?: ""
                 val safeBody = AgentLogger.sanitize(errBody)
                 AgentLogger.httpError(resp.code, safeBody)
-                throw IOException("Gemini 流式请求失败 ${resp.code}: ${safeBody.take(200)}")
+                // hotfix10：同 OpenAIClient——结构化 LlmHttpException（code + Retry-After）
+                throw com.example.agentkit.core.LlmHttpException(
+                    code = resp.code,
+                    message = "Gemini 流式请求失败 ${resp.code}: ${safeBody.take(200)}",
+                    serverBody = safeBody.take(200),
+                    retryAfterMs = com.example.agentkit.core.parseRetryAfterMs(
+                        resp.header("Retry-After")
+                    )
+                )
             }
             val source = resp.body!!.source()
             while (!source.exhausted()) {

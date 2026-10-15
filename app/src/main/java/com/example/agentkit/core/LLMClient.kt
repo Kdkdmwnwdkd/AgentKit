@@ -33,7 +33,16 @@ data class LLMConfig(
  * [retryable] 表示是否值得重试：429/5xx 属瞬时问题可重试，
  * 401/403/400 等鉴权/参数错误重试也无用，必须快速失败（避免用户白等 3 次重试）。
  */
-class LlmHttpException(val code: Int, message: String, val serverBody: String = "") : java.io.IOException(message) {
+class LlmHttpException(
+    val code: Int,
+    message: String,
+    val serverBody: String = "",
+    /**
+     * 服务端 `Retry-After` 头解析出的毫秒数（0 = 没给/解析不了）。
+     * hotfix10：429 限流时按它退避，别用固定短序列硬刚。
+     */
+    val retryAfterMs: Long = 0L
+) : java.io.IOException(message) {
     val retryable: Boolean get() = code == 429 || code >= 500
 }
 
@@ -104,6 +113,26 @@ interface LLMClient {
  * （文本增量 + tool_calls 分片累积 → Completed 整条 commit，Agent 主循环消费）
  * 共享同一 SSE 读取逻辑（readSseDataObjects）。
  */
+
+/**
+ * 解析 `Retry-After` 响应头为毫秒（hotfix10）。
+ *
+ * 支持两种合法形态：延迟秒数（`Retry-After: 120`，最常见）与 HTTP 日期
+ * （`Retry-After: Wed, 21 Oct 2015 07:28:00 GMT`，少见）。解析不出一律返回 0
+ * （调用方按自己的 429 序列退避，不会被坏头值卡死）。
+ * 纯函数、零 Android 依赖——QA harness 可直接断言。
+ */
+fun parseRetryAfterMs(raw: String?): Long {
+    val v = raw?.trim().orEmpty()
+    if (v.isEmpty()) return 0L
+    v.toLongOrNull()?.let { if (it >= 0) return it * 1000L }
+    val fmt = java.time.format.DateTimeFormatter.RFC_1123_DATE_TIME
+    return runCatching {
+        val t = java.time.ZonedDateTime.parse(v, fmt).toInstant().toEpochMilli()
+        (t - System.currentTimeMillis()).coerceAtLeast(0L)
+    }.getOrDefault(0L)
+}
+
 class OpenAIClient(
     private val config: LLMConfig,
     private val http: OkHttpClient = OkHttpClient()
@@ -257,7 +286,19 @@ class OpenAIClient(
         withContext(Dispatchers.IO) {
             http.newCall(request).execute().use { resp ->
                 if (!resp.isSuccessful) {
-                    throw IOException("LLM 流式请求失败 ${resp.code}")
+                    // hotfix10：流式通道原来抛裸 IOException("LLM 流式请求失败 429")，
+                    // 丢了 HTTP 结构与 Retry-After——上层认不出 429、退避只能用通用
+                    // 3s/10s 短序列硬刚限流（真机 19:05 连续 3 次 429 后运行直接失败）。
+                    // 改抛结构化 LlmHttpException：isRetryable/retryReason/429 专用
+                    // 退避序列全部能认出来。
+                    val errBody = runCatching { resp.body?.string() }.getOrDefault("") ?: ""
+                    AgentLogger.httpError(resp.code, AgentLogger.sanitize(errBody))
+                    throw LlmHttpException(
+                        code = resp.code,
+                        message = "LLM 流式请求失败 ${resp.code}",
+                        serverBody = AgentLogger.sanitize(errBody).take(200),
+                        retryAfterMs = parseRetryAfterMs(resp.header("Retry-After"))
+                    )
                 }
                 val source = resp.body!!.source()
                 while (!source.exhausted()) {

@@ -176,7 +176,51 @@ private class FakeNetworkRecovery(
     }
 }
 
+
+/* --------------- hotfix10：429 限流专用序列 + Retry-After 解析 --------------- */
+
+/** A3：429 专用退避序列 = 10s → 30s → 60s 封顶，且尊重服务端 Retry-After。 */
+private suspend fun testRateLimitBackoff() {
+    println("\n== A3：429 限流专用退避（hotfix10） ==")
+
+    check("限流序列值与封顶符合配置") {
+        assertEquals("第 1 次重试", 10_000L, RetryBackoffPolicy.rateLimitBackoffMillis(1))
+        assertEquals("第 2 次重试", 30_000L, RetryBackoffPolicy.rateLimitBackoffMillis(2))
+        assertEquals("第 3 次重试", 60_000L, RetryBackoffPolicy.rateLimitBackoffMillis(3))
+        assertEquals("第 4 次重试（封顶）", 60_000L, RetryBackoffPolicy.rateLimitBackoffMillis(4))
+        assertEquals("常量序列", listOf(10_000L, 30_000L, 60_000L), RetryBackoffPolicy.RATE_LIMIT_SEQUENCE_MS)
+        assertEquals("封顶常量", 60_000L, RetryBackoffPolicy.MAX_RATE_LIMIT_MS)
+    }
+
+    check("Retry-After 秒数形态解析为毫秒") {
+        assertEquals("120 秒", 120_000L, parseRetryAfterMs("120"))
+        assertEquals("0 秒", 0L, parseRetryAfterMs("0"))
+        assertEquals("空值", 0L, parseRetryAfterMs(null))
+        assertEquals("空白", 0L, parseRetryAfterMs("   "))
+        assertEquals("非数值（无日期形态）", 0L, parseRetryAfterMs("soon"))
+    }
+
+    check("服务端要求等更久时取较大值（再封顶）") {
+        assertEquals(
+            "Retry-After 45s > 序列 10s → 用 45s",
+            45_000L,
+            RetryBackoffPolicy.rateLimitBackoffMillis(1, retryAfterMs = 45_000L)
+        )
+        assertEquals(
+            "Retry-After 5s < 序列 30s → 用 30s",
+            30_000L,
+            RetryBackoffPolicy.rateLimitBackoffMillis(2, retryAfterMs = 5_000L)
+        )
+        assertEquals(
+            "Retry-After 300s 超过封顶 → 钳到 60s",
+            60_000L,
+            RetryBackoffPolicy.rateLimitBackoffMillis(1, retryAfterMs = 300_000L)
+        )
+    }
+}
+
 /* ------------------------------ A：退避序列 ------------------------------ */
+
 
 /** A1：退避序列 = 可配常量 3s → 10s → 25s 封顶，序列和 38s（用户要的「半分钟」量级）。 */
 private suspend fun testBackoffSequence() {
@@ -630,9 +674,10 @@ private suspend fun testScreenshotBridgeLastErrorLogged() {
 /* ------------------------------ 入口 ------------------------------ */
 
 fun main() = runBlocking {
-    println("== 真机第三轮 Hotfix3（A 退避+网络恢复 / B ui_click 匹配 / C 日志）QA 行为验证 ==")
+    println("== 真机第三轮 Hotfix3 + hotfix10 429 限流序列（A 退避+网络恢复 / B ui_click 匹配 / C 日志）QA 行为验证 ==")
 
     testBackoffSequence()
+    testRateLimitBackoff()
     testNetworkRecoveryInterruptsWait()
     testFullBackoffWithoutNetworkEvent()
     testCancelDuringWait()

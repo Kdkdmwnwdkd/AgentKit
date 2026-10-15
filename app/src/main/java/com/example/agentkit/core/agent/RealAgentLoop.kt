@@ -66,7 +66,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  *  - maybeCompact 滑动窗口；审批流（needsApproval + ToolApproval；审批回调抛
  *    CancellationException 必须重抛不吞）；checkpoint 回调；onEvent 两个事件
  *    （ToolStarted 执行前 / ToolFinished 终态，并行时按 call.id 归并由 UI 负责）；
- *  - maxSteps=40 / maxParallelTools=5 / providerRetry=2 / maxHistoryMessages=40
+ *  - maxSteps=40 / maxParallelTools=5 / providerRetry=3 / maxHistoryMessages=40
  *    默认值；AgentLogger 各日志点保留。（消耗警示：步数上调直接放大 token 消耗与
  *    单回合时长——最坏 N 次 LLM 往返；上下文侧由 maxHistoryMessages/maybeCompact
  *    兜底，调整前需评估。）
@@ -85,7 +85,8 @@ import java.util.concurrent.atomic.AtomicBoolean
  * @param maxSteps 单轮最大步数（默认 40；与 core/AgentLoop.kt 适配层默认值必须一致，
  *   hotfix5 起两处均为 40，改一处务必同步另一处）。
  * @param maxParallelTools 全只读批次并行上限（分块限流，默认 5）。
- * @param providerRetry 供应商瞬时失败重试次数（默认 2，共 3 次尝试）。
+ * @param providerRetry 供应商瞬时失败重试次数（默认 3，共 4 次尝试；hotfix10 上调：
+ *   429 限流序列 10s/30s/60s 需 3 次重试才走得完，2 次会在第 3 次 429 后直接失败）。
  * @param maxHistoryMessages 上下文滑动窗口上限（默认 40）。
  * @param approval 危险工具审批回调（null = 关闭）。
  * @param checkpoint 检查点回调（每批消息变更后调用，断线/被杀后可恢复）。
@@ -119,7 +120,7 @@ class RealAgentLoop(
     systemPrompt: String = DEFAULT_SYSTEM_PROMPT,
     maxSteps: Int = 40,
     private val maxParallelTools: Int = 5,
-    private val providerRetry: Int = 2,
+    private val providerRetry: Int = 3,
     private val maxHistoryMessages: Int = 40,
     private val approval: ToolApproval? = null,
     private val checkpoint: ((List<ChatMessage>) -> Unit)? = null,
@@ -132,6 +133,22 @@ class RealAgentLoop(
     private val forceFullTools: Boolean = false,
     private val networkRecovery: NetworkRecoveryWaiter = NetworkRecoveryWaiter.TIMER_ONLY,
     private val backoffPlan: (attempt: Int) -> Long = RetryBackoffPolicy::backoffMillis,
+    /**
+     * 429 限流专用退避计划（hotfix10，默认 [RetryBackoffPolicy.rateLimitBackoffMillis]：
+     * 10s → 30s → 60s 封顶 + 尊重服务端 Retry-After）。
+     *
+     * 与 [backoffPlan] 分开而非合并：harness 大量注入 `backoffPlan = { 小值 }` 保持毫秒级，
+     * 合并会破坏所有既有注入点；分开则「普通故障走通用序列、限流走限流序列」各行其道。
+     */
+    private val rateLimitPlan: (attempt: Int, retryAfterMs: Long) -> Long =
+        RetryBackoffPolicy::rateLimitBackoffMillis,
+    /**
+     * 429 限流专用退避钩子（hotfix10，默认 [RetryBackoffPolicy.networkAwareRateLimit]）。
+     * 与 [retryBackoff] 分开：harness 大量注入 `retryBackoff`/`backoffPlan` 保持毫秒级，
+     * 且 429 与服务端 Retry-After 需要额外的毫秒参数——合并签名会破坏所有既有注入点。
+     */
+    private val rateLimitBackoff: suspend (attempt: Int, retryAfterMs: Long) -> Unit =
+        RetryBackoffPolicy.networkAwareRateLimit(rateLimitPlan, networkRecovery),
     private val retryBackoff: suspend (attempt: Int) -> Unit =
         RetryBackoffPolicy.networkAware(backoffPlan, networkRecovery)
 ) : AgentLoop {
@@ -591,7 +608,14 @@ class RealAgentLoop(
                         )
                         retrying = true
                         // 先公告再退避：让「正在恢复（n/N）」有稳定可见时长，并留出恢复窗口
-                        retryBackoff(attempt + 1)
+                        // hotfix10：429 限流走专用序列（10s/30s/60s + 尊重 Retry-After），
+                        // 不再用 3s/10s 通用序列硬刚限流（真机 19:05 连续 3 次 429 挂掉的根因）。
+                        val rateLimited = (e as? LlmHttpException)?.takeIf { it.code == 429 }
+                        if (rateLimited != null) {
+                            rateLimitBackoff(attempt + 1, rateLimited.retryAfterMs)
+                        } else {
+                            retryBackoff(attempt + 1)
+                        }
                         currentCoroutineContext().ensureActive()
                     }
                 }
@@ -738,6 +762,16 @@ object RetryBackoffPolicy {
     val BACKOFF_SEQUENCE_MS: List<Long> = listOf(3_000L, 10_000L, 25_000L)
 
     /**
+     * **429 限流专用**退避序列（hotfix10）：第 n 次重试取第 n 项，越界取末项封顶。
+     * 限流要「等得久、试得少」——通用序列 3s/10s 对限流等于没等（真机 19:05 实证：
+     * 连续 3 次 429 后整个回合直接失败）。
+     */
+    val RATE_LIMIT_SEQUENCE_MS: List<Long> = listOf(10_000L, 30_000L, 60_000L)
+
+    /** 429 单次退避封顶（含服务端 Retry-After 也不得超过它，防坏头值卡死回合）。 */
+    const val MAX_RATE_LIMIT_MS: Long = 60_000L
+
+    /**
      * 第 [attempt] 次重试（1-based）前应等待的毫秒数：取 [BACKOFF_SEQUENCE_MS] 的第
      * [attempt] 项（越界取末项封顶）；非法序号（≤0）按第 1 次处理，避免调用方传错导致
      * 永久忙等。
@@ -745,6 +779,24 @@ object RetryBackoffPolicy {
     fun backoffMillis(attempt: Int): Long {
         val index = (attempt - 1).coerceAtLeast(0)
         return BACKOFF_SEQUENCE_MS.getOrElse(index) { MAX_MS }.coerceAtLeast(0L)
+    }
+
+    /**
+     * **429 限流专用**退避（hotfix10）：[RATE_LIMIT_SEQUENCE_MS] = 10s → 30s → 60s 封顶。
+     *
+     * 为什么单列：限流不是网络抖动——用 3s/10s 的通用序列硬刚只会连续再挨两次 429
+     * （真机 19:05 实证：3s/10s 后第 3 次 429 直接整个回合失败）。限流的正确姿势是
+     * 「等得久、试得少」，故序列显著拉长；同时尊重服务端 `Retry-After`：
+     * 若服务端要求等更久，取两者较大值（再封顶 [MAX_RATE_LIMIT_MS]，防坏头值卡死）。
+     *
+     * @param attempt 1-based 重试序号。
+     * @param retryAfterMs 服务端 `Retry-After` 毫秒（0 = 未提供）。
+     */
+    fun rateLimitBackoffMillis(attempt: Int, retryAfterMs: Long = 0L): Long {
+        val index = (attempt - 1).coerceAtLeast(0)
+        val base = RATE_LIMIT_SEQUENCE_MS.getOrElse(index) { MAX_RATE_LIMIT_MS }
+        val serverAsk = retryAfterMs.coerceAtLeast(0L)
+        return maxOf(base, serverAsk).coerceAtMost(MAX_RATE_LIMIT_MS)
     }
 
     /**
@@ -771,6 +823,25 @@ object RetryBackoffPolicy {
             "LLM",
             "第 $attempt 次重试退避结束：计划 ${plannedMs}ms，" +
                 (if (interrupted) "网络已恢复 → 立即重试" else "等待满额 → 按序列重试")
+        )
+    }
+
+    /**
+     * 429 限流专用版 [networkAware]（hotfix10）：计划毫秒由
+     * [rateLimitPlan]（attempt + 服务端 Retry-After）给出，其余语义一致
+     * （网络恢复可提前结束等待；等待结束记 INFO）。
+     */
+    fun networkAwareRateLimit(
+        plan: (attempt: Int, retryAfterMs: Long) -> Long,
+        waiter: NetworkRecoveryWaiter
+    ): suspend (attempt: Int, retryAfterMs: Long) -> Unit = { attempt, retryAfterMs ->
+        val plannedMs = plan(attempt, retryAfterMs).coerceAtLeast(0L)
+        val interrupted = waiter.awaitRecovery(plannedMs)
+        AgentLogger.i(
+            "LLM",
+            "第 $attempt 次重试（429 限流）退避结束：计划 ${plannedMs}ms" +
+                (if (retryAfterMs > 0) "（服务端 Retry-After=${retryAfterMs}ms）" else "") +
+                (if (interrupted) "，网络已恢复 → 立即重试" else "，等待满额 → 按序列重试")
         )
     }
 }

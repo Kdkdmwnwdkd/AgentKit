@@ -132,7 +132,16 @@ class ClaudeClient(
                 val errBody = runCatching { resp.body?.string() }.getOrDefault("") ?: ""
                 val safeBody = AgentLogger.sanitize(errBody)
                 AgentLogger.httpError(resp.code, safeBody)
-                throw IOException("Claude 流式请求失败 ${resp.code}: ${safeBody.take(200)}")
+                // hotfix10：同 OpenAIClient——抛结构化 LlmHttpException（带 code 与
+                // Retry-After），让上层认得出 429 并走限流专用退避序列。
+                throw com.example.agentkit.core.LlmHttpException(
+                    code = resp.code,
+                    message = "Claude 流式请求失败 ${resp.code}: ${safeBody.take(200)}",
+                    serverBody = safeBody.take(200),
+                    retryAfterMs = com.example.agentkit.core.parseRetryAfterMs(
+                        resp.header("Retry-After")
+                    )
+                )
             }
             val source = resp.body!!.source()
             while (!source.exhausted()) {
