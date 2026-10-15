@@ -2,7 +2,9 @@ package com.example.agentkit.ui
 
 import android.graphics.BitmapFactory
 import android.util.Base64
+import android.widget.Toast
 import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
@@ -33,6 +35,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
@@ -46,6 +49,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.AutoAwesome
+import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.Notifications
 import androidx.compose.material.icons.outlined.Person
@@ -78,6 +82,7 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -88,6 +93,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.agentkit.core.ModelProfile
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -123,6 +129,11 @@ fun ChatScreen(
     val usageGranted by vm.usageGranted.collectAsStateWithLifecycle()
     val capturing by vm.capturing.collectAsStateWithLifecycle()
     val config by vm.config.collectAsStateWithLifecycle()
+    // 功能四（模型快速切换，录屏反馈「保存了好多个模型，要换的时候不给换，
+    // 都不知道现在用哪个」）：对话页常驻当前模型指示条 + 一键切换弹窗，
+    // 不再深埋三层（抽屉 → 模型配置 → 顶部横向档案条）且切换无任何反馈。
+    val profiles by vm.profiles.collectAsStateWithLifecycle()
+    val activeProfileId by vm.activeProfileId.collectAsStateWithLifecycle()
     val listState = rememberLazyListState()
 
     val pendingGrants = pendingGrantCount(
@@ -140,6 +151,10 @@ fun ChatScreen(
 
     // 「从中间轮重新发问」待编辑的用户气泡（长按/点击「重新发问」入口置位，确认后截断+重问）
     var reaskTarget by remember { mutableStateOf<UiItem.User?>(null) }
+    // 功能四：模型切换弹窗开关（指示条点击打开）
+    var showModelSwitch by remember { mutableStateOf(false) }
+    val ctx = LocalContext.current
+    val activeProfile = profiles.firstOrNull { it.id == activeProfileId }
 
     Column(Modifier.fillMaxSize()) {
         PageTopBar(
@@ -151,6 +166,17 @@ fun ChatScreen(
             // 当前会话已为空时禁用（§6.5.4）：再建也是空会话，无信息增量
             actionEnabled = messages.isNotEmpty(),
             onAction = { vm.newConversation() }
+        )
+        // 功能四：当前模型指示条——一眼看到「在用哪个模型」，点击即弹切换列表。
+        // 未配置时整条变引导态（点此去配置），与空态「去配置模型」同语义。
+        ModelIndicatorBar(
+            profileName = activeProfile?.name,
+            modelName = config.model,
+            host = hostOf(config.baseUrl),
+            ready = modelReady,
+            onClick = {
+                if (modelReady) showModelSwitch = true else onOpenModel()
+            }
         )
         if (messages.isEmpty() && streamDraft == null) {
             EmptyGuide(
@@ -263,7 +289,210 @@ fun ChatScreen(
     if (currentApproval != null) {
         ApprovalDialog(request = currentApproval, visible = approvalVisible, vm = vm)
     }
+
+    // —— 功能四：模型切换弹窗（录屏反馈「保存了好多个模型，要换的时候不给换」） ——
+    // AkModalHost 承载退场动画；点选即 vm.switchProfile 即时生效（VM 同步 _config，
+    // 下一轮请求读新配置，见 ChatViewModel.switchProfile），Toast 给可见反馈。
+    AkModalHost(target = if (showModelSwitch) true else null) { _, visible ->
+        ModelSwitchDialog(
+            visible = visible,
+            profiles = profiles,
+            activeId = activeProfileId,
+            onSelect = { id ->
+                vm.switchProfile(id)
+                val name = profiles.firstOrNull { it.id == id }?.name ?: "该配置"
+                Toast.makeText(ctx, "已切换到「$name」", Toast.LENGTH_SHORT).show()
+                showModelSwitch = false
+            },
+            onManage = {
+                showModelSwitch = false
+                onOpenModel()
+            },
+            onDismiss = { showModelSwitch = false }
+        )
+    }
 }
+
+/**
+ * 功能四：对话页「当前模型」指示条（录屏反馈「都不知道我现在用哪个模型」）。
+ *
+ * 常驻顶栏下方：图标底座 + 配置名（titleMedium w600）+ 模型名 · 域名（bodySmall），
+ * 右侧 ExpandMore 暗示「可展开切换」。整条 52dp 触控（§6.0 48dp 下限 + 图标内边距），
+ * 按压 surface-2 + scale 0.97（与 AkListItem 同语言）。
+ *
+ * 未配置态（[ready] = false）：文案变「模型未配置 · 点此前往配置」，图标底座不升色，
+ * 点击走 onOpenModel 引导——与空态「去配置模型」按钮同语义，此处只是多一个常驻入口。
+ */
+@Composable
+private fun ModelIndicatorBar(
+    profileName: String?,
+    modelName: String,
+    host: String,
+    ready: Boolean,
+    onClick: () -> Unit
+) {
+    val interaction = remember { MutableInteractionSource() }
+    val pressed by interaction.collectIsPressedAsState()
+    val scale by animateFloatAsState(
+        targetValue = if (pressed) 0.97f else 1f,
+        animationSpec = AkMotionPress
+    )
+    val bg by animateColorAsState(
+        targetValue = if (pressed) LocalAkColors.surface2 else Color.Transparent,
+        animationSpec = AkMotionFastColor
+    )
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .scale(scale)
+            .background(bg)
+            .clickable(
+                interactionSource = interaction,
+                indication = null,
+                onClick = onClick
+            )
+            .padding(horizontal = AgentSpacing.space5, vertical = AgentSpacing.space2),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        AkIconBase(icon = Icons.Outlined.AutoAwesome, selected = ready)
+        Spacer(Modifier.width(AgentSpacing.space3))
+        Column(Modifier.weight(1f)) {
+            Text(
+                text = if (ready) profileName ?: "默认配置" else "模型未配置",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = if (ready) MaterialTheme.colorScheme.onSurface
+                else MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                text = when {
+                    !ready -> "点此前往配置模型"
+                    modelName.isBlank() -> "未设置模型名"
+                    else -> "$modelName · $host"
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+        if (ready) {
+            Icon(
+                imageVector = Icons.Outlined.ExpandMore,
+                contentDescription = "切换模型",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(20.dp)
+            )
+        }
+    }
+}
+
+/**
+ * 功能四：「切换模型配置」弹窗（对齐 [AddProfileDialog] 视觉语言：344dp 白卡 +
+ * scale/fade 出入场，AkModalHost 承载退场）。
+ *
+ * 列出全部档案（[AkListItem] 两行结构：配置名 + 模型名 · 域名），当前生效项
+ * selected 高亮（primary 图标底座 + primary 标题 + 右侧对勾）。点选即时生效，
+ * 无需先保存——[ChatViewModel.switchProfile] 同步落盘，重启不丢失。
+ *
+ * 底部「管理模型配置」文字按钮进模型配置页（新建/重命名/删除/编辑字段在那里），
+ * 本弹窗只承担「快速切换」单一职责，不与配置页职责重叠。
+ */
+@Composable
+private fun ModelSwitchDialog(
+    visible: Boolean,
+    profiles: List<ModelProfile>,
+    activeId: String,
+    onSelect: (String) -> Unit,
+    onManage: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val spec = if (visible) AkMotionDialog else AkMotionExit
+    val scale by animateFloatAsState(if (visible) 1f else 0.96f, animationSpec = spec)
+    val alpha by animateFloatAsState(if (visible) 1f else 0f, animationSpec = spec)
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Box(
+            Modifier
+                .fillMaxSize()
+                .padding(horizontal = 24.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Surface(
+                shape = RoundedCornerShape(20.dp),
+                color = MaterialTheme.colorScheme.surface,
+                modifier = Modifier
+                    .widthIn(max = 344.dp)
+                    .scale(scale)
+                    .alpha(alpha)
+            ) {
+                Column(Modifier.padding(24.dp)) {
+                    Text(
+                        text = "切换模型配置",
+                        style = MaterialTheme.typography.titleLarge,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Spacer(Modifier.height(AgentSpacing.space2))
+                    Text(
+                        text = "共 ${profiles.size} 个配置 · 点选即时生效",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(AgentSpacing.space4))
+                    LazyColumn(
+                        modifier = Modifier.heightIn(max = 360.dp),
+                        verticalArrangement = Arrangement.spacedBy(AgentSpacing.space1)
+                    ) {
+                        items(profiles, key = { it.id }) { profile ->
+                            val isActive = profile.id == activeId
+                            val host = hostOf(profile.config.baseUrl)
+                            val desc = when {
+                                profile.config.model.isBlank() && host.isBlank() -> "未填写"
+                                profile.config.model.isBlank() -> host
+                                else -> "${profile.config.model} · $host"
+                            }
+                            AkListItem(
+                                icon = Icons.Outlined.AutoAwesome,
+                                title = profile.name,
+                                description = desc,
+                                selected = isActive,
+                                onClick = { onSelect(profile.id) },
+                                trailing = if (isActive) {
+                                    {
+                                        Icon(
+                                            imageVector = Icons.Outlined.Check,
+                                            contentDescription = "当前生效",
+                                            tint = MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier.size(20.dp)
+                                        )
+                                    }
+                                } else null
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(AgentSpacing.space4))
+                    AkTextButton(
+                        text = "管理模型配置",
+                        onClick = onManage,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            }
+        }
+    }
+}
+
+/** 功能四：从 Base URL 提取域名（去 scheme、去路径）；空 URL 返回空串。 */
+private fun hostOf(baseUrl: String): String =
+    baseUrl.trim()
+        .removePrefix("https://")
+        .removePrefix("http://")
+        .substringBefore("/")
+        .substringBefore("?")
 
 /**
  * 「正在恢复」横幅（Phase 2 DoD③）：供应商瞬时失败自动重试时显示
