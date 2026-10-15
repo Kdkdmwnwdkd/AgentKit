@@ -455,6 +455,29 @@ private fun testW6StartupOrder() {
         assertContains("兜底自尽", stop, "ScreenCaptureService.activeInstance?.let")
         assertContains("作废授权", stop, "invalidatePermission()")
     }
+
+    // —————————————————— F 区：第九轮（真机 19:04/19:05 实证后的两个省步数修复） ——————————————————
+
+    check("F1 shell_run 权限拒绝显式化（user shell 改 settings 被拒不得假装成功）") {
+        val shell = readSource("tools/ShellTool.kt")
+        assertContains("识别权限拒绝指纹", shell, "Permission Denial")
+        assertContains("识别 SecurityException 指纹", shell, "SecurityException")
+        assertContains("转 permission_denied 失败码", shell, "permission_denied")
+        assertContains(
+            "hint 引导改走 UI 路径",
+            shell,
+            "不要改用 shell 重试同一命令"
+        )
+    }
+
+    check("F2 ui_tree 过滤纯容器节点（11229→有效节点，省上下文、抗点错）") {
+        val svc = readSource("automation/AgentAccessibilityService.kt")
+        assertContains("快照结构", svc, "data class UiTreeSnapshot")
+        assertContains("信息量判定", svc, "private fun informative(")
+        assertContains("过滤统计", svc, "filteredCount")
+        val treeTool = readSource("automation/UiAutomationTools.kt")
+        assertContains("工具文案带过滤数", treeTool, "已过滤")
+    }
 }
 
 /* =============================== 主入口 =============================== */

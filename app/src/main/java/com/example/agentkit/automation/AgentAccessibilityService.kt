@@ -341,39 +341,70 @@ class AgentAccessibilityService : AccessibilityService() {
     /* ------------------------------------------------------------------ */
 
     /** 抓取当前窗口 UI 树，输出精简 JSON 数组（上限约 250 个节点）。 */
-    fun getUiTreeJson(): String {
-        val root = rootInActiveWindow ?: return "[]"
+    /**
+     * 读取当前界面结构为精简 JSON 数组（**已过滤纯容器节点**——hotfix9）。
+     *
+     * 为什么过滤：真机 19:04/19:05 实证，设置页一次 ui_tree 返回 11229~40085 字符
+     * （250 个节点里绝大多数是 text/desc/id 全空且不可点的纯容器 FrameLayout/LinearLayout）。
+     * ① 白白塞爆上下文、拖慢模型思考；② 关键项被淹没在噪声里，模型更容易点错。
+     * 过滤规则：保留 text/desc/id 任一非空、或可点击/可滚动/可编辑/有勾选态的节点。
+     * 上溯祖先与坐标定位在无障碍侧仍可查到容器，过滤不影响 ui_click 命中。
+     */
+    fun getUiTreeJson(): String = getUiTreeSnapshot().json
+
+    /** [getUiTreeJson] 的结构化版：附带 kept/filtered 统计，供工具文案说明过滤了多少噪声。 */
+    fun getUiTreeSnapshot(): UiTreeSnapshot {
+        val root = rootInActiveWindow ?: return UiTreeSnapshot("[]", 0, 0)
         return try {
             nodeCount = 0
+            filteredCount = 0
             val arr = buildJsonArray { traverse(root, this) }
-            arr.toString()
+            UiTreeSnapshot(arr.toString(), nodeCount - filteredCount, filteredCount)
         } catch (e: Exception) {
-            "[]"
+            UiTreeSnapshot("[]", 0, 0)
         } finally {
             root.recycle()
         }
     }
 
+    /** ui_tree 快照：json + 保留节点数 + 被过滤的纯容器节点数。 */
+    data class UiTreeSnapshot(val json: String, val kept: Int, val filtered: Int)
+
     private var nodeCount = 0
+    private var filteredCount = 0
+
+    /** 节点是否「有信息量」：有文案/描述/资源 id，或本身可交互（点/滑/编/勾）。 */
+    private fun informative(node: AccessibilityNodeInfo): Boolean =
+        !node.text.isNullOrBlank() ||
+            !node.contentDescription.isNullOrBlank() ||
+            !node.viewIdResourceName.isNullOrBlank() ||
+            node.isClickable ||
+            node.isScrollable ||
+            node.isEditable ||
+            node.isChecked
 
     private fun traverse(node: AccessibilityNodeInfo, arr: kotlinx.serialization.json.JsonArrayBuilder) {
         if (nodeCount >= MAX_NODES) return
         nodeCount++
-        val b = Rect()
-        node.getBoundsInScreen(b)
-        arr.add(
-            buildJsonObject {
-                put("text", node.text?.toString().orEmpty())
-                put("desc", node.contentDescription?.toString().orEmpty())
-                put("id", node.viewIdResourceName?.substringAfter('/').orEmpty())
-                put("cls", node.className?.toString()?.substringAfterLast('.').orEmpty())
-                put("bounds", "${b.left},${b.top},${b.right},${b.bottom}")
-                put("clickable", node.isClickable)
-                put("scrollable", node.isScrollable)
-                put("editable", node.isEditable)
-                put("checked", node.isChecked)
-            }
-        )
+        if (!informative(node)) {
+            filteredCount++
+        } else {
+            val b = Rect()
+            node.getBoundsInScreen(b)
+            arr.add(
+                buildJsonObject {
+                    put("text", node.text?.toString().orEmpty())
+                    put("desc", node.contentDescription?.toString().orEmpty())
+                    put("id", node.viewIdResourceName?.substringAfter('/').orEmpty())
+                    put("cls", node.className?.toString()?.substringAfterLast('.').orEmpty())
+                    put("bounds", "${b.left},${b.top},${b.right},${b.bottom}")
+                    put("clickable", node.isClickable)
+                    put("scrollable", node.isScrollable)
+                    put("editable", node.isEditable)
+                    put("checked", node.isChecked)
+                }
+            )
+        }
         for (i in 0 until node.childCount) {
             node.getChild(i)?.let { child ->
                 traverse(child, arr)

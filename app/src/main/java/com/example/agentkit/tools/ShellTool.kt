@@ -160,6 +160,25 @@ class ShellRunTool(
             if (openedNew) append("，已开辟新会话")
             if (result.truncated) append("，输出已截断")
         }
+        // 权限拒绝显式化（真机 2026-10-15 19:04 实证：`settings put system font_scale 2.0`
+        // 在 user shell 下退出码 255，但输出里是 SecurityException/Permission Denial——
+        // 老逻辑把它当 shell_ok 原样回喂，模型误以为「命令跑过了」，紧接着再试一次，
+        // 白扔两步。这里识别系统拒绝指纹，直接转 permission_denied 失败，
+        // hint 明确告诉模型：此路不通，改走 UI 操作。
+        val denied =
+            result.output.contains("Permission Denial", ignoreCase = true) ||
+                result.output.contains("SecurityException", ignoreCase = true) ||
+                result.output.contains("requires android.permission", ignoreCase = true)
+        if (denied) {
+            return ToolResult.fail(
+                code = "permission_denied",
+                message = header + "（系统拒绝：权限不足）",
+                hint = "该命令需要比 user shell 更高的权限（root/Shizuku 或系统特殊授权），" +
+                    "本机 shell 无法执行。**不要改用 shell 重试同一命令**——改走无障碍 UI 路径：" +
+                    "ui_tree 读界面 → ui_click/ui_tap 点对应设置项。",
+                data = result.output.take(400)
+            )
+        }
         return ToolResult.ok(
             code = "shell_ok",
             message = header,

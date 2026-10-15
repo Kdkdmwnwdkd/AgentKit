@@ -77,11 +77,12 @@ class UiTreeTool : AgentTool {
         val svc = AutomationBridge.service
         if (!AutomationBridge.isReady() || svc == null) return notReady()
         return try {
-            val json = withContext(Dispatchers.Main) { svc.getUiTreeJson() }
+            val snap = withContext(Dispatchers.Main) { svc.getUiTreeSnapshot() }
             ToolResult.ok(
                 code = "ui_tree_ok",
-                message = "已读取当前界面结构（${json.length} 字符）",
-                data = json
+                message = "已读取当前界面结构（${snap.json.length} 字符，保留 ${snap.kept} 个有效节点" +
+                    if (snap.filtered > 0) "，已过滤 ${snap.filtered} 个纯容器节点" else "" + "）",
+                data = snap.json
             )
         } catch (e: Exception) {
             ToolResult.fail(
