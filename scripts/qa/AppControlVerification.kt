@@ -15,13 +15,26 @@
  *  - [launchConfirmationResult]：confirmed 真/假两种输入的 code + message 断言；
  *  - [deviceContextEverUpdated]：空白/非空白两种输入的行为（无障碍未喂数据时的短路判据）。
  *
+ * W-7 审核修复追加覆盖（F1 取消传播 / F2 入参防护）：
+ *  - F1：settle/轮询期间协程被取消 → CancellationException 上抛而非返回 ToolResult。
+ *    经 internal 可测缝（[launchWithConfirmation] / [runCatchingRethrowCancel]，
+ *    -Xfriend-paths 可见）驱动**真实** confirmLaunch；修前形态（confirmLaunch 包在
+ *    catch (e: Exception) 里 + execute 裸 runCatching）会把取消吞成 launch_failed /
+ *    launch_error 假失败 → 本组断言失败；修后原样上抛 → 全绿。
+ *  - F2：pollIntervalMs ≤ 0 → 入口 fail-fast（修前无限忙等，看门狗都杀不死）。
+ *
  * 运行方式见 scripts/qa/run-appcontrol-verification.sh（kotlin-compiler-embeddable 编译 + java 运行）。
  */
 
 import com.example.agentkit.automation.DeviceContextStore
 import com.example.agentkit.automation.deviceContextEverUpdated
+import com.example.agentkit.core.ToolResult
 import com.example.agentkit.tools.*
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 
 /* ------------------------------ 迷你断言框架 ------------------------------ */
 
@@ -50,6 +63,21 @@ private fun <T> assertEquals(name: String, expected: T, actual: T) {
 private fun assertContains(name: String, haystack: String?, needle: String) {
     if (haystack?.contains(needle) != true) {
         throw AssertionError("expected to contain <$needle> in <${haystack?.take(160)}>")
+    }
+}
+
+/**
+ * 断言 [block] 以 CancellationException 收尾（F1：取消绝不是失败，
+ * 绝不允许被 catch (e: Exception) / runCatching 吞成 ToolResult 假失败）。
+ *
+ * 正常返回（没抛）→ AssertionError；抛出非取消异常 → 原样透传（check 记为 FAIL）。
+ */
+private suspend fun assertThrowsCancellation(cond: String, block: suspend () -> Unit) {
+    try {
+        block()
+        throw AssertionError("expected CancellationException but returned normally: $cond")
+    } catch (c: CancellationException) {
+        // 期望路径：取消原样上抛（TimeoutCancellationException 等子类也走这里）
     }
 }
 
@@ -389,6 +417,266 @@ private fun testDeviceContextEverUpdated() {
     }
 }
 
+/* ------------------------------ F1：取消传播（W-7 审核必修） ------------------------------ */
+
+/**
+ * 把 [DeviceContextStore] 的前台包名播种为指定值（F1 harness 专用测试后门）。
+ *
+ * 动机：`confirmLaunch` 的短路判据读全局单例 [DeviceContextStore.snapshot]——
+ * 空白走短路（零沉降），非空白才进入 1s 沉降 + 前台轮询。JVM 上构造不了 Android
+ * Context 调 `updateForeground`，故用反射直接写私有字段做**测试播种**（被测行为
+ * confirmLaunch/launchWithConfirmation 全是生产代码，不涉及此字段自身逻辑）。
+ */
+private fun seedForegroundPackage(pkg: String) {
+    val f = DeviceContextStore::class.java.getDeclaredField("foregroundPackage")
+    f.isAccessible = true
+    f.set(null, pkg)
+}
+
+/**
+ * F1 取消传播（W-7 审核必修项）：
+ * 「settle/轮询期间协程被取消 → CancellationException 上抛而非返回 ToolResult」。
+ *
+ * 区分修前/修后的原理：修前形态把 confirmLaunch 包在 `try { startActivity(...);
+ * confirmLaunch(...) } catch (e: Exception)` 里、execute 再包一层裸 runCatching——
+ * 取消（CancellationException 继承自 Exception）被吞成 launch_failed / launch_error
+ * 假失败，withTimeout 正常收口 → 断言「必须抛 CE」失败；修后形态（确认阶段移出
+ * try + runCatchingRethrowCancel）取消原样上抛 → 断言通过。
+ * 取消点用 withTimeout 精确落在「1s 沉降」与「250ms 轮询休眠」窗口内。
+ */
+private fun testCancellationPropagation() {
+    println("\n== F1 取消传播：settle/轮询期间取消 → CancellationException 上抛（修前吞/修后抛）==")
+
+    check("awaitForegroundPackage：轮询休眠期间取消 → 上抛 CE（不返回 false）") {
+        runBlocking {
+            assertThrowsCancellation("轮询休眠内取消") {
+                withTimeout(150) { // 250ms 轮询间隔 → 150ms 必落在休眠窗口内
+                    DeviceContextStore.awaitForegroundPackage(
+                        targetPackage = "com.smile.gifmaker",
+                        timeoutMs = 60_000,
+                        pollIntervalMs = 250,
+                        foregroundProvider = { "" }, // 永不到前台，保持轮询
+                        sleeper = { ms -> delay(ms) } // 真 delay：可取消
+                    )
+                }
+            }
+        }
+    }
+
+    check("launchWithConfirmation：start 抛 CancellationException → 原样上抛（取消绝不是失败）") {
+        runBlocking {
+            assertThrowsCancellation("start 阶段取消") {
+                launchWithConfirmation(AppEntry("快手", "com.smile.gifmaker")) {
+                    throw CancellationException("stop during startActivity")
+                }
+            }
+        }
+    }
+
+    check("launchWithConfirmation：start 抛 SecurityException → launch_failed（startActivity 自身异常行为保持）") {
+        runBlocking {
+            var startCalls = 0
+            val r = launchWithConfirmation(AppEntry("快手", "com.smile.gifmaker")) {
+                startCalls++
+                throw SecurityException("Permission Denial: startActivity")
+            }
+            assertEquals("start 只调一次", 1, startCalls)
+            assertTrue("not ok", !r.ok)
+            assertEquals("code", "launch_failed", r.code)
+            assertContains("message 含应用名", r.message, "快手")
+            assertContains("hint 含手动路径", r.hint ?: "", "手动打开")
+        }
+    }
+
+    check("launchWithConfirmation：start 正常 + 无障碍未喂数据（store 空白）→ 短路 ok(app_launched)，零沉降") {
+        runBlocking {
+            seedForegroundPackage("") // 从未喂过 → deviceContextEverUpdated=false → 短路
+            var startCalls = 0
+            val r = launchWithConfirmation(AppEntry("快手", "com.smile.gifmaker")) { startCalls++ }
+            assertEquals("start 已调用", 1, startCalls)
+            assertTrue("ok", r.ok)
+            assertEquals("code", "app_launched", r.code)
+            assertContains("提示复核", r.message, "device_foreground_app")
+        }
+    }
+
+    check("launchWithConfirmation【F1 核心】：settle 期间取消 → 上抛 CE，绝不变 launch_failed 假失败") {
+        runBlocking {
+            seedForegroundPackage("com.other.app") // 喂过数据 → 不走短路，进入 1s 沉降
+            var startCalls = 0
+            assertThrowsCancellation("settle 窗口内取消") {
+                withTimeout(300) { // POST_LAUNCH_SETTLE_MS=1000 → 300ms 必落在沉降期内
+                    launchWithConfirmation(AppEntry("快手", "com.smile.gifmaker")) { startCalls++ }
+                }
+            }
+            assertEquals("start 已执行（取消发生在 start 之后的沉降期）", 1, startCalls)
+        }
+    }
+
+    check("launchWithConfirmation【F1 核心】：前台确认轮询期间取消 → 上抛 CE") {
+        runBlocking {
+            seedForegroundPackage("com.other.app") // 沉降后进入轮询，目标永不到前台
+            assertThrowsCancellation("轮询窗口内取消") {
+                withTimeout(1_400) { // 1000ms 沉降 + 250ms 轮询 → 1400ms 落在轮询休眠内
+                    launchWithConfirmation(AppEntry("快手", "com.smile.gifmaker")) { }
+                }
+            }
+        }
+    }
+
+    check("launchWithConfirmation：未取消路径不变——沉降后目标到前台 → ok(app_launched)") {
+        runBlocking {
+            seedForegroundPackage("com.other.app")
+            val switcher = launch {
+                delay(200) // 模拟窗口切换：目标在沉降期内到前台
+                seedForegroundPackage("com.smile.gifmaker")
+            }
+            val r = launchWithConfirmation(AppEntry("快手", "com.smile.gifmaker")) { }
+            switcher.join()
+            assertTrue("ok", r.ok)
+            assertEquals("code", "app_launched", r.code)
+            assertContains("已确认前台", r.message, "已确认切换到前台")
+        }
+    }
+
+    check("launchWithConfirmation：未取消路径不变——3s 内未确认 → ok(app_launched_unconfirmed)（意图已发出）") {
+        runBlocking {
+            seedForegroundPackage("com.other.app") // 永不变目标 → 轮询满 3s 超时
+            val r = launchWithConfirmation(AppEntry("快手", "com.smile.gifmaker")) { }
+            assertTrue("ok（意图确已发出）", r.ok)
+            assertEquals("code", "app_launched_unconfirmed", r.code)
+            assertContains("复核提示", r.message, "device_foreground_app")
+        }
+    }
+
+    check("app_stop 执行段：shell runner 挂起期间取消 → 上抛 CE（不被 stop_error 吞）") {
+        runBlocking {
+            var runnerCalls = 0
+            assertThrowsCancellation("runner 挂起期间取消") {
+                withTimeout(150) {
+                    // 复刻 AppStopTool.execute 的包裹形状：runner.exec 是挂起点
+                    // （真实实现走终端会话池），必须经取消安全包装调用
+                    runCatchingRethrowCancel(
+                        block = {
+                            runnerCalls++
+                            val outcome = ShellCommandRunner { delay(10_000); null }
+                                .exec("am force-stop com.smile.gifmaker")
+                            appStopResult("快手", "com.smile.gifmaker", outcome)
+                        },
+                        onFailure = { ToolResult.fail("stop_error", "停止异常：${it.message}", "重试或告知用户手动停止") }
+                    )
+                }
+            }
+            assertEquals("runner 已调用一次", 1, runnerCalls)
+        }
+    }
+}
+
+/** F1：execute 层裸 runCatching 的取消安全替代（[runCatchingRethrowCancel]）三分支。 */
+private fun testRunCatchingRethrowCancel() {
+    println("\n== F1 runCatchingRethrowCancel（替代裸 runCatching，取消不被吞成 ToolResult）==")
+
+    check("block 抛 CancellationException → 原样上抛，onFailure 不被调用") {
+        runBlocking {
+            var failureCalled = false
+            assertThrowsCancellation("CE 上抛") {
+                runCatchingRethrowCancel(
+                    block = { throw CancellationException("user pressed stop") },
+                    onFailure = {
+                        failureCalled = true
+                        ToolResult.fail("launch_error", "启动异常：${it.message}", "重试或告知用户手动打开")
+                    }
+                )
+            }
+            assertTrue("onFailure 未被调用（取消绝不是失败）", !failureCalled)
+        }
+    }
+
+    check("block 抛业务异常（SecurityException）→ onFailure 接管（既有行为保持）") {
+        runBlocking {
+            val r = runCatchingRethrowCancel(
+                block = { throw SecurityException("Permission Denial") },
+                onFailure = { ToolResult.fail("launch_error", "启动异常：${it.message}", "重试或告知用户手动打开") }
+            )
+            assertTrue("not ok", !r.ok)
+            assertEquals("code", "launch_error", r.code)
+            assertContains("message 透传", r.message, "Permission Denial")
+        }
+    }
+
+    check("block 正常返回 → 值透传，onFailure 不调用") {
+        runBlocking {
+            var failureCalled = false
+            val r = runCatchingRethrowCancel(
+                block = { ToolResult.ok("app_launched", "已启动") },
+                onFailure = { failureCalled = true; ToolResult.fail("x", "y", "hint") }
+            )
+            assertTrue("ok", r.ok)
+            assertEquals("code", "app_launched", r.code)
+            assertTrue("onFailure 未被调用", !failureCalled)
+        }
+    }
+}
+
+/**
+ * F2：`awaitForegroundPackage` 的 pollIntervalMs 非正入参防护。
+ *
+ * 修前：≤0 时 sleepMs 恒 ≤0、waitedMs 永不增长 → 无限忙等（看门狗都杀不死）。
+ * 修后：入口 require fail-fast。断言用 withTimeout(2s) 兜底——即便跑在修前代码上
+ * 也是「看门狗拦截」的 FAIL，不会把 harness 挂死。
+ */
+private fun testAwaitForegroundParamGuard() {
+    println("\n== F2 awaitForegroundPackage 入参防护：pollIntervalMs ≤ 0 → fail-fast（修前无限循环）==")
+
+    check("pollIntervalMs=0 → fail-fast 抛 IllegalArgumentException（修前：无限循环被看门狗拦）") {
+        runBlocking {
+            var msg: String? = null
+            val outcome = try {
+                withTimeout(2_000) {
+                    DeviceContextStore.awaitForegroundPackage(
+                        targetPackage = "com.smile.gifmaker",
+                        timeoutMs = 1_000,
+                        pollIntervalMs = 0,
+                        foregroundProvider = { "" },
+                        sleeper = { delay(1) } // 真挂起：修前无限循环也能被看门狗拦截，不挂死 harness
+                    )
+                    "returned-normally"
+                }
+            } catch (e: IllegalArgumentException) {
+                msg = e.message
+                "fail-fast"
+            } catch (c: CancellationException) {
+                "watchdog-killed-infinite-loop"
+            }
+            assertEquals("fail-fast（修前为 watchdog-killed-infinite-loop）", "fail-fast", outcome)
+            assertContains("报错含参数名", msg, "pollIntervalMs")
+            assertContains("报错为中文", msg, "轮询")
+        }
+    }
+
+    check("pollIntervalMs=-250 → 同样 fail-fast（负间隔同样是无限循环）") {
+        runBlocking {
+            val outcome = try {
+                withTimeout(2_000) {
+                    DeviceContextStore.awaitForegroundPackage(
+                        targetPackage = "com.smile.gifmaker",
+                        timeoutMs = 1_000,
+                        pollIntervalMs = -250,
+                        foregroundProvider = { "" },
+                        sleeper = { delay(1) }
+                    )
+                    "returned-normally"
+                }
+            } catch (e: IllegalArgumentException) {
+                "fail-fast"
+            } catch (c: CancellationException) {
+                "watchdog-killed-infinite-loop"
+            }
+            assertEquals("fail-fast", "fail-fast", outcome)
+        }
+    }
+}
+
 fun main() {
     println("=== Phase1 补口 · 应用操控工具集（app_list/app_launch/app_stop）QA 行为验证 ===")
     testResolution()
@@ -399,6 +687,9 @@ fun main() {
     testAwaitForegroundTiming()
     testLaunchConfirmationMapping()
     testDeviceContextEverUpdated()
+    testCancellationPropagation()
+    testRunCatchingRethrowCancel()
+    testAwaitForegroundParamGuard()
     println("\n=== 汇总: $passed passed, ${failures.size} failed ===")
     if (failures.isNotEmpty()) {
         failures.forEach { println("FAILED: $it") }

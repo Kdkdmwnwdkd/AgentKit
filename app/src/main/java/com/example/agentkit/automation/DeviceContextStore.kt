@@ -76,7 +76,9 @@ object DeviceContextStore {
      *
      * @param targetPackage 目标包名；空串直接返回 false（防空串误配）。
      * @param timeoutMs 最长等待毫秒（默认 [LAUNCH_CONFIRM_TIMEOUT_MS]）。
-     * @param pollIntervalMs 轮询间隔毫秒（默认 [LAUNCH_CONFIRM_POLL_MS]）。
+     * @param pollIntervalMs 轮询间隔毫秒（默认 [LAUNCH_CONFIRM_POLL_MS]）；**必须 > 0**，
+     *   否则入口抛 IllegalArgumentException（W-7 审核 F2：非正间隔会使「间隔与剩余预算的
+     *   较小值」恒 ≤0、waitedMs 永不增长 → 无限忙等，看门狗都杀不死）。
      * @return true = 已在 [timeoutMs] 内确认到前台；false = 超时仍未确认（或入参为空）。
      */
     suspend fun awaitForegroundPackage(
@@ -87,6 +89,13 @@ object DeviceContextStore {
         sleeper: suspend (Long) -> Unit = { delay(it) }
     ): Boolean {
         if (targetPackage.isEmpty()) return false
+        // W-7 审核 F2：pollIntervalMs ≤ 0 时 sleepMs = minOf(pollIntervalMs,
+        // timeoutMs - waitedMs) 恒 ≤0、waitedMs 永不增长 → 无限忙等。入口 fail-fast
+        // 把调用方配错当场炸出来（不静默钳制——钳制会掩盖配错）。
+        require(pollIntervalMs > 0) {
+            "awaitForegroundPackage: pollIntervalMs 必须 > 0（收到 $pollIntervalMs）；" +
+                "非正轮询间隔会使轮询预算永不推进，造成无限循环"
+        }
         var waitedMs = 0L
         while (true) {
             if (foregroundProvider() == targetPackage) return true

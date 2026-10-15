@@ -11,6 +11,7 @@ import com.example.agentkit.core.ToolRegistry
 import com.example.agentkit.core.ToolResult
 import com.example.agentkit.automation.DeviceContextStore
 import com.example.agentkit.automation.deviceContextEverUpdated
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -369,29 +370,36 @@ class AppLaunchTool(private val context: Context) : AgentTool {
             )
         val activity = args["activity"]?.jsonPrimitive?.contentOrNull
 
-        runCatching {
-            val apps = loadLaunchableApps(context)
-            when (val r = resolveAppTarget(target, apps)) {
-                is AppResolution.Unique -> launchResolved(r.entry, activity)
-                is AppResolution.Ambiguous -> ToolResult.fail(
-                    code = "ambiguous_target",
-                    message = "「$target」匹配到 ${r.candidates.size} 个应用，请指定准确包名。",
-                    hint = appAmbiguousHint(target, r.candidates),
-                    data = formatAppList(r.candidates, r.candidates.size)
-                )
-                AppResolution.NotFound -> ToolResult.fail(
-                    code = "not_found",
-                    message = "未找到应用：$target",
-                    hint = appNotFoundHint(target)
+        // W-7 审核 F1：不用裸 runCatching——它会连 CancellationException 一起吞进
+        // getOrElse，把用户按「停止」转成 launch_error 假失败。改用取消安全包装
+        // [runCatchingRethrowCancel]：取消原样上抛（回合树尾闭合收尾），
+        // 其余异常才转 launch_error（既有行为不变）。
+        runCatchingRethrowCancel(
+            block = {
+                val apps = loadLaunchableApps(context)
+                when (val r = resolveAppTarget(target, apps)) {
+                    is AppResolution.Unique -> launchResolved(r.entry, activity)
+                    is AppResolution.Ambiguous -> ToolResult.fail(
+                        code = "ambiguous_target",
+                        message = "「$target」匹配到 ${r.candidates.size} 个应用，请指定准确包名。",
+                        hint = appAmbiguousHint(target, r.candidates),
+                        data = formatAppList(r.candidates, r.candidates.size)
+                    )
+                    AppResolution.NotFound -> ToolResult.fail(
+                        code = "not_found",
+                        message = "未找到应用：$target",
+                        hint = appNotFoundHint(target)
+                    )
+                }
+            },
+            onFailure = {
+                ToolResult.fail(
+                    code = "launch_error",
+                    message = "启动「$target」异常：${it.message}",
+                    hint = "确认应用已安装且未被停用；可先用 app_list 核对准确包名后重试；持续失败请告知用户手动打开。"
                 )
             }
-        }.getOrElse {
-            ToolResult.fail(
-                code = "launch_error",
-                message = "启动「$target」异常：${it.message}",
-                hint = "确认应用已安装且未被停用；可先用 app_list 核对准确包名后重试；持续失败请告知用户手动打开。"
-            )
-        }
+        )
     }
 
     /** 真正执行启动：优先按指定组件，其次 getLaunchIntentForPackage。 */
@@ -410,45 +418,120 @@ class AppLaunchTool(private val context: Context) : AgentTool {
             )
         }
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        return try {
-            context.startActivity(intent)
-            // W-7 P0-2：startActivity 成功 ≠ 已切换到前台——启动后先沉降、再确认
-            // （见 confirmLaunch），杜绝「假成功」让模型拿着旧 ui_tree 误判「没打开」而放弃。
-            confirmLaunch(entry)
-        } catch (e: Exception) {
-            ToolResult.fail(
-                code = "launch_failed",
-                message = "启动「${entry.label}」失败：${e.message}",
-                hint = "确认应用已安装且未被停用、Agent 处于前台；可改用精确包名重试；如仍失败请告知用户手动打开。"
-            )
-        }
+        // W-7 审核 F1：startActivity 与「沉降 + 前台确认」必须结构分离——后者
+        // （[confirmLaunch]）内部 delay + 轮询全是挂起点，CancellationException
+        // 继承自 Exception，一旦包进 catch (e: Exception) 会被吞成假失败：
+        // UI 收到假失败、同批后续写工具（如 app_stop）还会照常真实执行一次，
+        // 「取消绝不是失败」契约被破坏。组合骨架见 [launchWithConfirmation]。
+        return launchWithConfirmation(entry) { context.startActivity(intent) }
     }
+}
 
-    /**
-     * W-7 P0-2：启动意图发出后的「沉降 + 前台确认」。
-     *
-     * 1. **短路**：`DeviceContextStore.snapshot().foregroundPackage` 空白说明无障碍服务
-     *    从未喂过数据（ui_tree 同样不可用），确认无从谈起——直接返回旧语义的 ok，
-     *    避免无障碍没开时白等约 4 秒（判据纯函数见 [deviceContextEverUpdated]）。
-     * 2. **沉降**：等 [POST_LAUNCH_SETTLE_MS] 毫秒，给系统窗口切换留时间（对齐 Operit
-     *    PhoneAgent POST_LAUNCH_DELAY_MS=1000L 的思路，设计参考非代码复制）。
-     * 3. **前台确认**：[DeviceContextStore.awaitForegroundPackage] 轮询直到目标包名到前台。
-     * 4. **三分支**（映射纯函数见 [launchConfirmationResult]）：已确认 → 硬成功；
-     *    未确认 → 仍是 ok（意图已发出）但 code 区分开，提示模型用 device_foreground_app
-     *    复核——「发了」与「成了」绝不含混。
-     */
-    private suspend fun confirmLaunch(entry: AppEntry): ToolResult {
-        if (!deviceContextEverUpdated(DeviceContextStore.snapshot().foregroundPackage)) {
-            return ToolResult.ok(
-                code = "app_launched",
-                message = "已启动「${entry.label}」（包名 ${entry.packageName}）。建议用 device_foreground_app 确认是否已切换到目标应用。"
-            )
-        }
-        delay(POST_LAUNCH_SETTLE_MS)
-        val confirmed = DeviceContextStore.awaitForegroundPackage(entry.packageName)
-        val (code, message) = launchConfirmationResult(entry, confirmed)
-        return ToolResult.ok(code = code, message = message)
+/* ------------------------------------------------------------------ */
+/* W-7 审核 F1：取消传播可测缝（internal，JVM harness 经 -Xfriend-paths 断言） */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 取消安全的 [runCatching]（W-7 审核 F1 修复）。
+ *
+ * 坑：kotlin 标准库 `runCatching {}.getOrElse {}` 会连 CancellationException
+ * 一并吞掉并交给 getOrElse——用户按「停止」发生在挂起段（app_launch 的沉降/轮询、
+ * app_stop 的 shell 执行）时，取消被转成 `launch_error` / `stop_error` **假失败**
+ * 返回，UI 收到假失败、同批后续写工具还会照常真实执行一次（回合末才重抛），
+ * 「取消绝不是失败」契约被破坏。
+ *
+ * 本包装保证：CancellationException **原样上抛**（由 RealAgentLoop 树尾闭合收尾），
+ * 其余异常（业务失败）才交 [onFailure] 转 ToolResult——与仓库
+ * ToolExecutor.kt / RealAgentLoop.kt 既有同构修法一致。
+ *
+ * 抽成 internal 顶层函数的动机：JVM harness（-Xfriend-paths）可对
+ * 「CE 上抛 / 业务异常转失败 / 正常透传」三分支直接断言，无需 Android Context。
+ *
+ * @param block 业务段（可含挂起点）
+ * @param onFailure 非取消异常的降级处理（转 ToolResult）
+ */
+internal suspend fun <T> runCatchingRethrowCancel(
+    block: suspend () -> T,
+    onFailure: (Throwable) -> T
+): T = try {
+    block()
+} catch (c: CancellationException) {
+    // 取消绝不是失败：绝不上包装修、绝不变 Failed/launch_error，原样上抛
+    throw c
+} catch (e: Throwable) {
+    onFailure(e)
+}
+
+/**
+ * W-7 P0-2：启动意图发出后的「沉降 + 前台确认」。
+ *
+ * 1. **短路**：`DeviceContextStore.snapshot().foregroundPackage` 空白说明无障碍服务
+ *    从未喂过数据（ui_tree 同样不可用），确认无从谈起——直接返回旧语义的 ok，
+ *    避免无障碍没开时白等约 4 秒（判据纯函数见 [deviceContextEverUpdated]）。
+ * 2. **沉降**：等 [POST_LAUNCH_SETTLE_MS] 毫秒，给系统窗口切换留时间（对齐 Operit
+ *    PhoneAgent POST_LAUNCH_DELAY_MS=1000L 的思路，设计参考非代码复制）。
+ * 3. **前台确认**：[DeviceContextStore.awaitForegroundPackage] 轮询直到目标包名到前台。
+ * 4. **三分支**（映射纯函数见 [launchConfirmationResult]）：已确认 → 硬成功；
+ *    未确认 → 仍是 ok（意图已发出）但 code 区分开，提示模型用 device_foreground_app
+ *    复核——「发了」与「成了」绝不含混。
+ *
+ * 取消语义（W-7 审核 F1）：本函数内部 delay + 轮询全是挂起点，被取消时
+ * CancellationException 原样上抛——调用方 [launchWithConfirmation] 从结构上保证
+ * 它绝不落入 catch (e: Exception)。抽成 internal 顶层（原为 AppLaunchTool 私有
+ * 方法）的动机：JVM harness 可经 seam 驱动真实沉降/轮询路径做取消传播断言。
+ */
+internal suspend fun confirmLaunch(entry: AppEntry): ToolResult {
+    if (!deviceContextEverUpdated(DeviceContextStore.snapshot().foregroundPackage)) {
+        return ToolResult.ok(
+            code = "app_launched",
+            message = "已启动「${entry.label}」（包名 ${entry.packageName}）。建议用 device_foreground_app 确认是否已切换到目标应用。"
+        )
     }
+    delay(POST_LAUNCH_SETTLE_MS)
+    val confirmed = DeviceContextStore.awaitForegroundPackage(entry.packageName)
+    val (code, message) = launchConfirmationResult(entry, confirmed)
+    return ToolResult.ok(code = code, message = message)
+}
+
+/**
+ * 「startActivity + 前台确认」组合骨架（W-7 审核 F1 修复的核心结构）。
+ *
+ * 硬约束：[try] **只包 [start]**（即 startActivity 自身）——ActivityNotFoundException /
+ * SecurityException 仍转 `launch_failed`（既有行为保持）；而 [confirmLaunch]
+ * （沉降 + 轮询，内部全是挂起点）**绝不入 try**：CancellationException 继承自
+ * Exception，一旦落入 catch (e: Exception) 会被吞成假失败，破坏「取消绝不是失败」。
+ * 从构造上消除 CE 落入 catch 的可能，而非依赖 catch 内排序。
+ *
+ * 抽成 internal 顶层函数的动机：JVM harness 注入假 [start]（记录调用/抛异常）、
+ * 驱动**真实** [confirmLaunch]，对「start 异常转 launch_failed / start 阶段取消上抛 /
+ * 确认阶段取消上抛 / 正常路径三分支透传」直接断言（无需 Android Context）。
+ *
+ * @param entry 目标应用条目（仅用于失败文案）
+ * @param start 启动动作（生产传 `context.startActivity(intent)`；harness 传假动作）
+ * @return [confirmLaunch] 的结果；[start] 抛非取消异常时转 `launch_failed`
+ */
+internal suspend fun launchWithConfirmation(
+    entry: AppEntry,
+    start: suspend () -> Unit
+): ToolResult {
+    try {
+        start()
+    } catch (c: CancellationException) {
+        // 取消绝不是失败：start 途中被取消也原样上抛（防御性；生产 start 是
+        // startActivity，无挂起点，正常不会抛 CE）
+        throw c
+    } catch (e: Exception) {
+        // 仅 startActivity 自身异常转 launch_failed；确认阶段的取消/异常
+        // 从结构上到不了这里（见 KDoc）
+        return ToolResult.fail(
+            code = "launch_failed",
+            message = "启动「${entry.label}」失败：${e.message}",
+            hint = "确认应用已安装且未被停用、Agent 处于前台；可改用精确包名重试；如仍失败请告知用户手动打开。"
+        )
+    }
+    // startActivity 成功 ≠ 已切换到前台：先沉降、再确认（见 [confirmLaunch]）。
+    // 本调用绝不包进上方 try——取消必须上抛给回合树尾闭合，绝不吞成假失败。
+    return confirmLaunch(entry)
 }
 
 /* ------------------------------------------------------------------ */
@@ -561,29 +644,35 @@ class AppStopTool(
                 hint = "app_stop 必须提供 target（应用名或包名，如「快手」或 com.smile.gifmaker）。"
             )
 
-        runCatching {
-            val apps = loadLaunchableApps(context)
-            when (val r = resolveAppTarget(target, apps)) {
-                is AppResolution.Unique -> stopResolved(r.entry)
-                is AppResolution.Ambiguous -> ToolResult.fail(
-                    code = "ambiguous_target",
-                    message = "「$target」匹配到 ${r.candidates.size} 个应用，请指定准确包名。",
-                    hint = appAmbiguousHint(target, r.candidates),
-                    data = formatAppList(r.candidates, r.candidates.size)
-                )
-                AppResolution.NotFound -> ToolResult.fail(
-                    code = "not_found",
-                    message = "未找到应用：$target",
-                    hint = appNotFoundHint(target)
+        // W-7 审核 F1（同构防护）：stopResolved 内的 shellRunner.exec 是挂起点
+        // （真实实现走终端会话池），裸 runCatching 会把取消吞成 stop_error 假失败。
+        // 与 app_launch 的 execute 同一修法：取消原样上抛，业务异常才转失败。
+        runCatchingRethrowCancel(
+            block = {
+                val apps = loadLaunchableApps(context)
+                when (val r = resolveAppTarget(target, apps)) {
+                    is AppResolution.Unique -> stopResolved(r.entry)
+                    is AppResolution.Ambiguous -> ToolResult.fail(
+                        code = "ambiguous_target",
+                        message = "「$target」匹配到 ${r.candidates.size} 个应用，请指定准确包名。",
+                        hint = appAmbiguousHint(target, r.candidates),
+                        data = formatAppList(r.candidates, r.candidates.size)
+                    )
+                    AppResolution.NotFound -> ToolResult.fail(
+                        code = "not_found",
+                        message = "未找到应用：$target",
+                        hint = appNotFoundHint(target)
+                    )
+                }
+            },
+            onFailure = {
+                ToolResult.fail(
+                    code = "stop_error",
+                    message = "停止「$target」异常：${it.message}",
+                    hint = "可先用 app_list 核对准确包名后重试；持续失败请引导用户手动停止。"
                 )
             }
-        }.getOrElse {
-            ToolResult.fail(
-                code = "stop_error",
-                message = "停止「$target」异常：${it.message}",
-                hint = "可先用 app_list 核对准确包名后重试；持续失败请引导用户手动停止。"
-            )
-        }
+        )
     }
 
     /** 走 shell 通道停止；不可用时诚实降级。结果映射见纯函数 [appStopResult]。 */

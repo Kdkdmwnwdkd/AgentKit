@@ -67,7 +67,9 @@ import java.util.concurrent.atomic.AtomicBoolean
  *    CancellationException 必须重抛不吞）；checkpoint 回调；onEvent 两个事件
  *    （ToolStarted 执行前 / ToolFinished 终态，并行时按 call.id 归并由 UI 负责）；
  *  - maxSteps=40 / maxParallelTools=5 / providerRetry=2 / maxHistoryMessages=40
- *    默认值；AgentLogger 各日志点保留。
+ *    默认值；AgentLogger 各日志点保留。（消耗警示：步数上调直接放大 token 消耗与
+ *    单回合时长——最坏 N 次 LLM 往返；上下文侧由 maxHistoryMessages/maybeCompact
+ *    兜底，调整前需评估。）
  *
  * **取消 vs 失败的两条红线**：
  *  - CancellationException 永远不是失败：绝不被 executor 吞成 outcome、绝不被

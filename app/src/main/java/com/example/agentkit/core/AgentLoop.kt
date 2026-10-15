@@ -116,6 +116,9 @@ class AgentLoop(
      * 而适配层在下方 [impl] 构造处**显式透传** maxSteps（L149），`ui/ChatViewModel.kt:879`
      * 构造适配层时未传该参数——生产实际生效值因此一直是 16，跨应用多步任务被提前截断。
      * 两处默认值必须一致（40）：改这里或改 RealAgentLoop 时，务必同步另一处。
+     *
+     * 消耗警示（W-7 审核 F3）：步数上调直接放大 token 消耗与单回合时长（最坏 N 次
+     * LLM 往返）；上下文侧由 maxHistoryMessages/maybeCompact 兜底，调整前需评估。
      */
     maxSteps: Int = 40,
     maxParallelTools: Int = 5,
