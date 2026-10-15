@@ -344,7 +344,8 @@ object ScreenshotBridge {
     }
 
     /**
-     * 启动前台捕获服务（顺序见 [ScreenCaptureStartPolicy]：先取 token、后进前台）。
+     * 启动前台捕获服务（顺序见 [ScreenCaptureStartPolicy]：取 token → 立即进前台 →
+     * 再建投影；两条红线：Android 14 类型强校验 + startForegroundService 5s 超时）。
      *
      * @return true = 已把 Intent 交给系统且未出错；false = 未授权 / 系统拒绝，见 [lastError]。
      * **绝不抛异常**：任何失败都转成 false + [lastError]（Bug 2 底线）。

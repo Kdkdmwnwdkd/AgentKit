@@ -31,16 +31,23 @@ import android.os.Looper
  *    MediaProjection 才能正常创建（API 34 强制）。
  *  - 服务实例以 companion 暴露，工具层只依赖 ScreenshotBridge，不直接持有服务。
  *
- * **启动顺序（Bug 2 修复，务必保持）**：
- *  - Android 14（API 34，本项目 targetSdk 34）起，`startForeground(..., type =
+ * **启动顺序（两条红线同时满足，务必保持）**：
+ *  - 红线 A（Android 14 类型强校验）：`startForeground(..., type =
  *    FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)` 要求本次捕获的 MediaProjection token
- *    **已经取出**（用户已同意且 `getMediaProjection()` 已成功），否则抛 SecurityException
- *    → 进程崩。故本服务的顺序是：`onStartCommand` 里先取 token（[initProjection]）
- *    再进前台（[startForegroundSafely]），顺序策略见 [ScreenCaptureStartPolicy.plan]。
+ *    **已经取出**（用户已同意且 `getMediaProjection()` 已成功），否则抛 SecurityException。
+ *  - 红线 B（Android 12+ 前台服务超时）：`startForegroundService()` 之后系统只给约 5s
+ *    必须 `startForeground()`，否则抛 `ForegroundServiceDidNotStartInTimeException`
+ *    ——**该异常不可捕获，进程直接被杀**（真机「点立即开启→闪退」的根因）。
+ *  - 故 `onStartCommand` 的顺序是：① 取 token（[MediaProjectionManager.getMediaProjection]，
+ *    毫秒级轻量调用）→ ② **立即**进前台（[startForegroundSafely]，此时 token 已在手，
+ *    同时满足红线 A 与 B）→ ③ 才建 ImageReader / VirtualDisplay（[setupCapture]，重活放最后，
+ *    失败有全兜底）。顺序策略见 [ScreenCaptureStartPolicy.plan]。
  *  - Android 10～13（API 29-33）：同样的顺序没有副作用（类型已支持但无强制校验），
  *    <29：`startForeground` 无 type 参数，顺序无意义。**全版本共用一条路径**，不做分支。
  *  - 无论哪个版本，前台启动失败都**只允许**「记日志 + 上报 lastError + stopSelf」，
  *    绝不让异常逃出（老实现的 crash 就是异常从 onCreate 逃逸直接杀进程）。
+ *  - 另设 2s 看门狗：万一 ① 链路异常拖长，赶在系统 5s 红线之前主动收摊并留现场，
+ *    把「无声闪退」变成「日志里看得见的失败」。
  *
  * **全流程兜底（Bug「还是闪退」第二轮修复，本轮重点）**：
  *  顺序修好后仍然闪退 ⇒ 崩点在顺序之外。现在**每一个**可能抛异常的系统调用
@@ -56,6 +63,13 @@ class ScreenCaptureService : Service() {
     private var mediaProjection: MediaProjection? = null
     private var imageReader: ImageReader? = null
     private var virtualDisplay: VirtualDisplay? = null
+
+/** 前台是否已成功启动（防闪退生死线的完成标志，看门狗据此放行/收摊）。 */
+    @Volatile
+    private var foregroundStarted: Boolean = false
+
+/** 前台启动看门狗（startForegroundService 后 2s 未进前台则记日志 + stopSelf）。 */
+    private var foregroundWatchdog: Handler? = null
 
     /** 投影回调：用户从控制中心「停止投屏」时系统会回调 onStop（零依赖，顺手加上）。 */
     private var projectionCallback: MediaProjection.Callback? = null
@@ -90,6 +104,26 @@ class ScreenCaptureService : Service() {
         // 前台启动统一放到 onStartCommand（取到 token 之后），见类 KDoc。
         AgentLogger.i("ScreenCapture", "服务创建，等待授权 Intent 后取 token 再进前台")
         ScreenCaptureTrace.log(ScreenCaptureTrace.SERVICE_ON_CREATE, "onCreate 进入（尚未进前台）")
+        // 看门狗：startForegroundService 后若 2s 仍未进前台，说明 onStartCommand 链路过长，
+        // 记 ERROR 面包屑并自尽——赶在系统 5s 超时（ForegroundServiceDidNotStartInTimeException，
+        // 不可捕获）之前留下可见日志，而不是无声闪退。
+        foregroundWatchdog = Handler(Looper.getMainLooper()).apply {
+            postDelayed({
+                if (!foregroundStarted) {
+                    ScreenCaptureTrace.logFailure(
+                        ScreenCaptureTrace.START_FOREGROUND,
+                        "看门狗触发：startForegroundService 后 2s 仍未进入前台，主动收摊",
+                        null
+                    )
+                    AgentLogger.e("ScreenCapture", "看门狗：2s 未进前台，stopSelf 保命")
+                    failSafe(
+                        ScreenCaptureGuard.Stage.START_FOREGROUND,
+                        "前台启动看门狗超时（2s 未进前台）",
+                        null
+                    )
+                }
+            }, WATCHDOG_MS)
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -107,17 +141,49 @@ class ScreenCaptureService : Service() {
             "onStartCommand 进入 resultCode=$resultCode data=${if (data == null) "null" else "ok"}"
         )
 
-        // ① 先取 token（顺序敏感：Android 14 要求它早于 startForeground）
+        // ① 取 token（顺序敏感：Android 14 要求它早于 startForeground）。
+        //    getMediaProjection 是毫秒级轻量调用，放在最前面不影响 5s 超时红线。
+        var projection: MediaProjection? = null
         if (hasToken && data != null) {
-            // initProjection 内部已全兜底（失败即 failSafe + stopSelf），这里不再二次上报
-            initProjection(resultCode, data)
+            val r = ScreenCaptureGuard.guardValue {
+                getSystemService(MediaProjectionManager::class.java).getMediaProjection(resultCode, data)
+            }
+            projection = r.value
+            if (projection == null) {
+                ScreenCaptureTrace.logFailure(
+                    ScreenCaptureTrace.OBTAIN_TOKEN,
+                    "getMediaProjection 失败：${r.failure}",
+                    r.cause
+                )
+                failSafe(
+                    ScreenCaptureGuard.Stage.INIT_PROJECTION,
+                    "getMediaProjection 失败：${r.failure}",
+                    r.cause
+                )
+                return START_NOT_STICKY
+            }
+            mediaProjection = projection
+            ScreenCaptureTrace.log(ScreenCaptureTrace.OBTAIN_TOKEN, "getMediaProjection 成功")
+        }
+
+        // ② 立即进前台（**防闪退生死线**）：startForegroundService 之后系统只给 ~5s，
+        //    必须赶在创建 ImageReader/VirtualDisplay 这些重活之前完成，否则进程被
+        //    ForegroundServiceDidNotStartInTimeException 击杀（该异常不可捕获）。
+        startForegroundSafely(hasToken)
+        if (!foregroundStarted) {
+            // startForegroundSafely 内部失败已 failSafe + stopSelf，这里只挡后续流程
+            AgentLogger.w("ScreenCapture", "前台未就绪，放弃后续投影建立")
+            return START_NOT_STICKY
+        }
+
+        // ③ 才建 ImageReader + VirtualDisplay（重活放最后；失败走 failSafe，已有全兜底）
+        if (projection != null) {
+            setupCapture(projection)
             if (virtualDisplay == null) {
-                AgentLogger.w("ScreenCapture", "投影未就绪，放弃进前台（已安全停止）")
+                AgentLogger.w("ScreenCapture", "投影未就绪，已安全停止")
                 return START_NOT_STICKY
             }
         }
-        // ② 再进前台（失败被整体兜底，绝不抛出去）
-        startForegroundSafely(hasToken)
         return START_NOT_STICKY
     }
 
@@ -159,19 +225,21 @@ class ScreenCaptureService : Service() {
             ScreenCaptureTrace.logFailure(ScreenCaptureTrace.START_FOREGROUND, reason, guarded.cause)
             failSafe(ScreenCaptureGuard.Stage.START_FOREGROUND, reason, guarded.cause)
         } else {
+            foregroundStarted = true
+            foregroundWatchdog?.let { it.removeCallbacksAndMessages(null) }
             AgentLogger.i("ScreenCapture", "已进入前台（hasToken=$hasToken）")
             ScreenCaptureTrace.log(ScreenCaptureTrace.START_FOREGROUND, "成功 hasToken=$hasToken")
         }
     }
 
     /**
-     * 建立投影 / ImageReader / VirtualDisplay。
+     * 建立 ImageReader / VirtualDisplay（token 已在 [onStartCommand] 取好）。
      *
      * **每一步都单独兜底**（第四轮加固）：任何一步失败都走 [failSafe]，
      * 且释放范围精确等于「已经建出来的那些资源」——见 [heldResources]。
      * 本方法**不抛异常**；调用方以 `virtualDisplay != null` 判定是否就绪。
      */
-    private fun initProjection(resultCode: Int, data: Intent) {
+    private fun setupCapture(projection: MediaProjection) {
         // ① 尺寸防御：0/负数直接放弃（拿 0 去 newInstance 必崩），超大分辨率等比缩放
         val metrics = runCatching { resources.displayMetrics }.getOrNull()
         val rawW = metrics?.widthPixels ?: 0
@@ -197,29 +265,7 @@ class ScreenCaptureService : Service() {
                 if (size.clamped) "（原始 ${rawW}x${rawH} 已等比缩放）" else ""
         )
 
-        // ② 取 MediaProjection token（顺序敏感，且可能抛 SecurityException / 厂商 ROM 异常）
-        val projectionResult = ScreenCaptureGuard.guardValue {
-            val mpm = getSystemService(MediaProjectionManager::class.java)
-            mpm.getMediaProjection(resultCode, data)
-        }
-        val projection = projectionResult.value
-        if (projection == null) {
-            ScreenCaptureTrace.logFailure(
-                ScreenCaptureTrace.OBTAIN_TOKEN,
-                "getMediaProjection 失败：${projectionResult.failure}",
-                projectionResult.cause
-            )
-            failSafe(
-                ScreenCaptureGuard.Stage.INIT_PROJECTION,
-                "getMediaProjection 失败：${projectionResult.failure}",
-                projectionResult.cause
-            )
-            return
-        }
-        mediaProjection = projection
-        ScreenCaptureTrace.log(ScreenCaptureTrace.OBTAIN_TOKEN, "getMediaProjection 成功")
-
-        // ③ ImageReader：分辨率/格式不合规会抛 IllegalArgumentException
+        // ② ImageReader：分辨率/格式不合规会抛 IllegalArgumentException
         val readerResult = ScreenCaptureGuard.guardValue {
             ImageReader.newInstance(size.width, size.height, PixelFormat.RGBA_8888, 2)
         }
@@ -240,7 +286,7 @@ class ScreenCaptureService : Service() {
         imageReader = reader
         ScreenCaptureTrace.log(ScreenCaptureTrace.IMAGE_READER, "newInstance 成功")
 
-        // ④ 帧可用回调：非必需能力，注册失败只记 WARN，不因此放弃捕获
+        // ③ 帧可用回调：非必需能力，注册失败只记 WARN，不因此放弃捕获
         val handlerResult = ScreenCaptureGuard.guardValue { Handler(Looper.getMainLooper()) }
         val handler = handlerResult.value
         if (handler != null) {
@@ -258,7 +304,7 @@ class ScreenCaptureService : Service() {
             AgentLogger.w("ScreenCapture", "Handler 创建失败，跳过帧回调注册：${handlerResult.failure}")
         }
 
-        // ⑤ VirtualDisplay：这一步是闪退高发区（token 失效 / Surface 无效 / 分辨率超限）
+        // ④ VirtualDisplay：这一步是闪退高发区（token 失效 / Surface 无效 / 分辨率超限）
         val displayResult = ScreenCaptureGuard.guardValue {
             projection.createVirtualDisplay(
                 "AgentKitCapture", size.width, size.height, size.density,
@@ -440,6 +486,9 @@ class ScreenCaptureService : Service() {
     }
 
     override fun onDestroy() {
+        // 看门狗收摊：服务无论为何销毁，都不留悬挂回调（否则 2s 后误触发 + Handler 泄漏）
+        foregroundWatchdog?.let { it.removeCallbacksAndMessages(null) }
+        foregroundWatchdog = null
         // 销毁路径同样逐步 runCatching：释放顺序同 cleanupPlan（下游先、投影后）
         runCatching { virtualDisplay?.release() }
         runCatching { imageReader?.close() }
@@ -468,5 +517,13 @@ class ScreenCaptureService : Service() {
 
         private const val CHANNEL_ID = "agentkit_screen_capture"
         private const val NOTIF_ID = 1001
+
+        /**
+         * 前台启动看门狗阈值：`startForegroundService()` 之后系统只给约 5s
+         * （Android 12+ 实际更短，超时抛 `ForegroundServiceDidNotStartInTimeException`
+         * 且**不可捕获**，进程直接被杀）。留 2s 余量：到点未进前台就主动收摊并留日志，
+         * 赶在系统动手之前把现场留下来。
+         */
+        private const val WATCHDOG_MS = 2000L
     }
 }

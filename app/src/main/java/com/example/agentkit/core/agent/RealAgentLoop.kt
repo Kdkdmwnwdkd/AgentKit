@@ -66,7 +66,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  *  - maybeCompact 滑动窗口；审批流（needsApproval + ToolApproval；审批回调抛
  *    CancellationException 必须重抛不吞）；checkpoint 回调；onEvent 两个事件
  *    （ToolStarted 执行前 / ToolFinished 终态，并行时按 call.id 归并由 UI 负责）；
- *  - maxSteps=16 / maxParallelTools=5 / providerRetry=2 / maxHistoryMessages=40
+ *  - maxSteps=40 / maxParallelTools=5 / providerRetry=2 / maxHistoryMessages=40
  *    默认值；AgentLogger 各日志点保留。
  *
  * **取消 vs 失败的两条红线**：
@@ -114,7 +114,7 @@ class RealAgentLoop(
     private val llmProvider: () -> LLMClient,
     registry: ToolRegistry,
     systemPrompt: String = DEFAULT_SYSTEM_PROMPT,
-    maxSteps: Int = 16,
+    maxSteps: Int = 40,
     private val maxParallelTools: Int = 5,
     private val providerRetry: Int = 2,
     private val maxHistoryMessages: Int = 40,
