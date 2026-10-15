@@ -65,9 +65,9 @@ private fun strArg(args: JsonObject, key: String): String? =
 class UiTreeTool : AgentTool {
     override val name = "ui_tree"
     override val description =
-        "读取当前屏幕的 UI 结构（精简 JSON 数组）。每个元素含 text/desc（内容描述）/id/cls（类名）/bounds（left,top,right,bottom 像素坐标）/clickable/scrollable/editable/checked。在分析屏幕或决定点哪里之前先调用它。"
+        "读取当前屏幕的 UI 结构（精简 JSON 数组）。每个元素含 text/desc（内容描述）/id/cls（类名）/bounds（left,top,right,bottom 像素坐标）/clickable/scrollable/editable/checked。在分析屏幕或决定点哪里之前先调用它；ui_tap/ui_click 的坐标与目标都以它为准。每次操作后界面已变，需重新调用本工具；同一界面内容未变时不要重复调用。"
     override val systemPrompt =
-        "你可以通过 ui_tree 读取当前屏幕结构，并用 ui_tap/ui_long_press/ui_swipe/ui_input/ui_key/ui_click 操作手机。坐标取自 ui_tree 返回的 bounds（格式 left,top,right,bottom）。"
+        "你可以通过 ui_tree 读取当前屏幕结构，并用 ui_tap/ui_long_press/ui_swipe/ui_input/ui_key/ui_click 操作手机——这是操控界面的唯一可行通道。坐标取自 ui_tree 返回的 bounds（格式 left,top,right,bottom）。每次操作后重新 ui_tree 确认界面；界面内容未变则不要重复读取。"
     override val parameters = JsonSchema.objectSchema()
 
     /** 只读：仅读取界面结构，无副作用。 */
@@ -100,7 +100,8 @@ class UiTapTool : AgentTool {
     override val name = "ui_tap"
     /** 危险操作：真实点击屏幕，执行前必须弹窗经用户审批（L10）。 */
     override val needsApproval = true
-    override val description = "在屏幕坐标 (x, y) 处点击一次。坐标来自 ui_tree 的 bounds。"
+    override val description =
+        "在屏幕坐标 (x, y) 处点击一次。坐标必须取自 ui_tree 返回元素的 bounds 中心点：(left+right)/2, (top+bottom)/2。当 ui_click 按文本/ID 找不到元素时，用它按 ui_tree 的 bounds 坐标兜底点击。"
     override val parameters = JsonSchema.objectSchema(
         JsonSchema.prop("x", "integer", "点击的 X 坐标（像素）"),
         JsonSchema.prop("y", "integer", "点击的 Y 坐标（像素）")
@@ -297,7 +298,7 @@ class UiClickTool : AgentTool {
     /** 危险操作：按文本/ID 定位并点按元素，执行前必须弹窗经用户审批（L10）。 */
     override val needsApproval = true
     override val description =
-        "按「可见文本」或「resource-id 后缀」定位界面元素并点按，比 ui_tap 更语义化。至少提供 text 或 resource_id 之一。"
+        "按「可见文本」或「resource-id 后缀」定位界面元素并点按，比 ui_tap 更语义化。至少提供 text 或 resource_id 之一。定位失败时会返回屏幕上最接近的候选列表，请用最接近的候选重试一次；仍失败再改用 ui_tap 按 ui_tree 的 bounds 中心坐标点击。"
     override val parameters = JsonSchema.objectSchema(
         JsonSchema.prop("text", "string", "元素的可见文本或内容描述（可选）"),
         JsonSchema.prop("resource_id", "string", "元素的 resource-id 后缀，如 \"btn_submit\"（可选）")
@@ -328,13 +329,15 @@ class UiClickTool : AgentTool {
             } else {
                 // 真机第三轮 Bug B：失败必须带候选（归一化/包含/前缀都落空时，把屏幕上最相近
                 // 的标签告诉模型），否则模型只能瞎换成 ui_tap 硬点坐标。
+                // 真机第四轮 Bug（界面操作协议）：把「失败自纠三步」写进 hint——先用候选重试一次，
+                // 再退到 ui_tap 按 bounds 坐标，避免模型转投 shell（dumpsys/am start 必因权限失败）。
                 val candidates = svc.lastClickCandidates
                 val extra = if (candidates.isEmpty()) "" else "屏幕上最相近的候选：${candidates.joinToString("、")}；"
                 ToolResult.fail(
                     code = "click_not_found",
                     message = "未找到匹配元素或点击失败",
-                    hint = "先 ui_tree 确认元素文本/resource-id 是否变化，再用最新值重试。" + extra +
-                        "已做归一化（去空白/全角↔半角/忽略大小写）+ 包含 + 前缀匹配。"
+                    hint = extra + "请从候选里选最接近的「重试一次」；仍失败改用 ui_tap 按 ui_tree 的 bounds 中心坐标点击。" +
+                        "已做归一化（去空白/全角↔半角/忽略大小写）+ 包含 + 前缀匹配；也可先 ui_tree 确认元素文本/resource-id 的最新值。"
                 )
             }
         } catch (e: Exception) {
