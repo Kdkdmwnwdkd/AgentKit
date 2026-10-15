@@ -351,10 +351,15 @@ object ScreenshotBridge {
      */
     fun startService(context: Context): Boolean {
         val data = permissionData
+        ScreenCaptureTrace.log(
+            ScreenCaptureTrace.START_SERVICE,
+            "请求 startForegroundService resultCode=$resultCode data=${if (data == null) "null" else "ok"}"
+        )
         if (data == null || resultCode == 0) {
             lastError = ScreenCaptureStartPolicy.failureMessage("尚未取得屏幕捕获授权")
             AgentLogger.w("ScreenCapture", "未取得授权就启动捕获服务：$lastError")
             logLastError(lastError!!)
+            ScreenCaptureTrace.log(ScreenCaptureTrace.START_SERVICE, "失败（未授权）")
             return false
         }
         val failure = ScreenCaptureStartPolicy.guard {
@@ -370,9 +375,11 @@ object ScreenshotBridge {
             AgentLogger.e("ScreenCapture", "startForegroundService 失败：$lastError", failure.cause)
             logLastError(lastError!!)
             isCapturing = false
+            ScreenCaptureTrace.log(ScreenCaptureTrace.START_SERVICE, "失败：$lastError")
             return false
         }
         lastError = null
+        ScreenCaptureTrace.log(ScreenCaptureTrace.START_SERVICE, "成功（已交由系统拉起服务）")
         return true
     }
 
@@ -385,4 +392,169 @@ object ScreenshotBridge {
         isCapturing = false
         lastError = null
     }
+}
+
+/**
+ * 屏幕捕获**面包屑**日志（真机第四轮「点立即开始 → 闪退」最后一刀）。
+ *
+ * **动机**：用户日志里**完全没有** `ScreenCapture` 相关行，也没有崩溃记录，说明崩点落在
+ * 我们既没打日志也没兜底的位置。本对象把「授权回调 → 取 token → 进前台 → 建投影 → 抓首帧」
+ * 这条链上的**每个关键步骤**统一留一条 INFO 日志：即使随后进程被系统杀掉，也能凭
+ * **最后一条面包屑**精确定位崩点。步骤清单是常量（[KEY_STEPS]），QA harness 可据此断言完整性。
+ *
+ * 所有详情经 [AgentLogger.sanitize] 脱敏并截断，绝不明文落 key/包名等敏感信息。
+ */
+object ScreenCaptureTrace {
+
+    /** 授权回调进入（resultCode / data 是否为空）。 */
+    const val CB_ENTER: String = "授权回调进入"
+
+    /** 缓存 MediaProjection 授权结果。 */
+    const val CACHE_PERMISSION: String = "缓存授权结果"
+
+    /** 请求 startForegroundService（含返回 true/false 与 lastError）。 */
+    const val START_SERVICE: String = "启动前台服务"
+
+    /** 服务 onCreate 进入。 */
+    const val SERVICE_ON_CREATE: String = "服务 onCreate"
+
+    /** 服务 onStartCommand 进入。 */
+    const val SERVICE_ON_START: String = "服务 onStartCommand"
+
+    /** 取 MediaProjection token（成功/失败）。 */
+    const val OBTAIN_TOKEN: String = "取 MediaProjection token"
+
+    /** 屏幕尺寸（实际 w/h/dpi）。 */
+    const val SIZE: String = "屏幕尺寸"
+
+    /** ImageReader 创建（成功/失败）。 */
+    const val IMAGE_READER: String = "ImageReader 创建"
+
+    /** createVirtualDisplay（成功/失败）。 */
+    const val CREATE_VIRTUAL_DISPLAY: String = "createVirtualDisplay"
+
+    /** registerCallback（成功/失败）。 */
+    const val REGISTER_CALLBACK: String = "registerCallback"
+
+    /** 进前台 startForeground（成功/失败）。 */
+    const val START_FOREGROUND: String = "进前台 startForeground"
+
+    /** 首次拿到帧。 */
+    const val FIRST_FRAME: String = "首次拿到帧"
+
+    /**
+     * 关键步骤清单（**顺序 = 真实执行顺序**）。QA harness 断言其数量与内容，
+     * 任一关键步骤缺失即视为面包屑不完整（崩点将无法定位）。
+     */
+    val KEY_STEPS: List<String> = listOf(
+        CB_ENTER,
+        CACHE_PERMISSION,
+        START_SERVICE,
+        SERVICE_ON_CREATE,
+        SERVICE_ON_START,
+        OBTAIN_TOKEN,
+        SIZE,
+        IMAGE_READER,
+        CREATE_VIRTUAL_DISPLAY,
+        REGISTER_CALLBACK,
+        START_FOREGROUND,
+        FIRST_FRAME
+    )
+
+    /** 统一日志标签（与桥/服务同标签，便于 `grep ScreenCapture` 一次捞全）。 */
+    const val TAG: String = "ScreenCapture"
+
+    /**
+     * 打一条面包屑（INFO）。详情脱敏 + 截断，失败也要能被打出来——故自身绝不抛。
+     *
+     * @param step [KEY_STEPS] 之一（或失败标记）。
+     * @param detail 人类可读详情（可含 resultCode/尺寸等，禁止明文 key）。
+     */
+    fun log(step: String, detail: String) {
+        runCatching {
+            AgentLogger.i(TAG, "[面包屑] $step：${AgentLogger.sanitize(detail).take(200)}")
+        }
+    }
+
+    /**
+     * 打一条**失败**面包屑（ERROR + 堆栈）。崩点前最后一条日志应为失败面包屑。
+     *
+     * @param step [KEY_STEPS] 之一。
+     * @param detail 人类可读原因。
+     * @param cause 原始异常（可为 null）。
+     */
+    fun logFailure(step: String, detail: String, cause: Throwable?) {
+        runCatching {
+            AgentLogger.e(TAG, "[面包屑] $step 失败：${AgentLogger.sanitize(detail).take(200)}", cause)
+        }
+    }
+}
+
+/**
+ * 授权回调**全路径兜底**（纯函数，零 Android 依赖——QA harness 可直接断言）。
+ *
+ * **为什么**：`ActivityResult` 回调运行在主线程，**任何**未捕获异常都会直接杀进程。
+ * 用户「点立即开始 → 闪退」且日志里连一条 `ScreenCapture` 都没有，正是回调体里
+ * 某处裸调用抛异常的时刻。这里把「异常 → 失败结果 + 可读文案」抽成纯函数：
+ * 回调体无论抛什么（含 `Error` / 厂商 ROM 的奇葩异常）都被吞成 [Outcome]，
+ * **绝不逃逸**；失败结果再经 [ScreenCaptureStartPolicy.failureMessage] 变成用户可读文案。
+ */
+object ScreenCaptureAuthGuard {
+
+    /** 回调执行结果：[failure] 非空即失败；[cause] 供调用方把堆栈交给日志。 */
+    data class Outcome(val failure: String?, val cause: Throwable?) {
+        /** 是否成功（无异常）。 */
+        val succeeded: Boolean get() = failure == null
+    }
+
+    /**
+     * 兜底执行授权回调体。
+     *
+     * @param block 可能抛异常的授权回调动作（setPermission / startService / 弹 Toast …）。
+     * @return 成功时 [Outcome.failure] 为 null；失败时带上原因摘要（= [ScreenCaptureStartPolicy.describe]）。
+     */
+    fun run(block: () -> Unit): Outcome =
+        try {
+            block()
+            Outcome(null, null)
+        } catch (t: Throwable) {
+            Outcome(ScreenCaptureStartPolicy.describe(t), t)
+        }
+
+    /**
+     * 失败结果 → 面向用户的 Toast 文案（成功返回 null，表示无需提示）。
+     * 文案唯一来源 = [ScreenCaptureStartPolicy.failureMessage]。
+     */
+    fun toastText(outcome: Outcome): String? =
+        outcome.failure?.let { ScreenCaptureStartPolicy.failureMessage(it) }
+}
+
+/**
+ * 屏幕捕获「置位」策略（纯函数，零 Android 依赖——QA harness 可直接断言决策表）。
+ *
+ * **为什么**：`ChatViewModel.startScreenCapture` 之前**无条件**把 `_capturing` 置 true，
+ * 结果是「服务其实没起来，UI 却显示捕获中」——用户看到假状态、`ui_screenshot` 又一直失败，
+ * 双重困惑。修正语义：**仅当 `startService` 返回 true 才置捕获中**；失败保持 false 并在 UI 可见。
+ */
+object CaptureFlag {
+
+    /** 启动决策结果：[capturing] 为应写入的捕获状态；失败时 [errorMessage] 给出可读原因。 */
+    data class Decision(val capturing: Boolean, val errorMessage: String?)
+
+    /**
+     * 依据 `startService` 的返回值与 [ScreenshotBridge.lastError] 给出置位决策。
+     *
+     * - `startSucceeded == true` → 捕获中，无错误；
+     * - `startSucceeded == false` → **不得**置捕获中；错误文案优先取 [lastError]，
+     *   为空时兜底「未知原因」（绝不产生 null 静默）。
+     */
+    fun decide(startSucceeded: Boolean, lastError: String?): Decision =
+        if (startSucceeded) {
+            Decision(capturing = true, errorMessage = null)
+        } else {
+            Decision(
+                capturing = false,
+                errorMessage = lastError?.trim()?.takeIf { it.isNotBlank() } ?: "未知原因"
+            )
+        }
 }

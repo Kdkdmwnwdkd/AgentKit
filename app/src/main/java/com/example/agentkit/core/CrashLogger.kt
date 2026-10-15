@@ -201,6 +201,72 @@ object CrashLogger {
         return "检测到 ${files.size} 次崩溃记录：${latest.fileName} 位于 ${crashDir(context).absolutePath}"
     }
 
+    /* ============================== 未查看崩溃（启动横幅 B） ============================== */
+
+    /** 已读文件名集合的持久化名（SharedPreferences，避免改文件名破坏崩溃文件识别）。 */
+    private const val SEEN_PREFS_NAME: String = "crash_seen"
+
+    /** 已读集合在 [SEEN_PREFS_NAME] 中的键。 */
+    private const val SEEN_PREFS_KEY: String = "seen_files"
+
+    /**
+     * **未查看崩溃文件筛选**（纯函数，零 Android 依赖——QA harness 可直接断言）。
+     *
+     * 从「目录内全部文件名」里挑出**仍存在、且不在已读集合**的崩溃文件名，
+     * 按文件名（= 时间戳）降序（最新在前）。非崩溃文件名一律忽略。
+     *
+     * @param all 目录内现有文件名（顺序任意，含非崩溃文件）。
+     * @param seen 已读文件名集合（来自 SharedPreferences）。
+     */
+    internal fun unseenCrashFiles(all: List<String>, seen: Set<String>): List<String> =
+        all.filter { it.isCrashFileName() && it !in seen }.sortedDescending()
+
+    /** 读取已读集合（只读现存崩溃文件的已读名）；读取失败 → 空集合，**绝不影响启动**。 */
+    fun seenFiles(context: Context): Set<String> = runCatching {
+        prefs(context).getStringSet(SEEN_PREFS_KEY, emptySet())?.toSet() ?: emptySet()
+    }.getOrDefault(emptySet())
+
+    /**
+     * 未查看的崩溃记录（最新在前）。读取失败 / 目录不存在 → 空列表（静默降级）。
+     *
+     * 顺序与 [listCrashFiles] 一致（最新在前），供启动横幅与日志页消费。
+     */
+    fun unseenCrashRecords(context: Context): List<CrashRecord> = runCatching {
+        val records = listCrashFiles(context)
+        val unseenNames = unseenCrashFiles(records.map { it.fileName }, seenFiles(context)).toSet()
+        records.filter { it.fileName in unseenNames }
+    }.getOrDefault(emptyList())
+
+    /** 是否存在未查看崩溃（启动横幅判据）；读取失败 → false（静默降级，不打扰）。 */
+    fun hasUnseen(context: Context): Boolean =
+        runCatching { unseenCrashRecords(context).isNotEmpty() }.getOrDefault(false)
+
+    /**
+     * 把**当前仍存在**的全部崩溃文件标记为已读（横幅「查看」/「关闭」时调用）。
+     *
+     * 只落现存文件名，天然清理掉已删除文件的陈旧记录，避免集合无限增长。
+     * 写盘失败一律吞掉（标记失败不影响主流程，最坏下次再提示一次）。
+     */
+    fun markAllSeen(context: Context) {
+        runCatching {
+            val current = listCrashFiles(context).map { it.fileName }.toSet()
+            prefs(context).edit().putStringSet(SEEN_PREFS_KEY, current).apply()
+        }
+    }
+
+    /** 把单个崩溃文件标记为已读（在已有已读集合上追加；写盘失败吞掉）。 */
+    fun markSeen(context: Context, fileName: String) {
+        runCatching {
+            if (!fileName.isCrashFileName()) return
+            val merged = seenFiles(context).toMutableSet().apply { add(fileName) }
+            prefs(context).edit().putStringSet(SEEN_PREFS_KEY, merged).apply()
+        }
+    }
+
+    /** 已读标记用的 SharedPreferences（applicationContext，不持有 Activity）。 */
+    private fun prefs(context: Context) =
+        context.applicationContext.getSharedPreferences(SEEN_PREFS_NAME, Context.MODE_PRIVATE)
+
     /* ============================== 纯函数：报告格式化 ============================== */
 
     /**

@@ -38,6 +38,8 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Check
+import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.Error
 import androidx.compose.material.icons.outlined.Menu
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -75,7 +77,11 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import com.example.agentkit.automation.ScreenCaptureAuthGuard
+import com.example.agentkit.automation.ScreenCaptureTrace
 import com.example.agentkit.automation.ScreenshotBridge
+import com.example.agentkit.core.AgentLogger
+import com.example.agentkit.core.CrashLogger
 import kotlinx.coroutines.delay
 
 /**
@@ -953,15 +959,18 @@ fun AkTextField(
 
 /**
  * 屏幕捕获授权启动器：调起系统「是否允许截取屏幕」弹窗，RESULT_OK 后才交给 ViewModel
- * 启动前台服务（RESULT_CANCELED / data 为空时静默忽略，不报错——用户有权拒绝）。
+ * 启动前台服务（RESULT_CANCELED / data 为空时静默忽略——用户有权拒绝）。
  *
  * 控制台与权限中心两处入口共用同一实现，避免两处各写一遍 resultCode / Intent 判空而漂移。
  *
- * **Bug 2（给权限后回 App 就闪退）修复后的 UI 契约**：启动是**可能失败**的动作
- * （Android 14 的顺序约束、后台启动限制、厂商 ROM 限制都会让它失败），失败必须可见——
- * 读取 [ScreenshotBridge.lastError] 弹一条「屏幕捕获启动失败：<原因>，可重试」的长 Toast，
- * 而不是静默（静默的后果是 ui_screenshot 一直失败，用户却不知道为什么）。
- * 另外 `ScreenshotBridge.startService` 本身不抛异常（内部已兜底），故这里不再 try/catch。
+ * **「点立即开始 → 闪退」最后一刀（本轮回合）**：整个 ActivityResult 回调体
+ * （含 `setScreenCapturePermission` / `startScreenCapture` / 弹 Toast 以及取
+ * `MediaProjectionManager`）全部包在 [ScreenCaptureAuthGuard.run] 里——
+ * **任何 Throwable 都不允许逃逸**（回调跑在主线程，逃逸即杀进程）。失败时：
+ * ① `ScreenCaptureTrace.logFailure` 落面包屑 + 堆栈；② 弹可读 Toast（[ScreenCaptureAuthGuard.toastText]）。
+ *
+ * 同时把「点按钮 → 弹系统框」这一步也兜底：`getSystemService(MEDIA_PROJECTION_SERVICE)`
+ * 在极少数 ROM 上可能返回 null（`as MediaProjectionManager` 抛 NPE）。
  *
  * @return 点击「开始屏幕捕获」时调用的动作。
  */
@@ -971,19 +980,130 @@ internal fun rememberScreenCaptureLauncher(vm: ChatViewModel): () -> Unit {
     val launcher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { res ->
-        if (res.resultCode == Activity.RESULT_OK && res.data != null) {
-            vm.setScreenCapturePermission(res.resultCode, res.data)
-            vm.startScreenCapture(ctx)
-            val failure = ScreenshotBridge.lastError
-            if (failure != null) {
-                ScreenshotBridge.lastError = null // 一次性：读走即清，避免下一次成功还提示旧错
-                Toast.makeText(ctx, failure, Toast.LENGTH_LONG).show()
+        // 授权回调整段兜底：任何异常都不允许逃逸导致进程崩（真机闪退的最后一刀）。
+        val outcome = ScreenCaptureAuthGuard.run {
+            ScreenCaptureTrace.log(
+                ScreenCaptureTrace.CB_ENTER,
+                "resultCode=${res.resultCode} data=${if (res.data == null) "null" else "ok"}"
+            )
+            if (res.resultCode == Activity.RESULT_OK && res.data != null) {
+                vm.setScreenCapturePermission(res.resultCode, res.data)
+                vm.startScreenCapture(ctx)
+            } else {
+                AgentLogger.w("ScreenCapture", "用户取消或未返回授权数据（resultCode=${res.resultCode}）")
             }
+        }
+        val guardToast = ScreenCaptureAuthGuard.toastText(outcome)
+        if (guardToast != null) {
+            // 回调体自身抛异常：落栈 + 提示（lastError 由 reportFailure/兜底负责写）
+            AgentLogger.e("ScreenCapture", guardToast, outcome.cause)
+            runCatching { Toast.makeText(ctx, guardToast, Toast.LENGTH_LONG).show() }
+        }
+        // 桥层启动失败（startService=false）：读走一次性 lastError 并显示
+        val failure = ScreenshotBridge.lastError
+        if (failure != null) {
+            ScreenshotBridge.lastError = null // 一次性：读走即清，避免下一次成功还提示旧错
+            runCatching { Toast.makeText(ctx, failure, Toast.LENGTH_LONG).show() }
         }
     }
     return {
-        val mpm = ctx.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-        launcher.launch(mpm.createScreenCaptureIntent())
+        // 弹系统授权框本身也可能抛（无 MediaProjectionManager / 厂商 ROM 限制）：同样兜底。
+        val outcome = ScreenCaptureAuthGuard.run {
+            val mpm = ctx.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+            launcher.launch(mpm.createScreenCaptureIntent())
+        }
+        val toast = ScreenCaptureAuthGuard.toastText(outcome)
+        if (toast != null) {
+            AgentLogger.e("ScreenCapture", toast, outcome.cause)
+            runCatching { Toast.makeText(ctx, toast, Toast.LENGTH_LONG).show() }
+        }
+    }
+}
+
+// ———————————————————— 崩溃可见性横幅（真机第四轮 B：用户看不到「最近崩溃」= 白做） ————————————————————
+
+/**
+ * 崩溃横幅（真机第四轮 B）。
+ *
+ * **为什么必须有**：进程被杀时内存日志来不及落盘，崩溃报告 [CrashLogger] 是唯一证据；
+ * 但上一轮把证据写进了 `filesDir/crash/`，用户却**根本不知道去哪儿看**——等于白做。
+ * 本横幅在 App 启动/主界面出现时检测**未查看**的崩溃文件，顶部报「检测到上次崩溃，点击查看」：
+ * ① 点「查看」→ 标记已读（[CrashLogger.markAllSeen]）并 [onOpenLogs] 跳日志页；
+ * ② 点关闭 → 同样标记已读，不再打扰。
+ *
+ * **降级**：崩溃目录不存在 / 读取失败一律静默（[CrashLogger] 内部全程 runCatching），
+ * 返回空清单 → 横幅不渲染，**绝不影响启动**。
+ *
+ * @param onOpenLogs 点击「查看」时跳转日志页的动作（由宿主注入导航）。
+ */
+@Composable
+internal fun AkCrashBanner(
+    onOpenLogs: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val ctx = LocalContext.current
+    // 会话级只扫描一次：崩溃是低频事件，横幅提示一次足矣（避免每次重组都读盘）
+    val unseen = remember {
+        runCatching { CrashLogger.unseenCrashRecords(ctx) }.getOrDefault(emptyList())
+    }
+    var dismissed by remember { mutableStateOf(false) }
+    if (dismissed || unseen.isEmpty()) return
+
+    val ak = LocalAkColors
+    Surface(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = AgentSpacing.space3, vertical = AgentSpacing.space1),
+        shape = RoundedCornerShape(14.dp),
+        color = ak.warningContainer
+    ) {
+        Row(
+            modifier = Modifier.padding(
+                start = AgentSpacing.space4,
+                end = AgentSpacing.space1,
+                top = AgentSpacing.space2,
+                bottom = AgentSpacing.space2
+            ),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                imageVector = Icons.Outlined.Error,
+                contentDescription = null,
+                tint = ak.onWarningContainer,
+                modifier = Modifier.size(20.dp)
+            )
+            Spacer(Modifier.width(AgentSpacing.space2))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    text = "检测到上次崩溃",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = ak.onWarningContainer
+                )
+                Text(
+                    text = "共 ${unseen.size} 次，点击「最近崩溃」查看",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = ak.onWarningContainer
+                )
+            }
+            AkTextButton(
+                text = "查看",
+                tint = ak.onWarningContainer,
+                onClick = {
+                    runCatching { CrashLogger.markAllSeen(ctx) }
+                    dismissed = true
+                    onOpenLogs()
+                }
+            )
+            AkCircleIconButton(
+                icon = Icons.Outlined.Close,
+                description = "关闭崩溃横幅",
+                tint = ak.onWarningContainer,
+                onClick = {
+                    runCatching { CrashLogger.markAllSeen(ctx) }
+                    dismissed = true
+                }
+            )
+        }
     }
 }
 

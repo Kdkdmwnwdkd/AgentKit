@@ -27,5 +27,18 @@ class AgentKitApplication : Application() {
                 "崩溃捕获已安装（filesDir/crash/，保留最近 ${CrashLogger.MAX_KEEP} 份）"
             )
         }
+        // 崩溃可见性增强（真机第四轮 B）：启动时检测**未查看**的崩溃文件并留痕。
+        // 用户看不到「最近崩溃」等于白做——这里至少让日志/横幅两条路都能发现它。
+        // 读取失败一律静默降级（CrashLogger 内部全程 runCatching），**绝不影响启动**。
+        runCatching {
+            val unseen = CrashLogger.unseenCrashRecords(this)
+            if (unseen.isNotEmpty()) {
+                AgentLogger.w(
+                    "CrashLogger",
+                    "检测到 ${unseen.size} 次未查看崩溃：${unseen.first().fileName}" +
+                        "（可在日志页「最近崩溃」查看）"
+                )
+            }
+        }
     }
 }

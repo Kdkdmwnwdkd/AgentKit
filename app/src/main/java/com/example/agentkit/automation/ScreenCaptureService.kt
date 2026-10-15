@@ -63,10 +63,21 @@ class ScreenCaptureService : Service() {
     /** 帧可用回调的 Handler（主线程 Looper；创建失败时退化为不注册回调，不影响捕获）。 */
     private var frameHandler: Handler? = null
 
+    /** 是否已为「首次拿到帧」打过面包屑（只打一次，避免刷屏）。 */
+    @Volatile
+    private var firstFrameLogged: Boolean = false
+
     private val frameListener = ImageReader.OnImageAvailableListener { reader ->
         // 只做「有帧了」的留痕；真正的取帧在 captureBitmap 里同步做（避免回调里做重活）
         runCatching {
             AgentLogger.d("ScreenCapture", "帧可用（reader=${reader.width}x${reader.height}）")
+            if (!firstFrameLogged) {
+                firstFrameLogged = true
+                ScreenCaptureTrace.log(
+                    ScreenCaptureTrace.FIRST_FRAME,
+                    "已收到首帧 ${reader.width}x${reader.height}"
+                )
+            }
         }
     }
 
@@ -78,6 +89,7 @@ class ScreenCaptureService : Service() {
         // 此时声称 mediaProjection 类型会在 Android 14 上被 SecurityException 拦下。
         // 前台启动统一放到 onStartCommand（取到 token 之后），见类 KDoc。
         AgentLogger.i("ScreenCapture", "服务创建，等待授权 Intent 后取 token 再进前台")
+        ScreenCaptureTrace.log(ScreenCaptureTrace.SERVICE_ON_CREATE, "onCreate 进入（尚未进前台）")
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -90,6 +102,10 @@ class ScreenCaptureService : Service() {
         val hasToken = resultCode != 0 && data != null
         val plan = ScreenCaptureStartPolicy.plan(hasToken, Build.VERSION.SDK_INT)
         AgentLogger.i("ScreenCapture", "启动顺序=$plan（Android ${Build.VERSION.SDK_INT}）")
+        ScreenCaptureTrace.log(
+            ScreenCaptureTrace.SERVICE_ON_START,
+            "onStartCommand 进入 resultCode=$resultCode data=${if (data == null) "null" else "ok"}"
+        )
 
         // ① 先取 token（顺序敏感：Android 14 要求它早于 startForeground）
         if (hasToken && data != null) {
@@ -140,9 +156,11 @@ class ScreenCaptureService : Service() {
         val failure = guarded.failure
         if (failure != null) {
             val reason = if (!hasToken) "未取得 MediaProjection 授权（$failure）" else failure
+            ScreenCaptureTrace.logFailure(ScreenCaptureTrace.START_FOREGROUND, reason, guarded.cause)
             failSafe(ScreenCaptureGuard.Stage.START_FOREGROUND, reason, guarded.cause)
         } else {
             AgentLogger.i("ScreenCapture", "已进入前台（hasToken=$hasToken）")
+            ScreenCaptureTrace.log(ScreenCaptureTrace.START_FOREGROUND, "成功 hasToken=$hasToken")
         }
     }
 
@@ -173,6 +191,11 @@ class ScreenCaptureService : Service() {
             "屏幕尺寸 ${size.width}x${size.height}@${size.density}" +
                 if (size.clamped) "（原始 ${rawW}x${rawH} 已等比缩放）" else ""
         )
+        ScreenCaptureTrace.log(
+            ScreenCaptureTrace.SIZE,
+            "实际使用 ${size.width}x${size.height}@${size.density}" +
+                if (size.clamped) "（原始 ${rawW}x${rawH} 已等比缩放）" else ""
+        )
 
         // ② 取 MediaProjection token（顺序敏感，且可能抛 SecurityException / 厂商 ROM 异常）
         val projectionResult = ScreenCaptureGuard.guardValue {
@@ -181,6 +204,11 @@ class ScreenCaptureService : Service() {
         }
         val projection = projectionResult.value
         if (projection == null) {
+            ScreenCaptureTrace.logFailure(
+                ScreenCaptureTrace.OBTAIN_TOKEN,
+                "getMediaProjection 失败：${projectionResult.failure}",
+                projectionResult.cause
+            )
             failSafe(
                 ScreenCaptureGuard.Stage.INIT_PROJECTION,
                 "getMediaProjection 失败：${projectionResult.failure}",
@@ -189,6 +217,7 @@ class ScreenCaptureService : Service() {
             return
         }
         mediaProjection = projection
+        ScreenCaptureTrace.log(ScreenCaptureTrace.OBTAIN_TOKEN, "getMediaProjection 成功")
 
         // ③ ImageReader：分辨率/格式不合规会抛 IllegalArgumentException
         val readerResult = ScreenCaptureGuard.guardValue {
@@ -196,6 +225,11 @@ class ScreenCaptureService : Service() {
         }
         val reader = readerResult.value
         if (reader == null) {
+            ScreenCaptureTrace.logFailure(
+                ScreenCaptureTrace.IMAGE_READER,
+                "newInstance 失败：${readerResult.failure}",
+                readerResult.cause
+            )
             failSafe(
                 ScreenCaptureGuard.Stage.INIT_PROJECTION,
                 "ImageReader.newInstance 失败：${readerResult.failure}",
@@ -204,6 +238,7 @@ class ScreenCaptureService : Service() {
             return
         }
         imageReader = reader
+        ScreenCaptureTrace.log(ScreenCaptureTrace.IMAGE_READER, "newInstance 成功")
 
         // ④ 帧可用回调：非必需能力，注册失败只记 WARN，不因此放弃捕获
         val handlerResult = ScreenCaptureGuard.guardValue { Handler(Looper.getMainLooper()) }
@@ -233,6 +268,11 @@ class ScreenCaptureService : Service() {
         }
         val display = displayResult.value
         if (display == null) {
+            ScreenCaptureTrace.logFailure(
+                ScreenCaptureTrace.CREATE_VIRTUAL_DISPLAY,
+                "失败：${displayResult.failure}",
+                displayResult.cause
+            )
             failSafe(
                 ScreenCaptureGuard.Stage.INIT_PROJECTION,
                 "createVirtualDisplay 失败：${displayResult.failure}",
@@ -241,6 +281,7 @@ class ScreenCaptureService : Service() {
             return
         }
         virtualDisplay = display
+        ScreenCaptureTrace.log(ScreenCaptureTrace.CREATE_VIRTUAL_DISPLAY, "成功")
 
         // ⑥ 投影回调：用户从控制中心「停止投屏」时系统会回调 onStop（不注册就收不到，
         //    服务会一直挂着前台通知却抓不到帧——必须感知并安全停止）
@@ -261,6 +302,13 @@ class ScreenCaptureService : Service() {
         }
         if (callbackResult.failure != null) {
             AgentLogger.w("ScreenCapture", "registerCallback 失败（不致命）：${callbackResult.failure}")
+            ScreenCaptureTrace.logFailure(
+                ScreenCaptureTrace.REGISTER_CALLBACK,
+                "失败（不致命）：${callbackResult.failure}",
+                callbackResult.cause
+            )
+        } else {
+            ScreenCaptureTrace.log(ScreenCaptureTrace.REGISTER_CALLBACK, "成功")
         }
 
         // ⑦ 全部就绪：此时才对外声明可用（避免外部拿到半成品实例）

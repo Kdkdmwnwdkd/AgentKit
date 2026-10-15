@@ -389,10 +389,19 @@ fun AppScaffold(
                                 .widthIn(max = 680.dp)
                                 .fillMaxSize()
                         ) {
-                            ScreenHost(
-                                dest, vm, themeMode, onThemeModeChange,
-                                onSelect, onPageBack, unreadErrors
-                            )
+                            Column(Modifier.fillMaxSize()) {
+                                // 崩溃横幅（真机第四轮 B）：有未查看崩溃时置顶提示，点击跳日志页；
+                                // 日志页自身已有「最近崩溃」区块，故该页不重复显示。
+                                if (dest != AppDest.LOGS) {
+                                    AkCrashBanner(onOpenLogs = { navigateTo(AppDest.LOGS) })
+                                }
+                                Box(Modifier.weight(1f)) {
+                                    ScreenHost(
+                                        dest, vm, themeMode, onThemeModeChange,
+                                        onSelect, onPageBack, unreadErrors
+                                    )
+                                }
+                            }
                         }
                     }
                 }
@@ -400,11 +409,18 @@ fun AppScaffold(
                 // —— 窄屏：overlay 抽屉 + scrim + 左缘 24dp 右滑热区 ——
                 Box(Modifier.fillMaxSize()) {
                     // 内容层：状态栏 inset 由宿主统一处理，页面只画 56dp 透明顶栏 + 内容
-                    Box(Modifier.fillMaxSize().statusBarsPadding()) {
-                        ScreenHost(
-                            dest, vm, themeMode, onThemeModeChange,
-                            onSelect, onPageBack, unreadErrors
-                        )
+                    Column(Modifier.fillMaxSize().statusBarsPadding()) {
+                        // 崩溃横幅（真机第四轮 B）：置顶提示未查看崩溃，点击跳日志页；
+                        // 日志页自身已有「最近崩溃」区块，故该页不重复显示。
+                        if (dest != AppDest.LOGS) {
+                            AkCrashBanner(onOpenLogs = { navigateTo(AppDest.LOGS) })
+                        }
+                        Box(Modifier.weight(1f)) {
+                            ScreenHost(
+                                dest, vm, themeMode, onThemeModeChange,
+                                onSelect, onPageBack, unreadErrors
+                            )
+                        }
                     }
 
                     // 左缘 24dp 热区：跟手拖拽（抽屉位移与 scrim 透明度随手势进度）

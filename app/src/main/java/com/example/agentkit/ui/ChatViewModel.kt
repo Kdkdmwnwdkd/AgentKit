@@ -11,12 +11,15 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.agentkit.automation.AutomationBridge
 import com.example.agentkit.automation.AutomationPrefs
+import com.example.agentkit.automation.CaptureFlag
 import com.example.agentkit.automation.DeviceForegroundAppTool
 import com.example.agentkit.automation.AgentNotificationListener
 import com.example.agentkit.automation.DeviceContext
 import com.example.agentkit.automation.DeviceContextStore
 import com.example.agentkit.automation.DeviceNotificationsTool
 import com.example.agentkit.automation.ScreenshotBridge
+import com.example.agentkit.automation.ScreenCaptureStartPolicy
+import com.example.agentkit.automation.ScreenCaptureTrace
 import com.example.agentkit.automation.UiClickTool
 import com.example.agentkit.automation.UiInputTool
 import com.example.agentkit.automation.UiKeyTool
@@ -27,6 +30,7 @@ import com.example.agentkit.automation.UiTapTool
 import com.example.agentkit.automation.UiTreeTool
 import com.example.agentkit.core.AgentLoop
 import com.example.agentkit.core.AgentLogger
+import com.example.agentkit.core.agent.ConnectivityNetworkRecoveryWaiter
 import com.example.agentkit.core.ConfigSanitizer
 import com.example.agentkit.core.ConfigStore
 import com.example.agentkit.core.ConversationStore
@@ -547,15 +551,46 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         ctx.startActivity(intent)
     }
 
-    /** 屏幕捕获：缓存 MediaProjection 授权结果（来自系统授权回调）。 */
+    /** 屏幕捕获：缓存 MediaProjection 授权结果（来自系统授权回调）。失败 → lastError + ERROR 日志。 */
     fun setScreenCapturePermission(resultCode: Int, data: android.content.Intent?) {
-        ScreenshotBridge.setPermission(resultCode, data)
+        try {
+            ScreenshotBridge.setPermission(resultCode, data)
+            ScreenCaptureTrace.log(
+                ScreenCaptureTrace.CACHE_PERMISSION,
+                "resultCode=$resultCode data=${if (data == null) "null" else "ok"}"
+            )
+        } catch (t: Throwable) {
+            // 缓存授权结果本身不该失败，但厂商 ROM 可能在此抛——吞掉并上报，绝不逃逸到主线程。
+            ScreenshotBridge.reportFailure(
+                "缓存屏幕捕获授权失败：${ScreenCaptureStartPolicy.describe(t)}"
+            )
+            AgentLogger.e("ScreenCapture", "setScreenCapturePermission 异常", t)
+        }
     }
 
-    /** 屏幕捕获：启动前台服务开始截屏（需先 setScreenCapturePermission）。 */
+    /**
+     * 屏幕捕获：启动前台服务开始截屏（需先 setScreenCapturePermission）。
+     *
+     * **语义修正（真机第四轮 A3）**：仅当 [ScreenshotBridge.startService] 返回 true 才把
+     * `_capturing` 置 true——失败时保持 false 并在 UI 可见，避免「显示捕获中但服务其实没起来」。
+     */
     fun startScreenCapture(ctx: Context) {
-        ScreenshotBridge.startService(ctx)
-        _capturing.value = true
+        try {
+            val ok = ScreenshotBridge.startService(ctx)
+            val decision = CaptureFlag.decide(ok, ScreenshotBridge.lastError)
+            _capturing.value = decision.capturing
+            if (!ok) {
+                AgentLogger.e("ScreenCapture", "屏幕捕获启动失败：${decision.errorMessage}")
+            }
+            ScreenCaptureTrace.log(
+                ScreenCaptureTrace.START_SERVICE,
+                "startService=$ok lastError=${ScreenshotBridge.lastError}"
+            )
+        } catch (t: Throwable) {
+            ScreenshotBridge.reportFailure(ScreenCaptureStartPolicy.describe(t))
+            _capturing.value = false
+            AgentLogger.e("ScreenCapture", "startScreenCapture 异常", t)
+        }
     }
 
     /** 屏幕捕获：停止前台服务。 */
@@ -854,7 +889,9 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         // 修掉「AI 干完什么都在黑盒里、跑完才甩结果」的体验缺陷
         onEvent = ::handleAgentEvent,
         // Phase 2 DoD②：T01 流式文本增量 → 打字机草稿气泡（重新生成的新变体流式填入）
-        onTextDelta = ::handleTextDelta
+        onTextDelta = ::handleTextDelta,
+        // 真机第三轮 Bug A2：退避期间监听网络恢复——关掉飞行模式后「秒续」而不是干等满额
+        networkRecovery = ConnectivityNetworkRecoveryWaiter(app)
     )
 
     /**

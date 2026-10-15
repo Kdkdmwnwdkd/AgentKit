@@ -30,6 +30,7 @@ import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.Error
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -47,6 +48,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.agentkit.automation.ScreenshotBridge
 import com.example.agentkit.core.CrashLogger
 import com.example.agentkit.core.CrashRecord
 import kotlinx.coroutines.delay
@@ -79,11 +81,14 @@ fun LogsScreen(vm: ChatViewModel) {
     var crashes by remember { mutableStateOf<List<CrashRecord>>(emptyList()) }
     var crashExpanded by rememberSaveable { mutableStateOf("") }
     var crashDirPath by remember { mutableStateOf("") }
+    // 屏幕捕获最近一次失败原因（真机第四轮 C）：与崩溃并排展示，用户一次截图给全。
+    var lastError by remember { mutableStateOf<String?>(null) }
 
     /** 重新扫描崩溃目录，并把崩溃记录回放到 AgentLogger（此刻日志目录已就绪，可落盘）。 */
     fun reloadCrashes() {
         crashes = CrashLogger.listCrashFiles(ctx)
         crashDirPath = CrashLogger.crashDir(ctx).absolutePath
+        lastError = ScreenshotBridge.lastError
         CrashLogger.replayPendingIntoLogger(ctx)
     }
 
@@ -117,12 +122,13 @@ fun LogsScreen(vm: ChatViewModel) {
             }
         )
 
-        // —— 最近崩溃（有记录才出现；进程崩溃时内存日志会丢，崩溃报告是唯一证据）——
-        if (crashes.isNotEmpty()) {
+        // —— 最近崩溃（有记录 or 有 lastError 才出现；进程崩溃时内存日志会丢，崩溃报告是唯一证据）——
+        if (crashes.isNotEmpty() || lastError != null) {
             Spacer(Modifier.height(AgentSpacing.space3))
             CrashSection(
                 records = crashes,
                 dirPath = crashDirPath,
+                lastError = lastError,
                 expandedName = crashExpanded,
                 onToggle = { crashExpanded = if (crashExpanded == it) "" else it },
                 onClear = {
@@ -273,18 +279,45 @@ fun LogsScreen(vm: ChatViewModel) {
 private fun CrashSection(
     records: List<CrashRecord>,
     dirPath: String,
+    lastError: String?,
     expandedName: String,
     onToggle: (String) -> Unit,
     onClear: () -> Unit
 ) {
     val ctx = LocalContext.current
     AkSectionCard(
-        title = "最近崩溃（${records.size}）",
+        title = if (records.isEmpty()) "最近崩溃" else "最近崩溃（${records.size}）",
         icon = Icons.Outlined.Error,
-        description = "检测到 ${records.size} 次崩溃记录：" +
-            "${records.first().fileName} 位于 $dirPath",
+        description = if (records.isEmpty()) {
+            "暂无崩溃记录（目录：$dirPath）"
+        } else {
+            "检测到 ${records.size} 次崩溃记录：${records.first().fileName} 位于 $dirPath"
+        },
         modifier = Modifier.padding(horizontal = AgentSpacing.space5)
     ) {
+        // —— 屏幕捕获 lastError（真机第四轮 C）：与崩溃并排展示，用户一次截图给全 ——
+        if (!lastError.isNullOrBlank()) {
+            Surface(
+                shape = RoundedCornerShape(12.dp),
+                color = LocalAkColors.warningContainer,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(Modifier.padding(AgentSpacing.space3)) {
+                    Text(
+                        text = "屏幕捕获最近失败",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = LocalAkColors.onWarningContainer
+                    )
+                    Spacer(Modifier.height(AgentSpacing.space1))
+                    Text(
+                        text = lastError,
+                        style = machineSmall,
+                        color = LocalAkColors.onWarningContainer
+                    )
+                }
+            }
+            Spacer(Modifier.height(AgentSpacing.space2))
+        }
         records.forEachIndexed { index, record ->
             val expanded = expandedName == record.fileName
             AkPressSurface(
