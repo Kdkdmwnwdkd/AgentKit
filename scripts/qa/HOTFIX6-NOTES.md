@@ -145,3 +145,49 @@ C（引入 Shizuku 调试权限）。
 
 **诚实声明**：规则 C 是官方文档 + 真机报错原文双重确证（不是推导），风险低；
 但真机行为仍以装机为准。若本版仍出新错，**不再修 MediaProjection**，转 B/C。
+
+---
+
+# hotfix9 / hotfix10 / hotfix11（轮次编号从略，以 hotfix 号为准）
+
+## hotfix9（d6c46dc，v111）：shell 权限拒绝显式化 + ui_tree 纯容器过滤
+
+- `tools/ShellTool.kt`：输出含 `Permission Denial` / `SecurityException` /
+  `requires android.permission` → `ToolResult.fail(code="permission_denied",
+  hint="不要改用 shell 重试同一命令——改走无障碍 UI 路径：ui_tree → ui_click/ui_tap")`；
+- `automation/AgentAccessibilityService.kt`：`getUiTreeJson()` 委托
+  `getUiTreeSnapshot()`；`informative(node)` 过滤 text/desc/id 全空且不可点不可滚的
+  纯容器节点；`UiTreeSnapshot(json, kept, filtered)`；
+- 真机背景：`settings put system font_scale 2.0` 在 user shell 下抛
+  `SecurityException: requires INTERACT_ACROSS_USERS`（退出码 255）却被旧逻辑当
+  `shell_ok` 回喂，模型反复重试同一命令 200+ 步。
+
+## hotfix10（f4b5a95，v113）：429 限流退避强化 + 结构化异常
+
+- `core/agent/RealAgentLoop.kt`：`RATE_LIMIT_SEQUENCE_MS = 10s/30s/60s`（封顶 60s）、
+  `rateLimitBackoff(attempt, retryAfterMs)` 取 `max(本地序列, Retry-After)`；
+  `callWithRetry` 按 `LlmHttpException.code == 429` 分流限流专用退避；providerRetry 2→3；
+- `core/LLMClient.kt`：顶层 `parseRetryAfterMs()`（秒数 ×1000；HTTP 日期走
+  RFC_1123）；流式失败抛 `LlmHttpException(code, serverBody, retryAfterMs)`；
+- Claude / Gemini 流式通道同步改抛结构化异常；
+- 真机背景：19:05 端点 429×3 + timeout×1，3s/10s 退避 + 2 次重试直接溃败。
+
+## hotfix11（本轮）：对话页模型快速切换
+
+**用户反馈（20:03 录屏）**：「保存了好多个模型，要换的时候不给换，都不知道现在用哪个」。
+根因：对话页零当前模型展示、零切换入口——唯一途径深埋三层（抽屉 → 模型配置 →
+顶部横向档案 chip 条），多档案时被横向滚动挤出屏，切换无可见反馈。
+VM 侧 `switchProfile` 本就是即时生效 + 落盘，坏的纯粹是 UI 可发现性。
+
+修复（仅 `ui/ChatScreen.kt`，VM/core 零改动）：
+
+1. `ModelIndicatorBar`：顶栏下常驻「配置名 + 模型名 · 域名」+ ExpandMore，52dp 触控；
+   未配置态「模型未配置 · 点此前往配置模型」→ onOpenModel()；
+2. `ModelSwitchDialog`：AkModalHost + 344dp 白卡，列全部档案（当前项 selected + Check
+   对勾，封顶 360dp），点选 `vm.switchProfile(id)` + Toast「已切换到「X」」，
+   底部「管理模型配置」进配置页（先关弹窗再跳页防闪断）；
+3. `hostOf()`：Base URL → 域名纯函数。
+
+验证：assembleDebug BUILD SUCCESSFUL；hotfix 17/0、hotfix3 26/0、capture-path 58/0
+零回归；新增 `scripts/qa/Hotfix11Verification.kt`（G1-G12，13 断言）13/0 ALL PASS。
+详见 `HOTFIX11-NOTES.md`。
