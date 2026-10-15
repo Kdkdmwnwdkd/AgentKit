@@ -31,7 +31,13 @@ import android.os.Looper
  *    MediaProjection 才能正常创建（API 34 强制）。
  *  - 服务实例以 companion 暴露，工具层只依赖 ScreenshotBridge，不直接持有服务。
  *
- * **启动顺序（Android 14 两条硬规则，务必保持——第六轮修复确证）**：
+ * **启动顺序（Android 14 三条硬规则，务必保持——第六/七轮修复真机确证）**：
+ *  - 规则 C（`createVirtualDisplay` 前置条件）：targetSdk ≥ 34 时**必须先
+ *    `MediaProjection.registerCallback()` 再 `createVirtualDisplay()`**，否则系统抛
+ *    `IllegalStateException("Must register a callback before starting capture, to manage
+ *    resources in response to MediaProjection states.")`（官方文档 Android 14 行为变更
+ *    「注册回调」条目 + 真机 2026-10-15 18:36:20 日志实证）。故 registerCallback 的失败
+ *    在 Android 14 上是**致命**的，不再按「不致命」降级。
  *  - 规则 A（`getMediaProjection` 前置条件）：Android 14（targetSdk 34）上
  *    `getMediaProjection()` 要求本应用**已有以 `FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION`
  *    类型运行的前台服务**，否则系统在投影 start 时抛 SecurityException
@@ -388,7 +394,42 @@ class ScreenCaptureService : Service() {
             AgentLogger.w("ScreenCapture", "Handler 创建失败，跳过帧回调注册：${handlerResult.failure}")
         }
 
-        // ④ VirtualDisplay：这一步是闪退高发区（token 失效 / Surface 无效 / 分辨率超限）
+        // ④ **投影回调注册（Android 14 第三规则，必须先于 createVirtualDisplay）**：
+        //    targetSdk ≥ 34 时未注册 Callback 就调 createVirtualDisplay，系统直接抛
+        //    IllegalStateException("Must register a callback before starting capture...")。
+        //    （官方文档 Android 14 行为变更「注册回调」条目 + 真机 18:36:20 日志实证。）
+        //    因此这里的失败**不再是不致命**——后面必炸，直接走 failSafe 收摊。
+        val callback = object : MediaProjection.Callback() {
+            override fun onStop() {
+                AgentLogger.w("ScreenCapture", "系统回调 onStop：用户已停止投屏")
+                failSafe(
+                    ScreenCaptureGuard.Stage.PROJECTION_STOPPED,
+                    "用户已从控制中心停止投屏",
+                    null
+                )
+            }
+        }
+        val callbackResult = ScreenCaptureGuard.guard {
+            projection.registerCallback(callback, frameHandler)
+            projectionCallback = callback
+        }
+        if (callbackResult.failure != null) {
+            ScreenCaptureTrace.logFailure(
+                ScreenCaptureTrace.REGISTER_CALLBACK,
+                "失败（Android 14 上为致命，后续 createVirtualDisplay 必抛 IllegalStateException）：" +
+                    callbackResult.failure,
+                callbackResult.cause
+            )
+            failSafe(
+                ScreenCaptureGuard.Stage.INIT_PROJECTION,
+                "registerCallback 失败（Android 14 要求先注册回调）：${callbackResult.failure}",
+                callbackResult.cause
+            )
+            return
+        }
+        ScreenCaptureTrace.log(ScreenCaptureTrace.REGISTER_CALLBACK, "成功")
+
+        // ⑤ VirtualDisplay：这一步是闪退高发区（token 失效 / Surface 无效 / 分辨率超限）
         val displayResult = ScreenCaptureGuard.guardValue {
             projection.createVirtualDisplay(
                 "AgentKitCapture", size.width, size.height, size.density,
@@ -413,37 +454,9 @@ class ScreenCaptureService : Service() {
         virtualDisplay = display
         ScreenCaptureTrace.log(ScreenCaptureTrace.CREATE_VIRTUAL_DISPLAY, "成功")
 
-        // ⑥ 投影回调：用户从控制中心「停止投屏」时系统会回调 onStop（不注册就收不到，
-        //    服务会一直挂着前台通知却抓不到帧——必须感知并安全停止）
-        val callback = object : MediaProjection.Callback() {
-            override fun onStop() {
-                AgentLogger.w("ScreenCapture", "系统回调 onStop：用户已停止投屏")
-                failSafe(
-                    ScreenCaptureGuard.Stage.PROJECTION_STOPPED,
-                    "用户已从控制中心停止投屏",
-                    null
-                )
-            }
-        }
-        // 只有 registerCallback 这一步可能抛（构造回调对象不会），故单独兜底
-        val callbackResult = ScreenCaptureGuard.guard {
-            projection.registerCallback(callback, frameHandler)
-            projectionCallback = callback
-        }
-        if (callbackResult.failure != null) {
-            AgentLogger.w("ScreenCapture", "registerCallback 失败（不致命）：${callbackResult.failure}")
-            ScreenCaptureTrace.logFailure(
-                ScreenCaptureTrace.REGISTER_CALLBACK,
-                "失败（不致命）：${callbackResult.failure}",
-                callbackResult.cause
-            )
-        } else {
-            ScreenCaptureTrace.log(ScreenCaptureTrace.REGISTER_CALLBACK, "成功")
-        }
-
-        // ⑦ 全部就绪：此时才对外声明可用（避免外部拿到半成品实例）
+        // ⑥ 全部就绪：此时才对外声明可用（避免外部拿到半成品实例）
         activeInstance = this
-        ScreenshotBridge.isCapturing = true
+        ScreenshotBridge.setCapturing(true)
         ScreenshotBridge.clearError()
         AgentLogger.i("ScreenCapture", "捕获链路就绪：VirtualDisplay + ImageReader 已建立")
     }
@@ -488,7 +501,10 @@ class ScreenCaptureService : Service() {
                 ScreenCaptureGuard.CleanupStep.CLEAR_STATE -> {
                     // 只清自己：避免把另一个正在运行的实例状态抹掉
                     if (activeInstance === this) activeInstance = null
-                    ScreenshotBridge.isCapturing = false
+                    // 经桥置位 → 触发 onCapturingChanged → UI 开关回落（修「开了关不了」的假状态）
+                    ScreenshotBridge.setCapturing(false)
+                    // token 一次性且本次已失败：作废授权缓存，下次必须重新弹系统授权框
+                    ScreenshotBridge.invalidatePermission()
                 }
                 ScreenCaptureGuard.CleanupStep.REPORT_LAST_ERROR ->
                     runCatching { ScreenshotBridge.reportFailure(reason) }
@@ -587,7 +603,9 @@ class ScreenCaptureService : Service() {
         projectionCallback = null
         frameHandler = null
         if (activeInstance === this) activeInstance = null
-        ScreenshotBridge.isCapturing = false
+        ScreenshotBridge.setCapturing(false)
+        // token 一次性：服务销毁即作废，重开必须重新授权（避免拿旧 token 反复失败）
+        ScreenshotBridge.invalidatePermission()
         super.onDestroy()
         AgentLogger.i("ScreenCapture", "服务已销毁（资源全部释放）")
     }

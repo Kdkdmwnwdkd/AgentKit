@@ -508,6 +508,11 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
             _serviceConnected.value = connected
             refreshCapabilityPlans() // 无障碍连接变化 → 能力就绪度随之刷新
         }
+        // 屏幕捕获开关以「服务真实状态」为唯一真源：服务链路失败/停止 → 开关自动回落，
+        // 杜绝「UI 显示捕获中、其实早就失败」的假状态（真机第七轮「开了之后关不了」）。
+        ScreenshotBridge.onCapturingChanged = { capturing ->
+            _capturing.value = capturing
+        }
         refreshGrants()
         // L8/L9：首屏即有内容可看
         refreshLogs()

@@ -88,3 +88,60 @@ C（引入 Shizuku 调试权限）。
    取 MediaProjection token 成功 → ImageReader → VirtualDisplay → 首次拿到帧；
 3. 若「进前台成功」后出现「第 N 次遇 SecurityException，重试」属预期的传播窗口兜底；
 4. 反复开关多轮：应不崩；失败时给可读文案（重新授权），不闪退。
+
+---
+
+# 第七轮（hotfix8）：Android 14 规则 C + 「开了关不了」状态回写
+
+**真机时间**：2026-10-15 18:36（hotfix7 装机实测，用户日志 267 行）
+**结论：hotfix7 的方向是对的，链条最后一环补上即可用。**
+
+## 1. 真机事实（hotfix7 已解决旧错）
+
+```
+18:36:20.388 [ScreenCapture] 已进入前台（mediaProjection 类型）     ← 规则 A/B 生效
+18:36:20.389 [面包屑] 进前台 startForeground：成功
+18:36:20.402 [面包屑] 取 MediaProjection token：getMediaProjection 成功  ← SecurityException 消失！
+18:36:20.404 [面包屑] ImageReader 创建：newInstance 成功
+18:36:20.407 ERROR createVirtualDisplay 失败：IllegalStateException：
+      Must register a callback before starting capture, to manage resources
+      in response to MediaProjection states.
+```
+
+旧错（SecurityException）**已根治**；新错是链条最后一环：**建虚拟屏前没注册回调**。
+
+## 2. 根因：Android 14 规则 C（官方硬性，非猜测）
+
+- 官方 Android 14 行为变更「注册回调」条目：未实现 `Callback#onStop` 并注册回调，
+  `MediaProjection#createVirtualDisplay` **抛 IllegalStateException**（targetSdk U+）。
+- `MediaProjection.createVirtualDisplay` 参考文档 Exceptions 项明确：
+  `IllegalStateException — If the target SDK is U and up, and if no Callback is registered.`
+- 旧代码把 `registerCallback` 放在 `createVirtualDisplay` **之后**，且注册失败按
+  「不致命」降级（那是 Android 13 及以下的语义，14 上不成立）。
+
+## 3. 修复
+
+| 文件 | 改动 |
+| --- | --- |
+| `automation/ScreenCaptureService.kt` | `setupCapture` 步骤重排：ImageReader → **registerCallback（④）** → createVirtualDisplay（⑤）；注册失败**改判致命**（直接 failSafe，不再 WARN 降级）；类 KDoc 补规则 C |
+| `automation/ScreenshotBridge.kt` | `isCapturing` 改 `private set`；新增 `setCapturing()` + `onCapturingChanged` 回调 + `invalidatePermission()`；所有置位改走 `setCapturing`；`stopService` 兜底让存活实例 `stopSelf` |
+| `automation/ScreenCaptureService.kt` | `failSafe`/`onDestroy` 调 `setCapturing(false)` + `invalidatePermission()`（服务失败/销毁 → UI 开关回落 + 一次性授权作废） |
+| `ui/ChatViewModel.kt` | `init` 注册 `ScreenshotBridge.onCapturingChanged` 回写 `_capturing`（修「开了之后关不了」的假状态） |
+| `scripts/qa/CapturePathVerification.kt` | 新增 E1-E6：注册早于建屏、注册失败致命、状态真源在桥、失败回写作废、UI 订阅、停止硬保证 |
+
+**「关不了」的真因**：服务链路失败 → 服务 `stopSelf` → 桥 `isCapturing=false`，
+但 UI 开关是 ViewModel 自己的 `_capturing`，**没人回写** → 一直显示「捕获中」。
+同时旧授权缓存没清，再点开启会拿已消费的 token 重开（必失败）。
+
+## 4. 验证闭环
+
+| 门 | 结果 |
+| --- | --- |
+| `bash gradlew :app:assembleDebug` | BUILD SUCCESSFUL |
+| run-capture-path-verification.sh | **56 passed / 0 failed**（D1-D10 + E1-E6） |
+| run-crashlog-verification.sh | 48 passed / 0 failed |
+| run-hotfix-verification.sh | 17 passed / 0 failed |
+| run-appcontrol / t01 / hotfix3 / fallback / branch / verification | 全 0 failed |
+
+**诚实声明**：规则 C 是官方文档 + 真机报错原文双重确证（不是推导），风险低；
+但真机行为仍以装机为准。若本版仍出新错，**不再修 MediaProjection**，转 B/C。

@@ -306,8 +306,46 @@ object ScreenshotBridge {
     /** MediaProjection 授权返回的 Intent（含投影 token，一次性）。 */
     var permissionData: Intent? = null
 
-    /** 当前是否正在捕获屏幕。 */
+    /** 当前是否正在捕获屏幕。**唯一真源是服务**：只有服务链路真正就绪/失败才置位。 */
     var isCapturing: Boolean = false
+        private set
+
+    /**
+     * 捕获状态变更回调（供 UI 回写开关）。
+     *
+     * **为什么需要（真机第七轮「开了之后关不了」）**：服务链路失败（如 Android 14 的
+     * `createVirtualDisplay` / `registerCallback` 抛错）后服务会 `stopSelf`，桥的
+     * [isCapturing] 变 false，但 UI 的开关状态是 ViewModel 自己的 `_capturing`——
+     * 没人回写，于是 UI 一直显示「捕获中」，用户点关闭也像没反应（假状态）。
+     * 现在服务状态一变就经此回调推给 UI，开关必然回落，可重新开启/重新授权。
+     */
+    @Volatile
+    var onCapturingChanged: ((Boolean) -> Unit)? = null
+
+    /**
+     * 服务侧统一置位：改 [isCapturing] + 通知 UI。
+     * 可能来自主线程（服务生命周期）或回调线程，故全部 `runCatching`。
+     */
+    fun setCapturing(value: Boolean) {
+        if (isCapturing == value) {
+            runCatching { onCapturingChanged?.invoke(value) }
+            return
+        }
+        isCapturing = value
+        AgentLogger.i("ScreenCapture", "捕获状态变更：$value")
+        runCatching { onCapturingChanged?.invoke(value) }
+    }
+
+    /**
+     * 作废一次性授权缓存（token 已消费或本次链路已失败 → 下次必须重新弹系统授权框）。
+     *
+     * 不清的话：服务失败后 UI 仍拿旧 token 重启，[ScreenCaptureService] 取投影必然再失败，
+     * 表现为「怎么点都开不起来」。清掉后 UI 回到「未授权」，用户重新点即重新授权。
+     */
+    fun invalidatePermission() {
+        resultCode = 0
+        permissionData = null
+    }
 
     /**
      * 最近一次启动失败的可读原因（null = 无一次性失败）。
@@ -323,7 +361,7 @@ object ScreenshotBridge {
     fun reportFailure(reason: String) {
         val msg = ScreenCaptureStartPolicy.failureMessage(reason)
         lastError = msg
-        isCapturing = false
+        setCapturing(false)
         AgentLogger.e("ScreenCapture", msg)
         logLastError(msg)
     }
@@ -378,7 +416,7 @@ object ScreenshotBridge {
         if (resultCode == 0 || permissionData == null) {
             lastError = ScreenCaptureStartPolicy.failureMessage("尚未取得屏幕捕获授权")
             logLastError(lastError!!)
-            isCapturing = false
+            setCapturing(false)
             ScreenCaptureTrace.log(ScreenCaptureTrace.START_SERVICE, "失败（无授权数据）")
             return false
         }
@@ -398,7 +436,7 @@ object ScreenshotBridge {
             lastError = ScreenCaptureStartPolicy.failureMessage(reason)
             AgentLogger.e("ScreenCapture", "startForegroundService 失败：$lastError", failure.cause)
             logLastError(lastError!!)
-            isCapturing = false
+            setCapturing(false)
             ScreenCaptureTrace.log(ScreenCaptureTrace.START_SERVICE, "失败：$lastError")
             return false
         }
@@ -418,7 +456,11 @@ object ScreenshotBridge {
         ScreenCaptureStartPolicy.guard {
             context.stopService(Intent(context, ScreenCaptureService::class.java))
         }
-        isCapturing = false
+        // 兜底：万一 stopService 因时序问题没杀掉服务（进程内还有实例），直接让它自尽，
+        // 保证「停止」一定生效（真机第七轮「开了之后关不了」的硬保证）。
+        ScreenCaptureService.activeInstance?.let { runCatching { it.stopSelf() } }
+        setCapturing(false)
+        invalidatePermission()
         lastError = null
     }
 }

@@ -401,12 +401,66 @@ private fun testW6StartupOrder() {
         val stops = serviceCode.count { it.contains("mediaProjection?.stop()") }
         assertTrue("failSafe + onDestroy 两处，实际 $stops", stops >= 2)
     }
+
+    // —————————————————— E 区：第七轮（Android 14 规则 C：先注册回调再建虚拟屏） ——————————————————
+
+    check("E1 setupCapture 内 registerCallback 必须早于 createVirtualDisplay（规则 C，官方硬性）") {
+        val setup = service
+            .substringAfter("private fun setupCapture(projection: MediaProjection)")
+            .substringBefore("private fun heldResources")
+        val setupCode = setup.lines().filter(isCode).joinToString("\n")
+        val regIdx = setupCode.indexOf("projection.registerCallback(")
+        val vdIdx = setupCode.indexOf("projection.createVirtualDisplay(")
+        assertTrue("registerCallback 调用存在", regIdx >= 0)
+        assertTrue("createVirtualDisplay 调用存在", vdIdx >= 0)
+        assertTrue(
+            "注册回调($regIdx) 必须先于建虚拟屏($vdIdx)——否则 Android 14 抛 IllegalStateException",
+            regIdx < vdIdx
+        )
+    }
+
+    check("E2 registerCallback 失败按致命处理（不再降级为「不致命」，后续必炸）") {
+        val setup = service
+            .substringAfter("private fun setupCapture(projection: MediaProjection)")
+            .substringBefore("private fun heldResources")
+        val regBlock = setup.substringAfter("val callbackResult")
+        assertContains("注册失败走 failSafe", regBlock.substringBefore("ScreenCaptureTrace.log("), "failSafe(")
+        assertFalse("不得再标为不致命", setup.contains("registerCallback 失败（不致命）"))
+    }
+
+    check("E3 捕获状态唯一真源在服务：桥暴露 setCapturing + onCapturingChanged 通知 UI") {
+        assertContains("置位函数", bridge, "fun setCapturing(value: Boolean)")
+        assertContains("状态变更回调", bridge, "var onCapturingChanged: ((Boolean) -> Unit)?")
+        assertContains("桥内失败置位", bridge, "setCapturing(false)")
+        assertTrue(
+            "isCapturing 不得被外部直接写（private set）",
+            bridge.contains("var isCapturing: Boolean = false\n        private set")
+        )
+    }
+
+    check("E4 服务失败/销毁 → 回写 UI 状态 + 作废一次性授权（修「关不了 / 重开必失败」）") {
+        assertContains("服务置位", service, "ScreenshotBridge.setCapturing(false)")
+        val invalidateCount = serviceCode.count { it.contains("ScreenshotBridge.invalidatePermission()") }
+        assertTrue("failSafe 与 onDestroy 各作废一次，实际 $invalidateCount", invalidateCount >= 2)
+        assertContains("桥提供作废函数", bridge, "fun invalidatePermission()")
+    }
+
+    check("E5 UI 开关订阅服务状态（ChatViewModel 注册 onCapturingChanged 回写 _capturing）") {
+        assertContains("注册回调", viewModel, "ScreenshotBridge.onCapturingChanged = { capturing ->")
+        assertContains("回写开关", viewModel, "_capturing.value = capturing")
+    }
+
+    check("E6 停止路径硬保证：stopService 额外让存活实例 stopSelf，且作废授权") {
+        val stop = bridge.substringAfter("fun stopService(").substringBefore("}\n}")
+        assertContains("兜底自尽", stop, "ScreenCaptureService.activeInstance?.let")
+        assertContains("作废授权", stop, "invalidatePermission()")
+    }
 }
 
 /* =============================== 主入口 =============================== */
 
 fun main() {
-    println("========== CapturePathVerification（真机第四轮最后一刀 + 第六轮启动顺序回正） ==========")
+    println("========== CapturePathVerification（第四轮最后一刀 + 第六轮启动顺序 + 第七轮规则 C/开关回写） ==========")
     testAuthGuard()
     testCaptureFlag()
     testBreadcrumbs()
