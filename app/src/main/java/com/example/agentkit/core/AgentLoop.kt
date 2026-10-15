@@ -1,11 +1,36 @@
 package com.example.agentkit.core
 
 import com.example.agentkit.core.agent.AgentLoop as AgentLoopContract
+import com.example.agentkit.core.agent.NetworkRecoveryWaiter
 import com.example.agentkit.core.agent.RealAgentLoop
 
+/**
+ * 默认系统提示（全链路 Agent 的公共底座）。
+ *
+ * 除基础「先调工具、再据结果回答」的引导外，**内嵌「界面操作协议」**——真机日志
+ * （08:27-08:28）暴露的策略错误：`ui_click` 失败后模型转用 `shell_run`（dumpsys /
+ * am start / settings）绕路操控界面，而本机 user shell 无对应权限，必然失败，
+ * 最终任务失败并放弃、把活推回用户。协议段把「唯一可行通道（无障碍 ui_*）」、
+ * 「禁止 shell 操控界面」、失败自纠三步、重读/去重 ui_tree、禁止过早放弃
+ * 逐条写死，供大小模型共同遵守。
+ *
+ * 预算约束：本常量总长须 ≤ [SYSTEM_PROMPT_MAX_CHARS]（QA harness 断言），
+ * 故协议段克制为短句祈使句（见 scripts/qa/PROMPT-NOTES.md）。
+ */
 const val DEFAULT_SYSTEM_PROMPT = """你是一个运行在 Android 设备上的本地 AI 助手。
 你可以使用一组工具来完成任务。当完成任务需要信息或操作时，先调用相应工具，再基于工具结果给出最终回答。
-如果一步不够，可以连续调用多个工具；工具调用之间要基于上一步的结果做下一步决策。"""
+如果一步不够，可以连续调用多个工具；工具调用之间要基于上一步的结果做下一步决策。
+
+【界面操作协议】
+操控界面只能用无障碍工具（唯一可行通道）：先 ui_tree 看结构，再用 ui_tap/ui_click/ui_input/ui_swipe/ui_key 操作。
+禁止用 shell_run 操控界面：dumpsys、am start、settings put/get、input tap 都会因权限不足失败，不要尝试。
+shell_run 只用于文件读写、命令执行、查看本机信息；要「已安装应用列表」用 app_list，要启动应用用 app_launch。
+ui_click 失败就自纠：① 看返回的候选列表，用最接近的候选重试一次；② 仍失败改用 ui_tap 按 ui_tree 的 bounds 中心坐标点击；③ 坐标也失败才向用户求助。
+每次操作后界面已变，必须重新 ui_tree；同一界面内容未变时不要重复 ui_tree。
+不要过早放弃：任务未完成前不要输出「请你手动核对」这类把活推回用户的话，至少按上面规则自纠两轮。"""
+
+/** [DEFAULT_SYSTEM_PROMPT] 的长度上限（防提示膨胀失控；QA harness 断言用）。 */
+const val SYSTEM_PROMPT_MAX_CHARS: Int = 4000
 
 /** 记忆使用引导：仅在启用记忆库时拼进系统提示，告诉模型“可以写、可以搜”。 */
 internal const val MEMORY_USAGE_PROMPT =
@@ -108,8 +133,12 @@ class AgentLoop(
     /**
      * Phase 2 DoD④「本地模型工具暴露降级」：强制全量工具开关（默认 false = 按 provider 自动）。
      * provider = local-llama 时默认把暴露给 LLM 的工具面裁剪到核心集（≤7）；置 true 强制全量。
+     * @param networkRecovery 退避期间的网络恢复等待器（真机第三轮 Bug A2）：Android 侧传
+     *   [com.example.agentkit.core.agent.ConnectivityNetworkRecoveryWaiter]，默认纯定时降级
+     *   （[NetworkRecoveryWaiter.TIMER_ONLY]，零 Android 依赖，core 层保持可 JVM 直测）。
      */
-    forceFullTools: Boolean = false
+    forceFullTools: Boolean = false,
+    networkRecovery: NetworkRecoveryWaiter = NetworkRecoveryWaiter.TIMER_ONLY
 ) : AgentLoopContract {
 
     /** 真实实现（T01 抽出的运行时内核）；本类所有公开 API 逐条转调至此。 */
@@ -127,7 +156,8 @@ class AgentLoop(
         onEvent = onEvent,
         shouldContinue = shouldContinue,
         onTextDelta = onTextDelta,
-        forceFullTools = forceFullTools
+        forceFullTools = forceFullTools,
+        networkRecovery = networkRecovery
     )
 
     /** 执行一轮对话，返回完整消息历史（语义 = [AgentLoopContract.send]，保留原名）。 */

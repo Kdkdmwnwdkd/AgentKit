@@ -54,7 +54,9 @@
          后续实现对应能力时再申请，并按危险等级接入 L10 审批闸门。 -->
     <uses-permission android:name="android.permission.RECEIVE_SMS" />
 
+    <!-- android:name 指向 AgentKitApplication：它只做一件事——在最早时机装上 CrashLogger -->
     <application
+        android:name=".AgentKitApplication"
         android:allowBackup="false"
         android:label="AgentKit"
         android:supportsRtl="true"

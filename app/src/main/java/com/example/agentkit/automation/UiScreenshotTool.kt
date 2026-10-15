@@ -13,6 +13,15 @@ import java.io.ByteArrayOutputStream
 import java.io.File
 
 /**
+ * 屏幕捕获未开启时的一步到位**可行动指引**（真机第四轮修正：泛泛报错 → 明确告诉用户去哪开）。
+ *
+ * 既是 [UiScreenshotTool] 失败返回的 message 文案，也供 QA harness 直接断言——
+ * 无需启动 Android 服务即可校验「权限中心 / 去开启」这两个关键动作词始终在册。
+ */
+const val SCREEN_CAPTURE_OFF_GUIDANCE =
+    "屏幕捕获未开启：请让用户到「权限中心 → 屏幕捕获 → 去开启」，然后重试。"
+
+/**
  * ui_screenshot：截取当前手机屏幕，并以图片形式返回。
  *
  * Agent 借此“看见”屏幕内容（图标、图片、验证码、游戏画面等 UI 树无法描述的区域）。
@@ -38,8 +47,10 @@ class UiScreenshotTool(private val workspace: File) : AgentTool {
         if (!ScreenshotBridge.isCapturing || svc == null) {
             return@withContext ToolResult.fail(
                 code = "capture_not_enabled",
-                message = "屏幕捕获未启用：请在「设置 → 自动化」中点「开始屏幕捕获」并授予屏幕录制权限。",
-                hint = "引导用户开启屏幕捕获授权后重试；或改用 ui_tree 读取界面结构。"
+                message = SCREEN_CAPTURE_OFF_GUIDANCE,
+                hint = "屏幕捕获需用户手动授权，无法由 Agent 自助开启；" +
+                    "请引导用户到「权限中心 → 屏幕捕获 → 去开启」后重试，" +
+                    "或改用 ui_tree 读取界面结构（不要用 shell 绕过）。"
             )
         }
         val bmp = svc.captureBitmap()

@@ -53,11 +53,15 @@ class ShellRunTool(
         "在终端会话里执行一条 shell 命令并返回输出与退出码。无 session 时自动开辟一条会话并返回其句柄；" +
             "复用同一 session 句柄可保持工作目录与环境变量（多轮 cd/export 生效）。identity 取值 " +
             "user/su/shizuku/ssh（首期仅 user 可用），prefer_proot 是否优先容器（默认 true，不可用回落本机 shell）。" +
-            "无 PTY/交互支持：不要用需要交互输入的命令（如不带 -y 的 apt、分页器 less），必要时改用非交互参数。"
+            "无 PTY/交互支持：不要用需要交互输入的命令（如不带 -y 的 apt、分页器 less），必要时改用非交互参数。" +
+            "注意：shell_run 不能用来操控界面——dumpsys、am start、settings put/get、input tap 都会因权限不足失败；" +
+            "操控界面请改用 ui_tree/ui_tap/ui_click 等 ui_* 工具。"
     override val systemPrompt =
         "用 shell_run 执行终端命令。首次不带 session 调用会返回一个 4 位十六进制句柄，后续把该句柄作为 " +
             "session 传入即可在同一 shell 里继续操作（cwd 与 export 的环境变量会保持）。不再需要的会话用 " +
-            "shell_close 关闭。命令输出过长会被截断（只保留头尾），必要时拆小命令分批查看。"
+            "shell_close 关闭。命令输出过长会被截断（只保留头尾），必要时拆小命令分批查看。" +
+            "shell_run 只用于文件读写、命令执行、查看本机信息，**不能操控界面**" +
+            "（dumpsys/am start/settings put|get 都会因权限不足失败）；操控界面请用 ui_* 工具。"
 
     override val parameters = JsonSchema.objectSchema(
         JsonSchema.prop("command", "string", "要执行的 shell 命令原文（不要预先转义，不要包含命令结尾换行）"),
