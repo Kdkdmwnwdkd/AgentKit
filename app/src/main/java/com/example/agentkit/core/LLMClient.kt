@@ -209,9 +209,15 @@ class OpenAIClient(
         messages: List<ChatMessage>,
         tools: List<AgentTool>
     ): Flow<String> = channelFlow {
-        readSseDataObjects(messages, tools) { obj ->
+        val outcome = readSseDataObjects(messages, tools) { obj ->
             val content = sseDeltaContent(obj)
             if (content != null) send(content)
+        }
+        // hotfix35：供应商忽略 stream:true 返回整段 JSON → 非流式解析降级成一次性输出
+        if (outcome is SseReadOutcome.PlainBody) {
+            runCatching { parseResponse(outcome.raw.trim()) }.getOrNull()?.content
+                ?.takeIf { it.isNotBlank() }
+                ?.let { send(it) }
         }
     }
 
@@ -239,7 +245,7 @@ class OpenAIClient(
         val reasoning = StringBuilder()
         // 功能五（P1-5）：流末 chunk（choices 为空、仅带 usage）单独到达，捕获最后一份非空值
         var usage: com.example.agentkit.core.TokenUsage? = null
-        readSseDataObjects(messages, tools) { obj ->
+        val outcome = readSseDataObjects(messages, tools) { obj ->
             val delta = sseDeltaObject(obj)
             if (delta != null) {
                 delta["content"]?.primOrNull()?.contentOrNull?.let {
@@ -254,6 +260,19 @@ class OpenAIClient(
                 }
             }
             parseOpenAiUsage(obj)?.let { usage = it }
+        }
+        // hotfix35：供应商忽略 stream:true（或中转不带 SSE）时返回的是整段 JSON——
+        // 旧实现一条 data: 都没匹配上，最终产出空回答（真机「不逐字/直接一句话/
+        // 有时干脆空白」的另一种根因）。这里退化为非流式解析，一次性把整条回答
+        // 作为增量发给 UI，行为与「一次性输出」的供应商一致。
+        if (outcome is SseReadOutcome.PlainBody) {
+            val parsed = runCatching { parseResponse(outcome.raw.trim()) }.getOrNull()
+            if (parsed != null && (parsed.content.isNotBlank() || parsed.toolCalls.isNotEmpty())) {
+                if (parsed.content.isNotBlank()) send(ChatStreamEvent.TextDelta(parsed.content))
+                parsed.reasoning?.let { send(ChatStreamEvent.ReasoningDelta(it)) }
+                send(ChatStreamEvent.Completed(parsed))
+                return@channelFlow
+            }
         }
         send(
             ChatStreamEvent.Completed(
@@ -287,11 +306,25 @@ class OpenAIClient(
      *
      * 非网络段（构造请求体 / 指纹日志）不切换调度。
      */
+    /**
+     * SSE 读取结果（hotfix35 兼容加固）：
+     *  - [Sse]：正常——至少见到一条 `data:` 行，已按 SSE 全部消费；
+     *  - [PlainBody]：**未见任何 `data:` 行**——供应商忽略 `stream: true`（或中转
+     *    剥了 SSE 外壳），body 是整段 JSON；带回原始文本供调用方走非流式解析降级。
+     */
+    private sealed interface SseReadOutcome {
+        object Sse : SseReadOutcome
+        data class PlainBody(val raw: String) : SseReadOutcome
+    }
+
+    /** 非 SSE 降级收集上限：防超大 body 占内存（正常回答远小于此）。 */
+    private val PLAIN_BODY_MAX = 2 * 1024 * 1024
+
     private suspend fun readSseDataObjects(
         messages: List<ChatMessage>,
         tools: List<AgentTool>,
         onData: suspend (JsonObject) -> Unit
-    ) {
+    ): SseReadOutcome {
         val requestJson = buildJsonObject {
             put("model", effectiveModel())
             put("stream", true)
@@ -311,7 +344,7 @@ class OpenAIClient(
         AgentLogger.apiTrace(endpointUrl(), effectiveModel(), effectiveApiKey())
         // Round1 Blocker 修复：网络段强制 IO 调度（streamText/streamChat 共用本方法，
         // 一处修两通道）。onData 里的 send 经 channelFlow 通道序列化回收集方，上下文安全。
-        withContext(Dispatchers.IO) {
+        return withContext(Dispatchers.IO) {
             http.newCall(request).execute().use { resp ->
                 if (!resp.isSuccessful) {
                     // hotfix10：流式通道原来抛裸 IOException("LLM 流式请求失败 429")，
@@ -329,14 +362,25 @@ class OpenAIClient(
                     )
                 }
                 val source = resp.body!!.source()
+                // hotfix35：一边按 SSE 消费，一边留一份原文——若整段都没出现 data:
+                // 前缀，说明供应商忽略 stream:true，原文即非流式响应体
+                var sawData = false
+                val rawFallback = StringBuilder()
                 while (!source.exhausted()) {
                     val line = source.readUtf8Line() ?: continue
-                    if (!line.startsWith("data:")) continue
+                    if (!line.startsWith("data:")) {
+                        if (rawFallback.length < PLAIN_BODY_MAX) {
+                            rawFallback.append(line).append('\n')
+                        }
+                        continue
+                    }
+                    sawData = true
                     val data = line.removePrefix("data:").trim()
-                    if (data == "[DONE]") return@withContext
+                    if (data == "[DONE]") break
                     val obj = runCatching { json.parseToJsonElement(data).objOrNull() }.getOrNull() ?: continue
                     onData(obj)
                 }
+                return@use if (sawData) SseReadOutcome.Sse else SseReadOutcome.PlainBody(rawFallback.toString())
             }
         }
     }
@@ -422,6 +466,11 @@ class OpenAIClient(
             ?: return AssistantMessage("", emptyList(), parseOpenAiUsage(root))
 
         val content = msg["content"]?.primOrNull()?.contentOrNull ?: ""
+        // hotfix35：非流式 / 流式降级路径同样提取思维链——DeepSeek reasoner、
+        // GLM、QwQ 等在非流式响应的 message 里也带 reasoning_content / reasoning，
+        // 之前只认流式 delta，降级后思考会整段丢掉。
+        val reasoning = msg["reasoning_content"]?.primOrNull()?.contentOrNull
+            ?: msg["reasoning"]?.primOrNull()?.contentOrNull
 
         val toolCalls = msg["tool_calls"]?.arrOrNull()?.mapNotNull { tc ->
             val obj = tc.objOrNull() ?: return@mapNotNull null
@@ -435,7 +484,12 @@ class OpenAIClient(
             ToolCall(id, name, args)
         } ?: emptyList()
 
-        return AssistantMessage(content, toolCalls, parseOpenAiUsage(root))
+        return AssistantMessage(
+            content,
+            toolCalls,
+            parseOpenAiUsage(root),
+            reasoning?.takeIf { it.isNotBlank() }
+        )
     }
 
     private fun toApiMessage(msg: ChatMessage): JsonObject = buildJsonObject {

@@ -152,9 +152,17 @@ class GeminiClient(
                 )
             }
             val source = resp.body!!.source()
+            // hotfix35：兼容加固——中转忽略 alt=sse 直接回整段 JSON 时（无 data: 行），
+            // 留原文并在末尾走非流式解析降级，避免产出空回答
+            var sawData = false
+            val rawFallback = StringBuilder()
             while (!source.exhausted()) {
                 val line = source.readUtf8Line() ?: continue
-                if (!line.startsWith("data:")) continue
+                if (!line.startsWith("data:")) {
+                    if (rawFallback.length < PLAIN_BODY_MAX) rawFallback.append(line).append('\n')
+                    continue
+                }
+                sawData = true
                 val data = line.removePrefix("data:").trim()
                 if (data.isEmpty()) continue
                 runCatching {
@@ -167,8 +175,16 @@ class GeminiClient(
                     }
                 }
             }
+            // hotfix35：整段无 data: 行 → 按非流式解析降级一次性输出
+            if (!sawData) {
+                runCatching { parseResponse(rawFallback.toString().trim()) }.getOrNull()
+                    ?.content?.takeIf { it.isNotBlank() }?.let { emit(it) }
+            }
         }
     }
+
+    /** hotfix35：非 SSE 降级收集上限（防超大 body 占内存）。 */
+    private val PLAIN_BODY_MAX = 2 * 1024 * 1024
 
     // —— 防御性清洗：与 OpenAIClient 同一套 ConfigSanitizer ——
 

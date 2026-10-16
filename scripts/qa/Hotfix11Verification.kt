@@ -483,7 +483,10 @@ private fun testTokenUsage() {
     }
     check("P4 OpenAI 非流式响应解析 usage") {
         val fn = openai.substringAfter("private fun parseResponse(text: String): AssistantMessage")
-        assertContains("P4", fn, "AssistantMessage(content, toolCalls, parseOpenAiUsage(root))")
+        // hotfix35 起同一解析链同时承载「流式降级」（非 SSE 整段 JSON），
+        // 返回结构扩为多行（含 reasoning 第四参），usage 仍在第三参
+        assertContains("P4", fn, "parseOpenAiUsage(root),")
+        assertContains("P4", fn, "reasoning?.takeIf { it.isNotBlank() }")
     }
     check("P5 OpenAI 流式：请求带 include_usage + 末片 usage 捕获") {
         assertContains("P5", openai, "putJsonObject(\"stream_options\") { put(\"include_usage\", true) }")
@@ -1461,6 +1464,60 @@ private fun testProviderCatalog() {
     }
 }
 
+/**
+ * AD 区：hotfix35「流式非 SSE 降级」——供应商适配的深水区。
+ *
+ * 场景：部分端点/中转忽略 `stream: true`，直接返回**整段 JSON**（无任何 data: 行）。
+ * 旧实现在逐行循环里 `if (!line.startsWith("data:")) continue`，一条都没匹配上 →
+ * 最终 emit Completed(空回答)——用户看到「不逐字、有时干脆空白」。
+ * （真机「不逐字显示」的另一半根因；与 hotfix33 的 null 崩溃是两条独立路径。）
+ *
+ * 修法：读取时同步留一份原文 + 标记是否见过 data: 行；整段无 data: → 判定为
+ * 非流式响应，走 parseResponse 降级，把整条回答一次性作为增量发出。三家通道
+ * （OpenAI 兼容 / Claude / Gemini）同法对称处理；OpenAI 降级路径同时补上
+ * reasoning_content 提取（否则降级后思维链整段丢失）。
+ */
+private fun testSseFallback() {
+    println("— AD 区：流式非 SSE 降级（hotfix35） —")
+    val llm = readSource("core/LLMClient.kt")
+    val claude = readSource("core/llm/ClaudeClient.kt")
+    val gemini = readSource("core/llm/GeminiClient.kt")
+
+    check("AD1 读取层：SseReadOutcome + sawData 判定 + 原文留存") {
+        assertContains("AD1", llm, "private sealed interface SseReadOutcome {")
+        assertContains("AD1", llm, "object Sse : SseReadOutcome")
+        assertContains("AD1", llm, "data class PlainBody(val raw: String) : SseReadOutcome")
+        assertContains("AD1", llm, "var sawData = false")
+        assertContains("AD1", llm, "val rawFallback = StringBuilder()")
+        assertContains("AD1", llm, "return@use if (sawData) SseReadOutcome.Sse else SseReadOutcome.PlainBody(rawFallback.toString())")
+        assertContains("AD1", llm, "private val PLAIN_BODY_MAX = 2 * 1024 * 1024")
+    }
+    check("AD2 streamChat/streamText：PlainBody 降级成一次性输出 + Completed(整条)") {
+        assertContains("AD2", llm, "if (outcome is SseReadOutcome.PlainBody) {")
+        assertContains("AD2", llm, "val parsed = runCatching { parseResponse(outcome.raw.trim()) }.getOrNull()")
+        assertContains("AD2", llm, "if (parsed.content.isNotBlank()) send(ChatStreamEvent.TextDelta(parsed.content))")
+        assertContains("AD2", llm, "parsed.reasoning?.let { send(ChatStreamEvent.ReasoningDelta(it)) }")
+        assertContains("AD2", llm, "send(ChatStreamEvent.Completed(parsed))")
+        assertContains("AD2", llm, "return@channelFlow")
+        // streamText 通道同样降级
+        val streamText = llm.substringAfter("override fun streamText(").substringBefore("override fun streamChat(")
+        assertContains("AD2", streamText, "if (outcome is SseReadOutcome.PlainBody) {")
+    }
+    check("AD3 降级路径保留思维链：parseResponse 提取 reasoning_content/reasoning") {
+        assertContains("AD3", llm, "val reasoning = msg[\"reasoning_content\"]?.primOrNull()?.contentOrNull")
+        assertContains("AD3", llm, "?: msg[\"reasoning\"]?.primOrNull()?.contentOrNull")
+        assertContains("AD3", llm, "reasoning?.takeIf { it.isNotBlank() }")
+    }
+    check("AD4 三家通道对称：Claude / Gemini 同款 sawData 降级") {
+        assertContains("AD4", claude, "var sawData = false")
+        assertContains("AD4", claude, "if (!sawData) {")
+        assertContains("AD4", claude, "parseResponse(rawFallback.toString().trim())")
+        assertContains("AD4", gemini, "var sawData = false")
+        assertContains("AD4", gemini, "if (!sawData) {")
+        assertContains("AD4", gemini, "parseResponse(rawFallback.toString().trim())")
+    }
+}
+
 fun main() {
     println("== hotfix11 模型快速切换 + 功能四/五 验证 ==")
     testModelQuickSwitch()
@@ -1508,6 +1565,8 @@ fun main() {
     testJsonSafeAndGlobalBackground()
     println()
     testProviderCatalog()
+    println()
+    testSseFallback()
     println()
     println("== 汇总 ==")
     println("PASS: $passed  FAIL: ${failures.size}  TOTAL: ${passed + failures.size}")
