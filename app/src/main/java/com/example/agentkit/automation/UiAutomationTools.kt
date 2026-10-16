@@ -77,13 +77,21 @@ class UiTreeTool : AgentTool {
         val svc = AutomationBridge.service
         if (!AutomationBridge.isReady() || svc == null) return notReady()
         return try {
-            val snap = withContext(Dispatchers.Main) { svc.getUiTreeSnapshot() }
-            ToolResult.ok(
-                code = "ui_tree_ok",
-                message = "已读取当前界面结构（${snap.json.length} 字符，保留 ${snap.kept} 个有效节点" +
-                    if (snap.filtered > 0) "，已过滤 ${snap.filtered} 个纯容器节点" else "" + "）",
-                data = snap.json
-            )
+            // W-7 P1-1：用带陈旧窗口防护的新版抓取——刚切换窗口时根节点可能没跟上，
+            // 会自动轮询等待（≤1.5s），避免模型拿到 [] 或 AgentKit 自己的界面。
+            val snap = withContext(Dispatchers.Main) { svc.getFreshUiTreeSnapshot() }
+            val msg = buildString {
+                append("已读取当前界面结构（${snap.json.length} 字符，保留 ${snap.kept} 个有效节点")
+                if (snap.filtered > 0) append("，已过滤 ${snap.filtered} 个纯容器节点")
+                append("）")
+                if (snap.kept == 0) {
+                    // kept=0 且没抛异常：要么界面真在切换中（启动应用/跳转后的过渡态），
+                    // 要么当前前台是没有可读节点的界面。给模型明确的自纠指引。
+                    append("。未读到可交互节点——可能界面正在切换（如刚打开新应用/页面），稍等片刻重新调用本工具；")
+                    append("若持续为空，可先用 device_foreground_app 确认前台应用，或用 ui_screenshot 直接看屏幕。")
+                }
+            }
+            ToolResult.ok(code = "ui_tree_ok", message = msg, data = snap.json)
         } catch (e: Exception) {
             ToolResult.fail(
                 code = "ui_tree_error",

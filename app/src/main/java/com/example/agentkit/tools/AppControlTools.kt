@@ -343,7 +343,8 @@ class AppListTool(private val context: Context) : AgentTool {
  * app_launch：按名称/包名启动任意应用。
  *
  * 参数：target（应用名或包名）、activity（可选，指定 Activity 时直接按 ComponentName 启动）。
- * 解析策略：精确包名 → 精确/模糊名称（唯一命中才启动；歧义返回候选；无命中返回自纠 hint）。
+ * 解析策略（W-7 P0-1）：静态字典（中文名/别名）→ 候选匹配（精确包名/精确名称/模糊，唯一命中才
+ * 启动；歧义返回候选；无命中返回自纠 hint）→ 包名形态兜底（形如包名直接试启）。
  * 实现零权限零依赖：PackageManager.getLaunchIntentForPackage + startActivity(FLAG_ACTIVITY_NEW_TASK)。
  */
 class AppLaunchTool(private val context: Context) : AgentTool {
@@ -377,7 +378,7 @@ class AppLaunchTool(private val context: Context) : AgentTool {
         runCatchingRethrowCancel(
             block = {
                 val apps = loadLaunchableApps(context)
-                when (val r = resolveAppTarget(target, apps)) {
+                when (val r = resolveAppTargetWithDict(target, apps)) {
                     is AppResolution.Unique -> launchResolved(r.entry, activity)
                     is AppResolution.Ambiguous -> ToolResult.fail(
                         code = "ambiguous_target",
@@ -650,7 +651,7 @@ class AppStopTool(
         runCatchingRethrowCancel(
             block = {
                 val apps = loadLaunchableApps(context)
-                when (val r = resolveAppTarget(target, apps)) {
+                when (val r = resolveAppTargetWithDict(target, apps)) {
                     is AppResolution.Unique -> stopResolved(r.entry)
                     is AppResolution.Ambiguous -> ToolResult.fail(
                         code = "ambiguous_target",

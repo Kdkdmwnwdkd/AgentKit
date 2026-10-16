@@ -23,11 +23,25 @@
  *    launch_error 假失败 → 本组断言失败；修后原样上抛 → 全绿。
  *  - F2：pollIntervalMs ≤ 0 → 入口 fail-fast（修前无限忙等，看门狗都杀不死）。
  *
+ * W-7 P0-1/P0-3/P1-1 追加覆盖（「打开快手」失败的三根因修复）：
+ *  - P0-1 静态字典：[AppNameDictionary.lookup] 命中/别名同包/大小写不敏感/未收录 null；
+ *    [looksLikePackageName] 包名形态判据（含点、无空白、段首字母）；
+ *    [resolveAppTargetWithDict] 三级解析链（字典命中用候选 label / 合成条目 / 回落
+ *    候选匹配保持歧义 / 包名兜底直启 / 空串 NotFound）——纯函数，假候选即可断言。
+ *  - P0-3 事件配对：[pickForegroundPackageFromEvents] 取时间序最后 RESUMED、
+ *    非 RESUMED 不参与、空包名跳过、时间戳并列后者覆盖、乱序输入不预排序。
+ *  - P1-1 陈旧窗口防护：[shouldRetryForFreshWindow]：刚切换且 root 为 null/自身包 →
+ *    值得再等；root 已是目标应用 / 距切换已久 / maxWaitMs≤0 → 不等。
+ *
  * 运行方式见 scripts/qa/run-appcontrol-verification.sh（kotlin-compiler-embeddable 编译 + java 运行）。
  */
 
 import com.example.agentkit.automation.DeviceContextStore
+import com.example.agentkit.automation.EVENT_ACTIVITY_RESUMED
+import com.example.agentkit.automation.UsageEventRecord
 import com.example.agentkit.automation.deviceContextEverUpdated
+import com.example.agentkit.automation.pickForegroundPackageFromEvents
+import com.example.agentkit.automation.shouldRetryForFreshWindow
 import com.example.agentkit.core.ToolResult
 import com.example.agentkit.tools.*
 import kotlinx.coroutines.CancellationException
@@ -677,6 +691,171 @@ private fun testAwaitForegroundParamGuard() {
     }
 }
 
+/* ------------------------------ W-7 P0-1：静态应用字典 ------------------------------ */
+
+private fun testAppNameDictionary() {
+    println("\n== W-7 P0-1 静态应用字典（lookup / looksLikePackageName / resolveAppTargetWithDict）==")
+
+    check("字典非空且含「快手」（W-7 起点案例）") {
+        assertTrue("size ≥ 50", AppNameDictionary.size >= 50)
+        assertEquals("快手", "com.smile.gifmaker", AppNameDictionary.lookup("快手"))
+    }
+    check("别名同包：B站/哔哩哔哩/bilibili → tv.danmaku.bili") {
+        assertEquals("B站", "tv.danmaku.bili", AppNameDictionary.lookup("B站"))
+        assertEquals("哔哩哔哩", "tv.danmaku.bili", AppNameDictionary.lookup("哔哩哔哩"))
+        assertEquals("bilibili", "tv.danmaku.bili", AppNameDictionary.lookup("bilibili"))
+    }
+    check("拉丁名大小写不敏感 + trim：「 WeChat 」→ com.tencent.mm") {
+        assertEquals("wechat", "com.tencent.mm", AppNameDictionary.lookup(" WeChat "))
+        assertEquals("KUAISHOU", "com.smile.gifmaker", AppNameDictionary.lookup("KUAISHOU"))
+    }
+    check("未收录名称 → null（字典绝不是唯一真相）") {
+        assertEquals("未收录", null, AppNameDictionary.lookup("快手极速版"))
+        assertEquals("空串", null, AppNameDictionary.lookup("   "))
+    }
+    check("looksLikePackageName：形如包名才放行") {
+        assertTrue("com.smile.gifmaker", looksLikePackageName("com.smile.gifmaker"))
+        assertTrue("com.mm_2", looksLikePackageName("com.mm_2"))
+        assertTrue("trim 后判定", looksLikePackageName("  com.tencent.mm  "))
+        assertTrue("中文名不是包名", !looksLikePackageName("快手"))
+        assertTrue("「打开微信」不是包名", !looksLikePackageName("打开微信"))
+        assertTrue("无点号不是包名", !looksLikePackageName("tencentmm"))
+        assertTrue("空段不是包名", !looksLikePackageName("com..mm"))
+        assertTrue("段首数字不是包名", !looksLikePackageName("com.1mm"))
+        assertTrue("含空白不是包名", !looksLikePackageName("com.mm x"))
+        assertTrue("空串不是包名", !looksLikePackageName(""))
+    }
+    check("字典命中 + 候选无此包 → 合成条目直启（label 用入参名）") {
+        val r = resolveAppTargetWithDict("B站", emptyList())
+        assertTrue("Unique", r is AppResolution.Unique)
+        assertEquals("pkg", "tv.danmaku.bili", (r as AppResolution.Unique).entry.packageName)
+        assertEquals("label 用入参名", "B站", r.entry.label)
+    }
+    check("字典命中 + 候选有此包 → 用候选真实 label") {
+        val r = resolveAppTargetWithDict("快手", FAKE_APPS)
+        assertTrue("Unique", r is AppResolution.Unique)
+        assertEquals("pkg", "com.smile.gifmaker", (r as AppResolution.Unique).entry.packageName)
+        assertEquals("label 来自候选", "快手", (r as AppResolution.Unique).entry.label)
+    }
+    check("字典未收录 → 回落候选匹配：「腾讯」仍歧义（语义不变）") {
+        val r = resolveAppTargetWithDict("腾讯", FAKE_APPS)
+        assertTrue("Ambiguous", r is AppResolution.Ambiguous)
+        assertEquals("两个候选", 2, (r as AppResolution.Ambiguous).candidates.size)
+    }
+    check("精确包名入参：字典未收录 → 候选精确包名命中") {
+        val r = resolveAppTargetWithDict("com.tencent.mm", FAKE_APPS)
+        assertTrue("Unique", r is AppResolution.Unique)
+        assertEquals("pkg", "com.tencent.mm", (r as AppResolution.Unique).entry.packageName)
+    }
+    check("包名兜底：形如包名但候选没有 → Unique 直启") {
+        val r = resolveAppTargetWithDict("com.bilibili.app.in", emptyList())
+        assertTrue("Unique", r is AppResolution.Unique)
+        assertEquals("pkg", "com.bilibili.app.in", (r as AppResolution.Unique).entry.packageName)
+        assertEquals("label 用入参名", "com.bilibili.app.in", (r as AppResolution.Unique).entry.label)
+    }
+    check("空/空白 target → NotFound（入口防护）") {
+        assertTrue("空串", resolveAppTargetWithDict("", FAKE_APPS) is AppResolution.NotFound)
+        assertTrue("空白", resolveAppTargetWithDict("   ", FAKE_APPS) is AppResolution.NotFound)
+    }
+    check("字典只做精确键匹配：「抖音极速版」未收录 → NotFound（不模糊扩字典）") {
+        val r = resolveAppTargetWithDict("抖音极速版", emptyList())
+        assertTrue("NotFound", r is AppResolution.NotFound)
+    }
+}
+
+/* ------------------------------ W-7 P0-3：前台事件配对 ------------------------------ */
+
+private fun testForegroundEventPairing() {
+    println("\n== W-7 P0-3 device_foreground_app 事件配对（pickForegroundPackageFromEvents）==")
+
+    check("事件类型常量与系统同值（API29+ ACTIVITY_RESUMED=1）") {
+        assertEquals("EVENT_ACTIVITY_RESUMED", 1, EVENT_ACTIVITY_RESUMED)
+    }
+    check("单个 RESUMED → 其包名") {
+        val pkg = pickForegroundPackageFromEvents(
+            listOf(UsageEventRecord(EVENT_ACTIVITY_RESUMED, "com.tencent.mm", 1_000L))
+        )
+        assertEquals("pkg", "com.tencent.mm", pkg)
+    }
+    check("多事件取时间序最后一个 RESUMED（输入乱序不预排序）") {
+        val pkg = pickForegroundPackageFromEvents(
+            listOf(
+                UsageEventRecord(EVENT_ACTIVITY_RESUMED, "com.tencent.mm", 1_000L),
+                UsageEventRecord(EVENT_ACTIVITY_RESUMED, "com.smile.gifmaker", 3_000L),
+                UsageEventRecord(EVENT_ACTIVITY_RESUMED, "tv.danmaku.bili", 2_000L)
+            )
+        )
+        assertEquals("最新时间戳者胜", "com.smile.gifmaker", pkg)
+    }
+    check("非 RESUMED（PAUSED=2 等）不参与配对") {
+        val pkg = pickForegroundPackageFromEvents(
+            listOf(
+                UsageEventRecord(EVENT_ACTIVITY_RESUMED, "com.tencent.mm", 1_000L),
+                UsageEventRecord(2, "com.smile.gifmaker", 9_000L) // 更晚的 PAUSED 不顶替
+            )
+        )
+        assertEquals("仍是 mm", "com.tencent.mm", pkg)
+    }
+    check("只有非 RESUMED → null（调用方据此回落桶法）") {
+        assertEquals("null", null, pickForegroundPackageFromEvents(listOf(UsageEventRecord(2, "com.tencent.mm", 1_000L))))
+    }
+    check("空列表 → null") {
+        assertEquals("null", null, pickForegroundPackageFromEvents(emptyList()))
+    }
+    check("空包名事件被跳过（不污染结果）") {
+        val pkg = pickForegroundPackageFromEvents(
+            listOf(
+                UsageEventRecord(EVENT_ACTIVITY_RESUMED, "com.tencent.mm", 1_000L),
+                UsageEventRecord(EVENT_ACTIVITY_RESUMED, "  ", 9_000L)
+            )
+        )
+        assertEquals("仍是 mm", "com.tencent.mm", pkg)
+    }
+    check("时间戳并列 → 列表中后者覆盖（与系统事件追加序一致）") {
+        val pkg = pickForegroundPackageFromEvents(
+            listOf(
+                UsageEventRecord(EVENT_ACTIVITY_RESUMED, "com.tencent.mm", 1_000L),
+                UsageEventRecord(EVENT_ACTIVITY_RESUMED, "com.smile.gifmaker", 1_000L)
+            )
+        )
+        assertEquals("后者胜", "com.smile.gifmaker", pkg)
+    }
+}
+
+/* ------------------------------ W-7 P1-1：ui_tree 陈旧窗口防护 ------------------------------ */
+
+private fun testFreshWindowGuard() {
+    println("\n== W-7 P1-1 ui_tree 陈旧窗口防护（shouldRetryForFreshWindow 判据）==")
+
+    val self = "com.example.agentkit"
+    val other = "com.smile.gifmaker"
+
+    check("刚切换（elapsed<maxWait）且 root 为 null → 值得再等（窗口没建起来）") {
+        assertTrue("wait", shouldRetryForFreshWindow(null, self, elapsedSinceSwitchMs = 100L, maxWaitMs = 1_500L))
+    }
+    check("刚切换且 root 仍是 AgentKit 自身 → 值得再等（审批弹窗/聊天页没退）") {
+        assertTrue("wait", shouldRetryForFreshWindow(self, self, elapsedSinceSwitchMs = 100L, maxWaitMs = 1_500L))
+    }
+    check("刚切换但 root 已是目标应用 → 不等（窗口就绪，抓）") {
+        assertTrue("no-wait", !shouldRetryForFreshWindow(other, self, elapsedSinceSwitchMs = 100L, maxWaitMs = 1_500L))
+    }
+    check("距切换已久（elapsed≥maxWait）→ 不等（没有新窗口要等）") {
+        assertTrue("no-wait", !shouldRetryForFreshWindow(null, self, elapsedSinceSwitchMs = 2_000L, maxWaitMs = 1_500L))
+        assertTrue("no-wait(自身包也如此)", !shouldRetryForFreshWindow(self, self, elapsedSinceSwitchMs = 9_999L, maxWaitMs = 1_500L))
+    }
+    check("maxWaitMs≤0 → 恒不等（fail-safe，禁无限等）") {
+        assertTrue("0", !shouldRetryForFreshWindow(null, self, elapsedSinceSwitchMs = 0L, maxWaitMs = 0L))
+        assertTrue("负值", !shouldRetryForFreshWindow(null, self, elapsedSinceSwitchMs = 0L, maxWaitMs = -1L))
+    }
+    check("elapsed=0（刚切换完立刻查）且 root 为 null → 等") {
+        assertTrue("wait", shouldRetryForFreshWindow(null, self, elapsedSinceSwitchMs = 0L, maxWaitMs = 1_500L))
+    }
+    check("无窗口切换发生过（elapsed 极大）→ 不等（行为与旧版一致）") {
+        val neverSwitched = 1_000_000_000_000L // 远大于任何 maxWaitMs
+        assertTrue("no-wait", !shouldRetryForFreshWindow(null, self, elapsedSinceSwitchMs = neverSwitched, maxWaitMs = 1_500L))
+    }
+}
+
 fun main() {
     println("=== Phase1 补口 · 应用操控工具集（app_list/app_launch/app_stop）QA 行为验证 ===")
     testResolution()
@@ -690,6 +869,9 @@ fun main() {
     testCancellationPropagation()
     testRunCatchingRethrowCancel()
     testAwaitForegroundParamGuard()
+    testAppNameDictionary()
+    testForegroundEventPairing()
+    testFreshWindowGuard()
     println("\n=== 汇总: $passed passed, ${failures.size} failed ===")
     if (failures.isNotEmpty()) {
         failures.forEach { println("FAILED: $it") }

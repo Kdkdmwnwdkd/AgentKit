@@ -11,10 +11,39 @@ import android.os.Bundle
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import com.example.agentkit.core.AgentLogger
+import kotlinx.coroutines.delay
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import java.text.Normalizer
+
+/**
+ * 纯函数（W-7 P1-1）：当前这次 UI 树抓取是否「陈旧到值得再等一轮」。
+ * 零 Android 依赖，QA harness 可直接断言。
+ *
+ * 背景：app_launch 启动目标应用后立刻 ui_tree，`rootInActiveWindow` 常常还停在
+ * ① null（新窗口未建起来）或 ② AgentKit 自己的窗口（审批弹窗/聊天页还没退），
+ * 旧实现当场抓一次就返回，模型拿到的要么是 `[]` 要么是自己的界面，据此点的坐标全错。
+ *
+ * 判据：
+ *  - 距上次窗口切换事件已 ≥ [maxWaitMs] → 不等（没有新窗口要等，或目标窗口早就在）；
+ *  - 否则 root 为 null 或根节点就是 [selfPackage] → 值得再等一轮（目标应用窗口大概率正在路上）。
+ *
+ * @param rootPackage 当前活动窗口根节点包名；null = `rootInActiveWindow` 拿不到根
+ * @param selfPackage AgentKit 自身包名
+ * @param elapsedSinceSwitchMs 距上次窗口切换事件的毫秒数
+ * @param maxWaitMs 最长等待预算（毫秒）
+ */
+internal fun shouldRetryForFreshWindow(
+    rootPackage: String?,
+    selfPackage: String,
+    elapsedSinceSwitchMs: Long,
+    maxWaitMs: Long
+): Boolean {
+    if (maxWaitMs <= 0L) return false
+    if (elapsedSinceSwitchMs >= maxWaitMs) return false
+    return rootPackage == null || rootPackage == selfPackage
+}
 
 /**
  * UI 节点的**纯数据镜像**（脱离 [AccessibilityNodeInfo]，可在纯 JVM 下断言）。
@@ -325,6 +354,9 @@ class AgentAccessibilityService : AccessibilityService() {
             AccessibilityEvent.TYPE_WINDOWS_CHANGED -> {
                 val pkg = event.packageName?.toString().orEmpty()
                 if (pkg.isNotBlank()) DeviceContextStore.updateForeground(this, pkg)
+                // W-7 P1-1：记录最近一次窗口切换时刻——ui_tree 据此判断「刚切换完窗口，
+                // 根节点可能还没跟上」，见 getFreshUiTreeSnapshot / shouldRetryForFreshWindow。
+                lastWindowSwitchAt = System.currentTimeMillis()
             }
         }
     }
@@ -356,15 +388,61 @@ class AgentAccessibilityService : AccessibilityService() {
     fun getUiTreeSnapshot(): UiTreeSnapshot {
         val root = rootInActiveWindow ?: return UiTreeSnapshot("[]", 0, 0)
         return try {
-            nodeCount = 0
-            filteredCount = 0
-            val arr = buildJsonArray { traverse(root, this) }
-            UiTreeSnapshot(arr.toString(), nodeCount - filteredCount, filteredCount)
+            parseRoot(root)
         } catch (e: Exception) {
             UiTreeSnapshot("[]", 0, 0)
         } finally {
             root.recycle()
         }
+    }
+
+    /**
+     * **带陈旧窗口防护**的 UI 树抓取（W-7 P1-1）：启动应用/页面跳转后立刻读取时，
+     * 根节点可能还没切换到目标窗口（null 或仍是 AgentKit 自己的窗口），此时按
+     * [shouldRetryForFreshWindow] 轮询等待，最多 [maxWaitMs] 毫秒；超时后按当前
+     * 状态抓一次返回（诚实降级，不无限等）。
+     *
+     * 仅在「距上次窗口切换事件很近」时才等待——没有任何窗口切换发生时（lastWindowSwitchAt
+     * 为 0 或已久远）elapsed 远超 maxWaitMs，直接抓，行为与 [getUiTreeSnapshot] 一致。
+     *
+     * 必须在主线程调用（rootInActiveWindow 的稳定调用线程）；挂起函数，delay 让出主线程。
+     */
+    suspend fun getFreshUiTreeSnapshot(
+        maxWaitMs: Long = FRESH_WINDOW_MAX_WAIT_MS,
+        pollMs: Long = FRESH_WINDOW_POLL_MS
+    ): UiTreeSnapshot {
+        val deadline = System.currentTimeMillis() + maxWaitMs
+        while (true) {
+            val root = rootInActiveWindow
+            val timedOut = System.currentTimeMillis() >= deadline
+            val needWait = !timedOut && shouldRetryForFreshWindow(
+                rootPackage = root?.packageName?.toString(),
+                selfPackage = packageName,
+                elapsedSinceSwitchMs = System.currentTimeMillis() - lastWindowSwitchAt,
+                maxWaitMs = maxWaitMs
+            )
+            if (!needWait) {
+                if (root == null) return UiTreeSnapshot("[]", 0, 0)
+                return try {
+                    parseRoot(root)
+                } catch (e: Exception) {
+                    UiTreeSnapshot("[]", 0, 0)
+                } finally {
+                    root.recycle()
+                }
+            }
+            // 需要等待：先回收本次拿到的根（可能是 AgentKit 自己的陈旧窗口），再睡一轮
+            root?.recycle()
+            delay(pollMs.coerceAtLeast(1L))
+        }
+    }
+
+    /** 把根节点解析成快照 JSON（调用方负责 recycle）。 */
+    private fun parseRoot(root: AccessibilityNodeInfo): UiTreeSnapshot {
+        nodeCount = 0
+        filteredCount = 0
+        val arr = buildJsonArray { traverse(root, this) }
+        return UiTreeSnapshot(arr.toString(), nodeCount - filteredCount, filteredCount)
     }
 
     /** ui_tree 快照：json + 保留节点数 + 被过滤的纯容器节点数。 */
@@ -614,7 +692,21 @@ class AgentAccessibilityService : AccessibilityService() {
         return dispatchTap(((l + r) / 2f), ((t + b) / 2f), 1)
     }
 
+    /**
+     * 最近一次窗口切换事件的时刻（W-7 P1-1）。
+     * 0 = 本次服务生命周期内还没发生过窗口切换——此时 elapsed 极大，
+     * [getFreshUiTreeSnapshot] 直接抓，不会误等。
+     */
+    @Volatile
+    private var lastWindowSwitchAt = 0L
+
     companion object {
         private const val MAX_NODES = 250
+
+        /** ui_tree 陈旧窗口防护的最长等待预算（毫秒）——等这么久就够了，不无限等。 */
+        private const val FRESH_WINDOW_MAX_WAIT_MS = 1_500L
+
+        /** 陈旧窗口防护的轮询间隔（毫秒）。 */
+        private const val FRESH_WINDOW_POLL_MS = 120L
     }
 }
