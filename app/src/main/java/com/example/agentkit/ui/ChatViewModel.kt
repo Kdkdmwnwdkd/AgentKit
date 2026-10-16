@@ -1235,6 +1235,23 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     private val _modelList = MutableStateFlow<List<String>>(emptyList())
     val modelList: StateFlow<List<String>> = _modelList.asStateFlow()
 
+    /**
+     * 功能五（P1-6）：收藏的模型名（对标 RikkaHub `favoriteModels`）。
+     *
+     * 收藏区恒在列表最前，跨端点共用——目的是让「每天用的那两三个模型」
+     * 不用每次在几十个列表项里翻。
+     */
+    private val _favoriteModels = MutableStateFlow(configStore.loadFavoriteModels())
+    val favoriteModels: StateFlow<List<String>> = _favoriteModels.asStateFlow()
+
+    /** 功能五（P1-6）：收藏 / 取消收藏（即时落盘，重启不丢）。 */
+    fun toggleFavoriteModel(name: String) {
+        val cur = _favoriteModels.value
+        val next = if (name in cur) cur - name else cur + name
+        _favoriteModels.value = next
+        configStore.saveFavoriteModels(next)
+    }
+
     /** 是否正在拉取模型列表：UI 显示 loading，并作并发守卫（拉取中忽略重复触发）。 */
     private val _modelListLoading = MutableStateFlow(false)
     val modelListLoading: StateFlow<Boolean> = _modelListLoading.asStateFlow()

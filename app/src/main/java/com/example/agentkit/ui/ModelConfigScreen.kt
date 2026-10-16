@@ -27,12 +27,14 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.Check
@@ -41,6 +43,7 @@ import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Search
+import androidx.compose.material.icons.outlined.StarBorder
 import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material3.CircularProgressIndicator
@@ -860,6 +863,8 @@ private fun ModelPickerSheet(
     val models by vm.modelList.collectAsStateWithLifecycle()
     // 当前已选中的模型：以已落盘配置为准（不是编辑器里未保存的值）
     val config by vm.config.collectAsStateWithLifecycle()
+    // 功能五（P1-6）：收藏模型（收藏区恒在最前）
+    val favorites by vm.favoriteModels.collectAsStateWithLifecycle()
     // 搜索关键词：纯本地状态，无需上提到 VM
     var keyword by remember { mutableStateOf("") }
 
@@ -974,54 +979,42 @@ private fun ModelPickerSheet(
                                 machine = true
                             )
                             Spacer(Modifier.height(AgentSpacing.space2))
+                            // 功能五（P1-6）：收藏优先排序（对标 RikkaHub ModelListSheet 收藏区）
+                            // sortedByDescending 是稳定排序：收藏组内保持端点原序，不跳来跳去
+                            val visible = remember(models, keyword, favorites) {
+                                val base = if (keyword.isBlank()) models
+                                else models.filter { it.contains(keyword, ignoreCase = true) }
+                                base.sortedByDescending { it in favorites }
+                            }
+                            val listState = rememberLazyListState()
+                            // 功能五（P1-6）：打开即定位当前模型（列表拉取完成后滚过去，
+                            // 不用用户在几十项里自己找——RikkaHub `selectedModelPosition` 同目的）
+                            LaunchedEffect(models, keyword) {
+                                if (keyword.isBlank() && models.isNotEmpty()) {
+                                    val idx = visible.indexOf(config.model)
+                                    if (idx > 0) listState.scrollToItem(idx)
+                                }
+                            }
                             Text(
-                                text = "共 ${models.size} 个模型",
+                                text = "共 ${models.size} 个模型 · 收藏 ${favorites.count { it in models }} 个",
                                 style = MaterialTheme.typography.labelMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                             Spacer(Modifier.height(AgentSpacing.space2))
-                            // 本地过滤：modelId 含关键词（忽略大小写）即命中
-                            val filtered = models.filter { it.contains(keyword, ignoreCase = true) }
                             LazyColumn(
-                                Modifier
+                                state = listState,
+                                modifier = Modifier
                                     .fillMaxWidth()
                                     .heightIn(max = 360.dp)
                             ) {
-                                items(filtered) { id ->
-                                    val isCurrent = id == config.model
-                                    Row(
-                                        Modifier
-                                            .fillMaxWidth()
-                                            .clip(RoundedCornerShape(12.dp))
-                                            .clickable { onPick(id) }
-                                            .padding(
-                                                vertical = AgentSpacing.space3,
-                                                horizontal = AgentSpacing.space2
-                                            ),
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Text(
-                                            text = id,
-                                            style = MaterialTheme.typography.bodyMedium,
-                                            color = if (isCurrent) {
-                                                MaterialTheme.colorScheme.primary
-                                            } else {
-                                                MaterialTheme.colorScheme.onSurface
-                                            },
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis,
-                                            modifier = Modifier.weight(1f)
-                                        )
-                                        if (isCurrent) {
-                                            Spacer(Modifier.width(AgentSpacing.space2))
-                                            Icon(
-                                                imageVector = Icons.Outlined.Check,
-                                                contentDescription = "当前模型",
-                                                tint = MaterialTheme.colorScheme.primary,
-                                                modifier = Modifier.size(18.dp)
-                                            )
-                                        }
-                                    }
+                                items(visible, key = { it }) { id ->
+                                    ModelPickerRow(
+                                        id = id,
+                                        isCurrent = id == config.model,
+                                        favorite = id in favorites,
+                                        onPick = { onPick(id) },
+                                        onToggleFavorite = { vm.toggleFavoriteModel(id) }
+                                    )
                                 }
                             }
                         }
@@ -1037,6 +1030,96 @@ private fun ModelPickerSheet(
             }
         }
     }
+}
+
+/**
+ * 功能五（P1-6）：模型列表行——模型名 + 能力标签 + 星标 + 当前对勾。
+ *
+ * 星标与整行点击是**两个独立热区**：点星只切换收藏、不选中模型
+ * （点星会顺带选模型是最容易误操作的实现）。
+ *
+ * 能力标签是**规则推断**（见 [modelTags]）而非白名单表——新模型只要命名规律
+ * 一致就自动命中，不用发版维护（思路来自 RikkaHub ModelRegistry 的匹配引擎）。
+ */
+@Composable
+private fun ModelPickerRow(
+    id: String,
+    isCurrent: Boolean,
+    favorite: Boolean,
+    onPick: () -> Unit,
+    onToggleFavorite: () -> Unit
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .clickable(onClick = onPick)
+            .padding(vertical = AgentSpacing.space3, horizontal = AgentSpacing.space2),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(
+                text = id,
+                style = MaterialTheme.typography.bodyMedium,
+                color = if (isCurrent) MaterialTheme.colorScheme.primary
+                else MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            val tags = modelTags(id)
+            if (tags.isNotEmpty()) {
+                Spacer(Modifier.height(AgentSpacing.space1))
+                Row(horizontalArrangement = Arrangement.spacedBy(AgentSpacing.space1)) {
+                    tags.forEach { tag ->
+                        AkBadge(
+                            text = tag,
+                            container = MaterialTheme.colorScheme.surfaceVariant,
+                            content = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+        }
+        Icon(
+            imageVector = if (favorite) Icons.Filled.Star else Icons.Outlined.StarBorder,
+            contentDescription = if (favorite) "取消收藏" else "收藏",
+            tint = if (favorite) MaterialTheme.colorScheme.primary
+            else MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier
+                .clip(CircleShape)
+                .clickable(onClick = onToggleFavorite)
+                .padding(AgentSpacing.space2)
+                .size(18.dp)
+        )
+        if (isCurrent) {
+            Spacer(Modifier.width(AgentSpacing.space1))
+            Icon(
+                imageVector = Icons.Outlined.Check,
+                contentDescription = "当前模型",
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(18.dp)
+            )
+        }
+    }
+}
+
+/**
+ * 功能五（P1-6）：按模型名推断能力标签（规则匹配，不是白名单）。
+ *
+ * 只标两类用户真正用得上的：「视觉」（决定能不能发图）与「推理」（决定该不该
+ * 期待它慢慢想）。宁可漏标不可错标——错标会让用户发图给纯文本模型然后困惑。
+ */
+private fun modelTags(id: String): List<String> {
+    val lower = id.lowercase()
+    val tags = mutableListOf<String>()
+    val vision = listOf(
+        "gpt-4o", "gpt-4.1", "gpt-5", "vision", "-vl", "vl-", "llava",
+        "claude-3", "claude-4", "claude-sonnet", "gemini", "glm-4v", "qwen2-vl", "qwen3-vl"
+    )
+    if (vision.any { lower.contains(it) }) tags += "视觉"
+    val reasoning = listOf("o1", "o3", "o4", "reason", "thinking", "-r1", "deepseek-r")
+    if (reasoning.any { lower.contains(it) }) tags += "推理"
+    return tags
 }
 
 /**

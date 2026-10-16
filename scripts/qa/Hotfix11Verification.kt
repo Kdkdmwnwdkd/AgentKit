@@ -399,6 +399,48 @@ private fun testFileAttachment() {
     }
 }
 
+/**
+ * O 区：功能五 P1-6「模型选择器增强」——对标 RikkaHub `ModelListSheet`
+ * （收藏区 / 打开定位当前项 / 能力标签）。
+ */
+private fun testModelPickerEnhancements() {
+    println("— O 区：模型选择器增强（功能五 P1-6） —")
+    val cfg = readSource("ui/ModelConfigScreen.kt")
+    val vm = readSource("ui/ChatViewModel.kt")
+    val store = readSource("core/ConfigStore.kt")
+
+    check("O1 收藏持久化：ConfigStore 存取 + 逗号分隔单键（不为一处引入 JSON）") {
+        assertContains("O1", store, "fun loadFavoriteModels()")
+        assertContains("O1", store, "fun saveFavoriteModels(list: List<String>)")
+        assertContains("O1", store, "KEY_FAVORITE_MODELS = \"favorite_models\"")
+    }
+    check("O2 VM 暴露收藏流 + 切换即落盘") {
+        assertContains("O2", vm, "val favoriteModels: StateFlow<List<String>>")
+        assertContains("O2", vm, "fun toggleFavoriteModel(name: String)")
+        assertContains("O2", vm, "configStore.saveFavoriteModels(next)")
+    }
+    check("O3 收藏优先排序（稳定排序，收藏组内保持端点原序）") {
+        assertContains("O3", cfg, "base.sortedByDescending { it in favorites }")
+    }
+    check("O4 打开即定位当前模型（列表拉取完成后滚动过去）") {
+        assertContains("O4", cfg, "listState.scrollToItem(idx)")
+        assertContains("O4", cfg, "visible.indexOf(config.model)")
+    }
+    check("O5 能力标签是规则推断（新模型命名规律一致即自动命中，不发版维护）") {
+        assertContains("O5", cfg, "private fun modelTags(id: String): List<String>")
+        assertContains("O5", cfg, "\"视觉\"")
+        assertContains("O5", cfg, "\"推理\"")
+    }
+    check("O6 星标与整行点击是两个独立热区（点星不会顺带选中模型）") {
+        val row = cfg.substringAfter("private fun ModelPickerRow(")
+        assertContains("O6", row, "onToggleFavorite")
+        assertContains("O6", row, ".clickable(onClick = onPick)")
+    }
+    check("O7 计数文案含收藏数（用户一眼知道收藏了几个）") {
+        assertContains("O7", cfg, "收藏 \${favorites.count { it in models }} 个")
+    }
+}
+
 fun main() {
     println("== hotfix11 模型快速切换 + 功能四/五 验证 ==")
     testModelQuickSwitch()
@@ -416,6 +458,8 @@ fun main() {
     testTtsReading()
     println()
     testFileAttachment()
+    println()
+    testModelPickerEnhancements()
     println()
     println("== 汇总 ==")
     println("PASS: $passed  FAIL: ${failures.size}  TOTAL: ${passed + failures.size}")

@@ -162,6 +162,27 @@ class ConfigStore(context: Context) {
     }
 
     /**
+     * 功能五（P1-6）：收藏的模型名（对标 RikkaHub `favoriteModels`）。
+     *
+     * 存**模型名**而非「端点 + 模型名」：模型名在绝大多数情况下全局唯一
+     * （gpt-4o / deepseek-chat / claude-sonnet-4-5），跨端点共用一份收藏夹
+     * 更省心；同名的极端情况最多多收藏一条，无正确性风险。
+     *
+     * 用逗号分隔存单键：模型名不含逗号（OpenAI 兼容端点命名惯例），
+     * 不值得为它引入一份 JSON。
+     */
+    fun loadFavoriteModels(): List<String> =
+        sp.getString(KEY_FAVORITE_MODELS, "").orEmpty()
+            .split(',')
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+
+    /** 功能五（P1-6）：写回收藏模型（顺序无关，UI 侧按列表原序展示）。 */
+    fun saveFavoriteModels(list: List<String>) {
+        sp.edit().putString(KEY_FAVORITE_MODELS, list.joinToString(",")).apply()
+    }
+
+    /**
      * 保存媒体 Provider Key（生图/视频工坊用，与 LLM Key 同库不同键——调研 06 号文档
      * 明确「不引入统一密钥库」，开源前不做加密，与 LLM Key 同等待遇）。
      *
@@ -226,6 +247,8 @@ class ConfigStore(context: Context) {
         private const val KEY_PROFILES = "profiles_json"
         /** 功能二：当前生效档案 id。 */
         private const val KEY_ACTIVE_ID = "active_profile_id"
+        /** 功能五（P1-6）：收藏模型名（逗号分隔）。 */
+        private const val KEY_FAVORITE_MODELS = "favorite_models"
         private const val KEY_MEDIA_KEY_PREFIX = "media_key_"
         private const val KEY_GH_OWNER = "gh_owner"
         private const val KEY_GH_REPO = "gh_repo"
