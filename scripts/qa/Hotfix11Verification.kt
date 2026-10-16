@@ -284,9 +284,12 @@ private fun testMessageMoreActions() {
         assertContains("L1", chat, "onMore = { menuTarget = item.text to item.turnIndex }")
     }
     check("L2 分享走系统分享面板（ACTION_SEND + createChooser，零额外权限）") {
-        assertContains("L2", chat, "private fun shareMessage(context: Context, text: String)")
-        assertContains("L2", chat, "Intent.ACTION_SEND")
-        assertContains("L2", chat, "Intent.createChooser")
+        // hotfix22 起分享实现收敛到 ShareActions.kt，ChatScreen 只留委托（Q6 再验共用）
+        assertContains("L2", chat, "private fun shareMessage(context: Context, text: String) = shareText(context, text, \"分享消息\")")
+        val share = readSource("ui/ShareActions.kt")
+        assertContains("L2", share, "Intent.ACTION_SEND")
+        assertContains("L2", share, "Intent.createChooser")
+        assertContains("L2", share, "type = \"text/plain\"")
     }
     check("L3 消息操作弹窗存在，删除项文案写明「及之后的全部内容」") {
         assertContains("L3", chat, "private fun MessageActionsDialog(")
@@ -551,6 +554,60 @@ private fun testTokenUsage() {
     }
 }
 
+/**
+ * Q 区：功能五 P1-4a「会话导出 Markdown」——对标 RikkaHub Export.kt / Coomi 导出。
+ *
+ * 断言的链路完整性：纯函数序列化（core）→ VM 只读入口 → 抽屉长按菜单 →
+ * 系统分享面板（与 hotfix17 消息分享共用 shareText）。
+ */
+private fun testConversationExport() {
+    println("— Q 区：会话导出 Markdown（功能五 P1-4a） —")
+    val md = readSource("core/ConversationMarkdown.kt")
+    val vm = readSource("ui/ChatViewModel.kt")
+    val share = readSource("ui/ShareActions.kt")
+    val chat = readSource("ui/ChatScreen.kt")
+    val scaffold = readSource("ui/AppScaffold.kt")
+
+    check("Q1 core 纯函数 conversationToMarkdown（零 IO，harness 可断言）") {
+        assertContains("Q1", md, "fun conversationToMarkdown(record: ConversationRecord): String")
+        assertContains("Q1", md, "private const val MAX_CONTENT_CHARS = 20_000")
+    }
+    check("Q2 导出件自描述：标题 + 元信息头（时间/条数/token 用量）") {
+        assertContains("Q2", md, "appendLine(\"# \${record.title}\")")
+        assertContains("Q2", md, "导出时间：")
+        assertContains("Q2", md, "消息条数：")
+        assertContains("Q2", md, "Token 用量：")
+    }
+    check("Q3 按轮组织 + 只导选中变体 + 多变体标注（废弃变体不进导出件）") {
+        assertContains("Q3", md, "## 第 \${index + 1} 轮")
+        assertContains("Q3", md, "turn.variants.getOrNull(turn.selectedIndex)")
+        assertContains("Q3", md, "*（变体 \${turn.selectedIndex + 1}/\${turn.variants.size}）*")
+    }
+    check("Q4 工具卡折叠为引用块 + 代码块，超长截断带注记") {
+        assertContains("Q4", md, "> 🔧 工具 `\${rec.toolName")
+        assertContains("Q4", md, "appendLine(\"```\")")
+        assertContains("Q4", md, "…（已截断，原文共 \$length 字）")
+    }
+    check("Q5 VM 只读导出入口（空会话返空串，UI 据此不弹面板）") {
+        assertContains("Q5", vm, "fun conversationMarkdown(convId: String): String")
+        assertContains("Q5", vm, "if (rec.messages.isEmpty()) return \"\"")
+        assertContains("Q5", vm, "import com.example.agentkit.core.conversationToMarkdown")
+    }
+    check("Q6 分享机制共用（消息分享与会话导出同一 shareText，不复制粘贴）") {
+        assertContains("Q6", share, "internal fun shareText(context: Context, text: String, chooserTitle: String)")
+        assertContains("Q6", share, "Intent.createChooser(send, chooserTitle)")
+        assertContains("Q6", chat, "private fun shareMessage(context: Context, text: String) = shareText(context, text, \"分享消息\")")
+    }
+    check("Q7 抽屉长按菜单导出项 + AppScaffold 两处接线（宽屏/窄屏不漂移）") {
+        assertContains("Q7", scaffold, "title = \"导出 Markdown\"")
+        assertContains("Q7", scaffold, "onExport = { menuConvId = null; onExportConversation(id) }")
+        assertContains("Q7", scaffold, "onExportConversation = { id ->")
+        assertContains("Q7", scaffold, "shareText(ctx, vm.conversationMarkdown(id), \"导出会话\")")
+        assertTrue("Q7", scaffold.split("onExportConversation = { id ->").size >= 3)
+        assertContains("Q7", scaffold, "val ctx = LocalContext.current")
+    }
+}
+
 fun main() {
     println("== hotfix11 模型快速切换 + 功能四/五 验证 ==")
     testModelQuickSwitch()
@@ -572,6 +629,8 @@ fun main() {
     testModelPickerEnhancements()
     println()
     testTokenUsage()
+    println()
+    testConversationExport()
     println()
     println("== 汇总 ==")
     println("PASS: $passed  FAIL: ${failures.size}  TOTAL: ${passed + failures.size}")

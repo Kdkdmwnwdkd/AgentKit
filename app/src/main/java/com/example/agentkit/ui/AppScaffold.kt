@@ -233,6 +233,8 @@ fun AppScaffold(
     val pendingGrants = pendingGrantCount(
         serviceConnected, capturing, notificationGranted, usageGranted
     )
+    // 功能五（P1-4a）：会话导出走系统分享面板，需要 Context 发起 Intent
+    val ctx = LocalContext.current
 
     // 未读 ERROR：进入日志页即标记已读（读后归零即隐藏，§6.5.2）
     var logsSeenCount by rememberSaveable { mutableStateOf(0) }
@@ -377,6 +379,9 @@ fun AppScaffold(
                             onRenameConversation = { id, title -> vm.renameConversation(id, title) },
                             onDeleteConversation = { id -> vm.deleteConversation(id) },
                             onSetPinned = { id, pinned -> vm.setConversationPinned(id, pinned) },
+                            onExportConversation = { id ->
+                                shareText(ctx, vm.conversationMarkdown(id), "导出会话")
+                            },
                             firstItemFocus = null
                         )
                     }
@@ -488,6 +493,9 @@ fun AppScaffold(
                                 onDeleteConversation = { id -> vm.deleteConversation(id) },
                                 onSetPinned = { id, pinned ->
                                     vm.setConversationPinned(id, pinned)
+                                },
+                                onExportConversation = { id ->
+                                    shareText(ctx, vm.conversationMarkdown(id), "导出会话")
                                 },
                                 firstItemFocus = firstItemFocus
                             )
@@ -605,6 +613,8 @@ private fun DrawerContent(
     onRenameConversation: (String, String) -> Unit,
     onDeleteConversation: (String) -> Unit,
     onSetPinned: (String, Boolean) -> Unit,
+    /** 功能五（P1-4a）：导出会话为 Markdown（入参 = 会话 id；空会话由 VM 返空串，UI 不弹面板）。 */
+    onExportConversation: (String) -> Unit,
     firstItemFocus: FocusRequester?
 ) {
     // 长按菜单 / 重命名 / 删除三个模态的目标会话 id（AkModalHost 三态机承载退场动画）
@@ -711,6 +721,7 @@ private fun DrawerContent(
                 onSetPinned(id, conv?.pinned != true)
             },
             onRename = { menuConvId = null; renameConvId = id },
+            onExport = { menuConvId = null; onExportConversation(id) },
             onDelete = { menuConvId = null; deleteConvId = id },
             onDismiss = { menuConvId = null }
         )
@@ -852,7 +863,7 @@ private fun DrawerConversationRow(
 }
 
 /**
- * 功能三：会话长按菜单（重命名 / 删除）。与 [AkConfirmDialog] 同语言：
+ * 功能三：会话长按菜单（置顶 / 重命名 / 导出 / 删除）。与 [AkConfirmDialog] 同语言：
  * 344dp 白卡 + scale/fade 出入场；删除是危险动作，但红色只留给确认弹窗，菜单项保持中性（§3.1）。
  */
 @Composable
@@ -862,6 +873,7 @@ private fun ConversationMenuDialog(
     pinned: Boolean,
     onTogglePin: () -> Unit,
     onRename: () -> Unit,
+    onExport: () -> Unit,
     onDelete: () -> Unit,
     onDismiss: () -> Unit
 ) {
@@ -908,6 +920,13 @@ private fun ConversationMenuDialog(
                         icon = Icons.Outlined.Edit,
                         title = "重命名",
                         onClick = onRename
+                    )
+                    // 功能五（P1-4a）：导出 Markdown（走系统分享面板，零权限）
+                    AkListItem(
+                        icon = Icons.Outlined.Description,
+                        title = "导出 Markdown",
+                        description = "生成本对话的 Markdown 文本，分享到其它应用",
+                        onClick = onExport
                     )
                     AkListItem(
                         icon = Icons.Outlined.Delete,

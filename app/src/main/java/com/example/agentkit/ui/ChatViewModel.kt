@@ -38,6 +38,7 @@ import com.example.agentkit.core.AgentLogger
 import com.example.agentkit.core.agent.ConnectivityNetworkRecoveryWaiter
 import com.example.agentkit.core.ConfigSanitizer
 import com.example.agentkit.core.ConfigStore
+import com.example.agentkit.core.conversationToMarkdown
 import com.example.agentkit.core.ConversationStore
 import com.example.agentkit.core.ConversationSummary
 import com.example.agentkit.core.ModelProfile
@@ -1819,6 +1820,17 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     /** 刷新会话摘要列表（每次增删改后调用；抽屉最近对话区与顶栏标题消费）。 */
     private fun refreshConversations() {
         _conversations.value = conversationStore.list()
+    }
+
+    /**
+     * 功能五（P1-4a）：导出指定会话为 Markdown 文本（抽屉长按菜单「导出 Markdown」）。
+     * 会话不存在或为空返回空串——调用方（UI）据此不弹分享面板。
+     * 纯读不改状态：导出是只读动作，不碰 updatedAt、不触发落盘。
+     */
+    fun conversationMarkdown(convId: String): String {
+        val rec = conversationStore.load(convId) ?: return ""
+        if (rec.messages.isEmpty()) return ""
+        return conversationToMarkdown(rec)
     }
 
     /** 载入指定会话为当前会话（设 id + 读消息进 _messages + 刷新摘要）。 */

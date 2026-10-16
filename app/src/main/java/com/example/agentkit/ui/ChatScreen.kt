@@ -727,18 +727,10 @@ internal class TtsController(context: Context) {
 
 /**
  * 功能五（P1-1）：分享消息正文——走系统分享面板（对标 RikkaHub MessageSheetAction Share）。
- *
- * 用 ACTION_SEND + text/plain：不依赖任何额外权限，用户自己选目标 App。
- * 面板未安装任何接收方时 createChooser 会显示空态，不崩（系统兜底）。
+ * 机制与 hotfix22 会话导出同源，抽到 [shareText] 共用（ACTION_SEND + text/plain，
+ * 零权限；面板无接收方时系统显示空态，不崩）。
  */
-private fun shareMessage(context: Context, text: String) {
-    if (text.isBlank()) return
-    val send = Intent(Intent.ACTION_SEND).apply {
-        type = "text/plain"
-        putExtra(Intent.EXTRA_TEXT, text)
-    }
-    context.startActivity(Intent.createChooser(send, "分享消息"))
-}
+private fun shareMessage(context: Context, text: String) = shareText(context, text, "分享消息")
 
 /** 功能四：从 Base URL 提取域名（去 scheme、去路径）；空 URL 返回空串。 */
 internal fun hostOf(baseUrl: String): String =
