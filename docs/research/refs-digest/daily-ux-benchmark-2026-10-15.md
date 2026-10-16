@@ -63,7 +63,7 @@
 | 23b | **文件/文档附件（PDF/DOCX/文本）** | ◐ | ✅ README 明示 images/text/PDF/Docx 多模态输入 | ✅ 附件三件套 | ◐ | ✅ hotfix19（v122+）：文本类直读 / PDF 渲染成图 / DOCX 抽文本 / 其它明确拒绝 | 已追平 |
 | 24 | 语音输入（ASR） | ❌ | ✅ AsrButton ChatInput.kt:344 | ◐ | ❌ | ❌ | P2 |
 | 25 | 全屏输入对话框（长文本） | ◐ | ◐ | ✅ FullscreenInputDialog.kt | — | ❌ | P2 |
-| 26 | 快捷指令/提示词库唤起 | ✅ PromptLibrary/QuickCommands | ◐ | ◐ PromptLibrary | ◐ | ❌（技能中心有但不在输入栏唤起） | P1 |
+| 26 | 快捷指令/提示词库唤起 | ✅ PromptLibrary/QuickCommands | ◐ | ◐ PromptLibrary | ◐ | ✅ hotfix24：输入栏闪电按钮 + 选择器点选填入 + 提示词库管理页（6 内置可另存为） | P1 ✅ |
 | 27 | 输入栏上方上下文工具条 | ✅ ContextTools | ◐ | ◐ | — | ❌ | P2 |
 | 28 | 粘贴图片自动识别 | ◐ | ✅ transferableContent | ✅ AttachmentUtils | — | ❌ | P2 |
 | 29 | 模型快捷切换（输入栏旁） | ✅ ModelPickerSheet 组件 | ◐（顶栏入口） | ◐ | — | ✅ hotfix11 指示条 | 已追平 |
@@ -72,9 +72,9 @@
 
 | # | 功能项 | Coomi | RikkaHub | Operit | AiCode | AgentKit 现状 | 定级 |
 |---|---|---|---|---|---|---|---|
-| 30 | 会话置顶/取消置顶 | ✅（按执行时间排序） | ✅ ConversationList.kt:303-311 | ◐ | — | ❌ | P1 |
-| 31 | 会话搜索 | ✅ SessionsView | ✅ search 页 + FTS5 全文 | ◐ ChatHistorySelector | — | ❌ | P1 |
-| 32 | 会话导出（Markdown/图片） | ✅ DataView | ✅ ConversationExport.kt | ✅ ExportDialogs | ✅ 备份 | ❌ | P1 |
+| 30 | 会话置顶/取消置顶 | ✅（按执行时间排序） | ✅ ConversationList.kt:303-311 | ◐ | — | ✅ 抽屉长按置顶 + 书签标记（hotfix16） | P1 ✅ |
+| 31 | 会话搜索 | ✅ SessionsView | ✅ search 页 + FTS5 全文 | ◐ ChatHistorySelector | — | ✅ 抽屉搜索框 + 标题/正文命中（hotfix16） | P1 ✅ |
+| 32 | 会话导出（Markdown/图片） | ✅ DataView | ✅ ConversationExport.kt | ✅ ExportDialogs | ✅ 备份 | ✅ hotfix22 导出 Markdown + hotfix23 全局备份/恢复（ZIP 含会话/记忆/配置） | P1 ✅ |
 | 33 | 重新生成会话标题 | ✅ | ✅ ConversationList.kt:321-325 | ◐ | — | ❌（仅首条消息自动命名） | P1 |
 | 34 | 会话草稿独立保存 | ✅ README 明示 | ✅ | ◐ | — | ◐（输入框全局单草稿） | P1 |
 | 35 | 删会话确认 | ◐ | ✅ | ◐ | ◐ | ✅ AppScaffold.kt:693-699 danger 确认「删除后不可恢复」 | 已追平 |
@@ -126,10 +126,10 @@
 P1-1 消息更多操作：分享/删除/分叉成新会话（#15/#16/#18）✅ hotfix17
 P1-2 TTS 朗读 + 自动朗读开关（#13）✅ hotfix18（自动朗读开关未做）
 P1-3 会话置顶 + 会话搜索 + 重新生成标题（#30/#31/#33）✅ hotfix16（搜索/置顶；重新生成标题未做）
-P1-4 会话导出 Markdown + 全局备份/恢复（#32/#50）⏳ 下一项
+P1-4 会话导出 Markdown + 全局备份/恢复（#32/#50）✅ hotfix22/hotfix23
 P1-5 Token 用量统计（每模型/每会话）（#21/#49）✅ hotfix21
 P1-6 模型选择器增强：收藏夹 + 打开定位当前项 + Provider 分组 + 能力标签（#40-43，rikkahub A4 的 P0 化）✅ hotfix20
-P1-7 输入栏快捷指令/提示词库唤起（#26）⏳
+P1-7 输入栏快捷指令/提示词库唤起（#26）✅ hotfix24
 P1-8 会话草稿独立保存（#34）⏳
 P1-9 推理过程折叠 UI（#20）⏳
 P1-10 外观增强：Material You 动态取色 + 完成提醒通知（#48/#55）⏳

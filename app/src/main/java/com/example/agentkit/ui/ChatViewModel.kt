@@ -42,6 +42,7 @@ import com.example.agentkit.core.BackupArchive
 import com.example.agentkit.core.BackupManifest
 import com.example.agentkit.core.ConfigBackup
 import com.example.agentkit.core.ConversationRecord
+import com.example.agentkit.core.DraftStore
 import com.example.agentkit.core.PromptDeleteResult
 import com.example.agentkit.core.PromptItem
 import com.example.agentkit.core.PromptStore
@@ -686,6 +687,9 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     // —— 功能三：聊天记录（用户真机录屏反馈：「人家都有聊天记录对话记录，你这都没有」）——
     // 会话持久化：conversations.json 放 filesDir，原子写 + .bak（形态学 MemoryStore）
     private val conversationStore = ConversationStore(File(app.filesDir, "conversations.json"))
+
+    // —— 功能五（P1-8）：每会话独立草稿（drafts.json；切会话存旧取新，发送即清）——
+    private val draftStore = DraftStore(File(app.filesDir, "drafts.json"))
 
     /** 当前会话 id；_messages 的语义即「当前会话的消息」。 */
     private val _activeConversationId = MutableStateFlow(conversationStore.ensureNotEmpty())
@@ -1633,6 +1637,9 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         val files = _pendingFiles.value
         _pendingFiles.value = emptyList()
         input.value = ""
+        // 功能五（P1-8）：发送成功即草稿使命结束——清掉该会话草稿，
+        // 否则切走再回来输入框会复活刚发过的原文（用户视角：见鬼了）
+        draftStore.remove(_activeConversationId.value)
         isRunning.value = true
         _streamDraft.value = null
         AgentLogger.i(
@@ -1994,6 +2001,9 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
                             backupJson.decodeFromString<List<MemoryItem>>(read.memoriesJson)
                         conversationStore.replaceAll(conversations)
                         memoryStore.restoreAll(memories)
+                        // 功能五（P1-8）：草稿不随备份走——旧会话 id 与新数据对不上，
+                        // 留着会让陌生草稿复活在恢复后的会话里，直接清
+                        draftStore.clear()
                         read.configJson?.let { cfgText ->
                             runCatching {
                                 backupJson.decodeFromString<ConfigBackup>(cfgText)
@@ -2016,10 +2026,19 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** 载入指定会话为当前会话（设 id + 读消息进 _messages + 刷新摘要）。 */
+    /**
+     * 载入指定会话为当前会话（设 id + 读消息进 _messages + 刷新摘要）。
+     *
+     * 功能五（P1-8）：草稿随会话走——切走前把输入框内容存进旧会话的草稿，
+     * 载入后把新会话的草稿填回输入框。用户「在 A 会话打了半段话，去 B 会话聊完，
+     * 回 A 话还在」的预期由此满足（此前输入框是全局单草稿，切走即丢）。
+     * 新建会话的草稿恒为空（[DraftStore.get] 返空串），语义天然正确。
+     */
     private fun loadConversation(id: String) {
+        draftStore.set(_activeConversationId.value, input.value)
         _activeConversationId.value = id
         _messages.value = conversationStore.load(id)?.toUiItems() ?: emptyList()
+        input.value = draftStore.get(id)
         refreshConversations()
     }
 
@@ -2057,6 +2076,8 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     fun deleteConversation(id: String) {
         if (id == _activeConversationId.value && isRunning.value) return
         conversationStore.delete(id)
+        // 功能五（P1-8）：会话没了，它的草稿是垃圾数据，一并清
+        draftStore.remove(id)
         if (id == _activeConversationId.value) {
             loadConversation(conversationStore.ensureNotEmpty())
         } else {

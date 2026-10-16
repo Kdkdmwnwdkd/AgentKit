@@ -771,6 +771,54 @@ private fun testPromptLibrary() {
     }
 }
 
+/**
+ * T 区：功能五 P1-8「会话草稿独立保存」——对标 RikkaHub 每会话草稿 /
+ * Coomi README 明示；AgentKit 原为「输入框全局单草稿」，切会话即丢。
+ *
+ * 链路：DraftStore（Map<convId, 草稿> 落盘，不进 conversations.json——
+ * 草稿是易失中间态，与消息持久化生命周期不同）→ loadConversation 切走存旧/
+ * 载入取新 → send 后清 → 删会话清 → 备份恢复清（id 对不上，防错配复活）。
+ */
+private fun testConversationDrafts() {
+    println("— T 区：会话草稿独立保存（功能五 P1-8） —")
+    val store = readSource("core/DraftStore.kt")
+    val vm = readSource("ui/ChatViewModel.kt")
+
+    check("T1 DraftStore：Map<convId, 草稿> 单文件，空串=删键，clear 全清") {
+        assertContains("T1", store, "class DraftStore(file: File)")
+        assertContains("T1", store, "json.encodeToString(synchronized(lock) { drafts.toMap() })")
+        assertContains("T1", store, "if (text.isBlank()) drafts.remove(convId) else drafts[convId] = text")
+        assertContains("T1", store, "fun clear()")
+        // 读入净化：手改文件/旧版本可能留空串
+        assertContains("T1", store, "if (k.isNotBlank() && v.isNotBlank()) drafts[k] = v")
+        // 不进 conversations.json：草稿与消息生命周期不同（注释即契约）
+        assertContains("T1", store, "为什么不并入 ConversationRecord")
+    }
+    check("T2 切会话草稿随人走：切走前存旧会话，载入后取新会话填回输入框") {
+        assertContains("T2", vm, "private val draftStore = DraftStore(File(app.filesDir, \"drafts.json\"))")
+        assertContains("T2", vm, "draftStore.set(_activeConversationId.value, input.value)")
+        assertContains("T2", vm, "input.value = draftStore.get(id)")
+    }
+    check("T3 发送后清草稿（切走再回来不复活刚发过的原文）") {
+        assertContains("T3", vm, "draftStore.remove(_activeConversationId.value)")
+        val sendBlock = vm.substringAfter("fun send() {").substringBefore("fun stop()")
+        assertContains("T3", sendBlock, "草稿使命结束")
+    }
+    check("T4 删会话连带清草稿（会话没了草稿是垃圾数据）") {
+        val delBlock = vm.substringAfter("fun deleteConversation(id: String) {").substringBefore("fun rename(")
+        assertContains("T4", delBlock, "draftStore.remove(id)")
+    }
+    check("T5 备份恢复清草稿（旧 id 与新数据对不上，防陌生草稿错配复活）") {
+        val restoreBlock = vm.substringAfter("fun restoreBackupFrom(uri: Uri)").substringBefore("sealed interface BackupUiState")
+        assertContains("T5", restoreBlock, "draftStore.clear()")
+        assertContains("T5", restoreBlock, "草稿不随备份走")
+    }
+    check("T6 草稿不泄密进备份件（备份只含 conversations/memories/config 三成员 + manifest）") {
+        val exportBlock = vm.substringAfter("fun exportBackupTo(uri: Uri)").substringBefore("fun restoreBackupFrom")
+        assertTrue("T6", !exportBlock.contains("draftStore"))
+    }
+}
+
 fun main() {
     println("== hotfix11 模型快速切换 + 功能四/五 验证 ==")
     testModelQuickSwitch()
@@ -798,6 +846,8 @@ fun main() {
     testBackupRestore()
     println()
     testPromptLibrary()
+    println()
+    testConversationDrafts()
     println()
     println("== 汇总 ==")
     println("PASS: $passed  FAIL: ${failures.size}  TOTAL: ${passed + failures.size}")
