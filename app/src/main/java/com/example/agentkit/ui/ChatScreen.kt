@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.speech.tts.TextToSpeech
 import android.util.Base64
 import android.widget.Toast
 import androidx.compose.animation.animateContentSize
@@ -74,6 +75,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -106,6 +108,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.agentkit.core.ModelProfile
+import java.util.Locale
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
@@ -172,6 +175,11 @@ fun ChatScreen(
     // 功能四：模型切换弹窗开关（指示条点击打开）
     var showModelSwitch by remember { mutableStateOf(false) }
     val ctx = LocalContext.current
+    // 功能五（P1-2）：TTS 朗读（离开对话页即 shutdown，防系统绑定泄漏）
+    val tts = remember { TtsController(ctx) }
+    DisposableEffect(Unit) { onDispose { tts.shutdown() } }
+    // 正在朗读的消息下标（null = 没在朗读）；再点同一按钮即停止
+    var speakingIndex by remember { mutableStateOf<Int?>(null) }
     val activeProfile = profiles.firstOrNull { it.id == activeProfileId }
     // 功能四（P0-2）：待发附件
     val pendingImages by vm.pendingImages.collectAsStateWithLifecycle()
@@ -256,7 +264,8 @@ fun ChatScreen(
                             // 功能五（P1-1）：落库消息才给「更多」（分享/从此处删除）——
                             // 草稿与失败气泡没有轮次可操作
                             val showMore = !running && item.turnIndex >= 0
-                            if (showSwitch || showRegen || showCopy || showMore) {
+                            val showSpeak = !running && item.text.isNotBlank()
+                            if (showSwitch || showRegen || showCopy || showMore || showSpeak) {
                                 AssistantActions(
                                     variantIndex = item.variantIndex,
                                     variantCount = item.variantCount,
@@ -264,10 +273,22 @@ fun ChatScreen(
                                     showRegen = showRegen,
                                     showCopy = showCopy,
                                     showMore = showMore,
+                                    showSpeak = showSpeak,
+                                    speaking = speakingIndex == index,
                                     onSwitch = { delta -> vm.switchVariant(item.turnIndex, delta) },
                                     onRegenerate = { vm.regenerate() },
                                     onCopy = { copyMessage(ctx, item.text) },
-                                    onMore = { menuTarget = item.text to item.turnIndex }
+                                    onMore = { menuTarget = item.text to item.turnIndex },
+                                    onSpeak = {
+                                        if (speakingIndex == index) {
+                                            tts.stop()
+                                            speakingIndex = null
+                                        } else if (tts.speak(item.text)) {
+                                            speakingIndex = index
+                                        } else {
+                                            Toast.makeText(ctx, "朗读器未就绪，请稍后再试", Toast.LENGTH_SHORT).show()
+                                        }
+                                    }
                                 )
                             }
                         }
@@ -579,6 +600,57 @@ private fun copyMessage(context: Context, text: String) {
 }
 
 /**
+ * 功能五（P1-2）：TTS 朗读控制器（系统 TextToSpeech，零新增依赖）。
+ *
+ * 生命周期纪律：TTS 必须显式 shutdown，否则会泄漏系统绑定——由调用方在
+ * [DisposableEffect] 里挂 [shutdown]（离开对话页即释放）。
+ *
+ * 初始化是异步的（OnInitListener 回调），因此 [speak] 用 [ready] 守卫并返回
+ * 布尔：未就绪时上层提示「朗读器未就绪」，而不是静默失败。
+ */
+internal class TtsController(context: Context) {
+
+    private val appContext = context.applicationContext
+    private var tts: TextToSpeech? = null
+
+    @Volatile
+    private var ready = false
+
+    init {
+        tts = TextToSpeech(appContext) { status ->
+            ready = status == TextToSpeech.SUCCESS
+            if (ready) {
+                // 中文优先（App 面向中文用户）；设备无中文引擎时回落系统默认，不阻断朗读
+                runCatching { tts?.language = Locale.CHINA }
+            }
+        }
+    }
+
+    /** 开始朗读；返回 false = 引擎未就绪或是空文本（调用方据此提示）。 */
+    fun speak(text: String): Boolean {
+        if (!ready || text.isBlank()) return false
+        val id = "msg-${System.currentTimeMillis()}"
+        tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, id)
+        return true
+    }
+
+    /** 停止当前朗读（再点一次同一按钮走这里）。 */
+    fun stop() {
+        runCatching { tts?.stop() }
+    }
+
+    /** 释放系统绑定（Composable 离开时调用）。 */
+    fun shutdown() {
+        runCatching {
+            tts?.stop()
+            tts?.shutdown()
+        }
+        tts = null
+        ready = false
+    }
+}
+
+/**
  * 功能五（P1-1）：分享消息正文——走系统分享面板（对标 RikkaHub MessageSheetAction Share）。
  *
  * 用 ACTION_SEND + text/plain：不依赖任何额外权限，用户自己选目标 App。
@@ -657,10 +729,13 @@ private fun AssistantActions(
     showRegen: Boolean,
     showCopy: Boolean,
     showMore: Boolean,
+    showSpeak: Boolean,
+    speaking: Boolean,
     onSwitch: (Int) -> Unit,
     onRegenerate: () -> Unit,
     onCopy: () -> Unit,
-    onMore: () -> Unit
+    onMore: () -> Unit,
+    onSpeak: () -> Unit
 ) {
     Row(
         modifier = Modifier
@@ -699,6 +774,20 @@ private fun AssistantActions(
                 modifier = Modifier
                     .clip(RoundedCornerShape(8.dp))
                     .clickable(onClick = onRegenerate)
+                    .padding(horizontal = AgentSpacing.space2, vertical = 6.dp)
+            )
+        }
+        // 功能五（P1-2）：朗读 / 停止朗读（同一按钮切换，文案随状态反转）
+        if (showSpeak) {
+            if (showCopy || showSwitch || showRegen || showMore) Spacer(Modifier.width(AgentSpacing.space3))
+            Text(
+                text = if (speaking) "停止朗读" else "朗读",
+                style = MaterialTheme.typography.labelMedium,
+                color = if (speaking) MaterialTheme.colorScheme.error
+                else MaterialTheme.colorScheme.primary,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(8.dp))
+                    .clickable(onClick = onSpeak)
                     .padding(horizontal = AgentSpacing.space2, vertical = 6.dp)
             )
         }

@@ -308,6 +308,42 @@ private fun testMessageMoreActions() {
     }
 }
 
+/**
+ * M 区：功能五 P1-2「TTS 朗读」——对标 RikkaHub ChatMessageActions(tts) /
+ * Operit ChatArea onSpeakMessage；AgentKit 用系统 TextToSpeech，零新增依赖。
+ */
+private fun testTtsReading() {
+    println("— M 区：TTS 朗读（功能五 P1-2） —")
+    val chat = readSource("ui/ChatScreen.kt")
+
+    check("M1 控制器用系统 TextToSpeech（零新增依赖）") {
+        assertContains("M1", chat, "internal class TtsController(context: Context)")
+        assertContains("M1", chat, "TextToSpeech(appContext)")
+    }
+    check("M2 异步初始化有 ready 守卫，speak 返回布尔（未就绪可提示，不静默失败）") {
+        assertContains("M2", chat, "private var ready = false")
+        assertContains("M2", chat, "fun speak(text: String): Boolean")
+        assertContains("M2", chat, "if (!ready || text.isBlank()) return false")
+    }
+    check("M3 生命周期纪律：DisposableEffect 离开即 shutdown（防系统绑定泄漏）") {
+        assertContains("M3", chat, "DisposableEffect(Unit) { onDispose { tts.shutdown() } }")
+        assertContains("M3", chat, "fun shutdown()")
+    }
+    check("M4 中文优先且回落不阻断（无中文引擎也不炸）") {
+        assertContains("M4", chat, "runCatching { tts?.language = Locale.CHINA }")
+    }
+    check("M5 朗读/停止同按钮切换，文案与颜色随状态反转") {
+        assertContains("M5", chat, "if (speaking) \"停止朗读\" else \"朗读\"")
+        assertContains("M5", chat, "speakingIndex == index")
+    }
+    check("M6 未就绪给可读提示（不是点了没反应）") {
+        assertContains("M6", chat, "朗读器未就绪，请稍后再试")
+    }
+    check("M7 运行中不给朗读入口（避免与流式输出抢注意力）") {
+        assertContains("M7", chat, "val showSpeak = !running && item.text.isNotBlank()")
+    }
+}
+
 fun main() {
     println("== hotfix11 模型快速切换 + 功能四/五 验证 ==")
     testModelQuickSwitch()
@@ -321,6 +357,8 @@ fun main() {
     testConversationPinAndSearch()
     println()
     testMessageMoreActions()
+    println()
+    testTtsReading()
     println()
     println("== 汇总 ==")
     println("PASS: $passed  FAIL: ${failures.size}  TOTAL: ${passed + failures.size}")
