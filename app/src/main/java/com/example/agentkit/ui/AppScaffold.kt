@@ -39,6 +39,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Bookmark
@@ -128,6 +129,7 @@ enum class AppDest(
     SKILLS("skills", "技能中心", "技能中心", Icons.Outlined.Extension),
     LOGS("logs", "运行日志", "运行日志", Icons.Outlined.Description),
     MEMORY("memory", "记忆库", "记忆库", Icons.Outlined.Storage),
+    PROMPTS("prompts", "提示词库", "提示词库", Icons.Outlined.AutoAwesome),
     SETTINGS("settings", "设置", "设置", Icons.Outlined.Settings),
     ABOUT("about", "关于", "关于", Icons.Outlined.Info);
 
@@ -547,7 +549,8 @@ private fun ScreenHost(
         AppDest.CHAT -> ChatScreen(
             vm = vm,
             onOpenModel = { onNavigate(AppDest.MODEL) },
-            onOpenPermissions = { onNavigate(AppDest.PERMISSIONS) }
+            onOpenPermissions = { onNavigate(AppDest.PERMISSIONS) },
+            onManagePrompts = { onNavigate(AppDest.PROMPTS) }
         )
         // 功能一：模型页不再硬跳对话页——从哪来往哪回（抽屉来的回抽屉关闭态，空态直达的回对话页）
         AppDest.MODEL -> ModelConfigScreen(vm) { onBack() }
@@ -562,6 +565,7 @@ private fun ScreenHost(
         AppDest.SKILLS -> SkillsScreen(vm)
         AppDest.LOGS -> LogsScreen(vm)
         AppDest.MEMORY -> MemoryScreen(vm)
+        AppDest.PROMPTS -> PromptLibraryScreen(vm)
         AppDest.SETTINGS -> SettingsScreen(vm, themeMode, onThemeModeChange, onNavigate)
         AppDest.ABOUT -> AboutScreen()
     }

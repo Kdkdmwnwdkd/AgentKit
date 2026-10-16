@@ -688,6 +688,89 @@ private fun testBackupRestore() {
     }
 }
 
+/**
+ * S 区：功能五 P1-7「输入栏快捷指令/提示词库」——对标 Coomi PromptLibrary.vue
+ * （SavedPrompt + BUILTIN 另存为语义）与 QuickCommands（一键填入）；RikkaHub 的
+ * PromptLibrary 实为注入位点、Operit 无此功能，故以 Coomi 为唯一参照，净室重写。
+ *
+ * 链路：core 纯函数（净化/内置保护）→ PromptStore 持久化 → VM CRUD + 填入输入框 →
+ * 输入栏闪电按钮 + 选择器 → 管理页/设置页入口/路由。
+ */
+private fun testPromptLibrary() {
+    println("— S 区：输入栏快捷指令/提示词库（功能五 P1-7） —")
+    val models = readSource("core/PromptModels.kt")
+    val lib = readSource("core/PromptLibrary.kt")
+    val store = readSource("core/PromptStore.kt")
+    val vm = readSource("ui/ChatViewModel.kt")
+    val chat = readSource("ui/ChatScreen.kt")
+    val picker = readSource("ui/PromptLibraryScreen.kt")
+    val scaffold = readSource("ui/AppScaffold.kt")
+    val settings = readSource("ui/SettingsScreen.kt")
+
+    check("S1 数据契约 + 6 条内置（builtin 字段而非字符串前缀猜语义）") {
+        assertContains("S1", models, "data class PromptItem(")
+        assertContains("S1", models, "val builtin: Boolean = false")
+        assertContains("S1", lib, "val BUILTIN_PROMPTS: List<PromptItem> = listOf(")
+        assertTrue("S1", lib.split("PromptItem(").size - 1 >= 6)
+        assertContains("S1", lib, "id = \"builtin:explain\"")
+        assertContains("S1", lib, "id = \"builtin:phone-task\"")
+    }
+    check("S2 读入净化：空字段/重复 id 丢弃，标签 trim+去重（坏数据不进内存）") {
+        assertContains("S2", lib, "fun sanitizePrompts(raw: List<PromptItem>): List<PromptItem>")
+        assertContains("S2", lib, "if (id.isEmpty() || title.isEmpty() || content.isEmpty()) return@mapNotNull null")
+        assertContains("S2", lib, "if (!seen.add(id)) return@mapNotNull null")
+        assertContains("S2", lib, "item.tags.map { it.trim() }.filter { it.isNotBlank() }.distinct()")
+    }
+    check("S3 upsert 规则：内置拒收（另存为自定义）/ 空内容拒收 / 同 id 替换否则追加") {
+        assertContains("S3", lib, "fun upsertPrompt(items: List<PromptItem>, draft: PromptItem): PromptUpsertResult")
+        assertContains("S3", lib, "if (draft.builtin) return PromptUpsertResult.Rejected(\"内置提示词不可修改，请另存为自定义\")")
+        assertContains("S3", lib, "items.map { if (it.id == id) entry else it }")
+        assertContains("S3", lib, "items + entry")
+    }
+    check("S4 删除内置保护 + 另存为复制（新 id，内容继承）") {
+        assertContains("S4", lib, "fun deletePrompt(items: List<PromptItem>, id: String): PromptDeleteResult")
+        assertContains("S4", lib, "if (target.builtin) return PromptDeleteResult.Protected")
+        assertContains("S4", lib, "fun duplicateAsCustom(items: List<PromptItem>, id: String, newId: String): PromptItem?")
+        assertContains("S4", lib, "fun newPromptId(now: Long, random: Int): String = \"p-\$now-\${random.toString(16).padStart(6, '0')}\"")
+    }
+    check("S5 PromptStore 持久化纪律：原子写 tmp+bak + 首次种内置 + 补种不覆盖用户数据") {
+        assertContains("S5", store, "class PromptStore(file: File)")
+        assertContains("S5", store, "tmpFile.renameTo(file)")
+        assertContains("S5", store, "file.copyTo(bakFile, overwrite = true)")
+        assertContains("S5", store, "val merged = mergeWithBuiltins(parsed ?: emptyList())")
+        assertContains("S5", store, "val missing = BUILTIN_PROMPTS.filter { it.id !in have }")
+        assertContains("S5", store, "return missing + cleaned")
+    }
+    check("S6 VM 接线：CRUD + 填入输入框（追加语义不毁用户已输入）") {
+        assertContains("S6", vm, "private val promptStore = PromptStore(File(app.filesDir, \"prompts.json\"))")
+        assertContains("S6", vm, "val prompts: StateFlow<List<PromptItem>>")
+        assertContains("S6", vm, "fun savePrompt(draft: PromptItem): PromptUpsertResult")
+        assertContains("S6", vm, "fun deletePrompt(id: String): PromptDeleteResult")
+        assertContains("S6", vm, "fun duplicatePromptAsCustom(id: String): String?")
+        assertContains("S6", vm, "fun insertPromptIntoInput(content: String)")
+        assertContains("S6", vm, "input.value = if (current.isBlank()) content else \"\$current\\n\$content\"")
+    }
+    check("S7 输入栏唤起：闪电按钮 + 选择器（点选填入/管理进全功能页）") {
+        assertContains("S7", chat, "onOpenPrompts = { showPromptPicker = true }")
+        assertContains("S7", chat, "private fun PromptButton(enabled: Boolean, onClick: () -> Unit)")
+        assertContains("S7", chat, "contentDescription = \"快捷指令\"")
+        assertContains("S7", chat, "vm.insertPromptIntoInput(item.content)")
+        assertContains("S7", picker, "fun PromptPickerDialog(")
+        assertContains("S7", picker, "onPick: (PromptItem) -> Unit")
+        assertContains("S7", picker, "onManage: () -> Unit")
+    }
+    check("S8 管理页 + 路由 + 设置页入口（三处齐活）") {
+        assertContains("S8", picker, "fun PromptLibraryScreen(vm: ChatViewModel)")
+        assertContains("S8", picker, "title = \"内置提示词\"")
+        assertContains("S8", picker, "danger = true")
+        assertContains("S8", scaffold, "PROMPTS(\"prompts\", \"提示词库\", \"提示词库\", Icons.Outlined.AutoAwesome)")
+        assertContains("S8", scaffold, "AppDest.PROMPTS -> PromptLibraryScreen(vm)")
+        assertContains("S8", scaffold, "onManagePrompts = { onNavigate(AppDest.PROMPTS) }")
+        assertContains("S8", settings, "title = \"提示词库\"")
+        assertContains("S8", settings, "onClick = { onNavigate(AppDest.PROMPTS) }")
+    }
+}
+
 fun main() {
     println("== hotfix11 模型快速切换 + 功能四/五 验证 ==")
     testModelQuickSwitch()
@@ -713,6 +796,8 @@ fun main() {
     testConversationExport()
     println()
     testBackupRestore()
+    println()
+    testPromptLibrary()
     println()
     println("== 汇总 ==")
     println("PASS: $passed  FAIL: ${failures.size}  TOTAL: ${passed + failures.size}")

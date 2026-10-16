@@ -12,7 +12,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.Apps
+import androidx.compose.material.icons.outlined.Bolt
 import androidx.compose.material.icons.outlined.Build
 import androidx.compose.material.icons.outlined.Cloud
 import androidx.compose.material.icons.outlined.Description
@@ -180,6 +182,13 @@ fun SettingsScreen(
                     title = "编辑器",
                     description = "查看与修改工作区内的代码文件",
                     onClick = { onNavigate(AppDest.EDITOR) }
+                )
+                AkDivider(Modifier.padding(start = AgentSpacing.space4))
+                AkListItem(
+                    icon = Icons.Outlined.AutoAwesome,
+                    title = "提示词库",
+                    description = "输入栏闪电按钮唤起的快捷指令，可新建与编辑",
+                    onClick = { onNavigate(AppDest.PROMPTS) }
                 )
                 AkDivider(Modifier.padding(start = AgentSpacing.space4))
                 AkListItem(

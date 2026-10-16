@@ -133,7 +133,8 @@ import kotlinx.coroutines.withContext
 fun ChatScreen(
     vm: ChatViewModel,
     onOpenModel: () -> Unit,
-    onOpenPermissions: () -> Unit
+    onOpenPermissions: () -> Unit,
+    onManagePrompts: () -> Unit
 ) {
     val messages by vm.messages.collectAsStateWithLifecycle()
     val streamDraft by vm.streamDraft.collectAsStateWithLifecycle()
@@ -142,6 +143,9 @@ fun ChatScreen(
     val activeConversationId by vm.activeConversationId.collectAsStateWithLifecycle()
     val input by vm.input.collectAsStateWithLifecycle()
     val running by vm.isRunning.collectAsStateWithLifecycle()
+    // 功能五（P1-7）：提示词库（快捷指令）——输入栏闪电按钮唤起的选择器数据源
+    val prompts by vm.prompts.collectAsStateWithLifecycle()
+    var showPromptPicker by remember { mutableStateOf(false) }
     val pendingApproval by vm.pendingApproval.collectAsStateWithLifecycle()
     val serviceConnected by vm.serviceConnected.collectAsStateWithLifecycle()
     val notificationGranted by vm.notificationGranted.collectAsStateWithLifecycle()
@@ -351,8 +355,25 @@ fun ChatScreen(
             onSend = { vm.send() },
             onStop = { vm.stop() },
             onPickAttach = { showAttachMenu = true },
+            onOpenPrompts = { showPromptPicker = true },
             onRemoveImage = { vm.removePendingImage(it) },
             onRemoveFile = { vm.removePendingFile(it) }
+        )
+    }
+
+    // 功能五（P1-7）：快捷指令选择器（点选填入输入框；「管理」进提示词库全功能页）
+    if (showPromptPicker) {
+        PromptPickerDialog(
+            prompts = prompts,
+            onDismiss = { showPromptPicker = false },
+            onPick = { item ->
+                vm.insertPromptIntoInput(item.content)
+                showPromptPicker = false
+            },
+            onManage = {
+                showPromptPicker = false
+                onManagePrompts()
+            }
         )
     }
 
@@ -1281,6 +1302,7 @@ private fun ChatInputBar(
     onSend: () -> Unit,
     onStop: () -> Unit,
     onPickAttach: () -> Unit,
+    onOpenPrompts: () -> Unit,
     onRemoveImage: (String) -> Unit,
     onRemoveFile: (String) -> Unit
 ) {
@@ -1314,6 +1336,10 @@ private fun ChatInputBar(
                 // 功能四（P0-2）/ 功能五（P1-4）：附件入口——「＋」圆按钮，运行中禁用
                 // （点开后再选「图片 / 文件」，不再直通相册）
                 AttachImageButton(enabled = !running, onClick = onPickAttach)
+                Spacer(Modifier.width(AgentSpacing.space2))
+                // 功能五（P1-7）：快捷指令入口——「⚡」圆按钮，运行中禁用
+                // （与 ＋ 同形制：输入栏不放两个异形按钮，视觉噪声翻倍）
+                PromptButton(enabled = !running, onClick = onOpenPrompts)
                 Spacer(Modifier.width(AgentSpacing.space2))
                 // 输入框：surface-var 底 radius 20dp，最小高 48dp，多行自增（max 120dp 内滚动）
                 Box(
@@ -1525,6 +1551,44 @@ private fun AttachPickerDialog(
                 }
             }
         }
+    }
+}
+
+/**
+ * 功能五（P1-7）：快捷指令入口（输入栏「⚡」圆按钮）。
+ *
+ * 与 [AttachImageButton] 同形制（touchTarget 圆底 surface-var，按压 0.97 微缩），
+ * 只差图标与语义；运行中与附件按钮一同禁用——运行中选提示词会与在途请求抢输入框。
+ */
+@Composable
+private fun PromptButton(enabled: Boolean, onClick: () -> Unit) {
+    val interaction = remember { MutableInteractionSource() }
+    val pressed by interaction.collectIsPressedAsState()
+    val scale by animateFloatAsState(
+        targetValue = if (pressed) 0.97f else 1f,
+        animationSpec = AkMotionPress
+    )
+    Box(
+        modifier = Modifier
+            .size(AgentDimens.touchTarget)
+            .scale(scale)
+            .clip(CircleShape)
+            .background(MaterialTheme.colorScheme.surfaceVariant)
+            .clickable(
+                interactionSource = interaction,
+                indication = null,
+                enabled = enabled,
+                onClick = onClick
+            )
+            .then(if (enabled) Modifier else Modifier.alpha(0.38f)),
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(
+            imageVector = Icons.Outlined.AutoAwesome,
+            contentDescription = "快捷指令",
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(20.dp)
+        )
     }
 }
 

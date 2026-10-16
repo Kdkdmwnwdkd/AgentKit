@@ -42,6 +42,10 @@ import com.example.agentkit.core.BackupArchive
 import com.example.agentkit.core.BackupManifest
 import com.example.agentkit.core.ConfigBackup
 import com.example.agentkit.core.ConversationRecord
+import com.example.agentkit.core.PromptDeleteResult
+import com.example.agentkit.core.PromptItem
+import com.example.agentkit.core.PromptStore
+import com.example.agentkit.core.PromptUpsertResult
 import com.example.agentkit.core.conversationToMarkdown
 import com.example.agentkit.core.ConversationStore
 import com.example.agentkit.core.ConversationSummary
@@ -1838,6 +1842,49 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         val rec = conversationStore.load(convId) ?: return ""
         if (rec.messages.isEmpty()) return ""
         return conversationToMarkdown(rec)
+    }
+
+    /* -------------------- 功能五（P1-7）：提示词库（快捷指令） -------------------- */
+
+    /**
+     * 提示词库存储（prompts.json 放 filesDir，原子写 + .bak，形态学 MemoryStore）。
+     * 与 ConversationStore/MemoryStore 同一套持久化纪律，首次启动种内置 6 条。
+     */
+    private val promptStore = PromptStore(File(app.filesDir, "prompts.json"))
+
+    private val _prompts = MutableStateFlow(promptStore.list())
+    val prompts: StateFlow<List<PromptItem>> = _prompts.asStateFlow()
+
+    /** 新建/更新自定义提示词（内置会被拒收，UI 展示 [PromptUpsertResult.Rejected.reason]）。 */
+    fun savePrompt(draft: PromptItem): PromptUpsertResult {
+        val result = promptStore.save(draft)
+        if (result is PromptUpsertResult.Ok) _prompts.value = result.items
+        return result
+    }
+
+    /** 删除提示词（内置受保护）。 */
+    fun deletePrompt(id: String): PromptDeleteResult {
+        val result = promptStore.delete(id)
+        if (result is PromptDeleteResult.Ok) _prompts.value = result.items
+        return result
+    }
+
+    /** 「另存为自定义」：返回新 id（UI 随即切入该条编辑态）；源不存在返 null。 */
+    fun duplicatePromptAsCustom(id: String): String? {
+        val newId = promptStore.duplicateAsCustom(id) ?: return null
+        _prompts.value = promptStore.list()
+        return newId
+    }
+
+    /**
+     * 把提示词内容填进输入框（快捷指令的「一键唤起」终态）。
+     *
+     * 追加而非覆盖：输入框已有内容时换行续写——用户经常是「写了一半思路，
+     * 选个提示词补个尾巴」；覆盖会静默毁掉他已打的字。空框则直接填入。
+     */
+    fun insertPromptIntoInput(content: String) {
+        val current = input.value
+        input.value = if (current.isBlank()) content else "$current\n$content"
     }
 
     /* -------------------- 功能五（P1-4b）：全局备份 / 恢复 -------------------- */
