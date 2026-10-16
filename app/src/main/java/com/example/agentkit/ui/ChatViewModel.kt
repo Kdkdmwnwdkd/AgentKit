@@ -38,6 +38,7 @@ import com.example.agentkit.core.AgentLogger
 import com.example.agentkit.core.agent.ConnectivityNetworkRecoveryWaiter
 import com.example.agentkit.core.ConfigSanitizer
 import com.example.agentkit.core.ConfigStore
+import com.example.agentkit.core.CompletionNotifier
 import com.example.agentkit.core.BackupArchive
 import com.example.agentkit.core.BackupManifest
 import com.example.agentkit.core.ConfigBackup
@@ -718,6 +719,17 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
 
     /** 模型配置持久化：进程重启也能还原，避免「明明填过却退回默认值」的不一致。 */
     private val configStore = ConfigStore(app)
+
+    // —— 功能五（P1-10）：回答完成提醒开关（设置页消费；落盘，与主题偏好不同纪律：
+    // 通知是用户显式 opt-in 的能力，跨启动应保持）——
+    private val _completionNotifyEnabled = MutableStateFlow(configStore.isCompletionNotifyEnabled())
+    val completionNotifyEnabled: StateFlow<Boolean> = _completionNotifyEnabled.asStateFlow()
+
+    /** 设置页开关：写回 ConfigStore（即时生效 + 跨启动保持）。 */
+    fun setCompletionNotifyEnabled(enabled: Boolean) {
+        configStore.setCompletionNotifyEnabled(enabled)
+        _completionNotifyEnabled.value = enabled
+    }
 
     // —— 功能二：多模型配置（用户真机录屏反馈：「别人的模型可以搞好几个，你就只能搞一个」）——
     // _profiles = 全部档案，_activeProfileId = 当前生效档案；config 同名同型保留
@@ -1724,6 +1736,15 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
                             }
                             else -> Unit
                         }
+                    }
+                    // 功能五（P1-10）：回答完成提醒——开了开关且 App 在后台才发通知
+                    // （前台提醒是噪音；权限被拒/被关由 CompletionNotifier 内部静默降级）。
+                    // 只挂 send 路径：regenerate 是「重做这题」的主动操作，用户盯着概率极高
+                    if (_completionNotifyEnabled.value) {
+                        CompletionNotifier.notifyAnswerComplete(
+                            app,
+                            lastAnswer?.content.orEmpty()
+                        )
                     }
                 }
                 outcome.onFailure {

@@ -1,6 +1,8 @@
 package com.example.agentkit
 
+import android.app.Activity
 import android.app.Application
+import android.os.Bundle
 import com.example.agentkit.core.AgentLogger
 import com.example.agentkit.core.CrashLogger
 
@@ -40,5 +42,32 @@ class AgentKitApplication : Application() {
                 )
             }
         }
+        // 功能五（P1-10）：前台 Activity 计数——「回答完成提醒」只在 App 退到后台时
+        // 发通知（用户正盯着聊天界面时提醒是噪音）。用 ActivityLifecycleCallbacks
+        // 而不是 ProcessLifecycleOwner：不引 lifecycle-process 新依赖，计数语义也够用。
+        registerActivityLifecycleCallbacks(object : Application.ActivityLifecycleCallbacks {
+            override fun onActivityStarted(activity: Activity) {
+                foregroundActivities++
+            }
+
+            override fun onActivityStopped(activity: Activity) {
+                foregroundActivities = (foregroundActivities - 1).coerceAtLeast(0)
+            }
+
+            override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) = Unit
+            override fun onActivityResumed(activity: Activity) = Unit
+            override fun onActivityPaused(activity: Activity) = Unit
+            override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) = Unit
+            override fun onActivityDestroyed(activity: Activity) = Unit
+        })
+    }
+
+    companion object {
+        /** 已 started 未 stopped 的 Activity 数；0 = App 在后台。多 Activity 形态也成立。 */
+        @Volatile
+        private var foregroundActivities: Int = 0
+
+        /** App 是否在前台（有可见 Activity）。 CompletionNotifier 据此决定发不发通知。 */
+        fun isAppInForeground(): Boolean = foregroundActivities > 0
     }
 }

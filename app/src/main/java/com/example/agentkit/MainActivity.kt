@@ -27,15 +27,21 @@ class MainActivity : ComponentActivity() {
  * 主题模式用 rememberSaveable 持有在** Activity 作用域**（而非各页内），
  * 设置页改选项、全 App 立刻跟着变；旋转屏幕 / 进程被系统回收后重建时不丢选择。
  * 偏好不落盘——日用助手天天对话，主题不值得一次磁盘写（见 [ThemeMode] 注释）。
+ *
+ * 功能五（P1-10）：动态取色开关与 [themeMode] 同纪律（进程内有效不落盘），
+ * 默认关——「暖纸」品牌色是 deliberate 设计，壁纸取色是 opt-in 覆盖。
  */
 @Composable
 private fun AgentKitApp() {
     var themeMode by rememberSaveable { mutableStateOf(ThemeMode.SYSTEM) }
-    AgentKitTheme(themeMode = themeMode) {
+    var dynamicColor by rememberSaveable { mutableStateOf(false) }
+    AgentKitTheme(themeMode = themeMode, dynamicColor = dynamicColor) {
         AppScaffold(
             vm = viewModel<ChatViewModel>(),
             themeMode = themeMode,
-            onThemeModeChange = { themeMode = it }
+            onThemeModeChange = { themeMode = it },
+            dynamicColor = dynamicColor,
+            onDynamicColorChange = { dynamicColor = it }
         )
     }
 }

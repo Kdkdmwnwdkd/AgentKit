@@ -101,14 +101,14 @@
 
 | # | 功能项 | Coomi | RikkaHub | Operit | AiCode | AgentKit 现状 | 定级 |
 |---|---|---|---|---|---|---|---|
-| 48 | 外观（明暗/动态取色/背景） | ✅ AppearanceView | ✅ themeId/dynamicColor/amoled | ✅ settings | ✅ Material You+背景图 | ◐ 五主题 token，无动态取色/背景 | P1 |
+| 48 | 外观（明暗/动态取色/背景） | ✅ AppearanceView | ✅ themeId/dynamicColor/amoled | ✅ settings | ✅ Material You+背景图 | ✅ 动态取色（hotfix27：Material You，Android 12+，opt-in） | P1 ✅ |
 | 49 | Token 用量与成本统计 | ✅ UsageView | ✅ stats 页 | ✅ tokenstats | ✅ Token stats | ✅ 会话用量条+气泡行+抽屉 tokens（hotfix21） | P1 ✅ |
 | 50 | 备份/恢复（含加密） | ✅ RestoreView | ✅ backup 页 | ◐ | ✅ 加密导出导入 | ❌ | P1 |
 | 51 | 多语言 UI | ❌ | ✅ 10 语言 | ◐ | ✅ 中英 | ❌（仅中文） | P2 |
 | 52 | 崩溃/日志可见性 | ◐ | ✅ log 页 | ◐ | ✅ CrashActivity | ✅ 日志页+崩溃横幅 | 已追平 |
 | 53 | 断线恢复过程可见 | ✅ 继续重试/回撤 | ◐ | ◐ | ◐ | ✅ RetryBanner | 已追平 |
 | 54 | 更新检查 | ✅ UpdatesView | ✅ UpdateChecker | ✅ update 模块 | ◐ | ✅（构建页链路） | 已追平 |
-| 55 | 通知（完成提醒） | ◐ | ✅ 通知渠道 | ✅ | ◐ | ◐（前台服务通知，无完成提醒） | P1 |
+| 55 | 通知（完成提醒） | ◐ | ✅ 通知渠道 | ✅ | ◐ | ✅ 回答完成提醒（hotfix27：后台才发 + 权限按需申请） | P1 ✅ |
 
 ## 二、差距清单（按日常使用频率 × 实现成本排序）
 
@@ -132,7 +132,7 @@ P1-6 模型选择器增强：收藏夹 + 打开定位当前项 + Provider 分组
 P1-7 输入栏快捷指令/提示词库唤起（#26）✅ hotfix24
 P1-8 会话草稿独立保存（#34）✅ hotfix25
 P1-9 推理过程折叠 UI（#20）✅ hotfix26
-P1-10 外观增强：Material You 动态取色 + 完成提醒通知（#48/#55）⏳
+P1-10 外观增强：Material You 动态取色 + 完成提醒通知（#48/#55）✅ hotfix27
 
 ### P2（增强，排期靠后）
 

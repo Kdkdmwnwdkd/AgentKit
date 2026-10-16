@@ -201,12 +201,16 @@ internal fun String.isErrorLogLine(): Boolean = split(' ').getOrNull(1) == "ERRO
  *   左缘 24dp 热区支持跟手右滑（超过 1/3 吸附，150ms motionFast）。
  *
  * @param themeMode 明暗模式（设置页三选，由 MainActivity 用 rememberSaveable 持有）。
+ * @param dynamicColor 功能五（P1-10）：Material You 动态取色开关（进程内有效）。
+ * @param onDynamicColorChange 动态取色切换回调（写回宿主持有的状态）。
  */
 @Composable
 fun AppScaffold(
     vm: ChatViewModel,
     themeMode: ThemeMode,
-    onThemeModeChange: (ThemeMode) -> Unit
+    onThemeModeChange: (ThemeMode) -> Unit,
+    dynamicColor: Boolean = false,
+    onDynamicColorChange: (Boolean) -> Unit = {}
 ) {
     // 路由态：15 个一级目的地的唯一真相源（抽屉只见 4+1，其余经设置页 / 控制台快捷入口到达）；
     // 页面切换无转场动画（v3 无此 token，§6.5.2）
@@ -408,6 +412,7 @@ fun AppScaffold(
                                 Box(Modifier.weight(1f)) {
                                     ScreenHost(
                                         dest, vm, themeMode, onThemeModeChange,
+                                        dynamicColor, onDynamicColorChange,
                                         onSelect, onPageBack, unreadErrors
                                     )
                                 }
@@ -428,6 +433,7 @@ fun AppScaffold(
                         Box(Modifier.weight(1f)) {
                             ScreenHost(
                                 dest, vm, themeMode, onThemeModeChange,
+                                dynamicColor, onDynamicColorChange,
                                 onSelect, onPageBack, unreadErrors
                             )
                         }
@@ -541,6 +547,8 @@ private fun ScreenHost(
     vm: ChatViewModel,
     themeMode: ThemeMode,
     onThemeModeChange: (ThemeMode) -> Unit,
+    dynamicColor: Boolean,
+    onDynamicColorChange: (Boolean) -> Unit,
     onNavigate: (AppDest) -> Unit,
     onBack: () -> Unit,
     unreadErrors: Int
@@ -566,7 +574,14 @@ private fun ScreenHost(
         AppDest.LOGS -> LogsScreen(vm)
         AppDest.MEMORY -> MemoryScreen(vm)
         AppDest.PROMPTS -> PromptLibraryScreen(vm)
-        AppDest.SETTINGS -> SettingsScreen(vm, themeMode, onThemeModeChange, onNavigate)
+        AppDest.SETTINGS -> SettingsScreen(
+            vm,
+            themeMode,
+            onThemeModeChange,
+            dynamicColor,
+            onDynamicColorChange,
+            onNavigate
+        )
         AppDest.ABOUT -> AboutScreen()
     }
 }

@@ -306,6 +306,17 @@ class ConfigStore(context: Context) {
         private const val KEY_GH_REPO = "gh_repo"
         private const val KEY_GH_PAT = "gh_pat"
         private const val KEY_GH_WORKFLOW = "gh_workflow"
+        /** 功能五（P1-10）：回答完成提醒开关（默认关——通知是侵入式能力，opt-in）。 */
+        private const val KEY_COMPLETION_NOTIFY = "completion_notify"
+    }
+
+    /** 功能五（P1-10）：回答完成提醒是否开启（默认 false）。 */
+    fun isCompletionNotifyEnabled(): Boolean =
+        sp.getBoolean(KEY_COMPLETION_NOTIFY, false)
+
+    /** 功能五（P1-10）：写回答完成提醒开关（设置页开关即时生效，落盘供下次启动读取）。 */
+    fun setCompletionNotifyEnabled(enabled: Boolean) {
+        sp.edit().putBoolean(KEY_COMPLETION_NOTIFY, enabled).apply()
     }
 }
 

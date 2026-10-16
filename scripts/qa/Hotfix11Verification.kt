@@ -929,6 +929,95 @@ private fun testReasoningFold() {
     }
 }
 
+/**
+ * V 区：功能五 P1-10「外观增强」——Material You 动态取色 + 回答完成提醒通知，
+ * 对标 RikkaHub dynamic theme / Coomi 完成提醒。
+ *
+ * 纪律：动态取色与主题模式同纪律（进程内有效不落盘，默认关——「暖纸」品牌色是
+ * deliberate 设计，壁纸取色是 opt-in 覆盖，且只覆盖 M3 标准色角色，语义色不跟随）；
+ * 完成提醒是**落盘**开关（用户显式 opt-in 的侵入式能力，跨启动保持），
+ * 且只在 App 退到后台时发（前台提醒是噪音），权限被拒/被关静默降级。
+ */
+private fun testAppearanceEnhancements() {
+    println("— V 区：外观增强：动态取色 + 完成提醒（功能五 P1-10） —")
+    val theme = readSource("ui/Theme.kt")
+    val activity = readSource("AgentKitApplication.kt")
+    val notifier = readSource("core/CompletionNotifier.kt")
+    val store = readSource("core/ConfigStore.kt")
+    val vm = readSource("ui/ChatViewModel.kt")
+    val settings = readSource("ui/SettingsScreen.kt")
+    val scaffold = readSource("ui/AppScaffold.kt")
+
+    check("V1 动态取色：默认关 + API 31 门禁 + 只覆盖 M3 标准色角色") {
+        assertContains("V1", theme, "dynamicColor: Boolean = false,")
+        assertContains("V1", theme, "Build.VERSION.SDK_INT >= Build.VERSION_CODES.S")
+        assertContains("V1", theme, "dynamicDarkColorScheme(context)")
+        assertContains("V1", theme, "dynamicLightColorScheme(context)")
+        // 注释即契约：语义色（暖纸品牌色）不跟随壁纸取色
+        assertContains("V1", theme, "语义色（LocalAgentKitColors 的暖纸 surface-1/2 等品牌色）")
+    }
+    check("V2 根组合：dynamicColor 由 Activity 作用域 rememberSaveable 持有并下发") {
+        val main = readSource("MainActivity.kt")
+        assertContains("V2", main, "var dynamicColor by rememberSaveable { mutableStateOf(false) }")
+        assertContains("V2", main, "AgentKitTheme(themeMode = themeMode, dynamicColor = dynamicColor)")
+        assertContains("V2", main, "onDynamicColorChange = { dynamicColor = it }")
+    }
+    check("V3 前台判定：Application ActivityLifecycleCallbacks started/stopped 计数") {
+        assertContains("V3", activity, "registerActivityLifecycleCallbacks")
+        assertContains("V3", activity, "override fun onActivityStarted(activity: Activity) {")
+        assertContains("V3", activity, "override fun onActivityStopped(activity: Activity) {")
+        assertContains("V3", activity, "@Volatile")
+        assertContains("V3", activity, "fun isAppInForeground(): Boolean = foregroundActivities > 0")
+        // started/stopped 计数而非 resumed/paused：半透明权限对话框不误判为后台
+        assertContains("V3", activity, "已 started 未 stopped 的 Activity 数")
+    }
+    check("V4 CompletionNotifier：后台才发 + 通知总开关检查 + 静默降级") {
+        assertContains("V4", notifier, "private const val CHANNEL_ID = \"answer_complete\"")
+        assertContains("V4", notifier, "if (AgentKitApplication.isAppInForeground()) return")
+        assertContains("V4", notifier, "if (!nm.areNotificationsEnabled()) return")
+        assertContains("V4", notifier, "runCatching {")
+        // 通知正文只放预览（截断 60 字），不发全文
+        assertContains("V4", notifier, "preview.take(60)")
+        // 渠道与 agent 业务通知渠道刻意分开
+        assertContains("V4", notifier, "与 [com.example.agentkit.tools.BuiltInTools] 的 agent 通知渠道**刻意分开**")
+    }
+    check("V5 ConfigStore：完成提醒开关落盘，默认 false（opt-in）") {
+        assertContains("V5", store, "private const val KEY_COMPLETION_NOTIFY = \"completion_notify\"")
+        assertContains("V5", store, "sp.getBoolean(KEY_COMPLETION_NOTIFY, false)")
+        assertContains("V5", store, "sp.edit().putBoolean(KEY_COMPLETION_NOTIFY, enabled).apply()")
+    }
+    check("V6 VM：开关 StateFlow + 通知钩子只挂 send 成功路径") {
+        assertContains("V6", vm, "private val _completionNotifyEnabled = MutableStateFlow(configStore.isCompletionNotifyEnabled())")
+        assertContains("V6", vm, "val completionNotifyEnabled: StateFlow<Boolean> = _completionNotifyEnabled.asStateFlow()")
+        assertContains("V6", vm, "fun setCompletionNotifyEnabled(enabled: Boolean)")
+        assertContains("V6", vm, "CompletionNotifier.notifyAnswerComplete(")
+        // 只挂 send：regenerate 是「重做这题」的主动操作，用户盯着概率极高，不通知
+        val sendBlock = vm.substringAfter("fun send() {")
+        assertContains("V6", sendBlock, "CompletionNotifier.notifyAnswerComplete(")
+        val regenBlock = vm.substringAfter("fun regenerate()").substringBefore("fun send()")
+        assertTrue("V6", !regenBlock.contains("CompletionNotifier"))
+    }
+    check("V7 设置页：动态取色行（API 31 门禁）+ 提醒卡 + 权限按需申请") {
+        assertContains("V7", settings, "if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {")
+        assertContains("V7", settings, "title = \"动态取色\"")
+        assertContains("V7", settings, "title = \"回答完成提醒\"")
+        assertContains("V7", settings, "ActivityResultContracts.RequestPermission()")
+        assertContains("V7", settings, "notifyPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)")
+        assertContains("V7", settings, "Build.VERSION_CODES.TIRAMISU")
+        assertContains("V7", settings, "ContextCompat.checkSelfPermission(")
+        // 关开关不需要权限直接落盘；开开关才走权限流程
+        assertContains("V7", settings, "vm.setCompletionNotifyEnabled(false)")
+        assertContains("V7", settings, "vm.setCompletionNotifyEnabled(true)")
+    }
+    check("V8 AppScaffold：动态取色参数穿透到设置页（宽窄两路 ScreenHost 同参）") {
+        assertContains("V8", scaffold, "dynamicColor: Boolean = false,")
+        assertContains("V8", scaffold, "onDynamicColorChange: (Boolean) -> Unit = {}")
+        assertTrue("V8", scaffold.split("dynamicColor, onDynamicColorChange,").size - 1 >= 2)
+        assertContains("V8", scaffold, "dynamicColor,")
+        assertContains("V8", scaffold, "onDynamicColorChange,")
+    }
+}
+
 fun main() {
     println("== hotfix11 模型快速切换 + 功能四/五 验证 ==")
     testModelQuickSwitch()
@@ -960,6 +1049,8 @@ fun main() {
     testConversationDrafts()
     println()
     testReasoningFold()
+    println()
+    testAppearanceEnhancements()
     println()
     println("== 汇总 ==")
     println("PASS: $passed  FAIL: ${failures.size}  TOTAL: ${passed + failures.size}")

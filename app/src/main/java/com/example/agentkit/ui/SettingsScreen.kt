@@ -1,7 +1,11 @@
 package com.example.agentkit.ui
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -22,6 +26,7 @@ import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Extension
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material.icons.outlined.Notifications
 import androidx.compose.material.icons.outlined.Palette
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Save
@@ -54,6 +59,8 @@ import android.widget.Toast
  *
  * @param themeMode 当前明暗模式。
  * @param onThemeModeChange 切换回调（写回宿主持有的状态）。
+ * @param dynamicColor 功能五（P1-10）：Material You 动态取色开关（进程内有效）。
+ * @param onDynamicColorChange 动态取色切换回调。
  * @param onNavigate 跳转到其他一级目的地。
  */
 @Composable
@@ -61,9 +68,24 @@ fun SettingsScreen(
     vm: ChatViewModel,
     themeMode: ThemeMode,
     onThemeModeChange: (ThemeMode) -> Unit,
+    dynamicColor: Boolean = false,
+    onDynamicColorChange: (Boolean) -> Unit = {},
     onNavigate: (AppDest) -> Unit
 ) {
     val enabled by vm.automationEnabled.collectAsStateWithLifecycle()
+    // 功能五（P1-10）：回答完成提醒（落盘开关，与主题偏好不同纪律——见 VM 注释）
+    val completionNotify by vm.completionNotifyEnabled.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+    // Android 13+ 通知运行时权限：开开关时按需申请，被拒则回滚 + Toast 说明
+    val notifyPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            vm.setCompletionNotifyEnabled(true)
+        } else {
+            Toast.makeText(context, "未授予通知权限，无法开启完成提醒", Toast.LENGTH_SHORT).show()
+        }
+    }
 
     // —— 功能五（P1-4b）：备份/恢复。SAF 文档选择器（零存储权限，用户自选落点）——
     val exportLauncher = rememberLauncherForActivityResult(
@@ -128,6 +150,64 @@ fun SettingsScreen(
                         onClick = { onThemeModeChange(ThemeMode.DARK) }
                     )
                 }
+                // 功能五（P1-10）：Material You 动态取色——Android 12+ 专属，
+                // 低版本不摆开关（没有系统能力）；与主题三选同纪律：进程内有效不落盘
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    Spacer(Modifier.height(AgentSpacing.space2))
+                    AkListItem(
+                        icon = Icons.Outlined.Palette,
+                        title = "动态取色",
+                        description = if (dynamicColor) {
+                            "已开启：界面跟随系统壁纸取色（Android 12+）"
+                        } else {
+                            "关闭：使用「暖纸」品牌色"
+                        },
+                        trailing = {
+                            AkSwitch(
+                                checked = dynamicColor,
+                                onCheckedChange = onDynamicColorChange
+                            )
+                        }
+                    )
+                }
+            }
+
+            // —— 功能五（P1-10）：提醒 ——
+            AkSectionCard(
+                title = "提醒",
+                icon = Icons.Outlined.Notifications,
+                description = "回答生成完毕时通知你；仅 App 退到后台时发送，在前台不打扰。"
+            ) {
+                AkListItem(
+                    icon = Icons.Outlined.Notifications,
+                    title = "回答完成提醒",
+                    description = if (completionNotify) {
+                        "已开启：回答完成且 App 在后台时发通知"
+                    } else {
+                        "关闭：静默完成，不打断"
+                    },
+                    trailing = {
+                        AkSwitch(
+                            checked = completionNotify,
+                            onCheckedChange = { want ->
+                                if (!want) {
+                                    // 关开关不需要任何权限，直接落盘
+                                    vm.setCompletionNotifyEnabled(false)
+                                } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                                    ContextCompat.checkSelfPermission(
+                                        context,
+                                        Manifest.permission.POST_NOTIFICATIONS
+                                    ) != PackageManager.PERMISSION_GRANTED
+                                ) {
+                                    // Android 13+ 未授权：走系统申请，结果回写开关
+                                    notifyPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                                } else {
+                                    vm.setCompletionNotifyEnabled(true)
+                                }
+                            }
+                        )
+                    }
+                )
             }
 
             // —— 自动化：总开关（与控制台同一开关，这里也留一份；权限中心入口留在这张卡里）——
