@@ -832,6 +832,23 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         send()
     }
 
+    /**
+     * 功能五（P1-1）：从指定轮起删除（含该轮）——「清理从这里开始的内容」。
+     *
+     * 为什么不提供「只删这一条」：助手消息可能携带 tool_calls，删单条会让
+     * 后续 tool 结果成为孤儿（协议层直接 400）。截断语义既安全，又正好命中
+     * 用户真实需求（试错几轮后把尾巴一次性清掉重来）。
+     *
+     * [turnIndex] = 0 表示清空全部轮次（保留会话壳，标题不动）。
+     */
+    fun deleteFromTurn(turnIndex: Int) {
+        if (isRunning.value) return
+        conversationStore.truncateAfter(_activeConversationId.value, turnIndex - 1)
+        reloadActiveMessages()
+        refreshConversations()
+        AgentLogger.i("Chat", "已从第 ${turnIndex + 1} 轮起删除")
+    }
+
     // —— L10 危险操作审批：Agent 想操控手机必须先过人 ——
 
     /** 当前待用户确认的危险工具调用；非 null 时 UI 弹出审批 Dialog。 */

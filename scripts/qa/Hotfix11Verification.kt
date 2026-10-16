@@ -267,6 +267,47 @@ private fun testConversationPinAndSearch() {
     }
 }
 
+/**
+ * L 区：功能五 P1-1「消息更多操作（分享 / 从此处删除）」——对标 RikkaHub
+ * MessageSheetAction（Share/Delete）与 Operit ChatArea 消息菜单。
+ */
+private fun testMessageMoreActions() {
+    println("— L 区：消息更多操作（功能五 P1-1） —")
+    val chat = readSource("ui/ChatScreen.kt")
+    val vm = readSource("ui/ChatViewModel.kt")
+
+    check("L1 操作行有「⋯」更多入口（助手/用户两行都有）") {
+        assertContains("L1", chat, "showMore = showMore")
+        assertContains("L1", chat, "text = \"⋯\"")
+        assertContains("L1", chat, "onMore = { menuTarget = item.text to item.turnIndex }")
+    }
+    check("L2 分享走系统分享面板（ACTION_SEND + createChooser，零额外权限）") {
+        assertContains("L2", chat, "private fun shareMessage(context: Context, text: String)")
+        assertContains("L2", chat, "Intent.ACTION_SEND")
+        assertContains("L2", chat, "Intent.createChooser")
+    }
+    check("L3 消息操作弹窗存在，删除项文案写明「及之后的全部内容」") {
+        assertContains("L3", chat, "private fun MessageActionsDialog(")
+        assertContains("L3", chat, "删除这条及之后的全部内容")
+    }
+    check("L4 「从此处删除」有 danger 二次确认（不可逆操作统一拦截）") {
+        assertContains("L4", chat, "title = \"从此处删除\"")
+        assertContains("L4", chat, "danger = true")
+    }
+    check("L5 VM deleteFromTurn：截断语义（保留到上一轮），非删单条") {
+        val fn = vm.substringAfter("fun deleteFromTurn(")
+        assertContains("L5", fn, "conversationStore.truncateAfter(_activeConversationId.value, turnIndex - 1)")
+        assertContains("L5", fn, "refreshConversations()")
+    }
+    check("L6 VM 删除有运行中守卫（在跑的时候不许改历史）") {
+        val fn = vm.substringAfter("fun deleteFromTurn(")
+        assertTrue("L6 应有 isRunning 守卫", fn.substringBefore("truncateAfter").contains("isRunning.value"))
+    }
+    check("L7 草稿/失败气泡不给更多入口（无轮次可操作）") {
+        assertContains("L7", chat, "val showMore = !running && item.turnIndex >= 0")
+    }
+}
+
 fun main() {
     println("== hotfix11 模型快速切换 + 功能四/五 验证 ==")
     testModelQuickSwitch()
@@ -278,6 +319,8 @@ fun main() {
     testProviderListEntry()
     println()
     testConversationPinAndSearch()
+    println()
+    testMessageMoreActions()
     println()
     println("== 汇总 ==")
     println("PASS: $passed  FAIL: ${failures.size}  TOTAL: ${passed + failures.size}")

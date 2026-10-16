@@ -3,6 +3,7 @@ package com.example.agentkit.ui
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.util.Base64
@@ -57,11 +58,13 @@ import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.Check
+import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.Notifications
 import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material.icons.outlined.PhoneAndroid
 import androidx.compose.material.icons.outlined.Send
+import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material.icons.outlined.Shield
 import androidx.compose.material.icons.outlined.TouchApp
 import androidx.compose.material.icons.outlined.WarningAmber
@@ -161,6 +164,11 @@ fun ChatScreen(
 
     // 「从中间轮重新发问」待编辑的用户气泡（长按/点击「重新发问」入口置位，确认后截断+重问）
     var reaskTarget by remember { mutableStateOf<UiItem.User?>(null) }
+    // 功能五（P1-1）：消息「更多」菜单 / 从此处删除确认的目标
+    // （存「正文 → 轮次」二元组而非 UiItem：UiItem 是 sealed 接口，
+    //   弹窗体里取不到 text/turnIndex，还要再 when 一遍）
+    var menuTarget by remember { mutableStateOf<Pair<String, Int>?>(null) }
+    var deleteTarget by remember { mutableStateOf<Pair<String, Int>?>(null) }
     // 功能四：模型切换弹窗开关（指示条点击打开）
     var showModelSwitch by remember { mutableStateOf(false) }
     val ctx = LocalContext.current
@@ -245,16 +253,21 @@ fun ChatScreen(
                             val showSwitch = item.variantCount > 1
                             val showRegen = !running && index == messages.lastIndex && item.turnIndex >= 0
                             val showCopy = !running && item.text.isNotBlank()
-                            if (showSwitch || showRegen || showCopy) {
+                            // 功能五（P1-1）：落库消息才给「更多」（分享/从此处删除）——
+                            // 草稿与失败气泡没有轮次可操作
+                            val showMore = !running && item.turnIndex >= 0
+                            if (showSwitch || showRegen || showCopy || showMore) {
                                 AssistantActions(
                                     variantIndex = item.variantIndex,
                                     variantCount = item.variantCount,
                                     showSwitch = showSwitch,
                                     showRegen = showRegen,
                                     showCopy = showCopy,
+                                    showMore = showMore,
                                     onSwitch = { delta -> vm.switchVariant(item.turnIndex, delta) },
                                     onRegenerate = { vm.regenerate() },
-                                    onCopy = { copyMessage(ctx, item.text) }
+                                    onCopy = { copyMessage(ctx, item.text) },
+                                    onMore = { menuTarget = item.text to item.turnIndex }
                                 )
                             }
                         }
@@ -263,7 +276,9 @@ fun ChatScreen(
                         if (item is UiItem.User && !running) {
                             UserMessageActions(
                                 showReask = item.turnIndex >= 0,
+                                showMore = item.turnIndex >= 0,
                                 onCopy = { copyMessage(ctx, item.text) },
+                                onMore = { menuTarget = item.text to item.turnIndex },
                                 onReask = { reaskTarget = item }
                             )
                         }
@@ -324,6 +339,32 @@ fun ChatScreen(
     val currentApproval = approvalReq
     if (currentApproval != null) {
         ApprovalDialog(request = currentApproval, visible = approvalVisible, vm = vm)
+    }
+
+    // —— 功能五（P1-1）：消息更多菜单（分享 / 从此处删除） ——
+    AkModalHost(target = menuTarget) { target, visible ->
+        MessageActionsDialog(
+            visible = visible,
+            showDelete = target.second >= 0,
+            onShare = { shareMessage(ctx, target.first); menuTarget = null },
+            onDelete = { menuTarget = null; deleteTarget = target },
+            onDismiss = { menuTarget = null }
+        )
+    }
+    AkModalHost(target = deleteTarget) { target, visible ->
+        AkConfirmDialog(
+            title = "从此处删除",
+            message = "将删除从这条消息起的全部内容（含本条），删除后不可恢复。",
+            confirmText = "删除",
+            danger = true,
+            icon = Icons.Outlined.Delete,
+            visible = visible,
+            onConfirm = {
+                vm.deleteFromTurn(target.second)
+                deleteTarget = null
+            },
+            onDismiss = { deleteTarget = null }
+        )
     }
 
     // —— 功能四：模型切换弹窗（录屏反馈「保存了好多个模型，要换的时候不给换」） ——
@@ -537,6 +578,21 @@ private fun copyMessage(context: Context, text: String) {
     Toast.makeText(context, "已复制", Toast.LENGTH_SHORT).show()
 }
 
+/**
+ * 功能五（P1-1）：分享消息正文——走系统分享面板（对标 RikkaHub MessageSheetAction Share）。
+ *
+ * 用 ACTION_SEND + text/plain：不依赖任何额外权限，用户自己选目标 App。
+ * 面板未安装任何接收方时 createChooser 会显示空态，不崩（系统兜底）。
+ */
+private fun shareMessage(context: Context, text: String) {
+    if (text.isBlank()) return
+    val send = Intent(Intent.ACTION_SEND).apply {
+        type = "text/plain"
+        putExtra(Intent.EXTRA_TEXT, text)
+    }
+    context.startActivity(Intent.createChooser(send, "分享消息"))
+}
+
 /** 功能四：从 Base URL 提取域名（去 scheme、去路径）；空 URL 返回空串。 */
 internal fun hostOf(baseUrl: String): String =
     baseUrl.trim()
@@ -600,9 +656,11 @@ private fun AssistantActions(
     showSwitch: Boolean,
     showRegen: Boolean,
     showCopy: Boolean,
+    showMore: Boolean,
     onSwitch: (Int) -> Unit,
     onRegenerate: () -> Unit,
-    onCopy: () -> Unit
+    onCopy: () -> Unit,
+    onMore: () -> Unit
 ) {
     Row(
         modifier = Modifier
@@ -644,6 +702,20 @@ private fun AssistantActions(
                     .padding(horizontal = AgentSpacing.space2, vertical = 6.dp)
             )
         }
+        // 功能五（P1-1）：更多（分享 / 从此处删除）。用「⋯」文字而非图标，
+        // 与既有 ←/→ 同一套「文字符号代替图标」约定
+        if (showMore) {
+            if (showCopy || showSwitch || showRegen) Spacer(Modifier.width(AgentSpacing.space3))
+            Text(
+                text = "⋯",
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(8.dp))
+                    .clickable(onClick = onMore)
+                    .padding(horizontal = AgentSpacing.space2, vertical = 2.dp)
+            )
+        }
     }
 }
 
@@ -675,7 +747,9 @@ private fun SwitchArrow(label: String, enabled: Boolean, onClick: () -> Unit) {
 @Composable
 private fun UserMessageActions(
     showReask: Boolean,
+    showMore: Boolean,
     onCopy: () -> Unit,
+    onMore: () -> Unit,
     onReask: () -> Unit
 ) {
     Row(
@@ -703,6 +777,82 @@ private fun UserMessageActions(
                     .clickable(onClick = onReask)
                     .padding(horizontal = AgentSpacing.space2, vertical = 2.dp)
             )
+        }
+        if (showMore) {
+            Spacer(Modifier.width(AgentSpacing.space3))
+            Text(
+                text = "⋯",
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(8.dp))
+                    .clickable(onClick = onMore)
+                    .padding(horizontal = AgentSpacing.space2, vertical = 2.dp)
+            )
+        }
+    }
+}
+
+/**
+ * 功能五（P1-1）：消息操作弹窗（分享 / 从此处删除）。
+ *
+ * 视觉语言与其它对话框一致（AkModalHost + 344dp 白卡 + scale/fade）。
+ * 「从此处删除」文案明确写出「及之后的全部内容」——只写「删除」会让用户
+ * 以为是删单条（本 App 不提供删单条，见 [ChatViewModel.deleteFromTurn] 的说明）。
+ */
+@Composable
+private fun MessageActionsDialog(
+    visible: Boolean,
+    showDelete: Boolean,
+    onShare: () -> Unit,
+    onDelete: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val spec = if (visible) AkMotionDialog else AkMotionExit
+    val scale by animateFloatAsState(if (visible) 1f else 0.96f, animationSpec = spec)
+    val alpha by animateFloatAsState(if (visible) 1f else 0f, animationSpec = spec)
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Box(
+            Modifier
+                .fillMaxSize()
+                .padding(horizontal = 24.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Surface(
+                shape = RoundedCornerShape(20.dp),
+                color = MaterialTheme.colorScheme.surface,
+                modifier = Modifier
+                    .widthIn(max = 344.dp)
+                    .scale(scale)
+                    .alpha(alpha)
+            ) {
+                Column(Modifier.padding(vertical = AgentSpacing.space4)) {
+                    Text(
+                        text = "消息操作",
+                        style = MaterialTheme.typography.titleLarge,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.padding(horizontal = AgentSpacing.space6)
+                    )
+                    Spacer(Modifier.height(AgentSpacing.space2))
+                    AkListItem(
+                        icon = Icons.Outlined.Share,
+                        title = "分享",
+                        description = "发送到其它应用",
+                        onClick = onShare
+                    )
+                    if (showDelete) {
+                        AkListItem(
+                            icon = Icons.Outlined.Delete,
+                            title = "从此处删除",
+                            description = "删除这条及之后的全部内容",
+                            onClick = onDelete
+                        )
+                    }
+                }
+            }
         }
     }
 }
