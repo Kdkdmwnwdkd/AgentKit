@@ -6,4 +6,6 @@
 <paths>
     <files-path name="media_outputs" path="media/outputs/" />
     <files-path name="builds" path="builds/" />
+    <!-- hotfix29：会话导出的 .md 落 cacheDir/exports/，经同一 FileProvider 分享 -->
+    <cache-path name="exports" path="exports/" />
 </paths>

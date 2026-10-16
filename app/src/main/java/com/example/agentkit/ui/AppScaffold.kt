@@ -385,9 +385,12 @@ fun AppScaffold(
                             onRenameConversation = { id, title -> vm.renameConversation(id, title) },
                             onDeleteConversation = { id -> vm.deleteConversation(id) },
                             onSetPinned = { id, pinned -> vm.setConversationPinned(id, pinned) },
-                            onExportConversation = { id ->
-                                shareText(ctx, vm.conversationMarkdown(id), "导出会话")
-                            },
+onExportConversation = { id ->
+    // hotfix29：导出从纯文本升级为 .md 真文件（FileProvider content://）；
+    // 文件名取会话标题（净化后），无匹配标题回退「会话」
+    val title = conversations.firstOrNull { it.id == id }?.title ?: "会话"
+    shareMarkdownFile(ctx, title, vm.conversationMarkdown(id), "导出会话")
+},
                             firstItemFocus = null
                         )
                     }
@@ -503,7 +506,10 @@ fun AppScaffold(
                                     vm.setConversationPinned(id, pinned)
                                 },
                                 onExportConversation = { id ->
-                                    shareText(ctx, vm.conversationMarkdown(id), "导出会话")
+                                    // hotfix29：导出从纯文本升级为 .md 真文件（FileProvider content://）；
+                                    // 文件名取会话标题（净化后），无匹配标题回退「会话」
+                                    val title = conversations.firstOrNull { it.id == id }?.title ?: "会话"
+                                    shareMarkdownFile(ctx, title, vm.conversationMarkdown(id), "导出会话")
                                 },
                                 firstItemFocus = firstItemFocus
                             )

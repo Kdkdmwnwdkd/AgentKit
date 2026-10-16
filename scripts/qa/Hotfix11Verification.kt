@@ -612,7 +612,8 @@ private fun testConversationExport() {
         assertContains("Q7", scaffold, "title = \"导出 Markdown\"")
         assertContains("Q7", scaffold, "onExport = { menuConvId = null; onExportConversation(id) }")
         assertContains("Q7", scaffold, "onExportConversation = { id ->")
-        assertContains("Q7", scaffold, "shareText(ctx, vm.conversationMarkdown(id), \"导出会话\")")
+        // hotfix29：导出从 shareText 纯文本切换为 shareMarkdownFile .md 真文件
+        assertContains("Q7", scaffold, "shareMarkdownFile(ctx, title, vm.conversationMarkdown(id), \"导出会话\")")
         assertTrue("Q7", scaffold.split("onExportConversation = { id ->").size >= 3)
         assertContains("Q7", scaffold, "val ctx = LocalContext.current")
     }
@@ -1075,6 +1076,58 @@ private fun testPromptBackup() {
     }
 }
 
+/**
+ * X 区：hotfix29「会话导出变 .md 真文件」——真机反馈「我分享的话也是一段话
+ * 分享，我不是说变成文件啥的」，根因：hotfix22 导出走 text/plain 的
+ * EXTRA_TEXT，到微信/邮件里就是一坨纯文本：无文件名、不能存文件管理器、
+ * Markdown 格式特征全丢。
+ *
+ * 设计：写 cacheDir/exports/<净化标题>.md → FileProvider 换 content://
+ * （与 L8 作品库/构建产物安装同一 provider 通道）→ ACTION_SEND +
+ * type=text/markdown + EXTRA_STREAM + FLAG_GRANT_READ_URI_PERMISSION。
+ * 落 cacheDir 而非 filesDir：导出件是易重建的临时产物，系统清缓存自动
+ * 回收，不占用户存储配额。失败三级降级（写盘/取 URI/startActivity）
+ * 一律回退 shareText 纯文本——分享动作永远有出口，不崩。
+ */
+private fun testMarkdownFileExport() {
+    println("— X 区：会话导出 .md 真文件（hotfix29） —")
+    val share = readSource("ui/ShareActions.kt")
+    val scaffold = readSource("ui/AppScaffold.kt")
+    val paths = File("/workspace/AgentKit/app/src/main/res/xml/file_paths.xml").readText()
+
+    check("X1 FileProvider：cacheDir/exports 路径声明（导出 .md 的落点）") {
+        assertContains("X1", paths, "<cache-path name=\"exports\" path=\"exports/\" />")
+    }
+    check("X2 ShareActions：shareMarkdownFile 走 content:// + text/markdown + EXTRA_STREAM") {
+        assertContains("X2", share, "internal fun shareMarkdownFile(")
+        assertContains("X2", share, "type = \"text/markdown\"")
+        assertContains("X2", share, "putExtra(Intent.EXTRA_STREAM, uri)")
+        assertContains("X2", share, "addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)")
+        assertContains("X2", share, "FileProvider.getUriForFile(context, \"\${context.packageName}.fileprovider\", file)")
+        assertContains("X2", share, "File(context.cacheDir, \"exports\")")
+    }
+    check("X3 降级链：写盘/取 URI/startActivity 三级失败都回退 shareText") {
+        // 源码里 shareText(context, content, chooserTitle) 出现 3 次（两级 getOrNull + onFailure）
+        assertTrue("X3", share.split("shareText(context, content, chooserTitle)").size - 1 >= 3)
+        assertContains("X3", share, ".onFailure {")
+    }
+    check("X4 文件名净化：非法字符/控制字符/超长/空标题四类全覆盖") {
+        assertContains("X4", share, "internal fun sanitizeFileName(raw: String): String")
+        assertContains("X4", share, "ILLEGAL_FILE_CHARS")
+        assertContains("X4", share, "ch.code < 0x20")
+        assertContains("X4", share, ".take(60)")
+        assertContains("X4", share, "ifEmpty { \"conversation\" }")
+    }
+    check("X5 AppScaffold：两处导出入口（移动抽屉+宽屏侧栏）同切文件分享") {
+        assertTrue("X5", scaffold.split("shareMarkdownFile(ctx, title, vm.conversationMarkdown(id), \"导出会话\")").size - 1 >= 2)
+        assertContains("X5", scaffold, "val title = conversations.firstOrNull { it.id == id }?.title ?: \"会话\"")
+    }
+    check("X6 shareText 保留：消息分享仍走纯文本（反馈未涉及，不殃及）") {
+        val chat = readSource("ui/ChatScreen.kt")
+        assertContains("X6", chat, "shareText(context, text, \"分享消息\")")
+    }
+}
+
 fun main() {
     println("== hotfix11 模型快速切换 + 功能四/五 验证 ==")
     testModelQuickSwitch()
@@ -1110,6 +1163,8 @@ fun main() {
     testAppearanceEnhancements()
     println()
     testPromptBackup()
+    println()
+    testMarkdownFileExport()
     println()
     println("== 汇总 ==")
     println("PASS: $passed  FAIL: ${failures.size}  TOTAL: ${passed + failures.size}")
