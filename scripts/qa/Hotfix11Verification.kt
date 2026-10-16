@@ -1399,6 +1399,68 @@ private fun testJsonSafeAndGlobalBackground() {
     }
 }
 
+/**
+ * AC 区：hotfix34「供应商全量适配」——真机反馈「你问我哪家的模型，为什么一定要
+ * 哪家的？你不能说全部都弄吗？现在大市面上比较出名的都弄一下，或者说全部适配一下」。
+ *
+ * 设计：ProviderCatalog 数据驱动目录（国内/海外/聚合/本地/原生 共 30+ 家），
+ * 每家标注协议风格（openai/claude/gemini/local-llama）；ProviderManager.create
+ * 遇未注册 id 按目录风格兜底、未收录 id 一律 OpenAI 兼容——新增供应商零代码。
+ */
+private fun testProviderCatalog() {
+    println("— AC 区：供应商全量适配（hotfix34） —")
+    val base = "/workspace/AgentKit/app/src/main/java/com/example/agentkit/"
+    val catalog = File(base + "core/llm/ProviderCatalog.kt").readText()
+    val llm = readSource("core/LLMClient.kt")
+    val modelScreen = readSource("ui/ModelConfigScreen.kt")
+
+    check("AC1 目录：30+ 家齐全 + 关键厂商在册") {
+        // 每家 = 一条 LlmProvider(...)；用 id = 计数
+        val count = Regex("LlmProvider\\(\\s*\\n?\\s*id = ").findAll(catalog).count()
+        assertTrue("AC1 目录条数=$count（期望 >= 30）", count >= 30)
+        listOf(
+            "STYLE_OPENAI, label = \"OpenAI 兼容\"", "\"deepseek\"", "\"moonshot\"", "\"zhipu\"",
+            "\"qwen\"", "\"doubao\"", "\"ernie\"", "\"hunyuan\"", "\"spark\"", "\"minimax\"",
+            "\"stepfun\"", "\"yi\"", "\"xai\"", "\"mistral\"", "\"perplexity\"", "\"groq\"",
+            "\"together\"", "\"deepinfra\"", "\"cerebras\"", "\"openrouter\"", "\"siliconflow\"",
+            "\"modelscope\"", "\"ollama\"", "\"lmstudio\"", "\"vllm\"",
+            "STYLE_CLAUDE, label = \"Claude\"", "STYLE_GEMINI, label = \"Gemini\"",
+            "STYLE_LOCAL_LLAMA, label = \"本地模型（内置）\""
+        ).forEach { needle -> assertContains("AC1", catalog, needle) }
+    }
+    check("AC2 协议风格：三类云端 + 本地全覆盖 + 本地免 Key") {
+        assertContains("AC2", catalog, "const val STYLE_OPENAI = \"openai\"")
+        assertContains("AC2", catalog, "const val STYLE_CLAUDE = \"claude\"")
+        assertContains("AC2", catalog, "const val STYLE_GEMINI = \"gemini\"")
+        assertContains("AC2", catalog, "const val STYLE_LOCAL_LLAMA = \"local-llama\"")
+        // 本地部署标 requiresApiKey = false（Ollama / LM Studio / vLLM / 内置）
+        val localNoKey = Regex("requiresApiKey = false").findAll(catalog).count()
+        assertTrue("AC2 本地免 Key 条数=$localNoKey（期望 >= 4）", localNoKey >= 4)
+    }
+    check("AC3 前向兼容：未收录 id 一律按 OpenAI 兼容兜底") {
+        assertContains("AC3", catalog, "fun styleOf(id: String): String = byId(id)?.style ?: STYLE_OPENAI")
+        assertContains("AC3", catalog, "都会被正确当作 OpenAI 兼容处理")
+    }
+    check("AC4 ProviderManager：未注册 id 按目录风格兜底造客户端") {
+        assertContains("AC4", llm, "val style = com.example.agentkit.core.llm.ProviderCatalog.styleOf(name)")
+        assertContains("AC4", llm, "?: providers[com.example.agentkit.core.llm.ProviderCatalog.STYLE_OPENAI]")
+        assertContains("AC4", llm, "新增供应商 = 加一条目录数据，零代码零发版")
+    }
+    check("AC5 UI：全量选择器（常用 chip 横滑 + 全部供应商分组弹窗）") {
+        assertContains("AC5", modelScreen, "import com.example.agentkit.core.llm.ProviderCatalog")
+        assertContains("AC5", modelScreen, "AkChip(text = \"全部供应商…\", selected = false")
+        assertContains("AC5", modelScreen, "private fun ProviderAllDialog(")
+        assertContains("AC5", modelScreen, "ProviderGroup.entries.forEach { group ->")
+        assertContains("AC5", modelScreen, "private fun ProviderOptionRow(")
+    }
+    check("AC6 UI：默认值委托目录 + 本地部署免 Key 门禁") {
+        assertContains("AC6", modelScreen, "fun defaultUrl(id: String): String = ProviderCatalog.defaultUrl(id).ifBlank {")
+        assertContains("AC6", modelScreen, "val needsKey = ProviderCatalog.requiresApiKey(providerId)")
+        assertContains("AC6", modelScreen, "val canTest = isLocal || (baseUrl.isNotBlank() && (!needsKey || apiKey.isNotBlank()))")
+        assertContains("AC6", modelScreen, "val isLocal = providerId == ProviderCatalog.STYLE_LOCAL_LLAMA")
+    }
+}
+
 fun main() {
     println("== hotfix11 模型快速切换 + 功能四/五 验证 ==")
     testModelQuickSwitch()
@@ -1444,6 +1506,8 @@ fun main() {
     testChatBackground()
     println()
     testJsonSafeAndGlobalBackground()
+    println()
+    testProviderCatalog()
     println()
     println("== 汇总 ==")
     println("PASS: $passed  FAIL: ${failures.size}  TOTAL: ${passed + failures.size}")

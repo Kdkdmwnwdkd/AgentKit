@@ -581,7 +581,11 @@ internal class OpenAiToolCallAccumulator {
  * 供应商注册表（RikkaHub ProviderManager 思路，净室重写）。
  * 通过 [create] 按名称构造 LLMClient；新增供应商只需 registerProvider。
  *
- * "local-llama" 留给第 3 步本地 llama.cpp 集成时注册（见 docs/research/02）。
+ * hotfix34 全量适配：注册表只注册**协议风格**（openai / claude / gemini / local-llama），
+ * 具体厂商（deepseek / moonshot / zhipu / qwen / openrouter / ollama …共 30+ 家）
+ * 由 [com.example.agentkit.core.llm.ProviderCatalog] 映射到风格上——
+ * [create] 遇到未直接注册的 id 时按 [ProviderCatalog.styleOf] 兜底，
+ * 未收录的 id 默认 OpenAI 兼容。**新增供应商 = 加一条目录数据，零代码零发版**。
  */
 class ProviderManager {
     private val providers = mutableMapOf<String, (LLMConfig) -> LLMClient>()
@@ -596,9 +600,20 @@ class ProviderManager {
         providers[name] = factory
     }
 
-    fun create(name: String, config: LLMConfig): LLMClient =
-        providers[name]?.invoke(config)
+    /**
+     * 按 providerId 造客户端。
+     * 查找顺序：直接注册名 → 目录风格（厂商 id → 风格）→ OpenAI 兼容兜底。
+     * 这样 deepseek/ollama/openrouter 等目录内厂商、以及任何自定义 id 都能拿到客户端。
+     */
+    fun create(name: String, config: LLMConfig): LLMClient {
+        val direct = providers[name]
+        if (direct != null) return direct.invoke(config)
+        val style = com.example.agentkit.core.llm.ProviderCatalog.styleOf(name)
+        val byStyle = providers[style]
+            ?: providers[com.example.agentkit.core.llm.ProviderCatalog.STYLE_OPENAI]
+        return byStyle?.invoke(config)
             ?: throw IllegalArgumentException("未知供应商：$name（已注册：${providers.keys}）")
+    }
 
     val names: Set<String> get() = providers.keys
 }

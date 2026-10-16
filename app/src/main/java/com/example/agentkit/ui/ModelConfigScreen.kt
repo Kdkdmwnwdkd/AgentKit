@@ -78,6 +78,11 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.lazy.LazyRow
+import com.example.agentkit.core.llm.LlmProvider
+import com.example.agentkit.core.llm.ProviderCatalog
+import com.example.agentkit.core.llm.ProviderGroup
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.agentkit.core.ConfigSanitizer
 import com.example.agentkit.core.DEFAULT_SYSTEM_PROMPT
@@ -220,19 +225,18 @@ private fun LocalTabRefreshEffect(vm: ChatViewModel, tab: Int) {
 }
 
 /** 三家供应商的默认 Base URL / 模型名（切换供应商时预填用）。 */
+/**
+ * hotfix34：供应商默认值改为委托 [ProviderCatalog]（30+ 家全量目录）。
+ * 目录未收录的 id（用户自定义端点）走 OpenAI 兼容兜底——不因「不在目录」被卡住。
+ */
 private object ProviderDefaults {
-    fun defaultUrl(id: String): String = when (id) {
-        "claude" -> "https://api.anthropic.com"
-        "gemini" -> "https://generativelanguage.googleapis.com"
-        else -> "https://api.openai.com/v1"
+    fun defaultUrl(id: String): String = ProviderCatalog.defaultUrl(id).ifBlank {
+        if (id == ProviderCatalog.STYLE_LOCAL_LLAMA) "" else "https://api.openai.com/v1"
     }
 
-    fun defaultModel(id: String): String = when (id) {
-        "claude" -> "claude-sonnet-4-5"
-        "gemini" -> "gemini-2.5-pro"
+    fun defaultModel(id: String): String = ProviderCatalog.defaultModel(id).ifBlank {
         // 本地模式的模型由「本地模型」页签的 active 文件决定，这里只给个占位
-        "local-llama" -> ""
-        else -> "gpt-4o-mini"
+        if (ProviderCatalog.isLocal(id)) "" else "gpt-4o-mini"
     }
 }
 
@@ -372,66 +376,197 @@ private fun AddProfileChip(onClick: () -> Unit) {
 }
 
 /**
- * 供应商选择器（§6.8 模型 Tab 顶部）：2×2 等高胶囊（48dp 触控，§6.0）。
+ * hotfix34：供应商选择器（全量适配）。
  *
- * 四家两行：上行云端三家，下行本地模型——本地是「另一种模式」而非第四家云端，
- * 单独一行在语义上更诚实。选中：primary 底 + on-primary 文字 w600；未选：透明底 +
- * 1.5dp outline 描边 + on-surface-variant 文字 w500。背景色 150ms 过渡（AkMotionFastColor）。
+ * 真机反馈：「你问我哪家的模型，为什么一定要哪家的？你不能说全部都弄吗？
+ * 现在大市面上比较出名的都弄一下，或者说全部适配一下」。
+ *
+ * 交互：常用厂商横滑 chip 常驻（OpenAI 兼容 / DeepSeek / Kimi / 智谱 / 通义 /
+ * Claude / Gemini）＋ 末尾「全部供应商…」打开分组全量列表（国内 / 海外 /
+ * 聚合与推理平台 / 本地部署 / 原生协议，共 30+ 家，每家带域名与说明）。
+ * 选中即回填该家默认端点与模型（调用方 onSelect 里做）。
  */
 @Composable
 private fun ProviderSelector(selected: String, onSelect: (String) -> Unit) {
-    val row1 = listOf(
-        "openai" to "OpenAI 兼容",
-        "claude" to "Claude",
-        "gemini" to "Gemini"
-    )
-    val row2 = listOf("local-llama" to "本地模型")
+    var showAll by remember { mutableStateOf(false) }
+    val common = ProviderCatalog.all.filter { it.group == ProviderGroup.COMMON }
+    // 非「常用」厂商被选中时，chip 行要能显示它（否则用户看不到当前选的是哪家）
+    val current = ProviderCatalog.byId(selected)
+    val extra = if (current != null && current.group != ProviderGroup.COMMON) listOf(current) else emptyList()
+
     Column(verticalArrangement = Arrangement.spacedBy(AgentSpacing.space2)) {
-        ProviderRow(row1, selected, onSelect)
-        ProviderRow(row2, selected, onSelect)
+        LazyRow(horizontalArrangement = Arrangement.spacedBy(AgentSpacing.space2)) {
+            items(extra + common) { p ->
+                AkChip(
+                    text = p.label,
+                    selected = p.id == selected,
+                    onClick = { onSelect(p.id) }
+                )
+            }
+            item {
+                AkChip(text = "全部供应商…", selected = false, onClick = { showAll = true })
+            }
+        }
+        // 当前供应商说明（域名 + 一句话）——选中后一眼确认「我配的是哪家」
+        current?.let { p ->
+            Text(
+                text = buildString {
+                    if (p.defaultBaseUrl.isNotBlank()) append(p.defaultBaseUrl)
+                    if (p.note.isNotBlank()) {
+                        if (isNotEmpty()) append(" · ")
+                        append(p.note)
+                    }
+                },
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+    }
+
+    if (showAll) {
+        AkModalHost(target = Unit) { _, dialogVisible ->
+            ProviderAllDialog(
+                selected = selected,
+                visible = dialogVisible,
+                onPick = { id ->
+                    onSelect(id)
+                    showAll = false
+                },
+                onDismiss = { showAll = false }
+            )
+        }
     }
 }
 
+/**
+ * 全量供应商列表（分组 + 选中对勾）。344dp 宽卡片、封顶 560dp 高、内滚动——
+ * 与 AkConfirmDialog 同族语汇；点选即切换并回填默认端点。
+ */
 @Composable
-private fun ProviderRow(
-    providers: List<Pair<String, String>>,
+private fun ProviderAllDialog(
     selected: String,
-    onSelect: (String) -> Unit
+    visible: Boolean,
+    onPick: (String) -> Unit,
+    onDismiss: () -> Unit
 ) {
-    Row(
-        Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(AgentSpacing.space2)
+    val spec = if (visible) AkMotionDialog else AkMotionExit
+    val scale by animateFloatAsState(if (visible) 1f else 0.96f, animationSpec = spec)
+    val alpha by animateFloatAsState(if (visible) 1f else 0f, animationSpec = spec)
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
     ) {
-        providers.forEach { (id, label) ->
-            val isSelected = id == selected
-            val bg by animateColorAsState(
-                targetValue = if (isSelected) MaterialTheme.colorScheme.primary else Color.Transparent,
-                animationSpec = AkMotionFastColor
-            )
+        Box(
+            Modifier
+                .fillMaxSize()
+                .padding(horizontal = 20.dp),
+            contentAlignment = Alignment.Center
+        ) {
             Surface(
-                onClick = { onSelect(id) },
+                shape = RoundedCornerShape(20.dp),
+                color = MaterialTheme.colorScheme.surface,
                 modifier = Modifier
-                    .weight(1f)
-                    .height(48.dp),
-                shape = RoundedCornerShape(14.dp),
-                color = bg,
-                border = if (isSelected) null
-                else BorderStroke(1.5.dp, MaterialTheme.colorScheme.outlineVariant)
+                    .widthIn(max = 400.dp)
+                    .scale(scale)
+                    .alpha(alpha)
             ) {
-                Box(contentAlignment = Alignment.Center) {
+                Column(Modifier.padding(vertical = AgentSpacing.space4)) {
                     Text(
-                        text = label,
-                        style = MaterialTheme.typography.labelLarge,
-                        fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Medium,
-                        color = if (isSelected) MaterialTheme.colorScheme.onPrimary
-                        else MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1
+                        text = "选择供应商",
+                        style = MaterialTheme.typography.titleLarge,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.padding(horizontal = AgentSpacing.space5)
                     )
+                    Spacer(Modifier.height(AgentSpacing.space3))
+                    LazyColumn(
+                        Modifier.heightIn(max = 480.dp),
+                        contentPadding = PaddingValues(horizontal = AgentSpacing.space3)
+                    ) {
+                        ProviderGroup.entries.forEach { group ->
+                            val list = ProviderCatalog.all.filter { it.group == group }
+                            if (list.isEmpty()) return@forEach
+                            item(key = "hdr_${group.name}") {
+                                Text(
+                                    text = group.label,
+                                    style = MaterialTheme.typography.labelLarge,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.padding(
+                                        start = AgentSpacing.space2,
+                                        top = AgentSpacing.space3,
+                                        bottom = AgentSpacing.space1
+                                    )
+                                )
+                            }
+                            items(list, key = { it.id }) { p ->
+                                ProviderOptionRow(
+                                    provider = p,
+                                    isSelected = p.id == selected,
+                                    onClick = { onPick(p.id) }
+                                )
+                            }
+                        }
+                    }
                 }
             }
         }
-        // 单枚胶囊的行（本地模型）补一个不可见占位，保持左右边距与上行一致
-        if (providers.size == 1) Spacer(Modifier.weight(2f))
+    }
+}
+
+/** 单条供应商：label + 域名/说明两行 + 选中对勾。 */
+@Composable
+private fun ProviderOptionRow(
+    provider: LlmProvider,
+    isSelected: Boolean,
+    onClick: () -> Unit
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = AgentSpacing.space3, vertical = AgentSpacing.space3),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(
+                text = provider.label,
+                style = MaterialTheme.typography.bodyLarge,
+                color = if (isSelected) MaterialTheme.colorScheme.primary
+                else MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            val sub = buildString {
+                if (provider.defaultBaseUrl.isNotBlank()) append(provider.defaultBaseUrl)
+                if (provider.note.isNotBlank()) {
+                    if (isNotEmpty()) append(" · ")
+                    append(provider.note)
+                }
+                if (isEmpty()) append(provider.defaultModel)
+            }
+            if (sub.isNotBlank()) {
+                Text(
+                    text = sub,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+        if (isSelected) {
+            Spacer(Modifier.width(AgentSpacing.space2))
+            Icon(
+                imageVector = Icons.Outlined.Check,
+                contentDescription = "当前选择",
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(20.dp)
+            )
+        }
     }
 }
 
@@ -464,14 +599,17 @@ private fun ModelTab(
     val activeProfile = profiles.firstOrNull { it.id == activeProfileId }
 
     // 本地模式没有端点/Key：测试按钮放行，字段区换成状态卡
-    val isLocal = providerId == "local-llama"
-    val canTest = isLocal || (baseUrl.isNotBlank() && apiKey.isNotBlank())
+    // hotfix34：区分两种「本地」——isLocal 仅指 App 内置 llama.cpp（无端点字段）；
+    // Ollama/LM Studio/vLLM 是外部本地服务，仍要填 baseUrl，只是不需要 Key
+    val isLocal = providerId == ProviderCatalog.STYLE_LOCAL_LLAMA
+    val needsKey = ProviderCatalog.requiresApiKey(providerId)
+    val canTest = isLocal || (baseUrl.isNotBlank() && (!needsKey || apiKey.isNotBlank()))
 
     AkSectionCard(
         title = "模型接入",
-        description = "三家云端供应商可切换：OpenAI 兼容端点（含 vLLM / Ollama / OneAPI）、" +
-            "Claude Messages API、Gemini generateContent。" +
-            "填错 Key 时对话页会直接提示「API Key 无效」，不会再反复重试。"
+        description = "内置 30+ 家供应商预设（DeepSeek / Kimi / 智谱 / 通义 / 豆包 / Claude / " +
+            "Gemini / OpenRouter / Ollama…），点「全部供应商」按组选；协议只分 OpenAI 兼容 / " +
+            "Claude / Gemini 三类，其余自建或未收录端点选「OpenAI 兼容」直接填。",
     ) {
         Text(
             text = "供应商",
