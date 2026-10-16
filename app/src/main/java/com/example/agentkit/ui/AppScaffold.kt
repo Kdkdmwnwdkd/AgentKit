@@ -39,7 +39,9 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.Bookmark
 import androidx.compose.material.icons.outlined.Build
 import androidx.compose.material.icons.outlined.Chat
 import androidx.compose.material.icons.outlined.Cloud
@@ -374,6 +376,7 @@ fun AppScaffold(
                             onSelectConversation = onSelectConversation,
                             onRenameConversation = { id, title -> vm.renameConversation(id, title) },
                             onDeleteConversation = { id -> vm.deleteConversation(id) },
+                            onSetPinned = { id, pinned -> vm.setConversationPinned(id, pinned) },
                             firstItemFocus = null
                         )
                     }
@@ -483,6 +486,9 @@ fun AppScaffold(
                                     vm.renameConversation(id, title)
                                 },
                                 onDeleteConversation = { id -> vm.deleteConversation(id) },
+                                onSetPinned = { id, pinned ->
+                                    vm.setConversationPinned(id, pinned)
+                                },
                                 firstItemFocus = firstItemFocus
                             )
                             // 右缘 1dp outline 装饰线（全 App 唯一抽屉描边，规范明文；其余场景 0 描边）
@@ -598,12 +604,15 @@ private fun DrawerContent(
     onSelectConversation: (String) -> Unit,
     onRenameConversation: (String, String) -> Unit,
     onDeleteConversation: (String) -> Unit,
+    onSetPinned: (String, Boolean) -> Unit,
     firstItemFocus: FocusRequester?
 ) {
     // 长按菜单 / 重命名 / 删除三个模态的目标会话 id（AkModalHost 三态机承载退场动画）
     var menuConvId by remember { mutableStateOf<String?>(null) }
     var renameConvId by remember { mutableStateOf<String?>(null) }
     var deleteConvId by remember { mutableStateOf<String?>(null) }
+    // 功能五（P1-3）：会话搜索关键词（纯本地状态，不落盘——搜索是一次性动作）
+    var convQuery by remember { mutableStateOf("") }
 
     Column(
         Modifier
@@ -637,7 +646,32 @@ private fun DrawerContent(
         if (conversations.isNotEmpty()) {
             Spacer(Modifier.height(AgentSpacing.space5))
             DrawerGroupTitle("最近对话")
-            conversations.take(MAX_RECENT_CONVERSATIONS).forEach { conv ->
+            // 功能五（P1-3）：会话搜索——会话一多，靠滚动找太慢
+            // （对标 RikkaHub HistoryPage 的搜索；置顶项在无关键词时自然排在列表最前）
+            AkTextField(
+                value = convQuery,
+                onValueChange = { convQuery = it },
+                label = "搜索对话",
+                modifier = Modifier.padding(horizontal = AgentSpacing.space2),
+                placeholder = "输入标题关键词…"
+            )
+            Spacer(Modifier.height(AgentSpacing.space2))
+            // 有关键词：在**全部**会话里过滤（不受 8 条上限限制）；
+            // 无关键词：维持「最近 8 条」的紧凑列表（抽屉不是全量列表页）
+            val visibleConvs = if (convQuery.isBlank()) {
+                conversations.take(MAX_RECENT_CONVERSATIONS)
+            } else {
+                conversations.filter { it.title.contains(convQuery.trim(), ignoreCase = true) }
+            }
+            if (visibleConvs.isEmpty()) {
+                Text(
+                    text = "没有匹配的对话",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = AgentSpacing.space4, vertical = AgentSpacing.space2)
+                )
+            }
+            visibleConvs.forEach { conv ->
                 DrawerConversationRow(
                     conversation = conv,
                     isActive = conv.id == activeConversationId,
@@ -667,9 +701,15 @@ private fun DrawerContent(
 
     // —— 功能三：长按菜单 / 重命名 / 删除确认（Dialog 独立窗口，浮于 scrim 之上）——
     AkModalHost(target = menuConvId) { id, visible ->
+        val conv = conversations.firstOrNull { it.id == id }
         ConversationMenuDialog(
-            title = conversations.firstOrNull { it.id == id }?.title ?: "对话",
+            title = conv?.title ?: "对话",
             visible = visible,
+            pinned = conv?.pinned == true,
+            onTogglePin = {
+                menuConvId = null
+                onSetPinned(id, conv?.pinned != true)
+            },
             onRename = { menuConvId = null; renameConvId = id },
             onDelete = { menuConvId = null; deleteConvId = id },
             onDismiss = { menuConvId = null }
@@ -774,14 +814,26 @@ private fun DrawerConversationRow(
             )
             Spacer(Modifier.width(AgentSpacing.space3))
             Column(Modifier.weight(1f)) {
-                Text(
-                    text = conversation.title,
-                    style = MaterialTheme.typography.titleMedium,
-                    color = if (isActive) MaterialTheme.colorScheme.primary
-                    else MaterialTheme.colorScheme.onSurface,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    // 功能五（P1-3）：置顶标记——标题前的实心书签，一眼看出「这条被钉住了」
+                    if (conversation.pinned) {
+                        Icon(
+                            imageVector = Icons.Filled.Bookmark,
+                            contentDescription = "已置顶",
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(14.dp)
+                        )
+                        Spacer(Modifier.width(AgentSpacing.space1))
+                    }
+                    Text(
+                        text = conversation.title,
+                        style = MaterialTheme.typography.titleMedium,
+                        color = if (isActive) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
                 Text(
                     text = "${relativeTime(conversation.updatedAt)} · " +
                         "${conversation.messageCount} 条消息",
@@ -803,6 +855,8 @@ private fun DrawerConversationRow(
 private fun ConversationMenuDialog(
     title: String,
     visible: Boolean,
+    pinned: Boolean,
+    onTogglePin: () -> Unit,
     onRename: () -> Unit,
     onDelete: () -> Unit,
     onDismiss: () -> Unit
@@ -838,6 +892,14 @@ private fun ConversationMenuDialog(
                         modifier = Modifier.padding(horizontal = AgentSpacing.space6)
                     )
                     Spacer(Modifier.height(AgentSpacing.space2))
+                    // 功能五（P1-3）：置顶项置首位（高频且无副作用）；图标用 Bookmark
+                    // 的实心/线框表达状态，文案随当前状态反转，避免用户猜「点了会怎样」
+                    AkListItem(
+                        icon = if (pinned) Icons.Filled.Bookmark else Icons.Outlined.Bookmark,
+                        title = if (pinned) "取消置顶" else "置顶对话",
+                        description = if (pinned) "已置顶，取消后回到按时间排序" else "置顶后恒排在列表最前",
+                        onClick = onTogglePin
+                    )
                     AkListItem(
                         icon = Icons.Outlined.Edit,
                         title = "重命名",

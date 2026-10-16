@@ -56,7 +56,9 @@ data class ConversationSummary(
     val id: String,
     val title: String,
     val updatedAt: Long,
-    val messageCount: Int
+    val messageCount: Int,
+    /** 功能五（P1-3）：置顶标记——置顶会话恒排在列表最前（对标 RikkaHub pinned_chats）。 */
+    val pinned: Boolean = false
 )
 
 /**
@@ -94,7 +96,12 @@ data class ConversationRecord(
     val createdAt: Long,
     val updatedAt: Long,
     val messages: List<MsgRecord> = emptyList(),
-    val turns: List<TurnRecord> = emptyList()
+    val turns: List<TurnRecord> = emptyList(),
+    /**
+     * 功能五（P1-3）：置顶标记（默认 false，旧文件反序列化自动补齐）。
+     * 置顶只影响排序，不改变任何消息语义——取消置顶即回到按时间排序。
+     */
+    val pinned: Boolean = false
 )
 
 /**
@@ -218,10 +225,31 @@ class ConversationStore(file: File) {
         load()
     }
 
-    /** 会话摘要列表（updatedAt 倒序；抽屉「最近对话」与对话页顶栏标题消费）。 */
+    /**
+     * 会话摘要列表（功能五 P1-3：**置顶优先**，组内按 updatedAt 倒序）。
+     *
+     * 排序契约：`pinned` 降序 → `updatedAt` 降序。用两级比较而非单键，是因为
+     * 置顶语义必须是「永远在最前」，不能被新消息顶下去（RikkaHub pinned_chats 同语义）。
+     */
     fun list(): List<ConversationSummary> = synchronized(lock) {
-        items.map { ConversationSummary(it.id, it.title, it.updatedAt, it.messages.size) }
-            .sortedByDescending { it.updatedAt }
+        items.map { ConversationSummary(it.id, it.title, it.updatedAt, it.messages.size, it.pinned) }
+            .sortedWith(compareByDescending<ConversationSummary> { it.pinned }
+                .thenByDescending { it.updatedAt })
+    }
+
+    /**
+     * 功能五（P1-3）：置顶 / 取消置顶。
+     *
+     * 只置排序键，不动 updatedAt——否则「置顶」会把会话伪装成「刚聊过」，
+     * 取消置顶后它还会赖在列表顶部，用户会以为没生效。
+     */
+    fun setPinned(convId: String, pinned: Boolean) {
+        synchronized(lock) {
+            val idx = items.indexOfFirst { it.id == convId }
+            if (idx < 0) return
+            items[idx] = items[idx].copy(pinned = pinned)
+        }
+        schedulePersist()
     }
 
     /** 加载完整会话；不存在返回 null。返回拷贝，防调用方改内部状态。 */

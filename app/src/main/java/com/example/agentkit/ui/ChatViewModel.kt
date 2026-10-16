@@ -1612,6 +1612,17 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         refreshConversations()
     }
 
+    /**
+     * 功能五（P1-3）：置顶 / 取消置顶会话（抽屉长按菜单）。
+     *
+     * 与 rename 一样不需要 isRunning 守卫：只改排序键，不切 activeConversationId、
+     * 不动 _messages，在途事件仍按原 id 落盘。
+     */
+    fun setConversationPinned(id: String, pinned: Boolean) {
+        conversationStore.setPinned(id, pinned)
+        refreshConversations()
+    }
+
     // —— L7 技能导入 / 卸载 / 授权 ——
 
     /** 从 URL 下载 zip 并导入；网络 IO 放 Dispatchers.IO。 */

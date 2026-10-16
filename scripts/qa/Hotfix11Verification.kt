@@ -221,8 +221,54 @@ private fun testProviderListEntry() {
     }
 }
 
+/**
+ * K 区：功能五 P1-3「会话置顶 + 会话搜索」——对标 RikkaHub `ConversationList.kt`
+ * （pin/unpin 菜单 + pinned_chats 分组）与 HistoryPage 搜索。
+ */
+private fun testConversationPinAndSearch() {
+    println("— K 区：会话置顶 + 会话搜索（功能五 P1-3） —")
+    val store = readSource("core/ConversationStore.kt")
+    val vm = readSource("ui/ChatViewModel.kt")
+    val scaffold = readSource("ui/AppScaffold.kt")
+
+    check("K1 存储层：Record/Summary 带 pinned 字段（默认 false，旧文件兼容）") {
+        assertContains("K1", store, "val pinned: Boolean = false")
+        assertContains("K1", store, "it.messages.size, it.pinned")
+    }
+    check("K2 list() 排序契约：置顶优先 → 组内按时间倒序") {
+        assertContains("K2", store, "compareByDescending<ConversationSummary> { it.pinned }")
+    }
+    check("K3 setPinned 只改排序键，不动 updatedAt（防伪装成刚聊过）") {
+        val fn = store.substringAfter("fun setPinned(")
+        assertContains("K3", fn, "copy(pinned = pinned)")
+        assertTrue(
+            "K3 不应更新 updatedAt",
+            !fn.substringBefore("schedulePersist").contains("updatedAt =")
+        )
+    }
+    check("K4 VM 暴露 setConversationPinned 并刷新摘要列表") {
+        val fn = vm.substringAfter("fun setConversationPinned(")
+        assertContains("K4", fn, "conversationStore.setPinned(id, pinned)")
+        assertContains("K4", fn, "refreshConversations()")
+    }
+    check("K5 抽屉搜索：关键词过滤全部会话（不受最近 8 条上限）") {
+        assertContains("K5", scaffold, "var convQuery by remember")
+        assertContains("K5", scaffold, "conversations.filter { it.title.contains(convQuery.trim(), ignoreCase = true) }")
+        assertContains("K5", scaffold, "没有匹配的对话")
+    }
+    check("K6 长按菜单有置顶项，文案随状态反转 + 说明后果") {
+        assertContains("K6", scaffold, "onTogglePin = {")
+        assertContains("K6", scaffold, "if (pinned) \"取消置顶\" else \"置顶对话\"")
+        assertContains("K6", scaffold, "onSetPinned(id, conv?.pinned != true)")
+    }
+    check("K7 会话行有置顶可视标记（实心书签）") {
+        assertContains("K7", scaffold, "if (conversation.pinned)")
+        assertContains("K7", scaffold, "Icons.Filled.Bookmark")
+    }
+}
+
 fun main() {
-    println("== hotfix11 模型快速切换 + 功能四 P0 验证 ==")
+    println("== hotfix11 模型快速切换 + 功能四/五 验证 ==")
     testModelQuickSwitch()
     println()
     testMessageCopy()
@@ -230,6 +276,8 @@ fun main() {
     testImageAttachment()
     println()
     testProviderListEntry()
+    println()
+    testConversationPinAndSearch()
     println()
     println("== 汇总 ==")
     println("PASS: $passed  FAIL: ${failures.size}  TOTAL: ${passed + failures.size}")
