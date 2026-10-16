@@ -914,8 +914,10 @@ private fun testReasoningFold() {
         assertContains("U9", vm, "val reasoningDraft: StateFlow<String?> = _reasoningDraft.asStateFlow()")
         // append 落库路径透传 reasoning（send/regenerate 的历史消息也能折叠展示）
         assertContains("U9", vm, "is AssistantMessage -> UiItem.Assistant(msg.content, usage = usage, reasoning = msg.reasoning)")
-        // 流结束/失败等复位点同步清 reasoningDraft（不能留着上一条的思考）
-        assertTrue("U9", vm.split("_reasoningDraft.value = null").size - 1 >= 5)
+        // 流结束/失败等复位点清 reasoning 草稿（hotfix30 起：清的是 reasoningBuffer，
+        // 显示态经 syncDraftDisplay 投影，不能留着上一条的思考）
+        assertTrue("U9", vm.split("reasoningBuffer = null").size - 1 >= 4)
+        assertContains("U9", vm, "_reasoningDraft.value = if (isOwnerActive()) reasoningBuffer else null")
     }
     check("U10 UI：ReasoningBlock 流式展开/完成折叠，null 不渲染") {
         assertContains("U10", screen, "reasoning: String? = null")
@@ -1128,6 +1130,81 @@ private fun testMarkdownFileExport() {
     }
 }
 
+/**
+ * Y 区：hotfix30「生成中可切换会话」——真机反馈「我在一个对话发消息之后，
+ * 要去那那个对话之间的对话的话，他是得让那个对话回完才行，我不能跳，
+ * 不能过其他对话」。
+ *
+ * 根因：switchConversation 有 isRunning 硬守卫 + 所有在途写读
+ * _activeConversationId.value——放开切换必把旧会话的生成结果写进新会话。
+ *
+ * 解法：owner 捕获（send/regenerate 启动即存 runOwnerConvId，finally 清）+
+ * 流式草稿内存缓冲（draftBuffer/reasoningBuffer 为权威态，_streamDraft 只是
+ * owner==active 时的投影）+ 显示态全部带 isOwnerActive() 守卫。
+ * 切走 → 后台续跑只落盘；切回 → syncDraftDisplay 恢复打字机无缝续看。
+ * 保守边界：不放开并行发送（newConversation/send 仍受 isRunning 拦），
+ * 在途会话禁删（防删掉的会话被在途写盘复活）。
+ */
+private fun testConversationSwitchWhileRunning() {
+    println("— Y 区：生成中可切换会话（hotfix30） —")
+    val vm = readSource("ui/ChatViewModel.kt")
+    val scaffold = readSource("ui/AppScaffold.kt")
+    val chat = readSource("ui/ChatScreen.kt")
+
+    check("Y1 VM：owner 捕获机制（runOwnerConvId + 草稿缓冲 + 投影开关 + 生成中标识流）") {
+        assertContains("Y1", vm, "private var runOwnerConvId: String? = null")
+        assertContains("Y1", vm, "private var draftBuffer: String? = null")
+        assertContains("Y1", vm, "private var reasoningBuffer: String? = null")
+        assertContains("Y1", vm, "private fun isOwnerActive(): Boolean =")
+        assertContains("Y1", vm, "private fun syncDraftDisplay() {")
+        assertContains("Y1", vm, "val generatingConvId: StateFlow<String?> = _generatingConvId.asStateFlow()")
+    }
+    check("Y2 send/regenerate：启动捕获 owner + finally 全套收尾（双路径同纪律）") {
+        assertTrue("Y2", vm.split("runOwnerConvId = owner").size - 1 >= 2)
+        assertTrue("Y2", vm.split("_generatingConvId.value = owner").size - 1 >= 2)
+        assertTrue("Y2", vm.split("runOwnerConvId = null").size - 1 >= 2)
+        assertTrue("Y2", vm.split("draftBuffer = null").size - 1 >= 2)
+        // syncDraftDisplay 调用点：send 启动/收草稿/finally + regenerate 同三处 + switchConversation
+        assertTrue("Y2", vm.split("syncDraftDisplay()").size - 1 >= 6)
+    }
+    check("Y3 在途写按 owner：appendToStore/appendVariant/流式草稿三通道") {
+        val appendStore = vm.substringAfter("private fun appendToStore(item: UiItem)")
+        assertContains("Y3", appendStore, "val convId = runOwnerConvId ?: _activeConversationId.value")
+        // regenerate 成功/失败两条 appendVariant 都按 owner（切走期间结果仍写回原会话）
+        assertTrue("Y3", vm.split("appendVariant(\n").size >= 2)
+        assertTrue("Y3", vm.contains("owner, turnIndex, variant.toMsgRecord()"))
+        assertTrue("Y3", vm.contains("owner, turnIndex, err.toMsgRecord()"))
+        // 流式增量先攒缓冲再条件投影（切走续攒、切回恢复）
+        assertContains("Y3", vm, "draftBuffer = (draftBuffer ?: \"\") + delta")
+        assertContains("Y3", vm, "reasoningBuffer = (reasoningBuffer ?: \"\") + delta")
+    }
+    check("Y4 显示态守卫：_messages 追加全部带 isOwnerActive()（后台只落盘不上屏）") {
+        // ToolStarted / append() / send 的 stopItem / send 的 errItem 四处
+        assertTrue("Y4", vm.split("if (isOwnerActive()) _messages.value = _messages.value +").size - 1 >= 3)
+    }
+    check("Y5 switchConversation：去掉 isRunning 硬守卫 + 切后同步草稿投影") {
+        val sw = vm.substringAfter("fun switchConversation(id: String)")
+            .substringBefore("fun deleteConversation")
+        assertTrue("Y5", !sw.contains("if (isRunning.value) return"))
+        assertContains("Y5", sw, "loadConversation(id)")
+        assertContains("Y5", sw, "syncDraftDisplay()")
+    }
+    check("Y6 deleteConversation：在途会话（含非 active 的后台生成会话）禁删防复活") {
+        val del = vm.substringAfter("fun deleteConversation(id: String)")
+        assertContains("Y6", del, "if (id == runOwnerConvId) return")
+    }
+    check("Y7 UI：抽屉生成中标识 + 删除在途 Toast + 空闲会话输入说明行") {
+        assertContains("Y7", scaffold, "generatingConvId: String? = null")
+        assertContains("Y7", scaffold, "isGenerating = conv.id == generatingConvId")
+        assertContains("Y7", scaffold, "CircularProgressIndicator(")
+        assertContains("Y7", scaffold, "正在生成")
+        assertContains("Y7", scaffold, "该对话正在生成，请先停止或等待完成")
+        assertContains("Y7", chat, "val generatingConvId by vm.generatingConvId.collectAsStateWithLifecycle()")
+        assertContains("Y7", chat, "runningNotice = if (generatingConvId != null && generatingConvId != activeConversationId)")
+        assertContains("Y7", chat, "有其他对话正在生成，本对话需等待或停止后才能发送")
+    }
+}
+
 fun main() {
     println("== hotfix11 模型快速切换 + 功能四/五 验证 ==")
     testModelQuickSwitch()
@@ -1165,6 +1242,8 @@ fun main() {
     testPromptBackup()
     println()
     testMarkdownFileExport()
+    println()
+    testConversationSwitchWhileRunning()
     println()
     println("== 汇总 ==")
     println("PASS: $passed  FAIL: ${failures.size}  TOTAL: ${passed + failures.size}")

@@ -58,6 +58,7 @@ import androidx.compose.material.icons.outlined.Shield
 import androidx.compose.material.icons.outlined.Storage
 import androidx.compose.material.icons.outlined.Terminal
 import androidx.compose.material.icons.outlined.ViewInAr
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -236,6 +237,8 @@ fun AppScaffold(
     // 功能三：会话摘要与当前会话 id（抽屉「最近对话」组消费）
     val conversations by vm.conversations.collectAsStateWithLifecycle()
     val activeConversationId by vm.activeConversationId.collectAsStateWithLifecycle()
+    // hotfix30：正在生成的会话 id（抽屉显示「生成中」标识，可点到在途会话续看）
+    val generatingConvId by vm.generatingConvId.collectAsStateWithLifecycle()
     val pendingGrants = pendingGrantCount(
         serviceConnected, capturing, notificationGranted, usageGranted
     )
@@ -391,7 +394,8 @@ onExportConversation = { id ->
     val title = conversations.firstOrNull { it.id == id }?.title ?: "会话"
     shareMarkdownFile(ctx, title, vm.conversationMarkdown(id), "导出会话")
 },
-                            firstItemFocus = null
+                            firstItemFocus = null,
+                            generatingConvId = generatingConvId
                         )
                     }
                     Box(
@@ -511,8 +515,9 @@ onExportConversation = { id ->
                                     val title = conversations.firstOrNull { it.id == id }?.title ?: "会话"
                                     shareMarkdownFile(ctx, title, vm.conversationMarkdown(id), "导出会话")
                                 },
-                                firstItemFocus = firstItemFocus
-                            )
+                                    firstItemFocus = firstItemFocus,
+                                    generatingConvId = generatingConvId
+                                )
                             // 右缘 1dp outline 装饰线（全 App 唯一抽屉描边，规范明文；其余场景 0 描边）
                             Box(
                                 Modifier
@@ -640,12 +645,16 @@ private fun DrawerContent(
     onSetPinned: (String, Boolean) -> Unit,
     /** 功能五（P1-4a）：导出会话为 Markdown（入参 = 会话 id；空会话由 VM 返空串，UI 不弹面板）。 */
     onExportConversation: (String) -> Unit,
+    /** hotfix30：正在生成的会话 id——对应抽屉项显示「生成中」标识（null = 无在途任务）。 */
+    generatingConvId: String? = null,
     firstItemFocus: FocusRequester?
 ) {
     // 长按菜单 / 重命名 / 删除三个模态的目标会话 id（AkModalHost 三态机承载退场动画）
     var menuConvId by remember { mutableStateOf<String?>(null) }
     var renameConvId by remember { mutableStateOf<String?>(null) }
     var deleteConvId by remember { mutableStateOf<String?>(null) }
+    // hotfix30：删除在途会话的 Toast 反馈（VM 静默拒绝，UI 补一句人话）
+    val context = LocalContext.current
     // 功能五（P1-3）：会话搜索关键词（纯本地状态，不落盘——搜索是一次性动作）
     var convQuery by remember { mutableStateOf("") }
 
@@ -710,6 +719,7 @@ private fun DrawerContent(
                 DrawerConversationRow(
                     conversation = conv,
                     isActive = conv.id == activeConversationId,
+                    isGenerating = conv.id == generatingConvId,
                     onClick = { onSelectConversation(conv.id) },
                     onLongClick = { menuConvId = conv.id }
                 )
@@ -772,7 +782,20 @@ private fun DrawerContent(
             danger = true,
             icon = Icons.Outlined.Delete,
             visible = visible,
-            onConfirm = { onDeleteConversation(id); deleteConvId = null },
+            onConfirm = {
+                // hotfix30：在途会话 VM 会静默拒绝（防删掉的会话被在途写盘复活）——
+                // 这里给用户一句人话，避免「点了删除没反应」
+                if (id == generatingConvId) {
+                    Toast.makeText(
+                        context,
+                        "该对话正在生成，请先停止或等待完成",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                } else {
+                    onDeleteConversation(id)
+                }
+                deleteConvId = null
+            },
             onDismiss = { deleteConvId = null }
         )
     }
@@ -791,6 +814,7 @@ private fun DrawerContent(
 private fun DrawerConversationRow(
     conversation: ConversationSummary,
     isActive: Boolean,
+    isGenerating: Boolean = false,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
     modifier: Modifier = Modifier
@@ -836,10 +860,11 @@ private fun DrawerConversationRow(
                 )
                 // 合并为单节点：一次聚焦读全，selected 态读作「已选中」
                 .semantics(mergeDescendants = true) {
-                    contentDescription = conversation.title
+                    // hotfix30：生成中态读作「正在生成」——无障碍用户不依赖视觉转圈
+                    contentDescription =
+                        if (isGenerating) "${conversation.title}，正在生成" else conversation.title
                     selected = isActive
-                },
-            verticalAlignment = Alignment.CenterVertically
+                },            verticalAlignment = Alignment.CenterVertically
         ) {
             Icon(
                 imageVector = Icons.Outlined.Chat,
@@ -861,6 +886,16 @@ private fun DrawerConversationRow(
                         )
                         Spacer(Modifier.width(AgentSpacing.space1))
                     }
+                    // hotfix30：生成中标记——标题前的小号转圈，一眼看出「这条正在出字」，
+                    // 点击可切过去续看（在途任务按 owner 后台续跑，见 ChatViewModel.runOwnerConvId）
+                    if (isGenerating) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(12.dp),
+                            strokeWidth = 2.dp,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Spacer(Modifier.width(AgentSpacing.space1))
+                    }
                     Text(
                         text = conversation.title,
                         style = MaterialTheme.typography.titleMedium,
@@ -872,6 +907,8 @@ private fun DrawerConversationRow(
                 }
                 Text(
                     text = "${relativeTime(conversation.updatedAt)} · " +
+                        // hotfix30：生成中会话副标题前置「生成中」，与标题前转圈双通道提示
+                        (if (isGenerating) "生成中 · " else "") +
                         "${conversation.messageCount} 条消息" +
                         // 功能五（P1-5）：有用量数据才缀 tokens（旧会话/本地模型会话不显示）
                         (if (conversation.promptTokens + conversation.completionTokens > 0)

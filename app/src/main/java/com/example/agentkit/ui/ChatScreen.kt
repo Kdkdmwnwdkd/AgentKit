@@ -143,6 +143,8 @@ fun ChatScreen(
     val retryState by vm.retryState.collectAsStateWithLifecycle()
     val conversations by vm.conversations.collectAsStateWithLifecycle()
     val activeConversationId by vm.activeConversationId.collectAsStateWithLifecycle()
+    // hotfix30：正在生成的会话 id——非本会话在生成时输入区给说明行
+    val generatingConvId by vm.generatingConvId.collectAsStateWithLifecycle()
     val input by vm.input.collectAsStateWithLifecycle()
     val running by vm.isRunning.collectAsStateWithLifecycle()
     // 功能五（P1-7）：提示词库（快捷指令）——输入栏闪电按钮唤起的选择器数据源
@@ -359,7 +361,11 @@ fun ChatScreen(
             onPickAttach = { showAttachMenu = true },
             onOpenPrompts = { showPromptPicker = true },
             onRemoveImage = { vm.removePendingImage(it) },
-            onRemoveFile = { vm.removePendingFile(it) }
+            onRemoveFile = { vm.removePendingFile(it) },
+            // hotfix30：后台有其他对话在生成（generatingConvId != 本会话）时，
+            // 输入区禁用需有说明——用户切到空闲会话发现发不了消息会以为输入坏了
+            runningNotice = if (generatingConvId != null && generatingConvId != activeConversationId)
+                "有其他对话正在生成，本对话需等待或停止后才能发送" else null
         )
     }
 
@@ -1306,7 +1312,10 @@ private fun ChatInputBar(
     onPickAttach: () -> Unit,
     onOpenPrompts: () -> Unit,
     onRemoveImage: (String) -> Unit,
-    onRemoveFile: (String) -> Unit
+    onRemoveFile: (String) -> Unit,
+    // hotfix30：后台有其他对话在生成时的一行说明（null = 不显示）——
+    // 否则用户切到空闲会话发现发不了消息，会以为输入坏了
+    runningNotice: String? = null
 ) {
     Surface(color = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f)) {
         Column(
@@ -1322,6 +1331,19 @@ private fun ChatInputBar(
                     .height(1.dp)
                     .background(MaterialTheme.colorScheme.outline)
             )
+            // hotfix30：生成中提示行（有才占位，轻量 label 不抢焦点）
+            if (runningNotice != null) {
+                Text(
+                    text = runningNotice,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(
+                        start = AgentSpacing.space3,
+                        end = AgentSpacing.space3,
+                        top = AgentSpacing.space2
+                    )
+                )
+            }
             // 功能四（P0-2）/ 功能五（P1-4）：待发附件（缩略图行 + 文件行，有才占位）
             if (images.isNotEmpty()) AttachedImagesRow(images, onRemoveImage)
             if (files.isNotEmpty()) AttachedFilesRow(files, onRemoveFile)

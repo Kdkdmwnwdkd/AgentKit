@@ -787,6 +787,44 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     private var runJob: Job? = null
 
     /**
+     * hotfix30：在途任务的归属会话 id（send/regenerate 启动时捕获，finally 清 null）。
+     *
+     * 真机反馈：「我在一个对话发消息之后，要去那个对话之间的对话的话，他是得让
+     * 那个对话回完才行，我不能跳，不能过其他对话」。
+     *
+     * 根因：旧架构所有在途写操作（appendToStore/handleAgentEvent/流式草稿）都读
+     * _activeConversationId.value，且 switchConversation 有 isRunning 硬守卫——
+     * 放开切换就会把旧会话的生成结果写进新会话（写串）。
+     *
+     * 解法：启动即捕获 owner，所有在途写按 owner 落盘；显示态（_messages/草稿）
+     * 仍跟 active 走，靠 [isOwnerActive] 条件投影。用户切走 → 旧会话后台继续
+     * 出字（只落盘不上屏）；切回 → [syncDraftDisplay] 恢复实时草稿，无缝续看。
+     */
+    private var runOwnerConvId: String? = null
+
+    /**
+     * hotfix30：流式草稿的内存缓冲（权威态）。[_streamDraft]/[_reasoningDraft]
+     * 只是它在 owner==active 时的投影——切走时显示态清空但缓冲继续攒，
+     * 切回时原样恢复（打字机从中间继续，好过丢半截）。
+     */
+    private var draftBuffer: String? = null
+    private var reasoningBuffer: String? = null
+
+    /** hotfix30：正在生成的会话 id（UI 抽屉显示「生成中」标识；可点到在途会话续看）。 */
+    private val _generatingConvId = MutableStateFlow<String?>(null)
+    val generatingConvId: StateFlow<String?> = _generatingConvId.asStateFlow()
+
+    /** owner 是否就是当前显示会话——在途 UI 更新（草稿/工具卡/气泡）的投影开关。 */
+    private fun isOwnerActive(): Boolean =
+        runOwnerConvId != null && runOwnerConvId == _activeConversationId.value
+
+    /** 切会话/收尾后把草稿缓冲投影到显示态：active==owner 恢复，否则清（缓冲不丢）。 */
+    private fun syncDraftDisplay() {
+        _streamDraft.value = if (isOwnerActive()) draftBuffer else null
+        _reasoningDraft.value = if (isOwnerActive()) reasoningBuffer else null
+    }
+
+    /**
      * T05：停止当前运行（流式中点「停止」）。
      * 取消 runJob → AgentLoop 每轮边界 ensureActive 退出 + 树尾闭合补结果。
      * 未在运行时调用为 no-op。
@@ -818,16 +856,23 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         val userText = turns[turnIndex].user.content
         if (userText.isBlank()) return
 
+        // hotfix30：同 send——捕获在途归属会话，切走再切回不写串（appendVariant 按 owner）
+        val owner = _activeConversationId.value
+        runOwnerConvId = owner
+        _generatingConvId.value = owner
+        draftBuffer = ""
+        reasoningBuffer = null
+        syncDraftDisplay()
         isRunning.value = true
-        _streamDraft.value = ""
-        _reasoningDraft.value = null
         AgentLogger.i("Chat", "重新生成：第 ${turnIndex + 1} 轮")
         runJob = viewModelScope.launch {
             try {
                 val outcome = runCatching { loop.run(userText) }
                 // 流式草稿使命结束：最终回答以整条变体落库，先清草稿避免与整条同时显示
-                _streamDraft.value = null
-                _reasoningDraft.value = null
+                // hotfix30：清内存缓冲，显示态经 syncDraftDisplay 投影
+                draftBuffer = null
+                reasoningBuffer = null
+                syncDraftDisplay()
                 outcome.onSuccess { history ->
                     // 过程事件已实时渲染；未渲染的工具卡兜底补上（与 send 同策略）
                     history.forEach { msg ->
@@ -845,8 +890,9 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
                             history.filterIsInstance<AssistantMessage>().map { it.usage }
                         )
                     )
+                    // hotfix30：变体落盘按 owner（切走期间 regenerate 的后台结果仍写回原会话）
                     conversationStore.appendVariant(
-                        _activeConversationId.value, turnIndex, variant.toMsgRecord()
+                        owner, turnIndex, variant.toMsgRecord()
                     )
                     reloadActiveMessages()
                     refreshConversations()
@@ -858,8 +904,9 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
                     } else {
                         AgentLogger.e("Chat", "重新生成失败", it)
                         val err = UiItem.Assistant(friendlyMessage(it))
+                        // hotfix30：失败变体同样按 owner 落盘
                         conversationStore.appendVariant(
-                            _activeConversationId.value, turnIndex, err.toMsgRecord()
+                            owner, turnIndex, err.toMsgRecord()
                         )
                         reloadActiveMessages()
                         refreshConversations()
@@ -867,9 +914,13 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
                 }
             } finally {
                 runJob = null
+                // hotfix30：收尾清 owner/生成中标识/缓冲（send 同套保险）
+                runOwnerConvId = null
+                _generatingConvId.value = null
+                draftBuffer = null
+                reasoningBuffer = null
+                syncDraftDisplay()
                 isRunning.value = false
-                _streamDraft.value = null
-                _reasoningDraft.value = null
                 // Phase 2 DoD③：兜底清「正在恢复」（与 send 同一保险）
                 _retryState.value = null
                 refreshLogs()
@@ -1002,14 +1053,18 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     )
 
     /**
-     * T01 流式文本增量 → [_streamDraft] 草稿（打字机）。TextDelta 不进历史，
-     * 仅用于「正在生成」的实时气泡；[send] / [regenerate] 结束时清空并落库最终整条。
-     * 回调来自 LLM 收集协程，单独用 [streamDraftLock] 串行化（与 [msgLock] 解耦）。
+     * T01 流式文本增量 → 草稿缓冲（hotfix30 起为内存权威态，[_streamDraft] 是其投影）。
+     * TextDelta 不进历史，仅用于「正在生成」的实时气泡；[send] / [regenerate]
+     * 结束时清空并落库最终整条。回调来自 LLM 收集协程，单独用 [streamDraftLock]
+     * 串行化（与 [msgLock] 解耦）。owner!=active（用户切到别的会话）时缓冲继续攒，
+     * 切回时 [syncDraftDisplay] 恢复——后台续跑不丢半截。
      */
     private val streamDraftLock = Any()
 
     private fun handleTextDelta(delta: String) = synchronized(streamDraftLock) {
-        _streamDraft.value = (_streamDraft.value ?: "") + delta
+        // hotfix30：先攒进内存缓冲（权威态），仅 owner==active 才投影到显示态
+        draftBuffer = (draftBuffer ?: "") + delta
+        if (isOwnerActive()) _streamDraft.value = draftBuffer
     }
 
     /**
@@ -1018,7 +1073,9 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
      * 同一 UI 气泡消费，锁共享保证「思考」与「正文」的相对时序不乱。
      */
     private fun handleReasoningDelta(delta: String) = synchronized(streamDraftLock) {
-        _reasoningDraft.value = (_reasoningDraft.value ?: "") + delta
+        // hotfix30：同 handleTextDelta——缓冲权威 + 条件投影
+        reasoningBuffer = (reasoningBuffer ?: "") + delta
+        if (isOwnerActive()) _reasoningDraft.value = reasoningBuffer
     }
 
     /** 流式草稿文本：非 null 时 UI 在消息末尾渲染一个「正在生成」的助手气泡（尚未落库）。 */
@@ -1051,7 +1108,9 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     private val _retryState = MutableStateFlow<RetryState?>(null)
     val retryState: StateFlow<RetryState?> = _retryState.asStateFlow()
 
-    /** 过程事件 → UI 实时更新（Hotfix2）。工具并行执行时多线程回调，读写列表加锁防丢更新。 */
+    /** 过程事件 → UI 实时更新（Hotfix2）。工具并行执行时多线程回调，读写列表加锁防丢更新。
+     * hotfix30：_messages 是 active 会话的显示态——owner!=active（用户切到别的会话）
+     * 时只落盘（appendToStore 按 owner）不上屏，切回时 loadConversation 从 store 重建。 */
     private fun handleAgentEvent(ev: AgentEvent) = synchronized(msgLock) {
         when (ev) {
             is AgentEvent.ToolStarted -> {
@@ -1061,7 +1120,8 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
                     isError = false,
                     running = true
                 )
-                _messages.value = _messages.value + item
+                // hotfix30：显示态只在 owner==active 时更新（切走期间只落盘）
+                if (isOwnerActive()) _messages.value = _messages.value + item
                 // 功能三：执行中态先落一条占位（终态到达后按 call.id 覆盖，见 ConversationStore.appendMessage）
                 appendToStore(item)
             }
@@ -1677,9 +1737,15 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         // 功能五（P1-8）：发送成功即草稿使命结束——清掉该会话草稿，
         // 否则切走再回来输入框会复活刚发过的原文（用户视角：见鬼了）
         draftStore.remove(_activeConversationId.value)
+        // hotfix30：捕获在途归属会话——此后所有在途写（appendToStore/handleAgentEvent/
+        // 流式草稿）按它落盘，用户切走再切回不写串；finally 清
+        val owner = _activeConversationId.value
+        runOwnerConvId = owner
+        _generatingConvId.value = owner
+        draftBuffer = null
+        reasoningBuffer = null
+        syncDraftDisplay()
         isRunning.value = true
-        _streamDraft.value = null
-                _reasoningDraft.value = null
         AgentLogger.i(
             "Chat",
             "用户发送：${text.take(120)}" +
@@ -1709,9 +1775,11 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
                 appendToStore(userItem) // 功能三：聊天记录同步落盘
                 // 先拿到 Result，再在同一个挂起体里做后续 IO：Result.onSuccess 的 lambda 不是 suspend
                 val outcome = runCatching { loop.run(fullInput, images) }
-                // 流式草稿使命结束：最终回答以整条消息落库（防草稿与整条同时显示）
-                _streamDraft.value = null
-                _reasoningDraft.value = null
+                // 流式草稿使命结束：最终回答以整条消息落库（防草稿与整条同时显示）。
+                // hotfix30：清内存缓冲；显示态经 syncDraftDisplay 投影（owner!=active 时本就是 null）
+                draftBuffer = null
+                reasoningBuffer = null
+                syncDraftDisplay()
                 outcome.onSuccess { history ->
                     // 功能五（P1-5）：一个回合可能多次 LLM 往返（每次工具调用后都要再问一次模型），
                     // 每条 AssistantMessage 各带自己那次的 usage——合计后挂到最终回答气泡上，
@@ -1752,14 +1820,15 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
                     if (it is CancellationException) {
                         AgentLogger.i("Chat", "运行已停止（历史已闭合，可继续提问）")
                         val stopItem = UiItem.Assistant("⏹ 已停止。已完成的历史保留，可基于它继续提问。")
-                        _messages.value = _messages.value + stopItem
+                        // hotfix30：停止气泡只上屏当前显示的正是 owner 会话时（切走期间只落盘）
+                        if (isOwnerActive()) _messages.value = _messages.value + stopItem
                         appendToStore(stopItem)
                         return@onFailure
                     }
                     AgentLogger.e("Chat", "运行失败", it)
                     // 气泡面向用户：技术异常在此映射成可读文案（完整堆栈已在日志里落盘）
                     val errItem = UiItem.Assistant(friendlyMessage(it))
-                    _messages.value = _messages.value + errItem
+                    if (isOwnerActive()) _messages.value = _messages.value + errItem
                     appendToStore(errItem) // 功能三：失败气泡也进聊天记录
                 }
                 // L9：把本轮对话沉淀成低权重 event 记忆，下次会话也能回忆起来
@@ -1784,9 +1853,14 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
             } finally {
                 // finally 保证取消路径（withContext 直接抛 CancellationException）也能复位
                 runJob = null
+                // hotfix30：清 owner/生成中标识/草稿缓冲（regenerate 同套保险）；
+                // 用户此刻若正停在 owner 会话，reloadActiveMessages 会重建含最终回答的完整列表
+                runOwnerConvId = null
+                _generatingConvId.value = null
+                draftBuffer = null
+                reasoningBuffer = null
+                syncDraftDisplay()
                 isRunning.value = false
-                _streamDraft.value = null
-                _reasoningDraft.value = null
                 // Phase 2 DoD③：兜底清「正在恢复」——重试收尾事件之外的最后一道保险
                 _retryState.value = null
                 // Phase 2 DoD②：用轮次变体结构重建 _messages——补上助手气泡的变体游标元数据
@@ -1862,15 +1936,19 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
             )
             else -> return
         }
-        _messages.value = _messages.value + item
-        appendToStore(item) // 功能三：history 兜底补的消息同样落盘
+        // hotfix30：显示态只在 owner==active 时追加（后台续跑期间只落盘）
+        if (isOwnerActive()) _messages.value = _messages.value + item
+        appendToStore(item) // 功能三：history 兜底补的消息同样落盘（按 owner）
     }
 
     // —— 功能三：会话切换 / 增删改（聊天记录） ——
 
     /**
-     * 同步一条消息到会话存储。与 _messages 写入点同处调用、同在 [msgLock] 内，保顺序；
-     * activeConversationId 运行中不变（[switchConversation] 有 isRunning 守卫），直接读 current。
+     * 同步一条消息到会话存储。与 _messages 写入点同处调用、同在 [msgLock] 内，保顺序。
+     *
+     * hotfix30：在途写按 [runOwnerConvId]（启动时捕获的归属会话），不再读 current——
+     * 用户生成中切到别的会话，旧会话的后台出字全部落回旧会话，不写串；
+     * 非在途调用（无 owner）仍落 activeConversationId。
      *
      * 每条消息后都刷摘要流：工具事件频次高（每轮多个 ToolStarted/ToolFinished），不刷的话
      * 抽屉「最近对话」的标题/条数/updatedAt 在整个会话期间全陈旧，首条 user 触发的自动
@@ -1880,7 +1958,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     private fun appendToStore(item: UiItem) {
         // _activeConversationId 内部是非空 String（ensureNotEmpty 兜底）；对外 StateFlow 声明为
         // String? 是给 UI 层「可能还没初始化」的余地，这里直接读内部值即可
-        val convId = _activeConversationId.value
+        val convId = runOwnerConvId ?: _activeConversationId.value
         conversationStore.appendMessage(convId, item.toMsgRecord())
         refreshConversations()
     }
@@ -2116,6 +2194,10 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
      * 运行中拒绝（VM 兜底，UI 禁用只是双保险）：新建即切 activeConversationId，
      * 在途事件（ToolStarted/ToolFinished、history 兜底、onFailure）会按新 id 落盘，
      * 把旧会话的尾巴写进新会话——与 [switchConversation] 同一理由。
+     *
+     * hotfix30：该风险已由 owner 捕获消除，但**仍保守拦着**——放开后用户在新空会话
+     * 发消息会被 send() 的 isRunning 守卫拒（无并行发送），「能进不能发」比
+     * 「不能进」更割裂；并行发送（runJob 变多句柄）风险大，不在本 hotfix 范围。
      */
     fun newConversation() {
         if (isRunning.value) return
@@ -2124,20 +2206,30 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
 
     /**
      * 切换到指定会话（抽屉「最近对话」点击）。
-     * 运行中直接拒绝：Agent 事件按当前会话写消息，中途切换会写串（UI 层也会禁用，双保险）。
+     *
+     * hotfix30：运行中允许切换（真机反馈「我不能跳，不能过其他对话」）——在途任务按
+     * [runOwnerConvId] 继续后台生成（只落盘不上屏），本方法只换显示态：
+     * [loadConversation] 重载目标会话 + [syncDraftDisplay] 按需恢复/清实时草稿
+     * （切到在途会话 → 恢复打字机；切到无关会话 → 清空，缓冲不丢）。
+     * 写串风险由 owner 捕获机制消除（见 [runOwnerConvId] 注释）。
      */
     fun switchConversation(id: String) {
-        if (isRunning.value) return
         if (id == _activeConversationId.value) return
         loadConversation(id)
+        syncDraftDisplay()
     }
 
     /**
      * 删除会话；删的是当前会话则顺手切到剩下的最近一个（_messages 不空指）。
      * 删 active 会话 = 变相切 active（ensureNotEmpty 会载入另一个会话），运行中同样拒绝；
      * 删非 active 会话不碰 activeConversationId，在途事件不受影响，不拦。
+     *
+     * hotfix30 补禁删：在途会话（[runOwnerConvId]，含切走后后台生成的非 active 会话）
+     * 一律禁删——删了 store 记录，在途收尾的 appendToStore 会把消息写回已删 id
+     * （ConversationStore 按需重建记录），「删掉的会话复活」成脏数据。UI 同步禁用并 Toast。
      */
     fun deleteConversation(id: String) {
+        if (id == runOwnerConvId) return
         if (id == _activeConversationId.value && isRunning.value) return
         conversationStore.delete(id)
         // 功能五（P1-8）：会话没了，它的草稿是垃圾数据，一并清
