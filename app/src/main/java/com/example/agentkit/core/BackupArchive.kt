@@ -32,19 +32,23 @@ object BackupArchive {
     internal const val ENTRY_CONVERSATIONS = "conversations.json"
     internal const val ENTRY_MEMORIES = "memories.json"
     internal const val ENTRY_CONFIG = "config.json"
+    /** hotfix28：提示词库快照（老备份件没有该成员，恢复时跳过）。 */
+    internal const val ENTRY_PROMPTS = "prompts.json"
 
     /** 解压累计上限（zip 炸弹防护）。 */
     private const val MAX_TOTAL_BYTES = 64L * 1024 * 1024
 
     private val json = Json { ignoreUnknownKeys = true }
 
-    /** 解包结果：成功（含 manifest 与三份 JSON 文本；config 可为 null）或拒收原因。 */
+    /** 解包结果：成功（含 manifest 与各成员 JSON 文本；config/prompts 可为 null）或拒收原因。 */
     sealed class ReadResult {
         data class Ok(
             val manifest: BackupManifest,
             val conversationsJson: String,
             val memoriesJson: String,
-            val configJson: String?
+            val configJson: String?,
+            /** hotfix28：提示词库快照（null = 老备份件没带，恢复时不动现有提示词）。 */
+            val promptsJson: String? = null
         ) : ReadResult()
 
         /** 拒收：不是 ZIP / 缺 manifest / manifest 解析失败 / 版本不认识 / 条数不一致。 */
@@ -53,13 +57,14 @@ object BackupArchive {
 
     /**
      * 打包。conversationsJson/memoriesJson 由调用方用 [Json] 编码快照得到
-     * （保留 store 侧的序列化配置）；configJson 为 null 时跳过该成员。
+     * （保留 store 侧的序列化配置）；configJson/promptsJson 为 null 时跳过该成员。
      */
     fun create(
         manifest: BackupManifest,
         conversationsJson: String,
         memoriesJson: String,
-        configJson: String?
+        configJson: String?,
+        promptsJson: String? = null
     ): ByteArray {
         val bos = ByteArrayOutputStream()
         ZipOutputStream(bos).use { zip ->
@@ -67,6 +72,7 @@ object BackupArchive {
             zip.putText(ENTRY_CONVERSATIONS, conversationsJson)
             zip.putText(ENTRY_MEMORIES, memoriesJson)
             if (configJson != null) zip.putText(ENTRY_CONFIG, configJson)
+            if (promptsJson != null) zip.putText(ENTRY_PROMPTS, promptsJson)
         }
         return bos.toByteArray()
     }
@@ -74,7 +80,8 @@ object BackupArchive {
     /**
      * 解包 + 信封校验。契约：
      *  ① 可解析为 ZIP 且含 manifest.json；② manifest 版本 ≤ [VERSION]；
-     *  ③ 条数与 manifest 声明一致（ conversations/memories 两个成员必需）。
+     *  ③ 条数与 manifest 声明一致（conversations/memories 两个成员必需；
+     *     hotfix28：hasPrompts 为 true 时 prompts 成员也必需且条数要相符）。
      * 任一不满足 → [ReadResult.Invalid]，调用方不得触碰生产数据。
      */
     fun read(bytes: ByteArray): ReadResult {
@@ -114,10 +121,28 @@ object BackupArchive {
         if (convCount != manifest.conversationCount || memCount != manifest.memoryCount) {
             return ReadResult.Invalid("备份条目数与清单不符（清单 ${manifest.conversationCount}/${manifest.memoryCount}，实际 $convCount/$memCount）")
         }
-        return ReadResult.Ok(manifest, conversationsJson, memoriesJson, texts[ENTRY_CONFIG])
+        // hotfix28：声明带了提示词库就必须有该成员且条数相符；没声明（老备份件）→ 跳过不动
+        val promptsJson = texts[ENTRY_PROMPTS]
+        if (manifest.hasPrompts) {
+            if (promptsJson == null) return ReadResult.Invalid("缺少提示词库数据")
+            val promptCount = runCatching { json.parseToJsonElement(promptsJson).jsonArrayCount() }.getOrNull()
+            if (promptCount == null) {
+                return ReadResult.Invalid("提示词库数据不是合法 JSON 数组")
+            }
+            if (promptCount != manifest.promptCount) {
+                return ReadResult.Invalid("提示词条数与清单不符（清单 ${manifest.promptCount}，实际 $promptCount）")
+            }
+        }
+        return ReadResult.Ok(manifest, conversationsJson, memoriesJson, texts[ENTRY_CONFIG], promptsJson)
     }
 
-    private val ENTRY_WHITELIST = setOf(ENTRY_MANIFEST, ENTRY_CONVERSATIONS, ENTRY_MEMORIES, ENTRY_CONFIG)
+    private val ENTRY_WHITELIST = setOf(
+        ENTRY_MANIFEST,
+        ENTRY_CONVERSATIONS,
+        ENTRY_MEMORIES,
+        ENTRY_CONFIG,
+        ENTRY_PROMPTS
+    )
 
     private fun ZipOutputStream.putText(name: String, text: String) {
         putNextEntry(ZipEntry(name))

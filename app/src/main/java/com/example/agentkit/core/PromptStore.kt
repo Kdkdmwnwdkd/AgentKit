@@ -71,6 +71,22 @@ class PromptStore(file: File) {
         return newId
     }
 
+    /**
+     * 备份恢复入口（hotfix28）：整包替换为备份里的提示词列表并落盘。
+     *
+     * 与 [MemoryStore.restoreAll] 同纪律：走公开 API、过 [mergeWithBuiltins] 净化
+     * （备份件可能来自旧版本、缺新内置——补种；用户改过的 id 以备份为准）。
+     * 恢复后调用方负责刷新 UI StateFlow。
+     */
+    fun restoreAll(restored: List<PromptItem>) {
+        val merged = mergeWithBuiltins(restored)
+        synchronized(lock) {
+            items.clear()
+            items.addAll(merged)
+        }
+        persist()
+    }
+
     /* ------------------------------ 内部实现 ------------------------------ */
 
     /** 纯函数层的输入快照（锁内拷贝，纯函数本身无锁概念）。 */

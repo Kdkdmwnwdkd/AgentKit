@@ -1018,6 +1018,63 @@ private fun testAppearanceEnhancements() {
     }
 }
 
+/**
+ * W 区：hotfix28「提示词库进备份」——真机反馈「备份只备聊天记录」，
+ * 根因：hotfix24 提示词库做得比 hotfix23 备份晚，PromptStore 漏挂挡。
+ *
+ * 设计：与 config 成员同款前向兼容纪律——manifest 加 promptCount（默认 0）/
+ * hasPrompts（默认 false）；老备份件没这两个字段 → 反序列化吃默认值 → 恢复时
+ * 跳过该成员不动现有提示词；新备份件声明了就必需 prompts.json 且条数相符。
+ */
+private fun testPromptBackup() {
+    println("— W 区：提示词库进备份（hotfix28） —")
+    val models = readSource("core/BackupModels.kt")
+    val archive = readSource("core/BackupArchive.kt")
+    val promptStore = readSource("core/PromptStore.kt")
+    val vm = readSource("ui/ChatViewModel.kt")
+
+    check("W1 manifest：promptCount/hasPrompts 带默认值（老备份件前向兼容）") {
+        assertContains("W1", models, "val promptCount: Int = 0")
+        assertContains("W1", models, "val hasPrompts: Boolean = false")
+        // 注释即契约：默认值 = 老备份件没带，恢复时不动现有提示词
+        assertContains("W1", models, "默认 0 = 老备份件没带提示词库")
+    }
+    check("W2 归档层：prompts.json 成员 + 白名单 + 条数校验") {
+        assertContains("W2", archive, "internal const val ENTRY_PROMPTS = \"prompts.json\"")
+        assertContains("W2", archive, "promptsJson: String? = null")
+        assertContains("W2", archive, "if (promptsJson != null) zip.putText(ENTRY_PROMPTS, promptsJson)")
+        assertContains("W2", archive, "val promptsJson = texts[ENTRY_PROMPTS]")
+        // 声明带了就必须有且条数相符；没声明（老包）跳过
+        assertContains("W2", archive, "if (manifest.hasPrompts) {")
+        assertContains("W2", archive, "return ReadResult.Invalid(\"缺少提示词库数据\")")
+        assertContains("W2", archive, "return ReadResult.Invalid(\"提示词条数与清单不符（清单 \${manifest.promptCount}，实际 \$promptCount）\")")
+        assertTrue("W2", archive.contains("ENTRY_PROMPTS\n    )") || archive.contains("ENTRY_PROMPTS,\n"))
+    }
+    check("W3 PromptStore：restoreAll 走公开 API + mergeWithBuiltins 净化") {
+        assertContains("W3", promptStore, "fun restoreAll(restored: List<PromptItem>)")
+        assertContains("W3", promptStore, "val merged = mergeWithBuiltins(restored)")
+        assertContains("W3", promptStore, "persist()")
+        // 注释即契约：与 MemoryStore.restoreAll 同纪律
+        assertContains("W3", promptStore, "与 [MemoryStore.restoreAll] 同纪律")
+    }
+    check("W4 VM 导出：prompts 快照进 manifest 与 zip") {
+        val export = vm.substringAfter("fun exportBackupTo(uri: Uri)")
+        assertContains("W4", export, "val prompts = promptStore.list()")
+        assertContains("W4", export, "promptCount = prompts.size,")
+        assertContains("W4", export, "hasPrompts = true")
+        assertContains("W4", export, "backupJson.encodeToString(prompts)")
+        assertContains("W4", export, "条提示词")
+    }
+    check("W5 VM 恢复：老包跳过、新包重灌 + UI 刷新 + 提示文案") {
+        val restore = vm.substringAfter("fun restoreBackupFrom(uri: Uri)")
+        assertContains("W5", restore, "read.promptsJson?.let { promptText ->")
+        assertContains("W5", restore, "backupJson.decodeFromString<List<PromptItem>>(promptText)")
+        assertContains("W5", restore, "promptStore.restoreAll(it)")
+        assertContains("W5", restore, "_prompts.value = promptStore.list()")
+        assertContains("W5", restore, "if (read.manifest.hasPrompts) \"、\${read.manifest.promptCount} 条提示词\" else \"\"")
+    }
+}
+
 fun main() {
     println("== hotfix11 模型快速切换 + 功能四/五 验证 ==")
     testModelQuickSwitch()
@@ -1051,6 +1108,8 @@ fun main() {
     testReasoningFold()
     println()
     testAppearanceEnhancements()
+    println()
+    testPromptBackup()
     println()
     println("== 汇总 ==")
     println("PASS: $passed  FAIL: ${failures.size}  TOTAL: ${passed + failures.size}")

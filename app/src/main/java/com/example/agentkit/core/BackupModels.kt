@@ -10,11 +10,14 @@ import kotlinx.serialization.Serializable
  *  - conversations.json —— ConversationStore 全量快照（含轮次变体与 token 用量）
  *  - memories.json      —— MemoryStore 全量快照
  *  - config.json        —— [ConfigBackup]：模型配置档案等（可缺省：老备份件没有）
+ *  - prompts.json       —— PromptStore 全量快照（hotfix28 补入：提示词库当初漏挂挡，
+ *    真机反馈「备份只备聊天记录」——用户自建的快捷指令也该跟着走）
  *
  * 设计取舍：
  *  - **恢复走公开 API**（ConfigStore.restoreFrom / ConversationStore.replaceAll /
- *    MemoryStore.restoreAll），不直接搬 raw prefs 文件——公开 API 自带净化与迁移，
- *    换 raw 文件会绕过 ConfigSanitizer 与 turns 迁移，脏数据直接复活；
+ *    MemoryStore.restoreAll / PromptStore.restoreAll），不直接搬 raw prefs 文件——
+ *    公开 API 自带净化与迁移，换 raw 文件会绕过 ConfigSanitizer 与 turns 迁移，
+ *    脏数据直接复活；
  *  - manifest 必存且先行校验：版本不认识/条数异常时恢复直接拒绝，
  *    避免把半成品包灌进生产数据（「给了个坏包也不能毁了好数据」）；
  *  - Key/PAT 明文进 ZIP：与 SharedPreferences 明文存储同等待遇（私有目录 + 不加密的
@@ -31,7 +34,14 @@ data class BackupManifest(
     /** 记忆条数。 */
     val memoryCount: Int,
     /** 是否携带模型配置（false = 老备份件或用户无配置，恢复时不动现有配置）。 */
-    val hasConfig: Boolean
+    val hasConfig: Boolean,
+    /**
+     * 提示词条数（hotfix28）。默认 0 = 老备份件没带提示词库，
+     * 恢复时不动现有提示词（与 [hasConfig] 同款前向兼容纪律）。
+     */
+    val promptCount: Int = 0,
+    /** 是否携带提示词库（hotfix28；false = 老备份件，恢复时跳过该成员）。 */
+    val hasPrompts: Boolean = false
 )
 
 /**

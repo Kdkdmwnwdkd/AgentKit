@@ -1984,6 +1984,8 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
             val result = runCatching {
                 val conversations = conversationStore.snapshot()
                 val memories = memoryStore.snapshot()
+                // hotfix28：提示词库快照（导出/恢复对称；内置项随 mergeWithBuiltins 补种）
+                val prompts = promptStore.list()
                 val gh = configStore.loadGithubConfig()
                 val config = ConfigBackup(
                     profilesJson = backupJson.encodeToString(configStore.loadProfiles()),
@@ -2000,18 +2002,22 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
                     createdAt = System.currentTimeMillis(),
                     conversationCount = conversations.size,
                     memoryCount = memories.size,
-                    hasConfig = true
+                    hasConfig = true,
+                    // hotfix28：提示词库挂挡（真机反馈漏备份项）
+                    promptCount = prompts.size,
+                    hasPrompts = true
                 )
                 val bytes = BackupArchive.create(
                     manifest,
                     backupJson.encodeToString(conversations),
                     backupJson.encodeToString(memories),
-                    backupJson.encodeToString(config)
+                    backupJson.encodeToString(config),
+                    backupJson.encodeToString(prompts)
                 )
                 val out = app.contentResolver.openOutputStream(uri)
                     ?: error("无法写入所选位置（可能已被移除）")
                 out.use { it.write(bytes) }
-                "已导出 ${conversations.size} 个会话、${memories.size} 条记忆"
+                "已导出 ${conversations.size} 个会话、${memories.size} 条记忆、${prompts.size} 条提示词"
             }
             _backupState.value = result.fold(
                 onSuccess = { BackupUiState.Done(it) },
@@ -2059,13 +2065,21 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
                                 backupJson.decodeFromString<ConfigBackup>(cfgText)
                             }.getOrNull()?.let { configStore.restoreFrom(it) }
                         }
+                        // hotfix28：提示词库恢复（老备份件没带该成员 → 跳过，不动现有提示词）
+                        read.promptsJson?.let { promptText ->
+                            runCatching {
+                                backupJson.decodeFromString<List<PromptItem>>(promptText)
+                            }.getOrNull()?.let { promptStore.restoreAll(it) }
+                        }
+                        _prompts.value = promptStore.list()
                         // UI 重载（StateFlow.value 可跨线程设；loadConversation 内部同步）
                         refreshConversations()
                         loadConversation(conversationStore.ensureNotEmpty())
                         refreshMemories()
                         _profiles.value = configStore.loadProfiles()
                         _activeProfileId.value = configStore.loadActiveId().orEmpty()
-                        "已恢复 ${conversations.size} 个会话、${memories.size} 条记忆"
+                        "已恢复 ${conversations.size} 个会话、${memories.size} 条记忆" +
+                            if (read.manifest.hasPrompts) "、${read.manifest.promptCount} 条提示词" else ""
                     }
                     _backupState.value = result.fold(
                         onSuccess = { BackupUiState.Done(it) },
