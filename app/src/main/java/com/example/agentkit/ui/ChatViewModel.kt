@@ -174,13 +174,16 @@ sealed interface UiItem {
      *   重新生成 / 切换 / 重新发问都按它定位轮次；< 0 表示未归属任何轮。
      * @param usage 功能五（P1-5）：本条回答的 token 用量（一个回合多次 LLM 往返的合计；
      *   null = 服务端没给 usage，UI 不显示而非猜一个数）。
+     * @param reasoning 功能五（P1-9）：本条回答的推理过程（思维链全文）；
+     *   null = 模型没给思考，UI 不渲染折叠块而非摆个空框。
      */
     data class Assistant(
         val text: String,
         val variantIndex: Int = -1,
         val variantCount: Int = 1,
         val turnIndex: Int = -1,
-        val usage: TokenUsage? = null
+        val usage: TokenUsage? = null,
+        val reasoning: String? = null
     ) : UiItem
 
     data class Tool(
@@ -805,12 +808,14 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
 
         isRunning.value = true
         _streamDraft.value = ""
+        _reasoningDraft.value = null
         AgentLogger.i("Chat", "重新生成：第 ${turnIndex + 1} 轮")
         runJob = viewModelScope.launch {
             try {
                 val outcome = runCatching { loop.run(userText) }
                 // 流式草稿使命结束：最终回答以整条变体落库，先清草稿避免与整条同时显示
                 _streamDraft.value = null
+                _reasoningDraft.value = null
                 outcome.onSuccess { history ->
                     // 过程事件已实时渲染；未渲染的工具卡兜底补上（与 send 同策略）
                     history.forEach { msg ->
@@ -852,6 +857,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
                 runJob = null
                 isRunning.value = false
                 _streamDraft.value = null
+                _reasoningDraft.value = null
                 // Phase 2 DoD③：兜底清「正在恢复」（与 send 同一保险）
                 _retryState.value = null
                 refreshLogs()
@@ -977,6 +983,8 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         onEvent = ::handleAgentEvent,
         // Phase 2 DoD②：T01 流式文本增量 → 打字机草稿气泡（重新生成的新变体流式填入）
         onTextDelta = ::handleTextDelta,
+        // 功能五（P1-9）：推理过程增量 → handleReasoningDelta（与正文分流，UI 折叠块）
+        onReasoningDelta = ::handleReasoningDelta,
         // 真机第三轮 Bug A2：退避期间监听网络恢复——关掉飞行模式后「秒续」而不是干等满额
         networkRecovery = ConnectivityNetworkRecoveryWaiter(app)
     )
@@ -992,9 +1000,26 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         _streamDraft.value = (_streamDraft.value ?: "") + delta
     }
 
+    /**
+     * 功能五（P1-9）：推理过程增量 → [_reasoningDraft]（思考折叠块的实时内容）。
+     * 与 [handleTextDelta] 同一把锁串行化：两条流来自同一 LLM 收集协程、
+     * 同一 UI 气泡消费，锁共享保证「思考」与「正文」的相对时序不乱。
+     */
+    private fun handleReasoningDelta(delta: String) = synchronized(streamDraftLock) {
+        _reasoningDraft.value = (_reasoningDraft.value ?: "") + delta
+    }
+
     /** 流式草稿文本：非 null 时 UI 在消息末尾渲染一个「正在生成」的助手气泡（尚未落库）。 */
     private val _streamDraft = MutableStateFlow<String?>(null)
     val streamDraft: StateFlow<String?> = _streamDraft.asStateFlow()
+
+    /**
+     * 功能五（P1-9）：流式推理过程草稿（思考折叠块的实时内容）。
+     * 与 [_streamDraft] 同生命周期：非 null = 正在生成且模型在输出思考。
+     * 结束（落库/失败）时清空——最终思考随 [AssistantMessage.reasoning] 落盘。
+     */
+    private val _reasoningDraft = MutableStateFlow<String?>(null)
+    val reasoningDraft: StateFlow<String?> = _reasoningDraft.asStateFlow()
 
     /**
      * 功能五（P1-5）：当前会话累计 token 用量（对所有助手气泡的 usage 求和）。
@@ -1642,6 +1667,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         draftStore.remove(_activeConversationId.value)
         isRunning.value = true
         _streamDraft.value = null
+                _reasoningDraft.value = null
         AgentLogger.i(
             "Chat",
             "用户发送：${text.take(120)}" +
@@ -1673,6 +1699,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
                 val outcome = runCatching { loop.run(fullInput, images) }
                 // 流式草稿使命结束：最终回答以整条消息落库（防草稿与整条同时显示）
                 _streamDraft.value = null
+                _reasoningDraft.value = null
                 outcome.onSuccess { history ->
                     // 功能五（P1-5）：一个回合可能多次 LLM 往返（每次工具调用后都要再问一次模型），
                     // 每条 AssistantMessage 各带自己那次的 usage——合计后挂到最终回答气泡上，
@@ -1738,6 +1765,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
                 runJob = null
                 isRunning.value = false
                 _streamDraft.value = null
+                _reasoningDraft.value = null
                 // Phase 2 DoD③：兜底清「正在恢复」——重试收尾事件之外的最后一道保险
                 _retryState.value = null
                 // Phase 2 DoD②：用轮次变体结构重建 _messages——补上助手气泡的变体游标元数据
@@ -1803,7 +1831,8 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         val item = when (msg) {
             is UserMessage -> UiItem.User(msg.content)
             // 功能五（P1-5）：usage 仅在 send() 汇总整轮后传给最终回答（中间轮不传）
-            is AssistantMessage -> UiItem.Assistant(msg.content, usage = usage)
+            // 功能五（P1-9）：reasoning 随消息透传——加载历史/落库回答都能折叠展示推理过程
+            is AssistantMessage -> UiItem.Assistant(msg.content, usage = usage, reasoning = msg.reasoning)
             is ToolMessage -> UiItem.Tool(
                 ToolCall(msg.id, msg.name, msg.arguments),
                 msg.content,

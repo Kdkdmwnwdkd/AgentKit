@@ -237,11 +237,14 @@ class ClaudeClient(
         val blocks = root["content"]?.jsonArray ?: return AssistantMessage("", emptyList())
 
         val content = StringBuilder()
+        val reasoning = StringBuilder()
         val toolCalls = mutableListOf<ToolCall>()
         blocks.forEach { el ->
             val obj = el.jsonObject
             when (obj["type"]?.jsonPrimitive?.contentOrNull) {
                 "text" -> obj["text"]?.jsonPrimitive?.contentOrNull?.let { content.append(it) }
+                // 功能五（P1-9）：extended thinking 的思考块（thinking 字段，与正文 text 块分流）
+                "thinking" -> obj["thinking"]?.jsonPrimitive?.contentOrNull?.let { reasoning.append(it) }
                 "tool_use" -> {
                     val callId = obj["id"]?.jsonPrimitive?.contentOrNull ?: UUID.randomUUID().toString()
                     val name = obj["name"]?.jsonPrimitive?.contentOrNull ?: return@forEach
@@ -250,7 +253,12 @@ class ClaudeClient(
                 }
             }
         }
-        return AssistantMessage(content.toString(), toolCalls, parseClaudeUsage(root))
+        return AssistantMessage(
+            content.toString(),
+            toolCalls,
+            parseClaudeUsage(root),
+            reasoning.toString().takeIf { it.isNotBlank() }
+        )
     }
 
     /**

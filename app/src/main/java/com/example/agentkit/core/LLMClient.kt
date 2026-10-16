@@ -11,6 +11,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import com.example.agentkit.core.llm.ChatStreamEvent
+import com.example.agentkit.core.llm.parseOpenAiReasoning
 import com.example.agentkit.core.llm.parseOpenAiUsage
 import java.io.IOException
 
@@ -231,6 +232,8 @@ class OpenAIClient(
     ): Flow<ChatStreamEvent> = channelFlow {
         val accumulator = OpenAiToolCallAccumulator()
         val text = StringBuilder()
+        // 功能五（P1-9）：推理过程（思维链）累积——DeepSeek-R1/QwQ 等经 delta.reasoning_content 下发
+        val reasoning = StringBuilder()
         // 功能五（P1-5）：流末 chunk（choices 为空、仅带 usage）单独到达，捕获最后一份非空值
         var usage: com.example.agentkit.core.TokenUsage? = null
         readSseDataObjects(messages, tools) { obj ->
@@ -241,10 +244,24 @@ class OpenAIClient(
                     send(ChatStreamEvent.TextDelta(it))
                 }
                 delta["tool_calls"]?.jsonArray?.let { accumulator.absorb(it) }
+                // 功能五（P1-9）：思考增量与正文分流（UI 折叠展示，不进正文打字机）
+                parseOpenAiReasoning(delta)?.let {
+                    reasoning.append(it)
+                    send(ChatStreamEvent.ReasoningDelta(it))
+                }
             }
             parseOpenAiUsage(obj)?.let { usage = it }
         }
-        send(ChatStreamEvent.Completed(AssistantMessage(text.toString(), accumulator.build(), usage)))
+        send(
+            ChatStreamEvent.Completed(
+                AssistantMessage(
+                    text.toString(),
+                    accumulator.build(),
+                    usage,
+                    reasoning.toString().takeIf { it.isNotBlank() }
+                )
+            )
+        )
     }
 
     /**

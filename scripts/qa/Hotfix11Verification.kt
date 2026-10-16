@@ -490,15 +490,24 @@ private fun testTokenUsage() {
         val fn = openai.substringAfter("override fun streamChat(")
         assertContains("P5", fn, "var usage: com.example.agentkit.core.TokenUsage? = null")
         assertContains("P5", fn, "parseOpenAiUsage(obj)?.let { usage = it }")
-        assertContains("P5", fn, "AssistantMessage(text.toString(), accumulator.build(), usage)")
+        // hotfix26 起 Completed 带第四参 reasoning（P1-9）；usage 仍第三参不变
+        assertContains("P5", fn, "accumulator.build(),")
+        assertContains("P5", fn, "usage,")
+        assertContains("P5", fn, "reasoning.toString().takeIf { it.isNotBlank() }")
     }
     check("P6 Claude 非流式响应解析 usage（input/output_tokens）") {
         val fn = claude.substringAfter("private fun parseResponse(text: String): AssistantMessage")
-        assertContains("P6", fn, "AssistantMessage(content.toString(), toolCalls, parseClaudeUsage(root))")
+        assertContains("P6", fn, "AssistantMessage(")
+        assertContains("P6", fn, "parseClaudeUsage(root),")
+        // hotfix26：第四参 reasoning（thinking 块分流，P1-9）
+        assertContains("P6", fn, "reasoning.toString().takeIf { it.isNotBlank() }")
     }
     check("P7 Gemini 非流式响应解析 usage（usageMetadata）") {
         val fn = gemini.substringAfter("private fun parseResponse(text: String): AssistantMessage")
-        assertContains("P7", fn, "AssistantMessage(content.toString(), toolCalls, parseGeminiUsage(root))")
+        assertContains("P7", fn, "AssistantMessage(")
+        assertContains("P7", fn, "parseGeminiUsage(root),")
+        // hotfix26：第四参 reasoning（thought part 分流，P1-9）
+        assertContains("P7", fn, "reasoning.toString().takeIf { it.isNotBlank() }")
     }
     check("P8 落盘字段带默认值（旧 conversations.json 反序列化不炸）") {
         assertContains("P8", conv, "val promptTokens: Long = 0")
@@ -529,7 +538,8 @@ private fun testTokenUsage() {
     }
     check("P12 VM：regenerate 新变体带用量 + append 支持 usage 参数") {
         assertContains("P12", vm, "private fun append(msg: ChatMessage, usage: TokenUsage? = null)")
-        assertContains("P12", vm, "is AssistantMessage -> UiItem.Assistant(msg.content, usage = usage)")
+        // hotfix26 起 append 透传 reasoning（P1-9）
+        assertContains("P12", vm, "is AssistantMessage -> UiItem.Assistant(msg.content, usage = usage, reasoning = msg.reasoning)")
         val regen = vm.substringAfter("fun regenerate()")
         assertContains("P12", regen, "usage = TokenUsage.sum(")
     }
@@ -819,6 +829,106 @@ private fun testConversationDrafts() {
     }
 }
 
+/**
+ * U 区：功能五 P1-9「推理过程折叠」——对标 Coomi/RikkaHub 的「思考过程」交互
+ * （流式中默认展开让用户围观模型思考、完成态折叠可点开复盘）。
+ *
+ * 链路：三家解析（OpenAI reasoning_content/reasoning、Claude thinking block、
+ * Gemini thought:true part）→ ChatStreamEvent.ReasoningDelta 与 TextDelta 分流
+ * → AssistantMessage.reasoning 与 content 分字段存储（防自言自语进下一轮历史）
+ * → ConversationStore 落盘/还原 → ChatViewModel.reasoningDraft → ChatScreen
+ * ReasoningBlock（streaming=true 展开 / false 折叠）。
+ */
+private fun testReasoningFold() {
+    println("— U 区：推理过程折叠（功能五 P1-9） —")
+    val event = readSource("core/llm/ChatStreamEvent.kt")
+    val parsers = readSource("core/llm/ReasoningParsers.kt")
+    val client = readSource("core/LLMClient.kt")
+    val claude = readSource("core/llm/ClaudeClient.kt")
+    val gemini = readSource("core/llm/GeminiClient.kt")
+    val realLoop = readSource("core/agent/RealAgentLoop.kt")
+    val loop = readSource("core/AgentLoop.kt")
+    val contract = readSource("core/AgentContract.kt")
+    val store = readSource("core/ConversationStore.kt")
+    val vm = readSource("ui/ChatViewModel.kt")
+    val screen = readSource("ui/ChatScreen.kt")
+
+    check("U1 事件分流：ReasoningDelta 与 TextDelta 平级，思考不进正文打字机") {
+        assertContains("U1", event, "data class ReasoningDelta(val text: String) : ChatStreamEvent")
+        // 注释即契约：分流理由写进事件定义
+        assertContains("U1", event, "与 [TextDelta] 分流：思考内容不是最终答案")
+        assertContains("U1", event, "混进正文会让「回答」里多出一段模型的自言自语")
+    }
+    check("U2 三家解析纯函数：缺失返 null（没给思考 ≠ 给了空思考）") {
+        assertContains("U2", parsers, "fun parseOpenAiReasoning(delta: JsonObject): String?")
+        assertContains("U2", parsers, "delta[\"reasoning_content\"]?.jsonPrimitive?.contentOrNull?.let { return it }")
+        assertContains("U2", parsers, "return delta[\"reasoning\"]?.jsonPrimitive?.contentOrNull")
+        // Claude 三重门槛：content_block_delta + delta.type==thinking_delta + delta.thinking
+        assertContains("U2", parsers, "if (obj[\"type\"]?.jsonPrimitive?.contentOrNull != \"content_block_delta\") return null")
+        assertContains("U2", parsers, "if (delta[\"type\"]?.jsonPrimitive?.contentOrNull != \"thinking_delta\") return null")
+        assertContains("U2", parsers, "return delta[\"thinking\"]?.jsonPrimitive?.contentOrNull")
+        // Gemini：只认 thought=="true" 的 part
+        assertContains("U2", parsers, "if (part[\"thought\"]?.jsonPrimitive?.contentOrNull != \"true\") return null")
+        assertContains("U2", parsers, "return part[\"text\"]?.jsonPrimitive?.contentOrNull")
+    }
+    check("U3 OpenAI 兼容系：思考增量发 ReasoningDelta，Completed 第四参带 reasoning") {
+        assertContains("U3", client, "import com.example.agentkit.core.llm.parseOpenAiReasoning")
+        assertContains("U3", client, "val reasoning = StringBuilder()")
+        assertContains("U3", client, "parseOpenAiReasoning(delta)?.let {")
+        assertContains("U3", client, "send(ChatStreamEvent.ReasoningDelta(it))")
+        assertContains("U3", client, "reasoning.toString().takeIf { it.isNotBlank() }")
+    }
+    check("U4 Claude：thinking 块进 reasoning，与 text 块分流") {
+        assertContains("U4", claude, "val reasoning = StringBuilder()")
+        assertContains("U4", claude, "\"thinking\" -> obj[\"thinking\"]?.jsonPrimitive?.contentOrNull?.let { reasoning.append(it) }")
+        assertContains("U4", claude, "reasoning.toString().takeIf { it.isNotBlank() }")
+    }
+    check("U5 Gemini：thought part 进 reasoning，正式回答 part 才进 content") {
+        assertContains("U5", gemini, "if (parseGeminiThought(obj) != null) {")
+        assertContains("U5", gemini, "obj[\"text\"]?.jsonPrimitive?.contentOrNull?.let { reasoning.append(it) }")
+        assertContains("U5", gemini, "reasoning.toString().takeIf { it.isNotBlank() }")
+        // 注释即契约：分流防「自言自语进下一轮历史」
+        assertContains("U5", gemini, "思考灌进正文会让下一轮历史带上自言自语")
+    }
+    check("U6 agent 层：ReasoningDelta 事件转回调，包装层透传") {
+        assertContains("U6", realLoop, "is ChatStreamEvent.ReasoningDelta -> onReasoningDelta?.invoke(event.text)")
+        assertContains("U6", realLoop, "private val onReasoningDelta: ((String) -> Unit)? = null,")
+        assertContains("U6", loop, "onReasoningDelta: ((String) -> Unit)? = null,")
+        assertContains("U6", loop, "onReasoningDelta = onReasoningDelta,")
+    }
+    check("U7 消息模型：AssistantMessage.reasoning 与 content 分字段（默认 null）") {
+        assertContains("U7", contract, "val reasoning: String? = null")
+    }
+    check("U8 落盘：MsgRecord.reasoning 截断存储，还原时空白不还原") {
+        assertContains("U8", store, "val reasoning: String = \"\"")
+        assertContains("U8", store, "reasoning = reasoning.orEmpty().take(MAX_FIELD_CHARS)")
+        assertContains("U8", store, "reasoning = reasoning.takeIf { it.isNotBlank() }")
+        // 多版本会话记录还原同样带 reasoning
+        assertContains("U8", store, "reasoning = sel.reasoning.takeIf { it.isNotBlank() }")
+    }
+    check("U9 VM：reasoningDraft 状态 + handleReasoningDelta 共享 streamDraftLock") {
+        assertContains("U9", vm, "private fun handleReasoningDelta(delta: String) = synchronized(streamDraftLock) {")
+        assertContains("U9", vm, "onReasoningDelta = ::handleReasoningDelta,")
+        assertContains("U9", vm, "private val _reasoningDraft = MutableStateFlow<String?>(null)")
+        assertContains("U9", vm, "val reasoningDraft: StateFlow<String?> = _reasoningDraft.asStateFlow()")
+        // append 落库路径透传 reasoning（send/regenerate 的历史消息也能折叠展示）
+        assertContains("U9", vm, "is AssistantMessage -> UiItem.Assistant(msg.content, usage = usage, reasoning = msg.reasoning)")
+        // 流结束/失败等复位点同步清 reasoningDraft（不能留着上一条的思考）
+        assertTrue("U9", vm.split("_reasoningDraft.value = null").size - 1 >= 5)
+    }
+    check("U10 UI：ReasoningBlock 流式展开/完成折叠，null 不渲染") {
+        assertContains("U10", screen, "reasoning: String? = null")
+        assertContains("U10", screen, "if (reasoning != null) {\n                            ReasoningBlock(reasoning = reasoning, expandedInitially = true)")
+        assertContains("U10", screen, "if (reasoning != null) {\n                            ReasoningBlock(reasoning = reasoning, expandedInitially = false)")
+        assertContains("U10", screen, "private fun ReasoningBlock(reasoning: String, expandedInitially: Boolean) {")
+        // 折叠头常驻可反复开合；展开图标随状态旋转
+        assertContains("U10", screen, "var expanded by remember { mutableStateOf(expandedInitially) }")
+        assertContains("U10", screen, ".clickable { expanded = !expanded }")
+        assertContains("U10", screen, ".rotate(if (expanded) 180f else 0f)")
+        assertContains("U10", screen, "reasoning = item.reasoning")
+    }
+}
+
 fun main() {
     println("== hotfix11 模型快速切换 + 功能四/五 验证 ==")
     testModelQuickSwitch()
@@ -848,6 +958,8 @@ fun main() {
     testPromptLibrary()
     println()
     testConversationDrafts()
+    println()
+    testReasoningFold()
     println()
     println("== 汇总 ==")
     println("PASS: $passed  FAIL: ${failures.size}  TOTAL: ${passed + failures.size}")

@@ -77,7 +77,14 @@ data class AssistantMessage(
      * null = 供应商没给 usage（本地 llama / 兼容端点缺字段）——UI 不显示而非猜一个数。
      * 多步回合（调工具的轮次）由调用方按轮汇总（见 ChatViewModel.send）。
      */
-    val usage: TokenUsage? = null
+    val usage: TokenUsage? = null,
+    /**
+     * 功能五（P1-9）：本次 LLM 往返的推理过程（思维链全文，非流式增量）。
+     * null/空 = 模型没给思考（非推理模型或厂方不回传）——UI 不渲染折叠块而非摆个空框。
+     * 与 content 分流存储：思考是「怎么想的」，content 是「想了什么」，
+     * 灌进同一字段会让历史请求把模型的自言自语也当上下文发给下一轮。
+     */
+    val reasoning: String? = null
 ) : ChatMessage
 
 /**

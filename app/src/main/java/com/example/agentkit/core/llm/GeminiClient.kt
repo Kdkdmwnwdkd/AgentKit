@@ -235,10 +235,17 @@ class GeminiClient(
             ?: return AssistantMessage("", emptyList())
 
         val content = StringBuilder()
+        val reasoning = StringBuilder()
         val toolCalls = mutableListOf<ToolCall>()
         parts.forEach { el ->
             val obj = el.jsonObject
-            obj["text"]?.jsonPrimitive?.contentOrNull?.let { content.append(it) }
+            // 功能五（P1-9）：thought: true 的 part 是思考（Gemini 2.5 thinking），
+            // 与正式回答的 text part 分流——思考灌进正文会让下一轮历史带上自言自语
+            if (parseGeminiThought(obj) != null) {
+                obj["text"]?.jsonPrimitive?.contentOrNull?.let { reasoning.append(it) }
+            } else {
+                obj["text"]?.jsonPrimitive?.contentOrNull?.let { content.append(it) }
+            }
             obj["functionCall"]?.jsonObject?.let { fc ->
                 val name = fc["name"]?.jsonPrimitive?.contentOrNull ?: return@let
                 val args = fc["args"]?.jsonObject ?: JsonObject(emptyMap())
@@ -246,7 +253,12 @@ class GeminiClient(
                 toolCalls += ToolCall("gemini_${UUID.randomUUID().toString().take(8)}", name, args)
             }
         }
-        return AssistantMessage(content.toString(), toolCalls, parseGeminiUsage(root))
+        return AssistantMessage(
+            content.toString(),
+            toolCalls,
+            parseGeminiUsage(root),
+            reasoning.toString().takeIf { it.isNotBlank() }
+        )
     }
 
     /**

@@ -1220,6 +1220,8 @@ private suspend fun testRound1SseIoDispatch() {
                         collectThreads += Thread.currentThread().name
                         when (event) {
                             is ChatStreamEvent.TextDelta -> deltas.append(event.text)
+                            // hotfix26（P1-9）：推理过程增量——本用例只关心正文，思考事件显式忽略
+                            is ChatStreamEvent.ReasoningDelta -> Unit
                             is ChatStreamEvent.Completed -> completed = event.message
                         }
                     }

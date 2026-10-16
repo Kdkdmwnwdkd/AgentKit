@@ -138,6 +138,8 @@ fun ChatScreen(
 ) {
     val messages by vm.messages.collectAsStateWithLifecycle()
     val streamDraft by vm.streamDraft.collectAsStateWithLifecycle()
+    // 功能五（P1-9）：流式推理过程草稿（与 streamDraft 同生命周期的「正在思考」内容）
+    val reasoningDraft by vm.reasoningDraft.collectAsStateWithLifecycle()
     val retryState by vm.retryState.collectAsStateWithLifecycle()
     val conversations by vm.conversations.collectAsStateWithLifecycle()
     val activeConversationId by vm.activeConversationId.collectAsStateWithLifecycle()
@@ -338,7 +340,7 @@ fun ChatScreen(
                 // 流式草稿气泡（重新生成/发送时 T01 增量实时填入，尚未落库）
                 if (streamDraft != null) {
                     item(key = "stream-draft") {
-                        MessageRow(UiItem.Assistant(streamDraft.orEmpty()), streaming = true)
+                        MessageRow(UiItem.Assistant(streamDraft.orEmpty(), reasoning = reasoningDraft), streaming = true)
                     }
                 }
             }
@@ -1738,7 +1740,9 @@ private fun MessageRow(item: UiItem, streaming: Boolean) {
                 streaming = streaming,
                 maxWidth = (maxWidth * 0.84f).coerceIn(272.dp, 520.dp),
                 // 功能五（P1-5）：token 用量（null = 供应商没给，不显示）
-                usage = item.usage
+                usage = item.usage,
+                // 功能五（P1-9）：推理过程（null = 无思考，不渲染折叠块）
+                reasoning = item.reasoning
             )
 
             is UiItem.Tool -> ToolCard(item)
@@ -1759,7 +1763,9 @@ private fun MessageBubble(
     streaming: Boolean,
     maxWidth: Dp,
     /** 功能五（P1-5）：助手气泡的 token 用量（null = 无数据不显示；用户气泡恒 null）。 */
-    usage: TokenUsage? = null
+    usage: TokenUsage? = null,
+    /** 功能五（P1-9）：推理过程原文（null = 模型没给思考，不渲染折叠块；用户气泡恒 null）。 */
+    reasoning: String? = null
 ) {
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -1794,21 +1800,31 @@ private fun MessageBubble(
                         modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)
                     )
                     // 助手气泡：Markdown 渲染；流式时末尾带光标（流式全 App 唯一循环动画，§6.2）
-                    streaming -> Row(
-                        modifier = Modifier.widthIn(max = maxWidth),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        MarkdownText(
-                            text = text,
-                            color = MaterialTheme.colorScheme.onSurface,
-                            modifier = Modifier
-                                .weight(1f, fill = false)
-                                .padding(horizontal = 14.dp, vertical = 10.dp)
-                        )
-                        StreamCursor()
-                        Spacer(Modifier.width(14.dp))
+                    streaming -> Column {
+                        // 功能五（P1-9）：思考中默认展开——用户实时围观模型在推理什么
+                        if (reasoning != null) {
+                            ReasoningBlock(reasoning = reasoning, expandedInitially = true)
+                        }
+                        Row(
+                            modifier = Modifier.widthIn(max = maxWidth),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            MarkdownText(
+                                text = text,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier
+                                    .weight(1f, fill = false)
+                                    .padding(horizontal = 14.dp, vertical = 10.dp)
+                            )
+                            StreamCursor()
+                            Spacer(Modifier.width(14.dp))
+                        }
                     }
                     else -> Column {
+                        // 功能五（P1-9）：完成态默认折叠——想复盘推理时点开头看
+                        if (reasoning != null) {
+                            ReasoningBlock(reasoning = reasoning, expandedInitially = false)
+                        }
                         MarkdownText(
                             text = text,
                             color = MaterialTheme.colorScheme.onSurface,
@@ -1835,6 +1851,56 @@ private fun MessageBubble(
                 icon = Icons.Outlined.Person,
                 background = LocalAkColors.surface1,
                 tint = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+/**
+ * 功能五（P1-9）：推理过程折叠块（净室实现，参照三家「思考过程」交互的自有形制）。
+ *
+ * 头部「思考过程 · N 字」+ 旋转箭头常驻可反复开合；正文小号字、surface-1 底与正文区分。
+ * 展开初值由 [expandedInitially] 决定：流式中传 true（实时围观模型思考），完成态传 false（默认折叠、点开复盘）。
+ * 空推理不渲染本块——由调用方以 null 判断，本函数只接收非空。
+ */
+@Composable
+private fun ReasoningBlock(reasoning: String, expandedInitially: Boolean) {
+    var expanded by remember { mutableStateOf(expandedInitially) }
+    Column(
+        modifier = Modifier
+            .padding(horizontal = 10.dp, vertical = 8.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .background(LocalAkColors.surface1)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { expanded = !expanded }
+                .padding(horizontal = 10.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "思考过程 · ${reasoning.length} 字",
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.weight(1f)
+            )
+            Icon(
+                imageVector = Icons.Outlined.ExpandMore,
+                contentDescription = if (expanded) "收起思考过程" else "展开思考过程",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier
+                    .size(18.dp)
+                    .rotate(if (expanded) 180f else 0f)
+            )
+        }
+        if (expanded) {
+            Text(
+                text = reasoning,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(start = 10.dp, end = 10.dp, bottom = 8.dp)
             )
         }
     }

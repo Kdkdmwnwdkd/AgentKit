@@ -94,6 +94,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  * @param onEvent 过程事件回调（null = 关闭，保持旧行为）。
  * @param shouldContinue 每轮结束复查的续跑钩子（null = 关闭；stop() 与之并列）。
  * @param onTextDelta 流式文本增量回调（null = 关闭）。
+ * @param onReasoningDelta 功能五（P1-9）：推理过程增量回调（null = 关闭）。
  * @param hooks 执行过程钩子（默认 [NoopHooks]）。
  * @param executorFactory executor 工厂：每批工具执行前取一次（null = 按当前字段
  *   构造 [RegistryToolExecutor]）。测试可注入违约 executor 验证回合级兜底；
@@ -128,6 +129,8 @@ class RealAgentLoop(
     private val onEvent: ((AgentEvent) -> Unit)? = null,
     private val shouldContinue: (() -> Boolean)? = null,
     private val onTextDelta: ((String) -> Unit)? = null,
+    /** 功能五（P1-9）：推理过程增量回调（null = 关闭）。与 [onTextDelta] 分流。 */
+    private val onReasoningDelta: ((String) -> Unit)? = null,
     private val hooks: Hooks = NoopHooks,
     private val executorFactory: (() -> ToolExecutor)? = null,
     private val forceFullTools: Boolean = false,
@@ -538,6 +541,9 @@ class RealAgentLoop(
         llmProvider().streamChat(messages, exposure.tools).collect { event ->
             when (event) {
                 is ChatStreamEvent.TextDelta -> onTextDelta?.invoke(event.text)
+                // 功能五（P1-9）：推理过程增量与正文分流上抛（UI 折叠块实时渲染），
+                // 同样不进历史——进历史的只有 Completed 整条（message.reasoning）
+                is ChatStreamEvent.ReasoningDelta -> onReasoningDelta?.invoke(event.text)
                 is ChatStreamEvent.Completed -> completed = event.message
             }
         }

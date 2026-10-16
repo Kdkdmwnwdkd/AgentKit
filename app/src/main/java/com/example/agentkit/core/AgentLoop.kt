@@ -142,6 +142,11 @@ class AgentLoop(
      */
     onTextDelta: ((String) -> Unit)? = null,
     /**
+     * 功能五（P1-9）：推理过程（思维链）增量回调（null = 关闭）。
+     * 与 [onTextDelta] 分流：思考内容 UI 走折叠块，不进正文打字机。
+     */
+    onReasoningDelta: ((String) -> Unit)? = null,
+    /**
      * Phase 2 DoD④「本地模型工具暴露降级」：强制全量工具开关（默认 false = 按 provider 自动）。
      * provider = local-llama 时默认把暴露给 LLM 的工具面裁剪到核心集（≤7）；置 true 强制全量。
      * @param networkRecovery 退避期间的网络恢复等待器（真机第三轮 Bug A2）：Android 侧传
@@ -167,6 +172,7 @@ class AgentLoop(
         onEvent = onEvent,
         shouldContinue = shouldContinue,
         onTextDelta = onTextDelta,
+        onReasoningDelta = onReasoningDelta,
         forceFullTools = forceFullTools,
         networkRecovery = networkRecovery
     )

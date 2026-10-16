@@ -84,7 +84,13 @@ data class MsgRecord(
     val toolArgs: String? = null,
     val isError: Boolean = false,
     val promptTokens: Long = 0,
-    val completionTokens: Long = 0
+    val completionTokens: Long = 0,
+    /**
+     * 功能五（P1-9）：assistant 消息的推理过程（思维链全文）。
+     * 空 = 无思考（旧文件/非推理模型）；与 content 分字段存储，
+     * 读回历史时不把自言自语当对话内容发给下一轮。
+     */
+    val reasoning: String = ""
 )
 
 /**
@@ -131,7 +137,9 @@ internal fun UiItem.toMsgRecord(): MsgRecord = when (this) {
         content = text.take(MAX_FIELD_CHARS),
         // 功能五（P1-5）：token 用量随气泡落盘（无 usage 存 0，读时按 0 还原为 null）
         promptTokens = usage?.promptTokens ?: 0L,
-        completionTokens = usage?.completionTokens ?: 0L
+        completionTokens = usage?.completionTokens ?: 0L,
+        // 功能五（P1-9）：推理过程随气泡落盘（截断纪律同正文）
+        reasoning = reasoning.orEmpty().take(MAX_FIELD_CHARS)
     )
 
     is UiItem.Tool -> MsgRecord(
@@ -167,7 +175,9 @@ internal fun MsgRecord.toUiItem(): UiItem = when (role) {
             TokenUsage(promptTokens, completionTokens)
         } else {
             null
-        }
+        },
+        // 功能五（P1-9）：还原推理过程（空白 = 无思考，UI 不渲染折叠块）
+        reasoning = reasoning.takeIf { it.isNotBlank() }
     )
     // 未知 role 兜底按 assistant 渲染：宁可显示不错丢（历史数据兼容）
     else -> UiItem.Assistant(content)
@@ -203,7 +213,9 @@ internal fun ConversationRecord.toUiItems(): List<UiItem> = buildList {
                         TokenUsage(sel.promptTokens, sel.completionTokens)
                     } else {
                         null
-                    }
+                    },
+                    // 功能五（P1-9）：选中变体的推理过程一起还原（空白 → null）
+                    reasoning = sel.reasoning.takeIf { it.isNotBlank() }
                 )
             )
         }

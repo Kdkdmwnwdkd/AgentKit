@@ -51,7 +51,7 @@
 | 17 | 收藏消息 | ❌ | ✅ MessageSheetAction favorite | ❌ | — | ❌ | P2 |
 | 18 | 分叉成新会话 | ◐ | ✅ forkConversationAtMessage | ◐ | — | ❌ | P1 |
 | 19 | 消息时间显示 | ◐ | ✅ ChatMessageActions.kt:178 | ◐ | — | ❌ | P2 |
-| 20 | 推理过程折叠展示 | ✅ ReasoningBlock | ✅ ChatMessageReasoning.kt | ◐ | — | ❌（UI 层无 reasoning 展示；「回传历史思考过程」只是请求参数开关） | P1 |
+| 20 | 推理过程折叠展示 | ✅ ReasoningBlock | ✅ ChatMessageReasoning.kt | ◐ | — | ✅ 思考过程折叠（hotfix26：三家解析 + ReasoningDelta 分流 + 流式展开/完成折叠） | P1 ✅ |
 | 21 | 消息 token/耗时统计行 | ✅ UsageView | ✅ ChatMessageNerdLine.kt | ✅ tokenstats 模块 | ✅ Token stats README | ✅ 助手气泡用量行（hotfix21） | P1 ✅ |
 | 22 | WebView 渲染消息 | ❌ | ✅ render_with_webview | ❌ | ◐ | ❌ | P2 |
 
@@ -130,8 +130,8 @@ P1-4 会话导出 Markdown + 全局备份/恢复（#32/#50）✅ hotfix22/hotfix
 P1-5 Token 用量统计（每模型/每会话）（#21/#49）✅ hotfix21
 P1-6 模型选择器增强：收藏夹 + 打开定位当前项 + Provider 分组 + 能力标签（#40-43，rikkahub A4 的 P0 化）✅ hotfix20
 P1-7 输入栏快捷指令/提示词库唤起（#26）✅ hotfix24
-P1-8 会话草稿独立保存（#34）⏳
-P1-9 推理过程折叠 UI（#20）⏳
+P1-8 会话草稿独立保存（#34）✅ hotfix25
+P1-9 推理过程折叠 UI（#20）✅ hotfix26
 P1-10 外观增强：Material You 动态取色 + 完成提醒通知（#48/#55）⏳
 
 ### P2（增强，排期靠后）

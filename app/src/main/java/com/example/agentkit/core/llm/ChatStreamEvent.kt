@@ -18,6 +18,15 @@ sealed interface ChatStreamEvent {
     /** 一段文本增量（content 非空才发射；空 content 的 chunk 不产生事件）。 */
     data class TextDelta(val text: String) : ChatStreamEvent
 
+    /**
+     * 功能五（P1-9）：一段「推理过程」增量（思维链）。
+     *
+     * 与 [TextDelta] 分流：思考内容不是最终答案，UI 要折叠展示（ReasoningBlock），
+     * 混进正文会让「回答」里多出一段模型的自言自语。进历史的也只有
+     * [Completed] 整条（message.reasoning）。
+     */
+    data class ReasoningDelta(val text: String) : ChatStreamEvent
+
     /** 流结束：整条助手消息（content 为累积全文，toolCalls 为累积结果）。 */
     data class Completed(val message: AssistantMessage) : ChatStreamEvent
 }
