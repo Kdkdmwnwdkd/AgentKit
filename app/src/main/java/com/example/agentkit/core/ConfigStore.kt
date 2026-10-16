@@ -341,15 +341,16 @@ class ConfigStore(context: Context) {
     }
 
     /**
-     * hotfix32：背景图不透明度（0.05..0.60，默认 0.30）。
-     * 下限 0.05 防「设了等于没设」的困惑，上限 0.60 保气泡文字可读——
-     * 再浓就得靠 scrim 兜（ChatScreen 已有 surface 色半透明罩）。
+     * hotfix32/33：背景图不透明度（0.05..1.00，默认 0.30）。
+     * 下限 0.05 防「设了等于没设」的困惑；**上限 1.00 = 原图全浓度**
+     * （真机反馈「60% 都不够清楚，要 100%」——上限是用户的选择，不是产品的规定）。
+     * 文字可读性由全局 scrim（surface 色 25%）兜底，不靠压浓度。
      */
     fun chatBackgroundAlpha(): Float = sp.getFloat(KEY_CHAT_BG_ALPHA, 0.30f)
 
-    /** hotfix32：写背景图不透明度（clamp 后落盘）。 */
+    /** hotfix32/33：写背景图不透明度（clamp 后落盘）。 */
     fun setChatBackgroundAlpha(alpha: Float) {
-        sp.edit().putFloat(KEY_CHAT_BG_ALPHA, alpha.coerceIn(0.05f, 0.60f)).apply()
+        sp.edit().putFloat(KEY_CHAT_BG_ALPHA, alpha.coerceIn(0.05f, 1.0f)).apply()
     }
 }
 

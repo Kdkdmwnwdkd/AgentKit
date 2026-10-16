@@ -4,13 +4,13 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.jsonArray
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.IOException
 import java.util.concurrent.TimeUnit
+import com.example.agentkit.core.llm.arrOrNull
+import com.example.agentkit.core.llm.objOrNull
+import com.example.agentkit.core.llm.primOrNull
 
 /**
  * 模型列表拉取器：模型配置页「选择模型」弹窗的数据源。
@@ -117,7 +117,10 @@ class ModelListFetcher(
      */
     private fun parseModelIds(text: String, providerId: String): List<String> {
         val root = try {
-            Json.parseToJsonElement(text).jsonObject
+            Json.parseToJsonElement(text).objOrNull()
+                ?: throw IOException("获取模型列表失败：响应不是 JSON 对象")
+        } catch (e: IOException) {
+            throw e
         } catch (e: Exception) {
             AgentLogger.e("ModelList", "响应解析异常", e)
             throw IOException("获取模型列表失败：响应解析异常")
@@ -125,12 +128,12 @@ class ModelListFetcher(
         return when (providerId) {
             // Gemini：models[].name 去掉 models/ 前缀；只收支持 generateContent 的条目，
             // name 缺省 / 方法不含 generateContent 的跳过
-            "gemini" -> root["models"]?.jsonArray?.mapNotNull { el ->
+            "gemini" -> root["models"]?.arrOrNull()?.mapNotNull { el ->
                 runCatching {
-                    val obj = el.jsonObject
-                    val name = obj["name"]?.jsonPrimitive?.contentOrNull ?: return@runCatching null
-                    val supportsGenerate = obj["supportedGenerationMethods"]?.jsonArray
-                        ?.any { it.jsonPrimitive.contentOrNull == "generateContent" } == true
+                    val obj = el.objOrNull() ?: return@runCatching null
+                    val name = obj["name"]?.primOrNull()?.contentOrNull ?: return@runCatching null
+                    val supportsGenerate = obj["supportedGenerationMethods"]?.arrOrNull()
+                        ?.any { it.primOrNull()?.contentOrNull == "generateContent" } == true
                     if (name.isNotBlank() && supportsGenerate) {
                         name.removePrefix("models/")
                     } else {
@@ -140,9 +143,9 @@ class ModelListFetcher(
             } ?: emptyList()
 
             // OpenAI / Claude：data[].id；id 缺省或为空的条目跳过
-            else -> root["data"]?.jsonArray?.mapNotNull { el ->
+            else -> root["data"]?.arrOrNull()?.mapNotNull { el ->
                 runCatching {
-                    el.jsonObject["id"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
+                    el.objOrNull()?.get("id")?.primOrNull()?.contentOrNull?.takeIf { it.isNotBlank() }
                 }.getOrNull()
             } ?: emptyList()
         }

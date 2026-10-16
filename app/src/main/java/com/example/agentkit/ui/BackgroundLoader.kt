@@ -3,14 +3,30 @@ package com.example.agentkit.ui
 import android.content.Context
 import android.graphics.BitmapFactory
 import android.net.Uri
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlin.math.max
 
 /**
- * hotfix32：聊天背景图零依赖加载（SAF content:// → 采样缩放的 [ImageBitmap]）。
+ * hotfix32/33：聊天背景图零依赖加载（SAF content:// → 采样缩放的 [ImageBitmap]）。
  *
  * 纪律：全 App 外部依赖零新增——不引 Coil/Picasso，参照仓库只读思路、净室重写。
  * 背景图是「大图小用」场景（4000x3000 的照片显示在 ~1080x2400 的屏幕上），
@@ -49,6 +65,42 @@ suspend fun loadChatBackground(
         } ?: return@runCatching null
         bmp.asImageBitmap()
     }.getOrNull()
+}
+
+/**
+ * hotfix33：全局背景图层（挂 App 根层，随根 Box 铺满整屏）。
+ *
+ * 真机反馈「不只是要聊天的地方变啊，其他地方也要变啊」：hotfix32 只在对话页画
+ * 背景，这里提升到整个 App——抽屉、设置、模型、记忆、日志、控制台全部透出照片。
+ * 层序：照片（alpha = 用户浓度，100% 即原图）→ surface 色 25% scrim（保文字可读，
+ * 深浅两套主题自动适配）。无图时本层不渲染任何内容（零开销，根背景色兜底可见）。
+ *
+ * 注意：调用方需在无图时保留自身不透明底色、有图时让底色透明，否则照片被盖住。
+ */
+@Composable
+fun AppBackgroundLayer(vm: ChatViewModel) {
+    val uri by vm.chatBackgroundUri.collectAsStateWithLifecycle()
+    val alpha by vm.chatBackgroundAlpha.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+    val config = LocalConfiguration.current
+    var bitmap by remember { mutableStateOf<ImageBitmap?>(null) }
+    LaunchedEffect(uri) {
+        bitmap = uri?.takeIf { it.isNotBlank() }
+            ?.let { loadChatBackground(context, it, config.screenWidthDp, config.screenHeightDp) }
+    }
+    val bmp = bitmap ?: return
+    Image(
+        bitmap = bmp,
+        contentDescription = null,
+        contentScale = ContentScale.Crop,
+        alpha = alpha,
+        modifier = Modifier.fillMaxSize()
+    )
+    Box(
+        Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.25f))
+    )
 }
 
 /** 标准 2 的幂采样：缩到「仍不小于目标尺寸」的最大一级，避免过度降采样发虚。 */

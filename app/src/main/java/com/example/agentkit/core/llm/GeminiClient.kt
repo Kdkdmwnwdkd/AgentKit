@@ -158,11 +158,12 @@ class GeminiClient(
                 val data = line.removePrefix("data:").trim()
                 if (data.isEmpty()) continue
                 runCatching {
-                    val obj = json.parseToJsonElement(data).jsonObject
-                    val parts = obj["candidates"]?.jsonArray?.firstOrNull()
-                        ?.jsonObject?.get("content")?.jsonObject?.get("parts")?.jsonArray
+                    // hotfix33：SSE 分片可能是 null / 非对象，软转换跳过（不打断流）
+                    val obj = json.parseToJsonElement(data).objOrNull() ?: return@runCatching
+                    val parts = obj["candidates"]?.arrOrNull()?.firstOrNull()
+                        ?.objOrNull()?.get("content")?.objOrNull()?.get("parts")?.arrOrNull()
                     parts?.forEach { el ->
-                        el.jsonObject["text"]?.jsonPrimitive?.contentOrNull?.let { emit(it) }
+                        el.objOrNull()?.get("text")?.primOrNull()?.contentOrNull?.let { emit(it) }
                     }
                 }
             }
@@ -229,26 +230,28 @@ class GeminiClient(
     }
 
     private fun parseResponse(text: String): AssistantMessage {
-        val root = json.parseToJsonElement(text).jsonObject
-        val parts = root["candidates"]?.jsonArray?.firstOrNull()
-            ?.jsonObject?.get("content")?.jsonObject?.get("parts")?.jsonArray
+        // hotfix33：全链安全取值——candidates 为空 / part 为 null 都安全退化，不抛
+        val root = json.parseToJsonElement(text).objOrNull()
+            ?: return AssistantMessage("", emptyList())
+        val parts = root["candidates"]?.arrOrNull()?.firstOrNull()
+            ?.objOrNull()?.get("content")?.objOrNull()?.get("parts")?.arrOrNull()
             ?: return AssistantMessage("", emptyList())
 
         val content = StringBuilder()
         val reasoning = StringBuilder()
         val toolCalls = mutableListOf<ToolCall>()
         parts.forEach { el ->
-            val obj = el.jsonObject
+            val obj = el.objOrNull() ?: return@forEach
             // 功能五（P1-9）：thought: true 的 part 是思考（Gemini 2.5 thinking），
             // 与正式回答的 text part 分流——思考灌进正文会让下一轮历史带上自言自语
             if (parseGeminiThought(obj) != null) {
-                obj["text"]?.jsonPrimitive?.contentOrNull?.let { reasoning.append(it) }
+                obj["text"]?.primOrNull()?.contentOrNull?.let { reasoning.append(it) }
             } else {
-                obj["text"]?.jsonPrimitive?.contentOrNull?.let { content.append(it) }
+                obj["text"]?.primOrNull()?.contentOrNull?.let { content.append(it) }
             }
-            obj["functionCall"]?.jsonObject?.let { fc ->
-                val name = fc["name"]?.jsonPrimitive?.contentOrNull ?: return@let
-                val args = fc["args"]?.jsonObject ?: JsonObject(emptyMap())
+            obj["functionCall"]?.objOrNull()?.let { fc ->
+                val name = fc["name"]?.primOrNull()?.contentOrNull ?: return@let
+                val args = fc["args"]?.objOrNull() ?: JsonObject(emptyMap())
                 // Gemini 的 functionCall 没有 id：本地合成，回传靠 name 匹配
                 toolCalls += ToolCall("gemini_${UUID.randomUUID().toString().take(8)}", name, args)
             }

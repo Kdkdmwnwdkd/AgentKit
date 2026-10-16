@@ -862,15 +862,15 @@ private fun testReasoningFold() {
     }
     check("U2 三家解析纯函数：缺失返 null（没给思考 ≠ 给了空思考）") {
         assertContains("U2", parsers, "fun parseOpenAiReasoning(delta: JsonObject): String?")
-        assertContains("U2", parsers, "delta[\"reasoning_content\"]?.jsonPrimitive?.contentOrNull?.let { return it }")
-        assertContains("U2", parsers, "return delta[\"reasoning\"]?.jsonPrimitive?.contentOrNull")
+        assertContains("U2", parsers, "delta[\"reasoning_content\"]?.primOrNull()?.contentOrNull?.let { return it }")
+        assertContains("U2", parsers, "return delta[\"reasoning\"]?.primOrNull()?.contentOrNull")
         // Claude 三重门槛：content_block_delta + delta.type==thinking_delta + delta.thinking
-        assertContains("U2", parsers, "if (obj[\"type\"]?.jsonPrimitive?.contentOrNull != \"content_block_delta\") return null")
-        assertContains("U2", parsers, "if (delta[\"type\"]?.jsonPrimitive?.contentOrNull != \"thinking_delta\") return null")
-        assertContains("U2", parsers, "return delta[\"thinking\"]?.jsonPrimitive?.contentOrNull")
+        assertContains("U2", parsers, "if (obj[\"type\"]?.primOrNull()?.contentOrNull != \"content_block_delta\") return null")
+        assertContains("U2", parsers, "if (delta[\"type\"]?.primOrNull()?.contentOrNull != \"thinking_delta\") return null")
+        assertContains("U2", parsers, "return delta[\"thinking\"]?.primOrNull()?.contentOrNull")
         // Gemini：只认 thought=="true" 的 part
-        assertContains("U2", parsers, "if (part[\"thought\"]?.jsonPrimitive?.contentOrNull != \"true\") return null")
-        assertContains("U2", parsers, "return part[\"text\"]?.jsonPrimitive?.contentOrNull")
+        assertContains("U2", parsers, "if (part[\"thought\"]?.primOrNull()?.contentOrNull != \"true\") return null")
+        assertContains("U2", parsers, "return part[\"text\"]?.primOrNull()?.contentOrNull")
     }
     check("U3 OpenAI 兼容系：思考增量发 ReasoningDelta，Completed 第四参带 reasoning") {
         assertContains("U3", client, "import com.example.agentkit.core.llm.parseOpenAiReasoning")
@@ -881,12 +881,12 @@ private fun testReasoningFold() {
     }
     check("U4 Claude：thinking 块进 reasoning，与 text 块分流") {
         assertContains("U4", claude, "val reasoning = StringBuilder()")
-        assertContains("U4", claude, "\"thinking\" -> obj[\"thinking\"]?.jsonPrimitive?.contentOrNull?.let { reasoning.append(it) }")
+        assertContains("U4", claude, "\"thinking\" -> obj[\"thinking\"]?.primOrNull()?.contentOrNull?.let { reasoning.append(it) }")
         assertContains("U4", claude, "reasoning.toString().takeIf { it.isNotBlank() }")
     }
     check("U5 Gemini：thought part 进 reasoning，正式回答 part 才进 content") {
         assertContains("U5", gemini, "if (parseGeminiThought(obj) != null) {")
-        assertContains("U5", gemini, "obj[\"text\"]?.jsonPrimitive?.contentOrNull?.let { reasoning.append(it) }")
+        assertContains("U5", gemini, "obj[\"text\"]?.primOrNull()?.contentOrNull?.let { reasoning.append(it) }")
         assertContains("U5", gemini, "reasoning.toString().takeIf { it.isNotBlank() }")
         // 注释即契约：分流防「自言自语进下一轮历史」
         assertContains("U5", gemini, "思考灌进正文会让下一轮历史带上自言自语")
@@ -1289,7 +1289,7 @@ private fun testChatBackground() {
         assertContains("AA1", config, "fun chatBackgroundUri(): String?")
         assertContains("AA1", config, "fun setChatBackgroundUri(uri: String?)")
         assertContains("AA1", config, "fun chatBackgroundAlpha(): Float = sp.getFloat(KEY_CHAT_BG_ALPHA, 0.30f)")
-        assertContains("AA1", config, "alpha.coerceIn(0.05f, 0.60f)")
+        assertContains("AA1", config, "alpha.coerceIn(0.05f, 1.0f)")
     }
     check("AA2 VM：chatBackgroundUri/Alpha 状态 + setter（落盘即时生效）") {
         assertContains("AA2", vm, "private val _chatBackgroundUri = MutableStateFlow(configStore.chatBackgroundUri())")
@@ -1307,12 +1307,12 @@ private fun testChatBackground() {
         // 纪律注释即契约：不引 Coil/Picasso
         assertContains("AA3", loader, "不引 Coil/Picasso")
     }
-    check("AA4 ChatScreen：背景层 Image + scrim（深浅两主题保可读）") {
-        assertContains("AA4", screen, "val bgUri by vm.chatBackgroundUri.collectAsStateWithLifecycle()")
-        assertContains("AA4", screen, "loadChatBackground(ctx, it, bgConfig.screenWidthDp, bgConfig.screenHeightDp)")
-        assertContains("AA4", screen, "ContentScale.Crop")
-        assertContains("AA4", screen, "alpha = bgAlpha")
-        assertContains("AA4", screen, "MaterialTheme.colorScheme.surface.copy(alpha = 0.35f)")
+    check("AA4 全局背景层 Image + scrim（hotfix33 起挂 App 根层，AppBackgroundLayer）") {
+        assertContains("AA4", loader, "fun AppBackgroundLayer(vm: ChatViewModel)")
+        assertContains("AA4", loader, "ContentScale.Crop")
+        assertContains("AA4", loader, "alpha = alpha")
+        assertContains("AA4", loader, "MaterialTheme.colorScheme.surface.copy(alpha = 0.25f)")
+        assertContains("AA4", loader, "loadChatBackground(context, it, config.screenWidthDp, config.screenHeightDp)")
     }
     check("AA5 SettingsScreen：SAF 持久化选图 + 换一张/清除 + 浓度滑杆") {
         assertContains("AA5", settings, "private fun ChatBackgroundSection(vm: ChatViewModel)")
@@ -1321,7 +1321,81 @@ private fun testChatBackground() {
         assertContains("AA5", settings, "takePersistableUriPermission(")
         assertContains("AA5", settings, "vm.setChatBackground(uri.toString())")
         assertContains("AA5", settings, "vm.setChatBackground(null)")
-        assertContains("AA5", settings, "valueRange = 0.05f..0.60f")
+        assertContains("AA5", settings, "valueRange = 0.05f..1.0f")
+    }
+}
+
+/**
+ * AB 区：hotfix33「真机三连」——
+ *  ① **DeepSeek 间歇崩溃**（最高优先级真 Bug）：报「出错了：Element class
+ *     kotlinx.serialization.json.JsonNull is not a JsonObject」，测试连接正常、
+ *     聊天随机崩。根因：kotlinx 的 .jsonObject/.jsonPrimitive/.jsonArray 是硬转换，
+ *     遇到 JSON 显式 null（DeepSeek 收尾块 `"delta": null`、非推理回合
+ *     `"reasoning_content": null`）即抛。hotfix26 引入 reasoning 解析后开始踩。
+ *     修法：JsonSafe 三个 as? 软转换，LLM 链路 93 处全替换 + 去 !!。
+ *  ② 背景浓度上限 60% → **100%**（用户原话「60% 都不够清楚，要 100%；为什么
+ *     要设置 60%，我们自己不可以弄吗」——浓度是用户的选择）。
+ *  ③ 背景图仅对话页 → **全 App**（「不只是要聊天的地方变，其他地方也要变」）。
+ */
+private fun testJsonSafeAndGlobalBackground() {
+    println("— AB 区：JSON 安全化 + 背景 100%/全局（hotfix33） —")
+    val base = "/workspace/AgentKit/app/src/main/java/com/example/agentkit/"
+    val safe = File(base + "core/llm/JsonSafe.kt").readText()
+    val llm = readSource("core/LLMClient.kt")
+    val loader = readSource("ui/BackgroundLoader.kt")
+    val config = readSource("core/ConfigStore.kt")
+    val settings = readSource("ui/SettingsScreen.kt")
+    val scaffold = readSource("ui/AppScaffold.kt")
+    val chat = readSource("ui/ChatScreen.kt")
+
+    check("AB1 JsonSafe：三个 as? 软转换访问器 + 根因文档") {
+        assertContains("AB1", safe, "fun JsonElement?.objOrNull(): JsonObject? = this as? JsonObject")
+        assertContains("AB1", safe, "fun JsonElement?.arrOrNull(): JsonArray? = this as? JsonArray")
+        assertContains("AB1", safe, "fun JsonElement?.primOrNull(): JsonPrimitive? = this as? JsonPrimitive")
+        assertContains("AB1", safe, "is not a JsonObject")
+        assertContains("AB1", safe, "\"reasoning_content\": null")
+    }
+    check("AB2 LLM 链路零裸强转（7 文件全扫——崩溃根治的硬证据）") {
+        val files = listOf(
+            "core/LLMClient.kt",
+            "core/llm/ReasoningParsers.kt",
+            "core/llm/TokenUsageParsers.kt",
+            "core/llm/ClaudeClient.kt",
+            "core/llm/GeminiClient.kt",
+            "core/llm/local/LocalLlamaClient.kt",
+            "core/ModelListFetcher.kt"
+        )
+        files.forEach { rel ->
+            val src = File(base + rel).readText()
+            assertTrue("AB2($rel) 残留 .jsonObject", !src.contains(".jsonObject"))
+            assertTrue("AB2($rel) 残留 .jsonPrimitive", !src.contains(".jsonPrimitive"))
+            assertTrue("AB2($rel) 残留 .jsonArray", !src.contains(".jsonArray"))
+        }
+    }
+    check("AB3 LLMClient：SSE delta 安全取值链 + parseResponse 去 !! 去 first()") {
+        assertContains(
+            "AB3", llm,
+            "obj[\"choices\"]?.arrOrNull()?.firstOrNull()?.objOrNull()?.get(\"delta\")?.objOrNull()"
+        )
+        assertContains("AB3", llm, "val root = json.parseToJsonElement(text).objOrNull()")
+        assertContains("AB3", llm, "?: return AssistantMessage(\"\", emptyList(), null)")
+        assertTrue("AB3", !llm.contains("arrOrNull().first()"))
+        assertTrue("AB3", !llm.contains("root[\"choices\"]!!"))
+    }
+    check("AB4 背景浓度：clamp 到 1.0（100%）+ 滑杆 range 同步") {
+        assertContains("AB4", config, "alpha.coerceIn(0.05f, 1.0f)")
+        assertContains("AB4", settings, "valueRange = 0.05f..1.0f")
+        assertTrue("AB4", !settings.contains("valueRange = 0.05f..0.60f"))
+    }
+    check("AB5 全局背景：AppBackgroundLayer + 根底色透明切换 + 对话页不再自绘") {
+        assertContains("AB5", loader, "fun AppBackgroundLayer(vm: ChatViewModel)")
+        assertContains("AB5", scaffold, "AppBackgroundLayer(vm)")
+        assertContains("AB5", scaffold, "if (hasAppBackground) Color.Transparent")
+        assertContains("AB5", scaffold, "else MaterialTheme.colorScheme.background")
+        assertContains("AB5", scaffold, "val hasAppBackground = !appBgUri.isNullOrBlank()")
+        // 对话页旧自绘层已移除（避免与全局层双份解码）
+        assertTrue("AB5", !chat.contains("bgConfig.screenWidthDp"))
+        assertContains("AB5", chat, "背景图已提升到 App 根层")
     }
 }
 
@@ -1368,6 +1442,8 @@ fun main() {
     testMemoryInteraction()
     println()
     testChatBackground()
+    println()
+    testJsonSafeAndGlobalBackground()
     println()
     println("== 汇总 ==")
     println("PASS: $passed  FAIL: ${failures.size}  TOTAL: ${passed + failures.size}")

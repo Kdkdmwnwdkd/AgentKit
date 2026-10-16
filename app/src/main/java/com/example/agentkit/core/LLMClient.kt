@@ -14,6 +14,9 @@ import com.example.agentkit.core.llm.ChatStreamEvent
 import com.example.agentkit.core.llm.parseOpenAiReasoning
 import com.example.agentkit.core.llm.parseOpenAiUsage
 import java.io.IOException
+import com.example.agentkit.core.llm.arrOrNull
+import com.example.agentkit.core.llm.objOrNull
+import com.example.agentkit.core.llm.primOrNull
 
 /**
  * 模型供应商配置：无状态，每次调用都携带。
@@ -239,11 +242,11 @@ class OpenAIClient(
         readSseDataObjects(messages, tools) { obj ->
             val delta = sseDeltaObject(obj)
             if (delta != null) {
-                delta["content"]?.jsonPrimitive?.contentOrNull?.let {
+                delta["content"]?.primOrNull()?.contentOrNull?.let {
                     text.append(it)
                     send(ChatStreamEvent.TextDelta(it))
                 }
-                delta["tool_calls"]?.jsonArray?.let { accumulator.absorb(it) }
+                delta["tool_calls"]?.arrOrNull()?.let { accumulator.absorb(it) }
                 // 功能五（P1-9）：思考增量与正文分流（UI 折叠展示，不进正文打字机）
                 parseOpenAiReasoning(delta)?.let {
                     reasoning.append(it)
@@ -331,7 +334,7 @@ class OpenAIClient(
                     if (!line.startsWith("data:")) continue
                     val data = line.removePrefix("data:").trim()
                     if (data == "[DONE]") return@withContext
-                    val obj = runCatching { json.parseToJsonElement(data).jsonObject }.getOrNull() ?: continue
+                    val obj = runCatching { json.parseToJsonElement(data).objOrNull() }.getOrNull() ?: continue
                     onData(obj)
                 }
             }
@@ -340,11 +343,11 @@ class OpenAIClient(
 
     /** 从一个 SSE data 对象里取 choices[0].delta（纯函数；无 choices/delta 时 null）。 */
     private fun sseDeltaObject(obj: JsonObject): JsonObject? =
-        obj["choices"]?.jsonArray?.firstOrNull()?.jsonObject?.get("delta")?.jsonObject
+        obj["choices"]?.arrOrNull()?.firstOrNull()?.objOrNull()?.get("delta")?.objOrNull()
 
     /** 从 SSE data 对象里取 choices[0].delta.content 文本（纯函数；缺失时 null）。 */
     private fun sseDeltaContent(obj: JsonObject): String? =
-        sseDeltaObject(obj)?.get("content")?.jsonPrimitive?.contentOrNull
+        sseDeltaObject(obj)?.get("content")?.primOrNull()?.contentOrNull
 
     // —— 防御性清洗：统一在此处把配置三元组洗一遍，供 buildRequest / apiTrace / testPing 复用 ——
 
@@ -409,20 +412,26 @@ class OpenAIClient(
     }
 
     private fun parseResponse(text: String): AssistantMessage {
-        val root = json.parseToJsonElement(text).jsonObject
-        val msg = root["choices"]!!
-            .jsonArray.first().jsonObject["message"]!!.jsonObject
+        // hotfix33：全链安全取值——非流式路径同样可能收到 `message: null` /
+        // `choices: []` / 各类 null 字段（真机 DeepSeek 间歇性崩溃同源），
+        // 任一环缺都退化为空回答，绝不抛异常打断整轮
+        val root = json.parseToJsonElement(text).objOrNull()
+            ?: return AssistantMessage("", emptyList(), null)
+        val msg = root["choices"]?.arrOrNull()?.firstOrNull()?.objOrNull()
+            ?.get("message")?.objOrNull()
+            ?: return AssistantMessage("", emptyList(), parseOpenAiUsage(root))
 
-        val content = msg["content"]?.jsonPrimitive?.contentOrNull ?: ""
+        val content = msg["content"]?.primOrNull()?.contentOrNull ?: ""
 
-        val toolCalls = msg["tool_calls"]?.jsonArray?.mapNotNull { tc ->
-            val obj = tc.jsonObject
-            val id = obj["id"]?.jsonPrimitive?.content ?: return@mapNotNull null
-            val fn = obj["function"]?.jsonObject ?: return@mapNotNull null
-            val name = fn["name"]?.jsonPrimitive?.content ?: return@mapNotNull null
-            val rawArgs = fn["arguments"]?.jsonPrimitive?.content ?: "{}"
-            val args = runCatching { json.parseToJsonElement(rawArgs).jsonObject }
-                .getOrElse { JsonObject(emptyMap()) }
+        val toolCalls = msg["tool_calls"]?.arrOrNull()?.mapNotNull { tc ->
+            val obj = tc.objOrNull() ?: return@mapNotNull null
+            val id = obj["id"]?.primOrNull()?.content ?: return@mapNotNull null
+            val fn = obj["function"]?.objOrNull() ?: return@mapNotNull null
+            val name = fn["name"]?.primOrNull()?.content ?: return@mapNotNull null
+            val rawArgs = fn["arguments"]?.primOrNull()?.content ?: "{}"
+            val args = runCatching {
+                json.parseToJsonElement(rawArgs).objOrNull() ?: JsonObject(emptyMap())
+            }.getOrElse { JsonObject(emptyMap()) }
             ToolCall(id, name, args)
         } ?: emptyList()
 
@@ -539,24 +548,26 @@ internal class OpenAiToolCallAccumulator {
      */
     fun absorb(toolCalls: JsonArray) {
         toolCalls.forEachIndexed { position, element ->
-            val obj = element.jsonObject
-            val index = obj["index"]?.jsonPrimitive?.intOrNull ?: position
+            // hotfix33：元素可能是 JsonNull（个别端点会下发 null 占位），软转换跳过
+            val obj = element.objOrNull() ?: return@forEachIndexed
+            val index = obj["index"]?.primOrNull()?.intOrNull ?: position
             val delta = byIndex.getOrPut(index) { Delta() }
-            obj["id"]?.jsonPrimitive?.contentOrNull?.let { if (it.isNotBlank()) delta.id = it }
-            val fn = obj["function"]?.jsonObject
-            fn?.get("name")?.jsonPrimitive?.contentOrNull?.let { if (it.isNotBlank()) delta.name = it }
-            fn?.get("arguments")?.jsonPrimitive?.contentOrNull?.let { delta.arguments.append(it) }
+            obj["id"]?.primOrNull()?.contentOrNull?.let { if (it.isNotBlank()) delta.id = it }
+            val fn = obj["function"]?.objOrNull()
+            fn?.get("name")?.primOrNull()?.contentOrNull?.let { if (it.isNotBlank()) delta.name = it }
+            fn?.get("arguments")?.primOrNull()?.contentOrNull?.let { delta.arguments.append(it) }
         }
     }
 
     /**
      * 产出整条工具调用列表（纯函数）：过滤无名调用，arguments 整体解析
-     * （失败退化空对象），id 缺失按 index 回退 `call_<index>`。
+     * （失败 / 解析出 null 都退化空对象），id 缺失按 index 回退 `call_<index>`。
      */
     fun build(): List<ToolCall> = byIndex.entries.mapNotNull { (index, delta) ->
         if (delta.name.isBlank()) return@mapNotNull null
         val args = runCatching {
-            OpenAIClient.json.parseToJsonElement(delta.arguments.toString()).jsonObject
+            OpenAIClient.json.parseToJsonElement(delta.arguments.toString()).objOrNull()
+                ?: JsonObject(emptyMap())
         }.getOrElse { JsonObject(emptyMap()) }
         ToolCall(
             id = delta.id.ifBlank { "call_$index" },

@@ -20,8 +20,9 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
+import com.example.agentkit.core.llm.arrOrNull
+import com.example.agentkit.core.llm.objOrNull
+import com.example.agentkit.core.llm.primOrNull
 import java.io.IOException
 import java.util.UUID
 
@@ -254,11 +255,11 @@ class LocalLlamaClient(
         val end = text.lastIndexOf('}')
         if (start < 0 || end <= start) return null
         val obj = runCatching {
-            json.parseToJsonElement(text.substring(start, end + 1)).jsonObject
+            json.parseToJsonElement(text.substring(start, end + 1)).objOrNull()
         }.getOrNull() ?: return null
-        val name = obj["tool"]?.jsonPrimitive?.contentOrNull ?: return null
+        val name = obj["tool"]?.primOrNull()?.contentOrNull ?: return null
         if (name !in validTools) return null
-        val args: JsonObject = runCatching { obj["arguments"]?.jsonObject }.getOrNull() ?: JsonObject(emptyMap())
+        val args: JsonObject = runCatching { obj["arguments"]?.objOrNull() }.getOrNull() ?: JsonObject(emptyMap())
         return ToolCall("local_${UUID.randomUUID().toString().take(8)}", name, args)
     }
 

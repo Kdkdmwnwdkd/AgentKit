@@ -2,8 +2,6 @@ package com.example.agentkit.core.llm
 
 import com.example.agentkit.core.TokenUsage
 import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
 
 /**
  * 功能五（P1-5）：三家协议的 token usage 解析（纯函数，零 Android / 零网络依赖——
@@ -19,7 +17,7 @@ import kotlinx.serialization.json.jsonPrimitive
 
 /** OpenAI 兼容协议：`usage.{prompt_tokens, completion_tokens}`（total 由本端求和，不采信服务端）。 */
 fun parseOpenAiUsage(root: JsonObject): TokenUsage? {
-    val usage = root["usage"]?.jsonObject ?: return null
+    val usage = root["usage"]?.objOrNull() ?: return null
     val prompt = usage.longField("prompt_tokens") ?: usage.longField("input_tokens") ?: return null
     val completion = usage.longField("completion_tokens") ?: usage.longField("output_tokens") ?: return null
     return TokenUsage(prompt, completion)
@@ -27,7 +25,7 @@ fun parseOpenAiUsage(root: JsonObject): TokenUsage? {
 
 /** Claude Messages API：`usage.{input_tokens, output_tokens}`（cache 字段不计入，避免虚高）。 */
 fun parseClaudeUsage(root: JsonObject): TokenUsage? {
-    val usage = root["usage"]?.jsonObject ?: return null
+    val usage = root["usage"]?.objOrNull() ?: return null
     val prompt = usage.longField("input_tokens") ?: return null
     val completion = usage.longField("output_tokens") ?: return null
     return TokenUsage(prompt, completion)
@@ -39,7 +37,7 @@ fun parseClaudeUsage(root: JsonObject): TokenUsage? {
  * 服务端契约：candidatesTokenCount 已含 thoughts，故只取两项。
  */
 fun parseGeminiUsage(root: JsonObject): TokenUsage? {
-    val meta = root["usageMetadata"]?.jsonObject ?: return null
+    val meta = root["usageMetadata"]?.objOrNull() ?: return null
     val prompt = meta.longField("promptTokenCount") ?: return null
     val completion = meta.longField("candidatesTokenCount") ?: return null
     return TokenUsage(prompt, completion)
@@ -50,4 +48,4 @@ fun parseGeminiUsage(root: JsonObject): TokenUsage? {
  * 容忍字符串数字（少数兼容端点把 token 数序列化成 "123"）——trim 后 toLongOrNull。
  */
 private fun JsonObject.longField(key: String): Long? =
-    this[key]?.jsonPrimitive?.content?.trim()?.toLongOrNull()
+    this[key]?.primOrNull()?.content?.trim()?.toLongOrNull()

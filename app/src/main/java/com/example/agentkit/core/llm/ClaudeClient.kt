@@ -150,18 +150,19 @@ class ClaudeClient(
                 val data = line.removePrefix("data:").trim()
                 if (data.isEmpty()) continue
                 runCatching {
-                    val obj = json.parseToJsonElement(data).jsonObject
-                    when (obj["type"]?.jsonPrimitive?.contentOrNull) {
+                    // hotfix33：SSE 分片可能是 null / 非对象，软转换跳过（不打断流）
+                    val obj = json.parseToJsonElement(data).objOrNull() ?: return@runCatching
+                    when (obj["type"]?.primOrNull()?.contentOrNull) {
                         "content_block_delta" -> {
-                            val delta = obj["delta"]?.jsonObject
-                            if (delta?.get("type")?.jsonPrimitive?.contentOrNull == "text_delta") {
-                                delta["text"]?.jsonPrimitive?.contentOrNull?.let { emit(it) }
+                            val delta = obj["delta"]?.objOrNull()
+                            if (delta?.get("type")?.primOrNull()?.contentOrNull == "text_delta") {
+                                delta["text"]?.primOrNull()?.contentOrNull?.let { emit(it) }
                             }
                         }
                         // 流中途报错（超限等）：抛出供上层按普通错误处理
                         "error" -> {
-                            val msg = obj["error"]?.jsonObject?.get("message")
-                                ?.jsonPrimitive?.contentOrNull ?: "Claude 流式错误"
+                            val msg = obj["error"]?.objOrNull()?.get("message")
+                                ?.primOrNull()?.contentOrNull ?: "Claude 流式错误"
                             throw IOException(msg)
                         }
                     }
@@ -233,22 +234,24 @@ class ClaudeClient(
     }
 
     private fun parseResponse(text: String): AssistantMessage {
-        val root = json.parseToJsonElement(text).jsonObject
-        val blocks = root["content"]?.jsonArray ?: return AssistantMessage("", emptyList())
+        // hotfix33：全链安全取值——content 为 null / 非数组时退化为空回答，不抛
+        val root = json.parseToJsonElement(text).objOrNull()
+            ?: return AssistantMessage("", emptyList())
+        val blocks = root["content"]?.arrOrNull() ?: return AssistantMessage("", emptyList())
 
         val content = StringBuilder()
         val reasoning = StringBuilder()
         val toolCalls = mutableListOf<ToolCall>()
         blocks.forEach { el ->
-            val obj = el.jsonObject
-            when (obj["type"]?.jsonPrimitive?.contentOrNull) {
-                "text" -> obj["text"]?.jsonPrimitive?.contentOrNull?.let { content.append(it) }
+            val obj = el.objOrNull() ?: return@forEach
+            when (obj["type"]?.primOrNull()?.contentOrNull) {
+                "text" -> obj["text"]?.primOrNull()?.contentOrNull?.let { content.append(it) }
                 // 功能五（P1-9）：extended thinking 的思考块（thinking 字段，与正文 text 块分流）
-                "thinking" -> obj["thinking"]?.jsonPrimitive?.contentOrNull?.let { reasoning.append(it) }
+                "thinking" -> obj["thinking"]?.primOrNull()?.contentOrNull?.let { reasoning.append(it) }
                 "tool_use" -> {
-                    val callId = obj["id"]?.jsonPrimitive?.contentOrNull ?: UUID.randomUUID().toString()
-                    val name = obj["name"]?.jsonPrimitive?.contentOrNull ?: return@forEach
-                    val input = obj["input"]?.jsonObject ?: JsonObject(emptyMap())
+                    val callId = obj["id"]?.primOrNull()?.contentOrNull ?: UUID.randomUUID().toString()
+                    val name = obj["name"]?.primOrNull()?.contentOrNull ?: return@forEach
+                    val input = obj["input"]?.objOrNull() ?: JsonObject(emptyMap())
                     toolCalls += ToolCall(callId, name, input)
                 }
             }

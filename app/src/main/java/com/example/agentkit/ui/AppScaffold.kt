@@ -330,7 +330,20 @@ fun AppScaffold(
         drawerWasOpen = openTarget
     }
 
-    BoxWithConstraints(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+    // hotfix33：全局背景图开关——有图时根底色透明（照片从最底层透出，各页卡片浮在其上），
+    // 无图时保持原不透明底色。真机反馈「不只是要聊天的地方变，其他地方也要变」。
+    val appBgUri by vm.chatBackgroundUri.collectAsStateWithLifecycle()
+    val hasAppBackground = !appBgUri.isNullOrBlank()
+    BoxWithConstraints(
+        Modifier
+            .fillMaxSize()
+            .background(
+                if (hasAppBackground) Color.Transparent
+                else MaterialTheme.colorScheme.background
+            )
+    ) {
+        // 全局背景层（照片 + surface 色 25% scrim）；无图时不渲染任何内容
+        AppBackgroundLayer(vm)
         val wide = maxWidth >= 840.dp
         // clamp(280dp, 82vw, 320dp)：280 保触控下限，320 保「抽屉感」上限（§6.5.2）
         val drawerWidth = minOf(320.dp, maxOf(280.dp, maxWidth * 0.82f))

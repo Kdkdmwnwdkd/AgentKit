@@ -227,35 +227,9 @@ fun ChatScreen(
         }
     }
 
-    // hotfix32：聊天背景图（真机反馈「我可以用我照片的壁纸当成壁纸」——
-    // 动态取色只染控件色，这里给照片本体当对话页背景；URI 失效/解码失败
-    // 都安静退化为无背景，不留半张图）
-    val bgUri by vm.chatBackgroundUri.collectAsStateWithLifecycle()
-    val bgAlpha by vm.chatBackgroundAlpha.collectAsStateWithLifecycle()
-    var bgBitmap by remember { mutableStateOf<ImageBitmap?>(null) }
-    val bgConfig = LocalConfiguration.current
-    LaunchedEffect(bgUri) {
-        bgBitmap = bgUri?.takeIf { it.isNotBlank() }
-            ?.let { loadChatBackground(ctx, it, bgConfig.screenWidthDp, bgConfig.screenHeightDp) }
-    }
-
+    // hotfix33：背景图已提升到 App 根层（AppBackgroundLayer）——本页不再自绘，
+    // 全局统一（真机反馈「不只是要聊天的地方变，其他地方也要变」）
     Box(Modifier.fillMaxSize()) {
-        // 背景图 + scrim：surface 色半透明罩压住花图，深浅两套主题下气泡文字都可读
-        val bg = bgBitmap
-        if (bg != null) {
-            Image(
-                bitmap = bg,
-                contentDescription = null,
-                contentScale = ContentScale.Crop,
-                alpha = bgAlpha,
-                modifier = Modifier.matchParentSize()
-            )
-            Box(
-                Modifier
-                    .matchParentSize()
-                    .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.35f))
-            )
-        }
         Column(Modifier.fillMaxSize()) {
         PageTopBar(
             // 功能三：标题 = 当前会话名（找不到摘要时回落「对话」——冷启动首帧也可能为空）

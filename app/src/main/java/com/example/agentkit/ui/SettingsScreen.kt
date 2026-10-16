@@ -420,11 +420,12 @@ private fun ChatBackgroundSection(vm: ChatViewModel) {
     Column(verticalArrangement = Arrangement.spacedBy(AgentSpacing.space2)) {
         AkListItem(
             icon = Icons.Outlined.Image,
-            title = "聊天背景",
+            title = "背景图",
             description = if (bgUri != null) {
-                "对话页正显示你的照片，当前浓度 ${(bgAlpha * 100).toInt()}%"
+                // hotfix33：背景提升为全 App（抽屉/设置/模型/记忆等页面全部透出）
+                "全 App 生效（含抽屉与各功能页），当前浓度 ${(bgAlpha * 100).toInt()}%"
             } else {
-                "未设置：选一张照片当对话页背景（不占 App 存储）"
+                "未设置：选一张照片当全 App 背景（不占 App 存储）"
             },
             trailing = if (bgUri != null) {
                 {
@@ -461,7 +462,9 @@ private fun ChatBackgroundSection(vm: ChatViewModel) {
                 Slider(
                     value = bgAlpha,
                     onValueChange = { vm.setChatBackgroundAlpha(it) },
-                    valueRange = 0.05f..0.60f,
+                    // hotfix33：上限放到 100%（原图）——真机反馈「60% 都不够清楚，要 100%；
+                    // 为什么要设置 60%，我们自己不可以弄吗」：浓度是用户的选择，不是产品规定
+                    valueRange = 0.05f..1.0f,
                     modifier = Modifier.weight(1f)
                 )
                 Spacer(Modifier.width(AgentSpacing.space2))

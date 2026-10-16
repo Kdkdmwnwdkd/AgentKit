@@ -2,8 +2,6 @@ package com.example.agentkit.core.llm
 
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
 
 /**
  * 功能五（P1-9）：三家「推理过程（思维链）」字段的纯解析（零 IO/Android 依赖，
@@ -22,8 +20,8 @@ import kotlinx.serialization.json.jsonPrimitive
 
 /** OpenAI 兼容系的思考增量（入参 = choices[0].delta 对象；缺失返 null）。 */
 fun parseOpenAiReasoning(delta: JsonObject): String? {
-    delta["reasoning_content"]?.jsonPrimitive?.contentOrNull?.let { return it }
-    return delta["reasoning"]?.jsonPrimitive?.contentOrNull
+    delta["reasoning_content"]?.primOrNull()?.contentOrNull?.let { return it }
+    return delta["reasoning"]?.primOrNull()?.contentOrNull
 }
 
 /**
@@ -32,10 +30,10 @@ fun parseOpenAiReasoning(delta: JsonObject): String? {
  * 其它事件（text_delta / input_json_delta / message_*）一律返 null。
  */
 fun parseClaudeThinkingDelta(obj: JsonObject): String? {
-    if (obj["type"]?.jsonPrimitive?.contentOrNull != "content_block_delta") return null
-    val delta = obj["delta"]?.jsonObject ?: return null
-    if (delta["type"]?.jsonPrimitive?.contentOrNull != "thinking_delta") return null
-    return delta["thinking"]?.jsonPrimitive?.contentOrNull
+    if (obj["type"]?.primOrNull()?.contentOrNull != "content_block_delta") return null
+    val delta = obj["delta"]?.objOrNull() ?: return null
+    if (delta["type"]?.primOrNull()?.contentOrNull != "thinking_delta") return null
+    return delta["thinking"]?.primOrNull()?.contentOrNull
 }
 
 /**
@@ -43,6 +41,6 @@ fun parseClaudeThinkingDelta(obj: JsonObject): String? {
  * `thought: true` 的 part 才是思考；正式回答 part 无此字段（返 null）。
  */
 fun parseGeminiThought(part: JsonObject): String? {
-    if (part["thought"]?.jsonPrimitive?.contentOrNull != "true") return null
-    return part["text"]?.jsonPrimitive?.contentOrNull
+    if (part["thought"]?.primOrNull()?.contentOrNull != "true") return null
+    return part["text"]?.primOrNull()?.contentOrNull
 }
