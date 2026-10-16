@@ -731,6 +731,27 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         _completionNotifyEnabled.value = enabled
     }
 
+    // —— hotfix32：聊天背景图（设置页选图 + 浓度；落盘跨启动）——
+    // 真机反馈「我可以用我照片的壁纸当成壁纸」——动态取色只染控件色，
+    // 这里给的是照片本体当对话页背景（位图不落 App 存储，只存 SAF URI）
+    private val _chatBackgroundUri = MutableStateFlow(configStore.chatBackgroundUri())
+    val chatBackgroundUri: StateFlow<String?> = _chatBackgroundUri.asStateFlow()
+
+    private val _chatBackgroundAlpha = MutableStateFlow(configStore.chatBackgroundAlpha())
+    val chatBackgroundAlpha: StateFlow<Float> = _chatBackgroundAlpha.asStateFlow()
+
+    /** 设置/清除背景图（uri = SAF content:// 字符串；null = 清除）。 */
+    fun setChatBackground(uri: String?) {
+        configStore.setChatBackgroundUri(uri)
+        _chatBackgroundUri.value = configStore.chatBackgroundUri()
+    }
+
+    /** 调背景图浓度（clamp 在 ConfigStore 内，这里只透传）。 */
+    fun setChatBackgroundAlpha(alpha: Float) {
+        configStore.setChatBackgroundAlpha(alpha)
+        _chatBackgroundAlpha.value = configStore.chatBackgroundAlpha()
+    }
+
     // —— 功能二：多模型配置（用户真机录屏反馈：「别人的模型可以搞好几个，你就只能搞一个」）——
     // _profiles = 全部档案，_activeProfileId = 当前生效档案；config 同名同型保留
     // （= active profile 的 config），现有消费者（对话页 / 401 气泡 / 测试连接）零改动

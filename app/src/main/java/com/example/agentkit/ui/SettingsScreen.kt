@@ -1,6 +1,7 @@
 package com.example.agentkit.ui
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -13,6 +14,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -25,6 +27,7 @@ import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Extension
 import androidx.compose.material.icons.outlined.Folder
+import androidx.compose.material.icons.outlined.Image
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Notifications
 import androidx.compose.material.icons.outlined.Palette
@@ -36,14 +39,19 @@ import androidx.compose.material.icons.outlined.Storage
 import androidx.compose.material.icons.outlined.TouchApp
 import androidx.compose.material.icons.outlined.ViewInAr
 import androidx.compose.material.icons.outlined.Widgets
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Slider
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import android.widget.Toast
 
@@ -170,6 +178,11 @@ fun SettingsScreen(
                         }
                     )
                 }
+                // —— hotfix32：聊天背景图（真机反馈「我可以用我照片的壁纸当成壁纸」：
+                // 动态取色只染控件色，这里给照片本体当对话页背景；SAF 选图 +
+                // 持久化读授权，位图不占 App 存储，浓度可调）——
+                Spacer(Modifier.height(AgentSpacing.space2))
+                ChatBackgroundSection(vm)
             }
 
             // —— 功能五（P1-10）：提醒 ——
@@ -374,4 +387,90 @@ private fun ThemeModeChip(
     onClick: () -> Unit
 ) {
     AkChip(text = label, selected = selected, onClick = onClick)
+}
+
+/**
+ * hotfix32：聊天背景图分区（外观卡内嵌）——SAF 选图（持久化读授权）+
+ * 「换一张 / 清除」+ 浓度滑杆（有图才显示）。
+ *
+ * 位图本体不落 App 存储（只存 content:// URI 字符串），换机/清缓存即失效，
+ * 符合「照片是用户的、App 只借来显示」的语义；intent 必须带
+ * FLAG_GRANT_PERSISTABLE_URI_PERMISSION，否则 takePersistableUriPermission
+ * 会抛（临时授权在进程重启后失效）。
+ */
+@Composable
+private fun ChatBackgroundSection(vm: ChatViewModel) {
+    val context = LocalContext.current
+    val bgUri by vm.chatBackgroundUri.collectAsStateWithLifecycle()
+    val bgAlpha by vm.chatBackgroundAlpha.collectAsStateWithLifecycle()
+    val pickImage = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        val uri = result.data?.data ?: return@rememberLauncherForActivityResult
+        // SAF 默认只授予临时读权限——不 take 的话重启后背景就丢了；
+        // 失败（个别 ROM 策略）也不拦选图，临时授权本次会话仍可用
+        runCatching {
+            context.contentResolver.takePersistableUriPermission(
+                uri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION
+            )
+        }
+        vm.setChatBackground(uri.toString())
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(AgentSpacing.space2)) {
+        AkListItem(
+            icon = Icons.Outlined.Image,
+            title = "聊天背景",
+            description = if (bgUri != null) {
+                "对话页正显示你的照片，当前浓度 ${(bgAlpha * 100).toInt()}%"
+            } else {
+                "未设置：选一张照片当对话页背景（不占 App 存储）"
+            },
+            trailing = if (bgUri != null) {
+                {
+                    AkTextButton(
+                        text = "清除",
+                        tint = MaterialTheme.colorScheme.error,
+                        onClick = { vm.setChatBackground(null) }
+                    )
+                }
+            } else null
+        )
+        AkOutlinedButton(
+            text = if (bgUri != null) "换一张" else "选择图片",
+            icon = Icons.Outlined.Image,
+            onClick = {
+                pickImage.launch(
+                    Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                        addCategory(Intent.CATEGORY_OPENABLE)
+                        type = "image/*"
+                        // 持久化授权必须随 intent 一起请求（否则 take 会抛）
+                        addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+                    }
+                )
+            }
+        )
+        if (bgUri != null) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = "浓度",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.width(AgentSpacing.space3))
+                Slider(
+                    value = bgAlpha,
+                    onValueChange = { vm.setChatBackgroundAlpha(it) },
+                    valueRange = 0.05f..0.60f,
+                    modifier = Modifier.weight(1f)
+                )
+                Spacer(Modifier.width(AgentSpacing.space2))
+                Text(
+                    text = "${(bgAlpha * 100).toInt()}%",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
+        }
+    }
 }

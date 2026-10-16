@@ -97,6 +97,7 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
@@ -226,7 +227,36 @@ fun ChatScreen(
         }
     }
 
-    Column(Modifier.fillMaxSize()) {
+    // hotfix32：聊天背景图（真机反馈「我可以用我照片的壁纸当成壁纸」——
+    // 动态取色只染控件色，这里给照片本体当对话页背景；URI 失效/解码失败
+    // 都安静退化为无背景，不留半张图）
+    val bgUri by vm.chatBackgroundUri.collectAsStateWithLifecycle()
+    val bgAlpha by vm.chatBackgroundAlpha.collectAsStateWithLifecycle()
+    var bgBitmap by remember { mutableStateOf<ImageBitmap?>(null) }
+    val bgConfig = LocalConfiguration.current
+    LaunchedEffect(bgUri) {
+        bgBitmap = bgUri?.takeIf { it.isNotBlank() }
+            ?.let { loadChatBackground(ctx, it, bgConfig.screenWidthDp, bgConfig.screenHeightDp) }
+    }
+
+    Box(Modifier.fillMaxSize()) {
+        // 背景图 + scrim：surface 色半透明罩压住花图，深浅两套主题下气泡文字都可读
+        val bg = bgBitmap
+        if (bg != null) {
+            Image(
+                bitmap = bg,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                alpha = bgAlpha,
+                modifier = Modifier.matchParentSize()
+            )
+            Box(
+                Modifier
+                    .matchParentSize()
+                    .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.35f))
+            )
+        }
+        Column(Modifier.fillMaxSize()) {
         PageTopBar(
             // 功能三：标题 = 当前会话名（找不到摘要时回落「对话」——冷启动首帧也可能为空）
             title = conversations.firstOrNull { it.id == activeConversationId }?.title
@@ -367,6 +397,7 @@ fun ChatScreen(
             runningNotice = if (generatingConvId != null && generatingConvId != activeConversationId)
                 "有其他对话正在生成，本对话需等待或停止后才能发送" else null
         )
+        }
     }
 
     // 功能五（P1-7）：快捷指令选择器（点选填入输入框；「管理」进提示词库全功能页）

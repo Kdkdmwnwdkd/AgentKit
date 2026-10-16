@@ -308,6 +308,9 @@ class ConfigStore(context: Context) {
         private const val KEY_GH_WORKFLOW = "gh_workflow"
         /** 功能五（P1-10）：回答完成提醒开关（默认关——通知是侵入式能力，opt-in）。 */
         private const val KEY_COMPLETION_NOTIFY = "completion_notify"
+        // hotfix32：聊天背景图（URI + 不透明度）
+        private const val KEY_CHAT_BG_URI = "chat_bg_uri"
+        private const val KEY_CHAT_BG_ALPHA = "chat_bg_alpha"
     }
 
     /** 功能五（P1-10）：回答完成提醒是否开启（默认 false）。 */
@@ -317,6 +320,36 @@ class ConfigStore(context: Context) {
     /** 功能五（P1-10）：写回答完成提醒开关（设置页开关即时生效，落盘供下次启动读取）。 */
     fun setCompletionNotifyEnabled(enabled: Boolean) {
         sp.edit().putBoolean(KEY_COMPLETION_NOTIFY, enabled).apply()
+    }
+
+    /**
+     * hotfix32：聊天背景图 URI（SAF content://，持久化读授权后的字符串；null = 无背景）。
+     *
+     * 真机反馈原话：「我不是说我可以用我照片的壁纸当成壁纸」——动态取色只染控件色，
+     * 用户要的是**自己的照片当对话页背景**。落 SharedPreferences：URI 是轻量字符串，
+     * 位图本体不拷贝（随时可从 content:// 重新解码），换机/清缓存即失效，符合预期。
+     */
+    fun chatBackgroundUri(): String? =
+        sp.getString(KEY_CHAT_BG_URI, null)?.takeIf { it.isNotBlank() }
+
+    /** hotfix32：写/清背景图 URI（null = 清除）。 */
+    fun setChatBackgroundUri(uri: String?) {
+        sp.edit().apply {
+            if (uri.isNullOrBlank()) remove(KEY_CHAT_BG_URI)
+            else putString(KEY_CHAT_BG_URI, uri)
+        }.apply()
+    }
+
+    /**
+     * hotfix32：背景图不透明度（0.05..0.60，默认 0.30）。
+     * 下限 0.05 防「设了等于没设」的困惑，上限 0.60 保气泡文字可读——
+     * 再浓就得靠 scrim 兜（ChatScreen 已有 surface 色半透明罩）。
+     */
+    fun chatBackgroundAlpha(): Float = sp.getFloat(KEY_CHAT_BG_ALPHA, 0.30f)
+
+    /** hotfix32：写背景图不透明度（clamp 后落盘）。 */
+    fun setChatBackgroundAlpha(alpha: Float) {
+        sp.edit().putFloat(KEY_CHAT_BG_ALPHA, alpha.coerceIn(0.05f, 0.60f)).apply()
     }
 }
 

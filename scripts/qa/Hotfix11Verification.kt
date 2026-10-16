@@ -1265,6 +1265,66 @@ private fun testMemoryInteraction() {
     }
 }
 
+/**
+ * AA 区：hotfix32「聊天背景图」——真机反馈「我不是说我可以用我照片的壁纸
+ * 当成壁纸」：hotfix27 动态取色只染控件色，用户要的是照片本体当对话页背景。
+ *
+ * 设计：SAF 选图（ACTION_OPEN_DOCUMENT + FLAG_GRANT_PERSISTABLE_URI_PERMISSION
+ * + takePersistableUriPermission）→ URI 轻量字符串落 ConfigStore（位图不占
+ * App 存储）→ ChatScreen Box 背景层（Image Crop + alpha + surface scrim 保
+ * 深浅两主题可读）→ 浓度滑杆 0.05..0.60。位图零依赖两遍解码（inSampleSize），
+ * 不引 Coil/Picasso（全 App 外部依赖零新增纪律）。
+ */
+private fun testChatBackground() {
+    println("— AA 区：聊天背景图（hotfix32） —")
+    val config = readSource("core/ConfigStore.kt")
+    val vm = readSource("ui/ChatViewModel.kt")
+    val screen = readSource("ui/ChatScreen.kt")
+    val settings = readSource("ui/SettingsScreen.kt")
+    val loader = File("/workspace/AgentKit/app/src/main/java/com/example/agentkit/ui/BackgroundLoader.kt").readText()
+
+    check("AA1 ConfigStore：URI + 浓度两键（URI 存轻量字符串，位图不占存储）") {
+        assertContains("AA1", config, "private const val KEY_CHAT_BG_URI = \"chat_bg_uri\"")
+        assertContains("AA1", config, "private const val KEY_CHAT_BG_ALPHA = \"chat_bg_alpha\"")
+        assertContains("AA1", config, "fun chatBackgroundUri(): String?")
+        assertContains("AA1", config, "fun setChatBackgroundUri(uri: String?)")
+        assertContains("AA1", config, "fun chatBackgroundAlpha(): Float = sp.getFloat(KEY_CHAT_BG_ALPHA, 0.30f)")
+        assertContains("AA1", config, "alpha.coerceIn(0.05f, 0.60f)")
+    }
+    check("AA2 VM：chatBackgroundUri/Alpha 状态 + setter（落盘即时生效）") {
+        assertContains("AA2", vm, "private val _chatBackgroundUri = MutableStateFlow(configStore.chatBackgroundUri())")
+        assertContains("AA2", vm, "val chatBackgroundUri: StateFlow<String?> = _chatBackgroundUri.asStateFlow()")
+        assertContains("AA2", vm, "val chatBackgroundAlpha: StateFlow<Float> = _chatBackgroundAlpha.asStateFlow()")
+        assertContains("AA2", vm, "fun setChatBackground(uri: String?)")
+        assertContains("AA2", vm, "fun setChatBackgroundAlpha(alpha: Float)")
+    }
+    check("AA3 零依赖位图加载：两遍解码 + inSampleSize + 失败安静降级") {
+        assertContains("AA3", loader, "suspend fun loadChatBackground(")
+        assertContains("AA3", loader, "inJustDecodeBounds = true")
+        assertContains("AA3", loader, "inSampleSize = calculateInSampleSize(")
+        assertContains("AA3", loader, "withContext(Dispatchers.IO)")
+        assertContains("AA3", loader, ".getOrNull()")
+        // 纪律注释即契约：不引 Coil/Picasso
+        assertContains("AA3", loader, "不引 Coil/Picasso")
+    }
+    check("AA4 ChatScreen：背景层 Image + scrim（深浅两主题保可读）") {
+        assertContains("AA4", screen, "val bgUri by vm.chatBackgroundUri.collectAsStateWithLifecycle()")
+        assertContains("AA4", screen, "loadChatBackground(ctx, it, bgConfig.screenWidthDp, bgConfig.screenHeightDp)")
+        assertContains("AA4", screen, "ContentScale.Crop")
+        assertContains("AA4", screen, "alpha = bgAlpha")
+        assertContains("AA4", screen, "MaterialTheme.colorScheme.surface.copy(alpha = 0.35f)")
+    }
+    check("AA5 SettingsScreen：SAF 持久化选图 + 换一张/清除 + 浓度滑杆") {
+        assertContains("AA5", settings, "private fun ChatBackgroundSection(vm: ChatViewModel)")
+        assertContains("AA5", settings, "Intent.ACTION_OPEN_DOCUMENT")
+        assertContains("AA5", settings, "FLAG_GRANT_PERSISTABLE_URI_PERMISSION")
+        assertContains("AA5", settings, "takePersistableUriPermission(")
+        assertContains("AA5", settings, "vm.setChatBackground(uri.toString())")
+        assertContains("AA5", settings, "vm.setChatBackground(null)")
+        assertContains("AA5", settings, "valueRange = 0.05f..0.60f")
+    }
+}
+
 fun main() {
     println("== hotfix11 模型快速切换 + 功能四/五 验证 ==")
     testModelQuickSwitch()
@@ -1306,6 +1366,8 @@ fun main() {
     testConversationSwitchWhileRunning()
     println()
     testMemoryInteraction()
+    println()
+    testChatBackground()
     println()
     println("== 汇总 ==")
     println("PASS: $passed  FAIL: ${failures.size}  TOTAL: ${passed + failures.size}")
