@@ -59,7 +59,8 @@
 
 | # | 功能项 | Coomi | RikkaHub | Operit | AiCode | AgentKit 现状 | 定级 |
 |---|---|---|---|---|---|---|---|
-| 23 | **图片/文件附件入口** | ✅ AttachmentStrip | ✅ Add01 菜单 ChatInput.kt:339 + transferableContent 分享进图 :511 | ✅ AttachmentSelector/Chip/Preview 三件套 | ◐ | ❌ **多模态链路已就绪（UserMessage.images→image_url）但无入口** | **P0** |
+| 23 | **图片附件入口** | ✅ AttachmentStrip | ✅ Add01 菜单 ChatInput.kt:339 + transferableContent 分享进图 :511 | ✅ AttachmentSelector/Chip/Preview 三件套 | ◐ | ✅ hotfix13（v119）：「＋」+ 缩略图行，多模态链路（UserMessage.images→image_url）接通 | 已追平 |
+| 23b | **文件/文档附件（PDF/DOCX/文本）** | ◐ | ✅ README 明示 images/text/PDF/Docx 多模态输入 | ✅ 附件三件套 | ◐ | ✅ hotfix19（v122+）：文本类直读 / PDF 渲染成图 / DOCX 抽文本 / 其它明确拒绝 | 已追平 |
 | 24 | 语音输入（ASR） | ❌ | ✅ AsrButton ChatInput.kt:344 | ◐ | ❌ | ❌ | P2 |
 | 25 | 全屏输入对话框（长文本） | ◐ | ◐ | ✅ FullscreenInputDialog.kt | — | ❌ | P2 |
 | 26 | 快捷指令/提示词库唤起 | ✅ PromptLibrary/QuickCommands | ◐ | ◐ PromptLibrary | ◐ | ❌（技能中心有但不在输入栏唤起） | P1 |
@@ -117,6 +118,7 @@
 |---|---|---|---|
 | P0-1 | **消息一键复制**（助手+用户气泡操作区加「复制」；助手行：复制+重新生成并列） | 矩阵 #9，rikkahub/operit 都有；AgentKit 仅手动选字 | 0.5d |
 | P0-2 | **输入栏图片附件**（选图入口+缩略图+随消息发送；多模态链路 `UserMessage.images→image_url` 已就绪，只缺 UI+VM 接线） | 矩阵 #23，三家都有；「截图问模型」是手机 Agent 高频场景 | 1.5d |
+| P0-2b | **文件附件（PDF/DOCX/文本）**——用户验收时点名「别跟我说只能发照片，不能发文件」；第一版只做了图片是执行缩水 | 矩阵 #23b | 1d |
 | P0-3 | **提供商/模型管理入口补齐**（对话页或设置里可直达「提供商列表」：启用/停用/模型数/测试，而不只深埋配置页） | 矩阵 #37；用户录屏里在参照 App 见过提供商页，AgentKit 无对应一级入口 | 1d |
 
 ### P1（日常会用到、价值明确）
