@@ -60,7 +60,9 @@ import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.ExpandMore
+import androidx.compose.material.icons.outlined.Image
 import androidx.compose.material.icons.outlined.Notifications
 import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material.icons.outlined.PhoneAndroid
@@ -181,8 +183,11 @@ fun ChatScreen(
     // 正在朗读的消息下标（null = 没在朗读）；再点同一按钮即停止
     var speakingIndex by remember { mutableStateOf<Int?>(null) }
     val activeProfile = profiles.firstOrNull { it.id == activeProfileId }
-    // 功能四（P0-2）：待发附件
+    // 功能四（P0-2）/ 功能五（P1-4）：待发附件（图片 + 文件）
     val pendingImages by vm.pendingImages.collectAsStateWithLifecycle()
+    val pendingFiles by vm.pendingFiles.collectAsStateWithLifecycle()
+    // 附件类型选择菜单（「＋」不再直通相册——用户要的是「发东西」，不只是照片）
+    var showAttachMenu by remember { mutableStateOf(false) }
     val inputScope = rememberCoroutineScope()
     val pickImage = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         uri?.let {
@@ -193,6 +198,19 @@ fun ChatScreen(
                     if (ok) "已添加图片" else "图片读取失败，请重选",
                     Toast.LENGTH_SHORT
                 ).show()
+            }
+        }
+    }
+    // 文件选择：OpenDocument + */* —— 具体类型由 VM 按扩展名分派（文本 / PDF / DOCX / 拒绝）
+    val pickFile = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        uri?.let {
+            inputScope.launch {
+                val msg = when (val r = vm.attachFileFromUri(it)) {
+                    is FileAttachResult.Text -> "已添加「${r.name}」（${r.chars} 字）"
+                    is FileAttachResult.Images -> "已添加 PDF「${r.name}」（${r.pages} 页转图片）"
+                    is FileAttachResult.Failed -> r.reason
+                }
+                Toast.makeText(ctx, msg, Toast.LENGTH_SHORT).show()
             }
         }
     }
@@ -320,11 +338,13 @@ fun ChatScreen(
             text = input,
             running = running,
             images = pendingImages,
+            files = pendingFiles,
             onTextChange = { vm.input.value = it },
             onSend = { vm.send() },
             onStop = { vm.stop() },
-            onPickImage = { pickImage.launch("image/*") },
-            onRemoveImage = { vm.removePendingImage(it) }
+            onPickAttach = { showAttachMenu = true },
+            onRemoveImage = { vm.removePendingImage(it) },
+            onRemoveFile = { vm.removePendingFile(it) }
         )
     }
 
@@ -360,6 +380,16 @@ fun ChatScreen(
     val currentApproval = approvalReq
     if (currentApproval != null) {
         ApprovalDialog(request = currentApproval, visible = approvalVisible, vm = vm)
+    }
+
+    // —— 功能五（P1-4）：附件类型选择（图片 / 文件） ——
+    AkModalHost(target = if (showAttachMenu) true else null) { _, visible ->
+        AttachPickerDialog(
+            visible = visible,
+            onPickImage = { showAttachMenu = false; pickImage.launch("image/*") },
+            onPickFile = { showAttachMenu = false; pickFile.launch(arrayOf("*/*")) },
+            onDismiss = { showAttachMenu = false }
+        )
     }
 
     // —— 功能五（P1-1）：消息更多菜单（分享 / 从此处删除） ——
@@ -1209,11 +1239,13 @@ private fun ChatInputBar(
     text: String,
     running: Boolean,
     images: List<String>,
+    files: List<PendingFile>,
     onTextChange: (String) -> Unit,
     onSend: () -> Unit,
     onStop: () -> Unit,
-    onPickImage: () -> Unit,
-    onRemoveImage: (String) -> Unit
+    onPickAttach: () -> Unit,
+    onRemoveImage: (String) -> Unit,
+    onRemoveFile: (String) -> Unit
 ) {
     Surface(color = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f)) {
         Column(
@@ -1229,8 +1261,9 @@ private fun ChatInputBar(
                     .height(1.dp)
                     .background(MaterialTheme.colorScheme.outline)
             )
-            // 功能四（P0-2）：待发附件缩略图行（有图才占位，避免常态留白）
+            // 功能四（P0-2）/ 功能五（P1-4）：待发附件（缩略图行 + 文件行，有才占位）
             if (images.isNotEmpty()) AttachedImagesRow(images, onRemoveImage)
+            if (files.isNotEmpty()) AttachedFilesRow(files, onRemoveFile)
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -1241,8 +1274,9 @@ private fun ChatInputBar(
                     .padding(horizontal = AgentSpacing.space3),
                 verticalAlignment = Alignment.Bottom
             ) {
-                // 功能四（P0-2）：附件入口——「＋」圆按钮，运行中禁用（与发送/停止互斥）
-                AttachImageButton(enabled = !running, onClick = onPickImage)
+                // 功能四（P0-2）/ 功能五（P1-4）：附件入口——「＋」圆按钮，运行中禁用
+                // （点开后再选「图片 / 文件」，不再直通相册）
+                AttachImageButton(enabled = !running, onClick = onPickAttach)
                 Spacer(Modifier.width(AgentSpacing.space2))
                 // 输入框：surface-var 底 radius 20dp，最小高 48dp，多行自增（max 120dp 内滚动）
                 Box(
@@ -1343,6 +1377,113 @@ private fun AttachedImagesRow(images: List<String>, onRemove: (String) -> Unit) 
                         text = "×",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurface
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * 功能五（P1-4）：待发文件行——文件 chip（文件名 + 移除）。
+ *
+ * 与 [AttachedImagesRow] 并排在同一区域：图片看缩略图、文件看名字。
+ * 名字截断到 180dp（长文件名不能把「×」挤出屏幕——那是唯一能取消的入口）。
+ */
+@Composable
+private fun AttachedFilesRow(files: List<PendingFile>, onRemove: (String) -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState())
+            .padding(horizontal = AgentSpacing.space3, vertical = AgentSpacing.space2),
+        horizontalArrangement = Arrangement.spacedBy(AgentSpacing.space2)
+    ) {
+        files.forEach { file ->
+            Row(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(MaterialTheme.colorScheme.surfaceVariant)
+                    .padding(horizontal = AgentSpacing.space3, vertical = AgentSpacing.space2),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "文件 · ${file.name}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.widthIn(max = 180.dp)
+                )
+                Spacer(Modifier.width(AgentSpacing.space2))
+                Text(
+                    text = "×",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier
+                        .clip(CircleShape)
+                        .clickable { onRemove(file.name) }
+                        .padding(horizontal = AgentSpacing.space1)
+                )
+            }
+        }
+    }
+}
+
+/**
+ * 功能五（P1-4）：附件类型选择（图片 / 文件）。
+ *
+ * 与其它弹窗同一视觉语言（AkModalHost + 344dp 白卡）。两条路径各自的说明写清
+ * 「能发什么」与「怎么被处理」——用户事前就知道 PDF 是当图片读的，
+ * 不会事后疑惑「为什么模型没引用原文」。
+ */
+@Composable
+private fun AttachPickerDialog(
+    visible: Boolean,
+    onPickImage: () -> Unit,
+    onPickFile: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val spec = if (visible) AkMotionDialog else AkMotionExit
+    val scale by animateFloatAsState(if (visible) 1f else 0.96f, animationSpec = spec)
+    val alpha by animateFloatAsState(if (visible) 1f else 0f, animationSpec = spec)
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Box(
+            Modifier
+                .fillMaxSize()
+                .padding(horizontal = 24.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Surface(
+                shape = RoundedCornerShape(20.dp),
+                color = MaterialTheme.colorScheme.surface,
+                modifier = Modifier
+                    .widthIn(max = 344.dp)
+                    .scale(scale)
+                    .alpha(alpha)
+            ) {
+                Column(Modifier.padding(vertical = AgentSpacing.space4)) {
+                    Text(
+                        text = "添加附件",
+                        style = MaterialTheme.typography.titleLarge,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.padding(horizontal = AgentSpacing.space6)
+                    )
+                    Spacer(Modifier.height(AgentSpacing.space2))
+                    AkListItem(
+                        icon = Icons.Outlined.Image,
+                        title = "图片",
+                        description = "从相册选择，视觉模型可直接看图",
+                        onClick = onPickImage
+                    )
+                    AkListItem(
+                        icon = Icons.Outlined.Description,
+                        title = "文件",
+                        description = "PDF / DOCX / 文本类（txt、md、json、csv、代码等）",
+                        onClick = onPickFile
                     )
                 }
             }

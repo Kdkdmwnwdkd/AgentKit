@@ -344,6 +344,61 @@ private fun testTtsReading() {
     }
 }
 
+/**
+ * N 区：功能五 P1-4「输入栏文件附件（文本 / PDF / DOCX）」——对标 RikkaHub
+ * 多模态输入（README 明示 images, text, PDF, Docx）。此前 AgentKit 只做了图片，
+ * 用户点名「别跟我说只能发照片，不能发文件」。
+ */
+private fun testFileAttachment() {
+    println("— N 区：文件附件（功能五 P1-4） —")
+    val vm = readSource("ui/ChatViewModel.kt")
+    val chat = readSource("ui/ChatScreen.kt")
+
+    check("N1 文件附件类型与结果类型齐备（三成功路径 + 一失败路径）") {
+        assertContains("N1", vm, "data class PendingFile(val name: String, val text: String)")
+        assertContains("N1", vm, "sealed interface FileAttachResult")
+        assertContains("N1", vm, "data class Text(val name: String, val chars: Int)")
+        assertContains("N1", vm, "data class Images(val name: String, val pages: Int)")
+        assertContains("N1", vm, "data class Failed(val reason: String)")
+    }
+    check("N2 按类型分派：PDF 转图 / DOCX 抽文本 / 文本类直读 / 其它明确拒绝") {
+        assertContains("N2", vm, "ext == \"pdf\" -> {")
+        assertContains("N2", vm, "ext == \"docx\" -> {")
+        assertContains("N2", vm, "ext in TEXT_EXTENSIONS -> {")
+        assertContains("N2", vm, "暂不支持 .\$ext 文件")
+    }
+    check("N3 PDF 渲染：前 N 页上限 + 铺白底（透明页不铺白会成黑图）") {
+        assertContains("N3", vm, "const val MAX_PDF_PAGES = 5")
+        assertContains("N3", vm, "PdfRenderer(parcel)")
+        assertContains("N3", vm, "bmp.eraseColor(0xFFFFFFFF.toInt())")
+    }
+    check("N4 DOCX 解包抽 <w:t> 文本 + 段落换行 + 实体解码（纯系统 zip，零依赖）") {
+        assertContains("N4", vm, "word/document.xml")
+        assertContains("N4", vm, "Regex(\"<w:t[^>]*>(.*?)</w:t>\"")
+        assertContains("N4", vm, "replace(\"</w:p>\", \"\\n\")")
+        assertContains("N4", vm, "decodeXmlEntities")
+    }
+    check("N5 发送时文件正文以「[附件：文件名]」块拼进消息（模型能引用来源）") {
+        assertContains("N5", vm, "val fileBlock = files.joinToString")
+        assertContains("N5", vm, "[附件：")
+    }
+    check("N6 文件有大小上限（防超长文件撑爆上下文）") {
+        assertContains("N6", vm, "const val MAX_FILE_CHARS = 60_000")
+        assertContains("N6", vm, "text.take(MAX_FILE_CHARS)")
+    }
+    check("N7 UI：「＋」改为「图片 / 文件」二选一（不再直通相册）") {
+        assertContains("N7", chat, "private fun AttachPickerDialog(")
+        assertContains("N7", chat, "onPickAttach = { showAttachMenu = true }")
+        assertContains("N7", chat, "pickFile.launch(arrayOf(\"*/*\"))")
+        assertContains("N7", chat, "ActivityResultContracts.OpenDocument()")
+    }
+    check("N8 文件 chip 行可移除，且文件名截断留出「×」位置") {
+        assertContains("N8", chat, "private fun AttachedFilesRow(")
+        assertContains("N8", chat, "widthIn(max = 180.dp)")
+        assertContains("N8", chat, "onRemoveFile = { vm.removePendingFile(it) }")
+    }
+}
+
 fun main() {
     println("== hotfix11 模型快速切换 + 功能四/五 验证 ==")
     testModelQuickSwitch()
@@ -359,6 +414,8 @@ fun main() {
     testMessageMoreActions()
     println()
     testTtsReading()
+    println()
+    testFileAttachment()
     println()
     println("== 汇总 ==")
     println("PASS: $passed  FAIL: ${failures.size}  TOTAL: ${passed + failures.size}")

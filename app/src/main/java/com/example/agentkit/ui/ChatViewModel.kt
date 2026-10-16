@@ -8,6 +8,7 @@ import android.graphics.BitmapFactory
 import android.net.Uri
 import android.util.Base64
 import java.io.ByteArrayOutputStream
+import java.util.zip.ZipInputStream
 import android.content.Intent
 import android.content.ComponentName
 import android.provider.Settings
@@ -223,6 +224,31 @@ data class TestResult(
  * UI 与业务的唯一桥梁：持有注册表、Agent 循环与配置，对外只暴露 StateFlow。
  * 业务规则（工具注册、循环策略、Skill 接入）都在这里组装，Compose 只负责渲染。
  */
+/**
+ * 功能五（P1-4）：待发文件——文件名 + 已提取的正文文本。
+ *
+ * 文本在读取时就抽好（读文件是 IO 重活），发送时只是字符串拼接；
+ * UI 只负责展示文件名与移除，不碰解析细节。
+ */
+data class PendingFile(val name: String, val text: String)
+
+/**
+ * 功能五（P1-4）：文件附件处理结果——三条成功路径 + 一条失败路径。
+ *
+ * 之所以要区分 [Text] 与 [Images]：用户需要知道「这份 PDF 是被当图片读的」
+ * （影响模型能否引用原文精确字句），而不是笼统一句「已添加」。
+ */
+sealed interface FileAttachResult {
+    /** 文本类文件已直读（[chars] = 实际取用字符数）。 */
+    data class Text(val name: String, val chars: Int) : FileAttachResult
+
+    /** PDF 已渲染为 [pages] 张图片并入图片链路。 */
+    data class Images(val name: String, val pages: Int) : FileAttachResult
+
+    /** 不支持的类型 / 读取失败——[reason] 直接展示给用户。 */
+    data class Failed(val reason: String) : FileAttachResult
+}
+
 class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
 
     private val workspace = File(app.filesDir, "agent_workspace")
@@ -1365,6 +1391,20 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     /** 功能四（P0-2）：附件图片长边上限——兼顾视觉模型识别效果与请求体积。 */
     private companion object {
         const val MAX_EDGE = 1024
+
+        /** 功能五（P1-4）：PDF 最多渲染页数（首页几页通常已够模型读懂主旨）。 */
+        const val MAX_PDF_PAGES = 5
+
+        /** 功能五（P1-4）：单个文本附件最多取用的字符数（防超长文件撑爆上下文）。 */
+        const val MAX_FILE_CHARS = 60_000
+
+        /** 功能五（P1-4）：按扩展名识别的文本类文件（直读文本路径）。 */
+        val TEXT_EXTENSIONS = setOf(
+            "txt", "md", "markdown", "json", "csv", "tsv", "log", "xml", "html", "htm",
+            "yaml", "yml", "ini", "conf", "cfg", "properties", "toml", "sql",
+            "kt", "java", "py", "js", "ts", "sh", "gradle", "c", "cpp", "h", "rs", "go",
+            "rb", "php", "bat"
+        )
     }
 
     /** 功能四（P0-2）：长边超过 [MAX_EDGE] 等比缩小（两阶段解码在调用方已完成）。 */
@@ -1385,23 +1425,182 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         _pendingImages.value = _pendingImages.value.filter { it != url }
     }
 
+    /**
+     * 功能五（P1-4）：待发**文件**——「＋」里除了图片还能发文档。
+     *
+     * 三种处理路径（不新增任何依赖，全走系统 API）：
+     *  ① 文本类（txt/md/json/csv/代码…）→ 直读文本，发送时作为附件块拼进消息；
+     *  ② PDF → `PdfRenderer` 渲染前 ≤[MAX_PDF_PAGES] 页为图片，并入图片链路（视觉得看）；
+     *  ③ DOCX → 解 zip 抽 `word/document.xml` 里的 `<w:t>` 文本（纯系统 zip + 正则）。
+     * 其它二进制格式明确拒绝并给出可读原因——**不做「静默忽略」**，
+     * 用户点了「＋」却什么都没发生是最差的反馈。
+     */
+    private val _pendingFiles = MutableStateFlow<List<PendingFile>>(emptyList())
+    val pendingFiles: StateFlow<List<PendingFile>> = _pendingFiles.asStateFlow()
+
+    /** 功能五（P1-4）：读取文件并按其类型挂到待发清单；返回精确结果供 UI 反馈。 */
+    suspend fun attachFileFromUri(uri: Uri): FileAttachResult = withContext(Dispatchers.IO) {
+        runCatching {
+            val name = queryDisplayName(uri) ?: "未命名文件"
+            val ext = name.substringAfterLast('.', "").lowercase()
+            when {
+                // ② PDF：渲染成图片走多模态（视觉模型读页面）
+                ext == "pdf" -> {
+                    val images = renderPdfToImages(uri, MAX_PDF_PAGES)
+                    if (images.isEmpty()) {
+                        FileAttachResult.Failed("PDF 打开失败或没有可渲染页面")
+                    } else {
+                        _pendingImages.value = _pendingImages.value + images
+                        FileAttachResult.Images(name, images.size)
+                    }
+                }
+
+                // ③ DOCX：解包抽文本
+                ext == "docx" -> {
+                    val text = extractDocxText(uri)
+                    if (text.isBlank()) {
+                        FileAttachResult.Failed("DOCX 里没有提取到文字（可能是纯图片文档）")
+                    } else {
+                        _pendingFiles.value = _pendingFiles.value + PendingFile(name, text.take(MAX_FILE_CHARS))
+                        FileAttachResult.Text(name, text.length)
+                    }
+                }
+
+                // ① 文本类：直读
+                ext in TEXT_EXTENSIONS -> {
+                    val text = readTextFile(uri)?.take(MAX_FILE_CHARS)
+                    if (text.isNullOrBlank()) {
+                        FileAttachResult.Failed("文件为空或无法读取")
+                    } else {
+                        _pendingFiles.value = _pendingFiles.value + PendingFile(name, text)
+                        FileAttachResult.Text(name, text.length)
+                    }
+                }
+
+                // 其它：明确拒绝（含建议），不静默吞掉
+                else -> FileAttachResult.Failed(
+                    "暂不支持 .$ext 文件；当前可发：图片、PDF、DOCX、" +
+                        "以及 txt/md/json/csv 等文本类文件"
+                )
+            }
+        }.getOrElse { FileAttachResult.Failed("读取失败：${it.message ?: "未知错误"}") }
+    }
+
+    /** 功能五（P1-4）：移除待发文件。 */
+    fun removePendingFile(name: String) {
+        _pendingFiles.value = _pendingFiles.value.filterNot { it.name == name }
+    }
+
+    /** ContentResolver 查显示名（拿不到就回落 null，由调用方兜底命名）。 */
+    private fun queryDisplayName(uri: Uri): String? = runCatching {
+        app.contentResolver.query(uri, null, null, null, null)?.use { c ->
+            val idx = c.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+            if (idx >= 0 && c.moveToFirst()) c.getString(idx) else null
+        }
+    }.getOrNull()
+
+    /** 读文本文件（UTF-8；二进制误判为文本时由上层长度/空白判定兜底）。 */
+    private fun readTextFile(uri: Uri): String? = runCatching {
+        app.contentResolver.openInputStream(uri)?.use { it.readBytes().toString(Charsets.UTF_8) }
+    }.getOrNull()
+
+    /**
+     * PDF → 图片 data URL（前 [maxPages] 页，长边 ≤1024 与图片附件同一规格）。
+     * 渲染前铺白底：PDF 页面本身透明，不铺白会得到黑底图（视觉模型也读不清）。
+     */
+    private fun renderPdfToImages(uri: Uri, maxPages: Int): List<String> {
+        val images = mutableListOf<String>()
+        runCatching {
+            val fd = app.contentResolver.openFileDescriptor(uri, "r") ?: return emptyList()
+            fd.use { parcel ->
+                android.graphics.pdf.PdfRenderer(parcel).use { renderer ->
+                    val pages = minOf(renderer.pageCount, maxPages)
+                    for (i in 0 until pages) {
+                        renderer.openPage(i).use { page ->
+                            val scale = MAX_EDGE.toFloat() / maxOf(page.width, page.height)
+                            val w = (page.width * scale).toInt().coerceIn(1, MAX_EDGE)
+                            val h = (page.height * scale).toInt().coerceIn(1, MAX_EDGE)
+                            val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+                            bmp.eraseColor(0xFFFFFFFF.toInt())
+                            page.render(bmp, null, null, android.graphics.pdf.PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                            val bytes = ByteArrayOutputStream().use { out ->
+                                bmp.compress(Bitmap.CompressFormat.JPEG, 80, out)
+                                out.toByteArray()
+                            }
+                            images += "data:image/jpeg;base64," + Base64.encodeToString(bytes, Base64.NO_WRAP)
+                        }
+                    }
+                }
+            }
+        }
+        return images
+    }
+
+    /**
+     * DOCX → 文本：`word/document.xml` 里逐个 `<w:t>` 取文字，`</w:p>` 视为换行，
+     * 最后解 XML 实体（&amp; 等）。纯系统 `ZipInputStream` + 正则，不引第三方库。
+     */
+    private fun extractDocxText(uri: Uri): String {
+        val sb = StringBuilder()
+        runCatching {
+            app.contentResolver.openInputStream(uri)?.use { input ->
+                ZipInputStream(input).use { zip ->
+                    var entry = zip.nextEntry
+                    while (entry != null) {
+                        if (entry.name == "word/document.xml") {
+                            val xml = zip.readBytes().toString(Charsets.UTF_8)
+                            val normalized = xml.replace("</w:p>", "\n")
+                            Regex("<w:t[^>]*>(.*?)</w:t>", RegexOption.DOT_MATCHES_ALL)
+                                .findAll(normalized)
+                                .forEach { sb.append(decodeXmlEntities(it.groupValues[1])) }
+                            break
+                        }
+                        zip.closeEntry()
+                        entry = zip.nextEntry
+                    }
+                }
+            }
+        }
+        return sb.toString()
+    }
+
+    /** 最小 XML 实体解码（DOCX 文本里常见五种）。 */
+    private fun decodeXmlEntities(raw: String): String = raw
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&amp;", "&")
+
     fun send() {
         val text = input.value.trim()
         if (text.isBlank() || isRunning.value) return
-        // 功能四（P0-2）：先摘走待发图片并清空，避免本轮发出后仍留在输入区
+        // 功能四（P0-2）/ 功能五（P1-4）：先摘走待发附件并清空，避免本轮发出后仍留在输入区
         val images = _pendingImages.value
         _pendingImages.value = emptyList()
+        val files = _pendingFiles.value
+        _pendingFiles.value = emptyList()
         input.value = ""
         isRunning.value = true
         _streamDraft.value = null
         AgentLogger.i(
             "Chat",
-            "用户发送：${text.take(120)}${if (images.isNotEmpty()) "（含 ${images.size} 张图片）" else ""}"
+            "用户发送：${text.take(120)}" +
+                (if (images.isNotEmpty()) "（含 ${images.size} 张图片）" else "") +
+                (if (files.isNotEmpty()) "（含 ${files.size} 个文件）" else "")
         )
 
         // L4 主动感知：把当前设备上下文自动拼进用户输入，让模型“知道”手机在干什么
         val ctxPrompt = DeviceContextStore.snapshot().toPrompt()
-        val fullInput = if (ctxPrompt.isBlank()) text else "$ctxPrompt\n\n用户当前请求：$text"
+        // 功能五（P1-4）：文件正文以带文件名的附件块拼在「当前请求」之前——
+        // 模型先看到材料、再看问题，符合人的阅读顺序；文件名保留，
+        // 模型回答时能引用「在 xx.txt 里...」
+        val fileBlock = files.joinToString("\n\n") { "[附件：${it.name}]\n${it.text}" }
+        val prefix = listOfNotNull(
+            ctxPrompt.takeIf { it.isNotBlank() },
+            fileBlock.takeIf { it.isNotBlank() }
+        ).joinToString("\n\n")
+        val fullInput = if (prefix.isBlank()) text else "$prefix\n\n用户当前请求：$text"
 
         // T05：句柄置入 runJob，供 stop() 取消；finally 保证 isRunning/日志必收
         runJob = viewModelScope.launch {
