@@ -45,6 +45,7 @@ import com.example.agentkit.core.ConfigBackup
 import com.example.agentkit.core.ConversationRecord
 import com.example.agentkit.core.DraftStore
 import com.example.agentkit.core.PromptDeleteResult
+import com.example.agentkit.core.llm.ProviderCatalog
 import com.example.agentkit.core.PromptItem
 import com.example.agentkit.core.PromptStore
 import com.example.agentkit.core.PromptUpsertResult
@@ -1206,9 +1207,17 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
      * @return 新档案 id。
      */
     fun addProfile(name: String? = null): String {
-        val blank = _config.value.let {
-            ModelConfig(baseUrl = "", apiKey = "", model = "", providerId = it.providerId)
-        }
+        // hotfix36：新建档案**不再继承当前供应商**——真机反馈「我创建新模型的时候，
+        // 他自动变成那个 deepseek 了」（当时正在用 DeepSeek，新建档案就沿用了它，
+        // 用户以为被锁死在 DeepSeek）。新建的语义是「从零配一家」，
+        // 中性默认 = OpenAI 兼容（占市面绝大多数，自建/中转也走它），
+        // 用户在「供应商」区点一下即可换成任意一家（含 30+ 家预设目录）。
+        val blank = ModelConfig(
+            baseUrl = "",
+            apiKey = "",
+            model = "",
+            providerId = ProviderCatalog.STYLE_OPENAI
+        )
         val id = UUID.randomUUID().toString()
         val trimmed = name?.trim()
         val profile = ModelProfile(

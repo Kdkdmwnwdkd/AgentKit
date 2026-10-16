@@ -179,6 +179,11 @@ class ClaudeClient(
             }
             // hotfix35：整段无 data: 行 → 供应商忽略 stream:true，按非流式降级输出
             if (!sawData) {
+                // hotfix36：降级留痕（日志页可对上「不逐字」的现象）
+                com.example.agentkit.core.AgentLogger.i(
+                    "Chat",
+                    "Claude 通道未按 SSE 返回（stream:true 被忽略），已降级为整段响应输出"
+                )
                 runCatching { parseResponse(rawFallback.toString().trim()) }.getOrNull()
                     ?.content?.takeIf { it.isNotBlank() }?.let { emit(it) }
             }

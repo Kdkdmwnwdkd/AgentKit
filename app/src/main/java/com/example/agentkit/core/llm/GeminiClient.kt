@@ -177,6 +177,11 @@ class GeminiClient(
             }
             // hotfix35：整段无 data: 行 → 按非流式解析降级一次性输出
             if (!sawData) {
+                // hotfix36：降级留痕（日志页可对上「不逐字」的现象）
+                com.example.agentkit.core.AgentLogger.i(
+                    "Chat",
+                    "Gemini 通道未按 SSE 返回（alt=sse 被忽略），已降级为整段响应输出"
+                )
                 runCatching { parseResponse(rawFallback.toString().trim()) }.getOrNull()
                     ?.content?.takeIf { it.isNotBlank() }?.let { emit(it) }
             }

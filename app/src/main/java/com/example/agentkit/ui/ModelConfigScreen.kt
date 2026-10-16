@@ -158,7 +158,12 @@ fun ModelConfigScreen(vm: ChatViewModel, onBack: () -> Unit) {
                         },
                         onCreate = {
                             vm.addProfile(null)
-                            Toast.makeText(ctx, "已新建配置", Toast.LENGTH_SHORT).show()
+                            // hotfix36：新建后引导下一步（不再默默继承上一家供应商）
+                            Toast.makeText(
+                                ctx,
+                                "已新建配置：请先选供应商、填 API Key，再点保存",
+                                Toast.LENGTH_SHORT
+                            ).show()
                         }
                     )
                     ModelTab(

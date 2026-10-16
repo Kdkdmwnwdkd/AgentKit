@@ -1518,6 +1518,41 @@ private fun testSseFallback() {
     }
 }
 
+/**
+ * AE 区：hotfix36「新建档案不再继承上一家供应商 + 降级留痕」。
+ *
+ * 真机反馈：「我创建新模型的时候，他自动变成那个 deepseek 了」——当时正用
+ * DeepSeek，addProfile 沿用了当前档案的 providerId，用户以为被锁死在 DeepSeek。
+ * 修法：新建档案固定中性默认 OpenAI 兼容（占市面绝大多数，自建/中转也走它），
+ * 由用户主动选；新建后 Toast 引导「先选供应商、填 Key，再保存」。
+ * 顺带把 hotfix35 的流式降级写入日志（用户「不逐字」的疑问可在日志页对上号）。
+ */
+private fun testProfileProviderDefault() {
+    println("— AE 区：新建档案供应商中性默认 + 降级留痕（hotfix36） —")
+    val vm = readSource("ui/ChatViewModel.kt")
+    val modelScreen = readSource("ui/ModelConfigScreen.kt")
+    val llm = readSource("core/LLMClient.kt")
+    val claude = readSource("core/llm/ClaudeClient.kt")
+    val gemini = readSource("core/llm/GeminiClient.kt")
+
+    check("AE1 addProfile：不再继承当前供应商，中性默认 OpenAI 兼容") {
+        assertTrue("AE1 仍继承旧供应商", !vm.contains("providerId = it.providerId"))
+        val fn = vm.substringAfter("fun addProfile(name: String? = null): String")
+        assertContains("AE1", fn, "providerId = ProviderCatalog.STYLE_OPENAI")
+        // 注释即契约：记录真机反馈与决策理由
+        assertContains("AE1", fn, "自动变成那个 deepseek 了")
+        assertContains("AE1", vm, "import com.example.agentkit.core.llm.ProviderCatalog")
+    }
+    check("AE2 新建后引导下一步（Toast 明确「选供应商 → 填 Key → 保存」）") {
+        assertContains("AE2", modelScreen, "已新建配置：请先选供应商、填 API Key，再点保存")
+    }
+    check("AE3 降级留痕：三家通道把「未按 SSE 返回」写进日志") {
+        assertContains("AE3", llm, "供应商未按 SSE 返回（stream:true 被忽略），已降级为整段响应输出")
+        assertContains("AE3", claude, "Claude 通道未按 SSE 返回（stream:true 被忽略），已降级为整段响应输出")
+        assertContains("AE3", gemini, "Gemini 通道未按 SSE 返回（alt=sse 被忽略），已降级为整段响应输出")
+    }
+}
+
 fun main() {
     println("== hotfix11 模型快速切换 + 功能四/五 验证 ==")
     testModelQuickSwitch()
@@ -1567,6 +1602,8 @@ fun main() {
     testProviderCatalog()
     println()
     testSseFallback()
+    println()
+    testProfileProviderDefault()
     println()
     println("== 汇总 ==")
     println("PASS: $passed  FAIL: ${failures.size}  TOTAL: ${passed + failures.size}")

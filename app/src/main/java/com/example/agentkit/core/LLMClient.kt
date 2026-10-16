@@ -266,6 +266,11 @@ class OpenAIClient(
         // 有时干脆空白」的另一种根因）。这里退化为非流式解析，一次性把整条回答
         // 作为增量发给 UI，行为与「一次性输出」的供应商一致。
         if (outcome is SseReadOutcome.PlainBody) {
+            // hotfix36：降级要留痕——用户「不逐字/一块出」的疑问可直接在日志页对上号
+            AgentLogger.i(
+                "Chat",
+                "供应商未按 SSE 返回（stream:true 被忽略），已降级为整段响应输出"
+            )
             val parsed = runCatching { parseResponse(outcome.raw.trim()) }.getOrNull()
             if (parsed != null && (parsed.content.isNotBlank() || parsed.toolCalls.isNotEmpty())) {
                 if (parsed.content.isNotBlank()) send(ChatStreamEvent.TextDelta(parsed.content))
