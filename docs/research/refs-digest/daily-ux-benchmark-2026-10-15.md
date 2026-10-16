@@ -52,7 +52,7 @@
 | 18 | 分叉成新会话 | ◐ | ✅ forkConversationAtMessage | ◐ | — | ❌ | P1 |
 | 19 | 消息时间显示 | ◐ | ✅ ChatMessageActions.kt:178 | ◐ | — | ❌ | P2 |
 | 20 | 推理过程折叠展示 | ✅ ReasoningBlock | ✅ ChatMessageReasoning.kt | ◐ | — | ❌（UI 层无 reasoning 展示；「回传历史思考过程」只是请求参数开关） | P1 |
-| 21 | 消息 token/耗时统计行 | ✅ UsageView | ✅ ChatMessageNerdLine.kt | ✅ tokenstats 模块 | ✅ Token stats README | ❌ | P1 |
+| 21 | 消息 token/耗时统计行 | ✅ UsageView | ✅ ChatMessageNerdLine.kt | ✅ tokenstats 模块 | ✅ Token stats README | ✅ 助手气泡用量行（hotfix21） | P1 ✅ |
 | 22 | WebView 渲染消息 | ❌ | ✅ render_with_webview | ❌ | ◐ | ❌ | P2 |
 
 ### 1.3 输入栏日常触点
@@ -102,7 +102,7 @@
 | # | 功能项 | Coomi | RikkaHub | Operit | AiCode | AgentKit 现状 | 定级 |
 |---|---|---|---|---|---|---|---|
 | 48 | 外观（明暗/动态取色/背景） | ✅ AppearanceView | ✅ themeId/dynamicColor/amoled | ✅ settings | ✅ Material You+背景图 | ◐ 五主题 token，无动态取色/背景 | P1 |
-| 49 | Token 用量与成本统计 | ✅ UsageView | ✅ stats 页 | ✅ tokenstats | ✅ Token stats | ❌ | P1 |
+| 49 | Token 用量与成本统计 | ✅ UsageView | ✅ stats 页 | ✅ tokenstats | ✅ Token stats | ✅ 会话用量条+气泡行+抽屉 tokens（hotfix21） | P1 ✅ |
 | 50 | 备份/恢复（含加密） | ✅ RestoreView | ✅ backup 页 | ◐ | ✅ 加密导出导入 | ❌ | P1 |
 | 51 | 多语言 UI | ❌ | ✅ 10 语言 | ◐ | ✅ 中英 | ❌（仅中文） | P2 |
 | 52 | 崩溃/日志可见性 | ◐ | ✅ log 页 | ◐ | ✅ CrashActivity | ✅ 日志页+崩溃横幅 | 已追平 |
@@ -123,16 +123,16 @@
 
 ### P1（日常会用到、价值明确）
 
-P1-1 消息更多操作：分享/删除/分叉成新会话（#15/#16/#18）
-P1-2 TTS 朗读 + 自动朗读开关（#13）
-P1-3 会话置顶 + 会话搜索 + 重新生成标题（#30/#31/#33）
-P1-4 会话导出 Markdown + 全局备份/恢复（#32/#50）
-P1-5 Token 用量统计（每模型/每会话）（#21/#49）
-P1-6 模型选择器增强：收藏夹 + 打开定位当前项 + Provider 分组 + 能力标签（#40-43，rikkahub A4 的 P0 化）
-P1-7 输入栏快捷指令/提示词库唤起（#26）
-P1-8 会话草稿独立保存（#34）
-P1-9 推理过程折叠 UI（#20）
-P1-10 外观增强：Material You 动态取色 + 完成提醒通知（#48/#55）
+P1-1 消息更多操作：分享/删除/分叉成新会话（#15/#16/#18）✅ hotfix17
+P1-2 TTS 朗读 + 自动朗读开关（#13）✅ hotfix18（自动朗读开关未做）
+P1-3 会话置顶 + 会话搜索 + 重新生成标题（#30/#31/#33）✅ hotfix16（搜索/置顶；重新生成标题未做）
+P1-4 会话导出 Markdown + 全局备份/恢复（#32/#50）⏳ 下一项
+P1-5 Token 用量统计（每模型/每会话）（#21/#49）✅ hotfix21
+P1-6 模型选择器增强：收藏夹 + 打开定位当前项 + Provider 分组 + 能力标签（#40-43，rikkahub A4 的 P0 化）✅ hotfix20
+P1-7 输入栏快捷指令/提示词库唤起（#26）⏳
+P1-8 会话草稿独立保存（#34）⏳
+P1-9 推理过程折叠 UI（#20）⏳
+P1-10 外观增强：Material You 动态取色 + 完成提醒通知（#48/#55）⏳
 
 ### P2（增强，排期靠后）
 

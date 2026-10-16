@@ -246,7 +246,7 @@ class GeminiClient(
                 toolCalls += ToolCall("gemini_${UUID.randomUUID().toString().take(8)}", name, args)
             }
         }
-        return AssistantMessage(content.toString(), toolCalls)
+        return AssistantMessage(content.toString(), toolCalls, parseGeminiUsage(root))
     }
 
     /**

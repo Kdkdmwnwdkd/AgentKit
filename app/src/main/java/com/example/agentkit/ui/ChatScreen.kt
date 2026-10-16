@@ -110,6 +110,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.agentkit.core.ModelProfile
+import com.example.agentkit.core.TokenUsage
 import java.util.Locale
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -152,6 +153,8 @@ fun ChatScreen(
     // 不再深埋三层（抽屉 → 模型配置 → 顶部横向档案条）且切换无任何反馈。
     val profiles by vm.profiles.collectAsStateWithLifecycle()
     val activeProfileId by vm.activeProfileId.collectAsStateWithLifecycle()
+    // 功能五（P1-5）：当前会话累计 token 用量（模型指示条下常驻小条）
+    val sessionUsage by vm.sessionUsage.collectAsStateWithLifecycle()
     val listState = rememberLazyListState()
 
     val pendingGrants = pendingGrantCount(
@@ -237,6 +240,11 @@ fun ChatScreen(
                 if (modelReady) showModelSwitch = true else onOpenModel()
             }
         )
+        // 功能五（P1-5）：本会话 token 用量小条（无数据时不占位——供应商没给 usage
+        // 或还没聊过，都不显示而非摆一个 0）
+        if (sessionUsage.totalTokens > 0) {
+            UsageSummaryBar(usage = sessionUsage)
+        }
         if (messages.isEmpty() && streamDraft == null) {
             EmptyGuide(
                 modifier = Modifier
@@ -515,6 +523,43 @@ private fun ModelIndicatorBar(
             )
         }
     }
+}
+
+/**
+ * 功能五（P1-5）：本会话 token 用量条（模型指示条下常驻，一行小字）。
+ *
+ * 为什么放这里而不是设置页：用量是「天天要看」的日常数据（这个月跟模型聊了多少、
+ * 快到额度了吗），埋在设置里等于没有；对标 RikkaHub / Coomi 的会话级统计。
+ * 纯展示不可点——交互（清零/导出）留给后续备份功能，不做半成品入口。
+ */
+@Composable
+private fun UsageSummaryBar(usage: TokenUsage) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = AgentSpacing.space5, vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = "本会话 tokens · ↑ ${formatTokens(usage.promptTokens)} · " +
+                "↓ ${formatTokens(usage.completionTokens)} · 共 ${formatTokens(usage.totalTokens)}",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+
+/**
+ * token 数格式化（纯函数）：1234 → "1.2k"、1234567 → "1.2M"。
+ * 小于 1000 原样展示——用量小的时候 "856" 比 "0.9k" 更精确。
+ * 小数分隔符固定 Locale.US——个别 locale 会输出逗号小数点，"1,2k" 不像个数。
+ */
+internal fun formatTokens(n: Long): String = when {
+    n < 1_000 -> n.toString()
+    n < 1_000_000 -> String.format(Locale.US, "%.1fk", n / 1_000.0)
+    else -> String.format(Locale.US, "%.1fM", n / 1_000_000.0)
 }
 
 /**
@@ -1635,7 +1680,9 @@ private fun MessageRow(item: UiItem, streaming: Boolean) {
                 text = item.text,
                 isUser = false,
                 streaming = streaming,
-                maxWidth = (maxWidth * 0.84f).coerceIn(272.dp, 520.dp)
+                maxWidth = (maxWidth * 0.84f).coerceIn(272.dp, 520.dp),
+                // 功能五（P1-5）：token 用量（null = 供应商没给，不显示）
+                usage = item.usage
             )
 
             is UiItem.Tool -> ToolCard(item)
@@ -1654,7 +1701,9 @@ private fun MessageBubble(
     text: String,
     isUser: Boolean,
     streaming: Boolean,
-    maxWidth: Dp
+    maxWidth: Dp,
+    /** 功能五（P1-5）：助手气泡的 token 用量（null = 无数据不显示；用户气泡恒 null）。 */
+    usage: TokenUsage? = null
 ) {
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -1703,11 +1752,24 @@ private fun MessageBubble(
                         StreamCursor()
                         Spacer(Modifier.width(14.dp))
                     }
-                    else -> MarkdownText(
-                        text = text,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)
-                    )
+                    else -> Column {
+                        MarkdownText(
+                            text = text,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)
+                        )
+                        // 功能五（P1-5）：本条回答的 token 用量（↑ 输入 / ↓ 输出）。
+                        // 有数据才渲染——供应商没给 usage 时不摆占位
+                        if (usage != null && usage.totalTokens > 0) {
+                            Text(
+                                text = "↑ ${formatTokens(usage.promptTokens)} · " +
+                                    "↓ ${formatTokens(usage.completionTokens)} tokens",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(start = 14.dp, end = 14.dp, bottom = 8.dp)
+                            )
+                        }
+                    }
                 }
             }
         }

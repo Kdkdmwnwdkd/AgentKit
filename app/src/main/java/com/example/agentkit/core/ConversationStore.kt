@@ -50,6 +50,8 @@ private const val MAX_FIELD_CHARS = 4000
  *
  * @param updatedAt 最近一次消息/重命名的时间（列表倒序键）。
  * @param messageCount 消息条数（摘要里展示，用户判断「这个会话聊到哪了」）。
+ * @param promptTokens / completionTokens 功能五（P1-5）：本会话累计 token 用量
+ *   （对所有轮次的助手变体求和——重新生成产生的废弃变体也真实花过钱，一并计入）。
  */
 @Serializable
 data class ConversationSummary(
@@ -58,7 +60,9 @@ data class ConversationSummary(
     val updatedAt: Long,
     val messageCount: Int,
     /** 功能五（P1-3）：置顶标记——置顶会话恒排在列表最前（对标 RikkaHub pinned_chats）。 */
-    val pinned: Boolean = false
+    val pinned: Boolean = false,
+    val promptTokens: Long = 0,
+    val completionTokens: Long = 0
 )
 
 /**
@@ -68,6 +72,8 @@ data class ConversationSummary(
  * @param id user/assistant 用 UUID；tool 用 ToolCall.id（与内存 _messages 的 Hotfix2 去重键一致）。
  * @param toolName / toolArgs 仅 tool 消息有值；arguments 本就是 JSON 字符串，直接存。
  * @param isError 终态是否失败（执行中态落盘时是空结果占位，终态到达后按 id 覆盖）。
+ * @param promptTokens / completionTokens 功能五（P1-5）：assistant 消息的 token 用量
+ *   （0 = 无数据——服务端没给 usage 或该消息非助手消息；旧文件反序列化自动补 0）。
  */
 @Serializable
 data class MsgRecord(
@@ -76,7 +82,9 @@ data class MsgRecord(
     val content: String,
     val toolName: String? = null,
     val toolArgs: String? = null,
-    val isError: Boolean = false
+    val isError: Boolean = false,
+    val promptTokens: Long = 0,
+    val completionTokens: Long = 0
 )
 
 /**
@@ -120,7 +128,10 @@ internal fun UiItem.toMsgRecord(): MsgRecord = when (this) {
     is UiItem.Assistant -> MsgRecord(
         id = UUID.randomUUID().toString(),
         role = ROLE_ASSISTANT,
-        content = text.take(MAX_FIELD_CHARS)
+        content = text.take(MAX_FIELD_CHARS),
+        // 功能五（P1-5）：token 用量随气泡落盘（无 usage 存 0，读时按 0 还原为 null）
+        promptTokens = usage?.promptTokens ?: 0L,
+        completionTokens = usage?.completionTokens ?: 0L
     )
 
     is UiItem.Tool -> MsgRecord(
@@ -148,6 +159,16 @@ internal fun MsgRecord.toUiItem(): UiItem = when (role) {
     )
 
     ROLE_USER -> UiItem.User(content)
+
+    // 功能五（P1-5）：还原 token 用量；两个计数都 0 = 无数据（旧文件/供应商没给）→ null
+    ROLE_ASSISTANT -> UiItem.Assistant(
+        content,
+        usage = if (promptTokens > 0 || completionTokens > 0) {
+            TokenUsage(promptTokens, completionTokens)
+        } else {
+            null
+        }
+    )
     // 未知 role 兜底按 assistant 渲染：宁可显示不错丢（历史数据兼容）
     else -> UiItem.Assistant(content)
 }
@@ -176,7 +197,13 @@ internal fun ConversationRecord.toUiItems(): List<UiItem> = buildList {
                     sel.content,
                     variantIndex = turn.selectedIndex,
                     variantCount = turn.variants.size,
-                    turnIndex = turnIndex
+                    turnIndex = turnIndex,
+                    // 功能五（P1-5）：选中变体的 token 用量一起还原（无数据 → null）
+                    usage = if (sel.promptTokens > 0 || sel.completionTokens > 0) {
+                        TokenUsage(sel.promptTokens, sel.completionTokens)
+                    } else {
+                        null
+                    }
                 )
             )
         }
@@ -232,7 +259,24 @@ class ConversationStore(file: File) {
      * 置顶语义必须是「永远在最前」，不能被新消息顶下去（RikkaHub pinned_chats 同语义）。
      */
     fun list(): List<ConversationSummary> = synchronized(lock) {
-        items.map { ConversationSummary(it.id, it.title, it.updatedAt, it.messages.size, it.pinned) }
+        items.map { rec ->
+            // 功能五（P1-5）：对**所有轮次的全部变体**求和——重新生成产生的废弃变体
+            // 也真实发生过计费，计入比只算选中变体更贴近用户的钱包
+            val usage = TokenUsage.sum(
+                rec.turns.flatMap { it.variants }
+                    .filter { it.role == ROLE_ASSISTANT }
+                    .map { TokenUsage(it.promptTokens, it.completionTokens) }
+            )
+            ConversationSummary(
+                id = rec.id,
+                title = rec.title,
+                updatedAt = rec.updatedAt,
+                messageCount = rec.messages.size,
+                pinned = rec.pinned,
+                promptTokens = usage.promptTokens,
+                completionTokens = usage.completionTokens
+            )
+        }
             .sortedWith(compareByDescending<ConversationSummary> { it.pinned }
                 .thenByDescending { it.updatedAt })
     }

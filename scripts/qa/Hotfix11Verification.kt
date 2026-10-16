@@ -233,7 +233,9 @@ private fun testConversationPinAndSearch() {
 
     check("K1 存储层：Record/Summary 带 pinned 字段（默认 false，旧文件兼容）") {
         assertContains("K1", store, "val pinned: Boolean = false")
-        assertContains("K1", store, "it.messages.size, it.pinned")
+        // list() 自 hotfix21（P1-5 用量统计）起改为命名参数构造（顺带汇总 token），
+        // 置顶键的传递断言随之更新为命名形式
+        assertContains("K1", store, "pinned = rec.pinned")
     }
     check("K2 list() 排序契约：置顶优先 → 组内按时间倒序") {
         assertContains("K2", store, "compareByDescending<ConversationSummary> { it.pinned }")
@@ -441,6 +443,114 @@ private fun testModelPickerEnhancements() {
     }
 }
 
+/**
+ * P 区：功能五 P1-5「Token 用量统计」——对标 RikkaHub / Coomi 的用量可见性。
+ *
+ * 断言的链路完整性：客户端解析（三家）→ commit 事件上传（AssistantMessage.usage）
+ * → 落盘（MsgRecord / 摘要）→ VM 汇总（整轮挂最终气泡 + 会话累计流）→ UI（顶部条 +
+ * 气泡小字 + 抽屉行）。
+ */
+private fun testTokenUsage() {
+    println("— P 区：Token 用量统计（功能五 P1-5） —")
+    val contract = readSource("core/AgentContract.kt")
+    val parsers = readSource("core/llm/TokenUsageParsers.kt")
+    val openai = readSource("core/LLMClient.kt")
+    val claude = readSource("core/llm/ClaudeClient.kt")
+    val gemini = readSource("core/llm/GeminiClient.kt")
+    val conv = readSource("core/ConversationStore.kt")
+    val vm = readSource("ui/ChatViewModel.kt")
+    val chat = readSource("ui/ChatScreen.kt")
+    val scaffold = readSource("ui/AppScaffold.kt")
+
+    check("P1 核心层 TokenUsage（输入/输出/合计 + sum 汇总）") {
+        assertContains("P1", contract, "data class TokenUsage(")
+        assertContains("P1", contract, "val promptTokens: Long = 0")
+        assertContains("P1", contract, "val completionTokens: Long = 0")
+        assertContains("P1", contract, "fun sum(usages: List<TokenUsage?>): TokenUsage")
+    }
+    check("P2 AssistantMessage 挂 usage 字段（默认 null，旧构造点零改动）") {
+        assertContains("P2", contract, "val usage: TokenUsage? = null")
+    }
+    check("P3 三家 usage 纯解析函数（零依赖，harness 可断言）") {
+        assertContains("P3", parsers, "fun parseOpenAiUsage(root: JsonObject): TokenUsage?")
+        assertContains("P3", parsers, "fun parseClaudeUsage(root: JsonObject): TokenUsage?")
+        assertContains("P3", parsers, "fun parseGeminiUsage(root: JsonObject): TokenUsage?")
+        // 缺失返回 null 而非 0：「服务端没给」与「服务端说 0」是两件事
+        assertContains("P3", parsers, "?: return null")
+    }
+    check("P4 OpenAI 非流式响应解析 usage") {
+        val fn = openai.substringAfter("private fun parseResponse(text: String): AssistantMessage")
+        assertContains("P4", fn, "AssistantMessage(content, toolCalls, parseOpenAiUsage(root))")
+    }
+    check("P5 OpenAI 流式：请求带 include_usage + 末片 usage 捕获") {
+        assertContains("P5", openai, "putJsonObject(\"stream_options\") { put(\"include_usage\", true) }")
+        val fn = openai.substringAfter("override fun streamChat(")
+        assertContains("P5", fn, "var usage: com.example.agentkit.core.TokenUsage? = null")
+        assertContains("P5", fn, "parseOpenAiUsage(obj)?.let { usage = it }")
+        assertContains("P5", fn, "AssistantMessage(text.toString(), accumulator.build(), usage)")
+    }
+    check("P6 Claude 非流式响应解析 usage（input/output_tokens）") {
+        val fn = claude.substringAfter("private fun parseResponse(text: String): AssistantMessage")
+        assertContains("P6", fn, "AssistantMessage(content.toString(), toolCalls, parseClaudeUsage(root))")
+    }
+    check("P7 Gemini 非流式响应解析 usage（usageMetadata）") {
+        val fn = gemini.substringAfter("private fun parseResponse(text: String): AssistantMessage")
+        assertContains("P7", fn, "AssistantMessage(content.toString(), toolCalls, parseGeminiUsage(root))")
+    }
+    check("P8 落盘字段带默认值（旧 conversations.json 反序列化不炸）") {
+        assertContains("P8", conv, "val promptTokens: Long = 0")
+        assertContains("P8", conv, "val completionTokens: Long = 0")
+        // 摘要与记录两处都有（抽屉行 + 会话记录）
+        assertTrue("P8", conv.split("val promptTokens: Long = 0").size >= 3)
+    }
+    check("P9 映射双向保留 usage（写入 toMsgRecord / 读取 toUiItem + 轮次渲染）") {
+        val write = conv.substringAfter("internal fun UiItem.toMsgRecord()")
+        assertContains("P9", write, "promptTokens = usage?.promptTokens ?: 0L")
+        val read = conv.substringAfter("internal fun MsgRecord.toUiItem()")
+        assertContains("P9", read, "TokenUsage(promptTokens, completionTokens)")
+        val turns = conv.substringAfter("internal fun ConversationRecord.toUiItems()")
+        assertContains("P9", turns, "usage = if (sel.promptTokens > 0 || sel.completionTokens > 0)")
+    }
+    check("P10 摘要统计对全部变体求和（废弃变体也真实花过钱）") {
+        val fn = conv.substringAfter("fun list(): List<ConversationSummary>")
+        assertContains("P10", fn, "rec.turns.flatMap { it.variants }")
+        assertContains("P10", fn, "promptTokens = usage.promptTokens")
+        assertContains("P10", fn, "completionTokens = usage.completionTokens")
+    }
+    check("P11 VM：整轮 LLM 往返用量汇总挂最终回答（中间轮用量不丢）") {
+        // 不按 outcome.onSuccess 切块——send/regenerate 两个同名块，取串会错位；
+        // 直接断言 send 路径独有的三行
+        assertContains("P11", vm, "val turnUsage = TokenUsage.sum(")
+        assertContains("P11", vm, "val lastAnswer = history.filterIsInstance<AssistantMessage>()")
+        assertContains("P11", vm, "append(msg, if (msg === lastAnswer) turnUsage else null)")
+    }
+    check("P12 VM：regenerate 新变体带用量 + append 支持 usage 参数") {
+        assertContains("P12", vm, "private fun append(msg: ChatMessage, usage: TokenUsage? = null)")
+        assertContains("P12", vm, "is AssistantMessage -> UiItem.Assistant(msg.content, usage = usage)")
+        val regen = vm.substringAfter("fun regenerate()")
+        assertContains("P12", regen, "usage = TokenUsage.sum(")
+    }
+    check("P13 VM：会话累计用量派生流（切会话随 _messages 重载自动切换）") {
+        assertContains("P13", vm, "val sessionUsage: StateFlow<TokenUsage> = _messages")
+        assertContains("P13", vm, "TokenUsage.sum(items.filterIsInstance<UiItem.Assistant>().mapNotNull { it.usage })")
+        assertContains("P13", vm, ".stateIn(viewModelScope, SharingStarted.Eagerly, TokenUsage.EMPTY)")
+    }
+    check("P14 ChatScreen：会话用量条 + 气泡用量小字 + formatTokens") {
+        assertContains("P14", chat, "val sessionUsage by vm.sessionUsage.collectAsStateWithLifecycle()")
+        assertContains("P14", chat, "if (sessionUsage.totalTokens > 0) {")
+        assertContains("P14", chat, "UsageSummaryBar(usage = sessionUsage)")
+        assertContains("P14", chat, "private fun UsageSummaryBar(usage: TokenUsage)")
+        assertContains("P14", chat, "internal fun formatTokens(n: Long): String")
+        assertContains("P14", chat, "usage = item.usage")
+        assertContains("P14", chat, "\"↑ \${formatTokens(usage.promptTokens)} · \"")
+    }
+    check("P15 抽屉会话行缀 tokens（有数据才显示，旧会话不摆 0）") {
+        val row = scaffold.substringAfter("fun ConversationRow(")
+        assertContains("P15", row, "formatTokens(conversation.promptTokens + conversation.completionTokens)")
+        assertContains("P15", row, "} tok\"")
+    }
+}
+
 fun main() {
     println("== hotfix11 模型快速切换 + 功能四/五 验证 ==")
     testModelQuickSwitch()
@@ -460,6 +570,8 @@ fun main() {
     testFileAttachment()
     println()
     testModelPickerEnhancements()
+    println()
+    testTokenUsage()
     println()
     println("== 汇总 ==")
     println("PASS: $passed  FAIL: ${failures.size}  TOTAL: ${passed + failures.size}")

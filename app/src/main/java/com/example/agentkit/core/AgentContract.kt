@@ -71,8 +71,41 @@ data class UserMessage(
 ) : ChatMessage
 data class AssistantMessage(
     val content: String,
-    val toolCalls: List<ToolCall> = emptyList()
+    val toolCalls: List<ToolCall> = emptyList(),
+    /**
+     * 功能五（P1-5）：本次 LLM 往返的 token 用量（服务端 usage 字段解析而来）。
+     * null = 供应商没给 usage（本地 llama / 兼容端点缺字段）——UI 不显示而非猜一个数。
+     * 多步回合（调工具的轮次）由调用方按轮汇总（见 ChatViewModel.send）。
+     */
+    val usage: TokenUsage? = null
 ) : ChatMessage
+
+/**
+ * 功能五（P1-5）：token 用量（一次 LLM 往返或一段时间窗口的合计）。
+ *
+ * prompt = 输入侧（含系统提示/工具定义/历史，通常远大于输出侧）；
+ * completion = 输出侧。三家协议字段名各不相同，解析统一成本结构后再上传
+ * （OpenAI usage.prompt_tokens/completion_tokens；Claude usage.input_tokens/
+ * output_tokens；Gemini usageMetadata.promptTokenCount/candidatesTokenCount）。
+ */
+data class TokenUsage(
+    val promptTokens: Long = 0,
+    val completionTokens: Long = 0
+) {
+    val totalTokens: Long get() = promptTokens + completionTokens
+
+    companion object {
+        /** 空用量（无数据时的占位，避免 UI 判空两套逻辑）。 */
+        val EMPTY: TokenUsage = TokenUsage()
+
+        /** 汇总多条（一个回合多次 LLM 往返 → 整轮成本）。null 元素跳过。 */
+        fun sum(usages: List<TokenUsage?>): TokenUsage =
+            TokenUsage(
+                promptTokens = usages.sumOf { it?.promptTokens ?: 0L },
+                completionTokens = usages.sumOf { it?.completionTokens ?: 0L }
+            )
+    }
+}
 
 /** 工具执行结果进入历史：带调用 id / 工具名 / 入参，方便 UI 折叠展示。 */
 data class ToolMessage(

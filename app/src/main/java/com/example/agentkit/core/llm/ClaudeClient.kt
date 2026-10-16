@@ -250,7 +250,7 @@ class ClaudeClient(
                 }
             }
         }
-        return AssistantMessage(content.toString(), toolCalls)
+        return AssistantMessage(content.toString(), toolCalls, parseClaudeUsage(root))
     }
 
     /**

@@ -53,6 +53,7 @@ import com.example.agentkit.core.ToolCall
 import com.example.agentkit.core.ToolMessage
 import com.example.agentkit.core.ToolApproval
 import com.example.agentkit.core.ToolRegistry
+import com.example.agentkit.core.TokenUsage
 import com.example.agentkit.core.UserMessage
 import com.example.agentkit.core.toMsgRecord
 import com.example.agentkit.core.toUiItems
@@ -104,6 +105,9 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -155,12 +159,15 @@ sealed interface UiItem {
      * @param variantCount 该轮变体总数；<= 1 时不显示切换器。
      * @param turnIndex 该轮在会话 [com.example.agentkit.core.TurnRecord] 列表中的下标；
      *   重新生成 / 切换 / 重新发问都按它定位轮次；< 0 表示未归属任何轮。
+     * @param usage 功能五（P1-5）：本条回答的 token 用量（一个回合多次 LLM 往返的合计；
+     *   null = 服务端没给 usage，UI 不显示而非猜一个数）。
      */
     data class Assistant(
         val text: String,
         val variantIndex: Int = -1,
         val variantCount: Int = 1,
-        val turnIndex: Int = -1
+        val turnIndex: Int = -1,
+        val usage: TokenUsage? = null
     ) : UiItem
 
     data class Tool(
@@ -798,7 +805,13 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
                     }
                     val final = history.filterIsInstance<AssistantMessage>()
                         .lastOrNull()?.content.orEmpty()
-                    val variant = UiItem.Assistant(if (final.isBlank()) "（模型未返回内容）" else final)
+                    // 功能五（P1-5）：新变体带本回合全部 LLM 往返的合计用量
+                    val variant = UiItem.Assistant(
+                        text = if (final.isBlank()) "（模型未返回内容）" else final,
+                        usage = TokenUsage.sum(
+                            history.filterIsInstance<AssistantMessage>().map { it.usage }
+                        )
+                    )
                     conversationStore.appendVariant(
                         _activeConversationId.value, turnIndex, variant.toMsgRecord()
                     )
@@ -966,6 +979,16 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     /** 流式草稿文本：非 null 时 UI 在消息末尾渲染一个「正在生成」的助手气泡（尚未落库）。 */
     private val _streamDraft = MutableStateFlow<String?>(null)
     val streamDraft: StateFlow<String?> = _streamDraft.asStateFlow()
+
+    /**
+     * 功能五（P1-5）：当前会话累计 token 用量（对所有助手气泡的 usage 求和）。
+     * 切会话时随 [_messages] 重载自动切换；UI 在对话页顶部常驻显示。
+     */
+    val sessionUsage: StateFlow<TokenUsage> = _messages
+        .map { items ->
+            TokenUsage.sum(items.filterIsInstance<UiItem.Assistant>().mapNotNull { it.usage })
+        }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, TokenUsage.EMPTY)
 
     /**
      * 供应商瞬时失败的「自动恢复」进行态（Phase 2 DoD③）：非 null 时 UI 显示
@@ -1632,6 +1655,14 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
                 // 流式草稿使命结束：最终回答以整条消息落库（防草稿与整条同时显示）
                 _streamDraft.value = null
                 outcome.onSuccess { history ->
+                    // 功能五（P1-5）：一个回合可能多次 LLM 往返（每次工具调用后都要再问一次模型），
+                    // 每条 AssistantMessage 各带自己那次的 usage——合计后挂到最终回答气泡上，
+                    // 中间轮（只有 toolCalls）不出气泡，其用量不至于丢
+                    val turnUsage = TokenUsage.sum(
+                        history.filterIsInstance<AssistantMessage>().map { it.usage }
+                    )
+                    val lastAnswer = history.filterIsInstance<AssistantMessage>()
+                        .lastOrNull { it.content.isNotBlank() }
                     history.forEach { msg ->
                         when (msg) {
                             // 发送时已实时上屏，跳过防重复
@@ -1642,7 +1673,9 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
                                 if (!shown) append(msg)
                             }
                             // 中间轮 Assistant 可能只有 toolCalls 无文本，空内容不出气泡
-                            is AssistantMessage -> if (msg.content.isNotBlank()) append(msg)
+                            is AssistantMessage -> if (msg.content.isNotBlank()) {
+                                append(msg, if (msg === lastAnswer) turnUsage else null)
+                            }
                             else -> Unit
                         }
                     }
@@ -1747,10 +1780,11 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         return if (raw.isBlank()) "⚠️ 出错了：未知错误" else "⚠️ 出错了：$raw"
     }
 
-    private fun append(msg: ChatMessage) {
+    private fun append(msg: ChatMessage, usage: TokenUsage? = null) {
         val item = when (msg) {
             is UserMessage -> UiItem.User(msg.content)
-            is AssistantMessage -> UiItem.Assistant(msg.content)
+            // 功能五（P1-5）：usage 仅在 send() 汇总整轮后传给最终回答（中间轮不传）
+            is AssistantMessage -> UiItem.Assistant(msg.content, usage = usage)
             is ToolMessage -> UiItem.Tool(
                 ToolCall(msg.id, msg.name, msg.arguments),
                 msg.content,

@@ -11,6 +11,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import com.example.agentkit.core.llm.ChatStreamEvent
+import com.example.agentkit.core.llm.parseOpenAiUsage
 import java.io.IOException
 
 /**
@@ -230,6 +231,8 @@ class OpenAIClient(
     ): Flow<ChatStreamEvent> = channelFlow {
         val accumulator = OpenAiToolCallAccumulator()
         val text = StringBuilder()
+        // 功能五（P1-5）：流末 chunk（choices 为空、仅带 usage）单独到达，捕获最后一份非空值
+        var usage: com.example.agentkit.core.TokenUsage? = null
         readSseDataObjects(messages, tools) { obj ->
             val delta = sseDeltaObject(obj)
             if (delta != null) {
@@ -239,8 +242,9 @@ class OpenAIClient(
                 }
                 delta["tool_calls"]?.jsonArray?.let { accumulator.absorb(it) }
             }
+            parseOpenAiUsage(obj)?.let { usage = it }
         }
-        send(ChatStreamEvent.Completed(AssistantMessage(text.toString(), accumulator.build())))
+        send(ChatStreamEvent.Completed(AssistantMessage(text.toString(), accumulator.build(), usage)))
     }
 
     /**
@@ -276,6 +280,10 @@ class OpenAIClient(
                 put("tool_choice", "auto")
                 putJsonArray("tools") { tools.forEach { add(toApiTool(it)) } }
             }
+            // 功能五（P1-5）：要服务端在流末单独发一个带 usage 的 chunk（OpenAI 官方 2023 起支持，
+            // vLLM / Ollama / DeepSeek / one-api 系均支持）。放在 customBody 之前——
+            // 用户在自定义体里显式配置 stream_options 时以用户为准。
+            putJsonObject("stream_options") { put("include_usage", true) }
             config.customBody.forEach { (k, v) -> put(k, v) }
         }
         val request = buildRequest(requestJson)
@@ -401,7 +409,7 @@ class OpenAIClient(
             ToolCall(id, name, args)
         } ?: emptyList()
 
-        return AssistantMessage(content, toolCalls)
+        return AssistantMessage(content, toolCalls, parseOpenAiUsage(root))
     }
 
     private fun toApiMessage(msg: ChatMessage): JsonObject = buildJsonObject {

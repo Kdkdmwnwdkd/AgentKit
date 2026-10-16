@@ -836,7 +836,11 @@ private fun DrawerConversationRow(
                 }
                 Text(
                     text = "${relativeTime(conversation.updatedAt)} · " +
-                        "${conversation.messageCount} 条消息",
+                        "${conversation.messageCount} 条消息" +
+                        // 功能五（P1-5）：有用量数据才缀 tokens（旧会话/本地模型会话不显示）
+                        (if (conversation.promptTokens + conversation.completionTokens > 0)
+                            " · ${formatTokens(conversation.promptTokens + conversation.completionTokens)} tok"
+                        else ""),
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
