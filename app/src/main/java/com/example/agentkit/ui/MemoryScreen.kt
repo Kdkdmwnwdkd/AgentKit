@@ -1,9 +1,11 @@
 package com.example.agentkit.ui
 
+import android.widget.Toast
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
@@ -13,14 +15,18 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -33,19 +39,25 @@ import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Bookmark
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.Hub
+import androidx.compose.material.icons.outlined.List
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Storage
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshots.SnapshotStateMap
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -57,6 +69,7 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.drawText
@@ -94,12 +107,21 @@ fun MemoryScreen(vm: ChatViewModel) {
     var showAdd by remember { mutableStateOf(false) }
     var showClear by remember { mutableStateOf(false) }
     var selectedId by rememberSaveable { mutableStateOf<String?>(null) }
+    // hotfix31：列表/图谱双模式，默认列表——真机反馈「图谱只学到布局的样子，
+    // 人家可以点开可以看」：列表好扫好点（图谱节点 Canvas 命中难），图谱留着做视觉。
+    var listMode by rememberSaveable { mutableStateOf(true) }
+    // hotfix31：编辑对话框三件套草稿（content 多行 + salience 滑杆 + tags 逗号分隔）
+    var showEdit by remember { mutableStateOf(false) }
+    var editContent by rememberSaveable { mutableStateOf("") }
+    var editSalience by rememberSaveable { mutableStateOf(5) }
+    var editTags by rememberSaveable { mutableStateOf("") }
+    val context = LocalContext.current
 
     // 选中项随结果集派生：搜索 / 刷新 / 遗忘后原选中可能已不在列表里，不强行续命
     val selected = memories.firstOrNull { it.id == selectedId }
 
     BoxWithConstraints(Modifier.fillMaxSize()) {
-        // 详情卡封顶 45% 屏高：图谱永远是主视觉，长内容在卡内滚动（OPeritAI 同款层级）
+        // 详情卡封顶 45% 屏高：图谱/列表永远是主视觉，长内容在卡内滚动（OPeritAI 同款层级）
         val detailMaxHeight = maxHeight * 0.45f
         Box(Modifier.fillMaxSize()) {
             Column(Modifier.fillMaxSize()) {
@@ -121,16 +143,30 @@ fun MemoryScreen(vm: ChatViewModel) {
                         vm.refreshMemories()
                     }
                 )
-                if (query.isNotBlank()) {
-                    Row(
-                        Modifier
-                            .fillMaxWidth()
-                            .padding(
-                                start = AgentSpacing.space5,
-                                end = AgentSpacing.space5,
-                                bottom = AgentSpacing.space2
-                            )
-                    ) {
+                // hotfix31：模式切换 chip 行（列表 ⇄ 图谱）——「全部」复位仅在
+                // 有筛选时出现，与模式 chip 同行不打架
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(
+                            start = AgentSpacing.space5,
+                            end = AgentSpacing.space5,
+                            bottom = AgentSpacing.space2
+                        ),
+                    horizontalArrangement = Arrangement.spacedBy(AgentSpacing.space2),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    AkChip(
+                        text = "列表",
+                        selected = listMode,
+                        onClick = { listMode = true }
+                    )
+                    AkChip(
+                        text = "图谱",
+                        selected = !listMode,
+                        onClick = { listMode = false }
+                    )
+                    if (query.isNotBlank()) {
                         AkChip(
                             text = "全部",
                             selected = false,
@@ -154,8 +190,19 @@ fun MemoryScreen(vm: ChatViewModel) {
                             }
                         )
                     }
+                } else if (listMode) {
+                    // hotfix31：列表模式——LazyColumn 记忆行，好扫好点；
+                    // 行内直接显示 kind 徽章 + 摘要 + 重要度 + 时间，点选看详情
+                    MemoryList(
+                        memories = memories,
+                        selectedId = selected?.id,
+                        onSelect = { id -> selectedId = if (selectedId == id) null else id },
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxWidth()
+                    )
                 } else {
-                    // —— 图谱区：核心视觉，吃满剩余空间 ——
+                    // —— 图谱模式：核心视觉，吃满剩余空间；节点可拖动（hotfix31）——
                     MemoryGraph(
                         memories = memories,
                         selectedId = selected?.id,
@@ -164,16 +211,23 @@ fun MemoryScreen(vm: ChatViewModel) {
                             .weight(1f)
                             .fillMaxWidth()
                     )
-                    if (selected != null) {
-                        MemoryDetailCard(
-                            item = selected,
-                            maxHeight = detailMaxHeight,
-                            onForget = {
-                                vm.forgetMemory(selected.id)
-                                selectedId = null
-                            }
-                        )
-                    }
+                }
+                if (selected != null) {
+                    MemoryDetailCard(
+                        item = selected,
+                        maxHeight = detailMaxHeight,
+                        onForget = {
+                            vm.forgetMemory(selected.id)
+                            selectedId = null
+                        },
+                        onEdit = {
+                            // hotfix31：编辑入口——草稿三件套取自当前选中项
+                            editContent = selected.content
+                            editSalience = selected.salience
+                            editTags = selected.tags.joinToString(", ")
+                            showEdit = true
+                        }
+                    )
                 }
             }
 
@@ -232,6 +286,35 @@ fun MemoryScreen(vm: ChatViewModel) {
                 showClear = false
             },
             onDismiss = { showClear = false }
+        )
+    }
+
+    // —— hotfix31：编辑记忆对话框（内容 / 重要度 / 标签三件套）——
+    AkModalHost(target = if (showEdit) Unit else null) { _, dialogVisible ->
+        MemoryEditDialog(
+            content = editContent,
+            salience = editSalience,
+            tags = editTags,
+            visible = dialogVisible,
+            onContentChange = { editContent = it },
+            onSalienceChange = { editSalience = it },
+            onTagsChange = { editTags = it },
+            onConfirm = {
+                val target = selectedId
+                // store 拒收（空白内容/目标不在）时保持对话框不关 + Toast 说明
+                val ok = target != null && vm.updateMemory(
+                    id = target,
+                    content = editContent,
+                    salience = editSalience,
+                    tags = editTags.split(",", "，").map { it.trim() }.filter { it.isNotBlank() }
+                )
+                if (ok) {
+                    showEdit = false
+                } else {
+                    Toast.makeText(context, "内容不能为空", Toast.LENGTH_SHORT).show()
+                }
+            },
+            onDismiss = { showEdit = false }
         )
     }
 }
@@ -338,6 +421,10 @@ private fun MemoryGraph(
 ) {
     val nodes = remember(memories) { buildMemoryNodes(memories) }
     val edges = remember(nodes) { buildMemoryEdges(nodes) }
+    // hotfix31：节点拖拽偏移（会话内有效，不落盘）——真机反馈「人家可以移动」。
+    // key = 记忆 id；松手后位置停在新处（视图态），重启图谱回到力导布局。
+    val dragOffsets: SnapshotStateMap<String, Offset> = remember { mutableStateMapOf() }
+    var draggingId by remember { mutableStateOf<String?>(null) }
     val measurer = rememberTextMeasurer()
     val labelStyle = MaterialTheme.typography.labelSmall
     val outlineColor = MaterialTheme.colorScheme.outline
@@ -357,7 +444,7 @@ private fun MemoryGraph(
     Canvas(
         modifier = modifier
             .semantics {
-                contentDescription = "记忆图谱，共 ${nodes.size} 条；点按节点在下方查看详情"
+                contentDescription = "记忆图谱，共 ${nodes.size} 条；点按节点在下方查看详情，拖动可移动节点"
             }
             .pointerInput(nodes) {
                 // PointerInputScope 自带 Density：dp → px 与绘制侧同源，命中阈值才不会漂移
@@ -371,7 +458,8 @@ private fun MemoryGraph(
                     var bestId: String? = null
                     var bestDist = Float.MAX_VALUE
                     nodes.forEach { node ->
-                        val center = memoryNodeCenter(node.ring, node.angle, geo)
+                        val center = memoryNodeCenter(node.ring, node.angle, geo) +
+                            (dragOffsets[node.id] ?: Offset.Zero)
                         val dist = (center - tap).getDistance()
                         // 阈值 = 节点半径 + 8dp；选中态放大了 1.3 倍，一并算进取值范围
                         if (dist <= ringRadiusPx[node.ring] * 1.3f + 8.dp.toPx() && dist < bestDist) {
@@ -382,6 +470,40 @@ private fun MemoryGraph(
                     bestId?.let(onSelect)
                 }
             }
+            // hotfix31：拖动手势独立挂第二个 pointerInput——tap 不消费拖动事件，
+            // 两个检测器各管各的（点击选中 / 拖动移位），不互相抢
+            .pointerInput(nodes) {
+                val ringRadiusPx = floatArrayOf(14.dp.toPx(), 12.dp.toPx(), 10.dp.toPx())
+                val geo = memoryGeometry(
+                    size.width.toFloat(),
+                    size.height.toFloat(),
+                    ringRadiusPx[0] + 6.dp.toPx()
+                )
+                detectDragGestures(
+                    onDragStart = { start ->
+                        // 抓取起始点最近的节点（同 tap 命中规则：半径 + 8dp）
+                        var bestId: String? = null
+                        var bestDist = Float.MAX_VALUE
+                        nodes.forEach { node ->
+                            val center = memoryNodeCenter(node.ring, node.angle, geo) +
+                                (dragOffsets[node.id] ?: Offset.Zero)
+                            val dist = (center - start).getDistance()
+                            if (dist <= ringRadiusPx[node.ring] * 1.3f + 8.dp.toPx() && dist < bestDist) {
+                                bestId = node.id
+                                bestDist = dist
+                            }
+                        }
+                        draggingId = bestId
+                    },
+                    onDragEnd = { draggingId = null },
+                    onDragCancel = { draggingId = null },
+                    onDrag = { _, dragAmount ->
+                        draggingId?.let { id ->
+                            dragOffsets[id] = (dragOffsets[id] ?: Offset.Zero) + dragAmount
+                        }
+                    }
+                )
+            }
     ) {
         val ringRadiusPx = floatArrayOf(14.dp.toPx(), 12.dp.toPx(), 10.dp.toPx())
         val geo = memoryGeometry(
@@ -389,11 +511,15 @@ private fun MemoryGraph(
             size.height.toFloat(),
             ringRadiusPx[0] + 6.dp.toPx()
         )
-        fun centerOf(node: MemNode) = memoryNodeCenter(node.ring, node.angle, geo)
+        fun centerOf(node: MemNode) =
+            // hotfix31：节点位置 = 力导布局基准 + 拖拽偏移（拖动过的节点停在新处，
+            // 会话内保持；edges 与标签都经此取位，边线随拖动实时重画）
+            memoryNodeCenter(node.ring, node.angle, geo) + (dragOffsets[node.id] ?: Offset.Zero)
 
-        // —— 连边：outline 低透明度；命中选中节点的边高亮加粗 ——
+        // —— 连边：outline 低透明度；命中选中/拖动的节点边高亮加粗 ——
         edges.forEach { (from, to) ->
-            val hot = from.id == selectedId || to.id == selectedId
+            val hot = from.id == selectedId || to.id == selectedId ||
+                from.id == draggingId || to.id == draggingId
             drawLine(
                 color = if (hot) primaryColor.copy(alpha = 0.85f)
                 else outlineColor.copy(alpha = 0.28f),
@@ -407,8 +533,10 @@ private fun MemoryGraph(
         nodes.forEach { node ->
             val center = centerOf(node)
             val selected = node.id == selectedId
+            // hotfix31：拖动中的节点与选中态同倍放大（1.3x），手指下有个明确目标
+            val dragging = node.id == draggingId
             val baseRadius = ringRadiusPx[node.ring]
-            val radius = if (selected) baseRadius * 1.3f else baseRadius
+            val radius = if (selected || dragging) baseRadius * 1.3f else baseRadius
             drawCircle(color = kindColor(node.item.kind), radius = radius, center = center)
             drawCircle(
                 color = outlineColor.copy(alpha = 0.5f),
@@ -437,12 +565,13 @@ private fun MemoryGraph(
     }
 }
 
-/** 选中节点详情卡：完整 content + kind 徽章 + tags / 重要度 / 时间 + 「忘记」。 */
+/** 选中节点详情卡：完整 content + kind 徽章 + tags / 重要度 / 时间 + 「忘记」+ hotfix31「编辑」。 */
 @Composable
 private fun MemoryDetailCard(
     item: MemoryItem,
     maxHeight: Dp,
-    onForget: () -> Unit
+    onForget: () -> Unit,
+    onEdit: () -> Unit = {}
 ) {
     val ak = LocalAkColors
     AkGroupCard(
@@ -466,6 +595,8 @@ private fun MemoryDetailCard(
                     content = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Spacer(Modifier.weight(1f))
+                // hotfix31：编辑入口（真机反馈「可以点开可以看还可以管」）
+                AkTextButton(text = "编辑", onClick = onEdit)
                 AkTextButton(text = "忘记", onClick = onForget, tint = MaterialTheme.colorScheme.error)
             }
             Text(
@@ -548,6 +679,202 @@ private fun MemoryAddDialog(
                             icon = Icons.Outlined.Bookmark,
                             modifier = Modifier.weight(1f),
                             enabled = draft.isNotBlank(),
+                            onClick = onConfirm
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * hotfix31：列表模式——LazyColumn 记忆行。
+ *
+ * 真机反馈原话：「记忆库是说搞个和 OPeritAI 差不多的，但是你现在只学到了样子，
+ * 人家可以点开，可以看，但是你这个不行，这只学到一个布局的样子而已」。
+ * Canvas 图谱节点在真机上小而难戳、扫不动；列表是「可管理」的底色：行内直接给
+ * kind 徽章 + 摘要两行 + 重要度 + 时间，点选与图谱同语义（选中看详情/编辑）。
+ * 选中态左缘 3dp primary 竖条，与 DrawerConversationRow 同一套视觉语言。
+ */
+@Composable
+private fun MemoryList(
+    memories: List<MemoryItem>,
+    selectedId: String?,
+    onSelect: (String) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val ak = LocalAkColors
+    LazyColumn(
+        modifier = modifier,
+        contentPadding = PaddingValues(
+            horizontal = AgentSpacing.space5,
+            vertical = AgentSpacing.space2
+        ),
+        verticalArrangement = Arrangement.spacedBy(AgentSpacing.space2)
+    ) {
+        items(memories, key = { it.id }) { item ->
+            val selected = item.id == selectedId
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 52.dp)
+            ) {
+                if (selected) {
+                    Box(
+                        Modifier
+                            .align(Alignment.CenterStart)
+                            .width(3.dp)
+                            .fillMaxHeight()
+                            .clip(RoundedCornerShape(topEnd = 2.dp, bottomEnd = 2.dp))
+                            .background(MaterialTheme.colorScheme.primary)
+                    )
+                }
+                AkGroupCard(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(start = if (selected) 6.dp else 0.dp)
+                        .clickable { onSelect(item.id) }
+                ) {
+                    Column(Modifier.padding(AgentSpacing.space3)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            AkBadge(
+                                text = kindLabel(item.kind),
+                                container = ak.surface2,
+                                content = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Spacer(Modifier.width(AgentSpacing.space2))
+                            Text(
+                                text = "重要度 ${item.salience}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            if (item.tags.isNotEmpty()) {
+                                Spacer(Modifier.width(AgentSpacing.space2))
+                                Text(
+                                    text = "#${item.tags.joinToString(" #")}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
+                        Spacer(Modifier.height(AgentSpacing.space1))
+                        Text(
+                            text = item.content,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            text = formatMemoryTime(item.updatedAt),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * hotfix31：编辑记忆对话框——content 多行 + salience 滑杆（1..10）+ tags 逗号分隔。
+ * 骨架同 [MemoryAddDialog]；「保存」 enabled = content 非空白（store 还有一道拒收，
+ * 双保险）。tags 拆分（中英文逗号）在调用方做，对话框只当纯文本编辑器。
+ */
+@Composable
+private fun MemoryEditDialog(
+    content: String,
+    salience: Int,
+    tags: String,
+    visible: Boolean,
+    onContentChange: (String) -> Unit,
+    onSalienceChange: (Int) -> Unit,
+    onTagsChange: (String) -> Unit,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val spec = if (visible) AkMotionDialog else AkMotionExit
+    val scale by animateFloatAsState(if (visible) 1f else 0.96f, animationSpec = spec)
+    val alpha by animateFloatAsState(if (visible) 1f else 0f, animationSpec = spec)
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Box(
+            Modifier
+                .fillMaxSize()
+                .padding(horizontal = 24.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Surface(
+                shape = RoundedCornerShape(20.dp),
+                color = MaterialTheme.colorScheme.surface,
+                modifier = Modifier
+                    .widthIn(max = 344.dp)
+                    .scale(scale)
+                    .alpha(alpha)
+            ) {
+                Column(Modifier.padding(24.dp)) {
+                    Text(
+                        text = "编辑记忆",
+                        style = MaterialTheme.typography.titleLarge,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Spacer(Modifier.height(AgentSpacing.space3))
+                    AkTextField(
+                        value = content,
+                        onValueChange = onContentChange,
+                        label = "内容",
+                        singleLine = false,
+                        maxLines = 5
+                    )
+                    Spacer(Modifier.height(AgentSpacing.space3))
+                    // salience 滑杆：1..10 离散（steps = 8），实时读数
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = "重要度",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(Modifier.width(AgentSpacing.space3))
+                        Slider(
+                            value = salience.toFloat(),
+                            onValueChange = { onSalienceChange(it.toInt().coerceIn(1, 10)) },
+                            valueRange = 1f..10f,
+                            steps = 8,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Spacer(Modifier.width(AgentSpacing.space2))
+                        Text(
+                            text = "$salience",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                    Spacer(Modifier.height(AgentSpacing.space3))
+                    AkTextField(
+                        value = tags,
+                        onValueChange = onTagsChange,
+                        label = "标签",
+                        placeholder = "用逗号分隔，如：饮食, 偏好"
+                    )
+                    Spacer(Modifier.height(AgentSpacing.space6))
+                    Row(horizontalArrangement = Arrangement.spacedBy(AgentSpacing.space2)) {
+                        AkOutlinedButton(
+                            text = "取消",
+                            onClick = onDismiss,
+                            modifier = Modifier.weight(1f)
+                        )
+                        AkPrimaryButton(
+                            text = "保存",
+                            icon = Icons.Outlined.Edit,
+                            modifier = Modifier.weight(1f),
+                            enabled = content.isNotBlank(),
                             onClick = onConfirm
                         )
                     }

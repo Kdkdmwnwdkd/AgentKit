@@ -133,6 +133,37 @@ class MemoryStore(private val dir: File) {
         return removed
     }
 
+    /**
+     * hotfix31：编辑一条记忆（内容 / 重要度 / 标签），保留 kind 与 createdAt。
+     *
+     * 真机反馈「记忆库只学到布局的样子，人家可以点开可以看还可以管」——详情卡
+     * 「编辑」的落点。与 [add] 同款净化纪律：content trim + 截断、salience clamp、
+     * tags 去空白去重；空白 content 拒收（返回 false，UI 保持编辑态不关对话框）。
+     * updatedAt 刷新让编辑过的记忆在「最近」排序里浮上来。
+     */
+    fun update(id: String, content: String, salience: Int, tags: List<String>): Boolean {
+        val normalized = content.trim().take(MAX_CONTENT_CHARS)
+        if (normalized.isBlank()) return false
+        val cleanTags = tags.map { it.trim() }.filter { it.isNotBlank() }.distinct()
+        val clamped = salience.coerceIn(MIN_SALIENCE, MAX_SALIENCE)
+        return synchronized(lock) {
+            val idx = items.indexOfFirst { it.id == id }
+            if (idx < 0) {
+                false
+            } else {
+                val old = items[idx]
+                items[idx] = old.copy(
+                    content = normalized,
+                    tags = cleanTags,
+                    salience = clamped,
+                    updatedAt = System.currentTimeMillis()
+                )
+                persist()
+                true
+            }
+        }
+    }
+
     /** 清空全部记忆（含落盘文件）。 */
     fun clear() {
         synchronized(lock) {

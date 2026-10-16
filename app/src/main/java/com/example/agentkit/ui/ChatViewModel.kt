@@ -1501,6 +1501,17 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         refreshMemories()
     }
 
+    /**
+     * hotfix31：编辑一条记忆（详情卡「编辑」→ 对话框）。
+     * 空白内容 / 目标不存在时 store 返回 false——UI 据此保持对话框不关，
+     * 并给一句提示；成功则刷新列表（updatedAt 刷新会把它顶到最前）。
+     */
+    fun updateMemory(id: String, content: String, salience: Int, tags: List<String>): Boolean {
+        val ok = memoryStore.update(id, content, salience, tags)
+        if (ok) refreshMemories()
+        return ok
+    }
+
     /** 清空全部记忆（UI 需二次确认）并重刷新列表。 */
     fun clearMemory() {
         memoryStore.clear()

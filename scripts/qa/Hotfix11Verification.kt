@@ -1205,6 +1205,66 @@ private fun testConversationSwitchWhileRunning() {
     }
 }
 
+/**
+ * Z 区：hotfix31「记忆库交互补强」——真机反馈「记忆库是说搞个和 OPeritAI
+ * 差不多的，但是你现在只学到了样子，人家可以移动，可以点开，可以看，
+ * 但是你这个不行，这只学到一个布局的样子而已」。
+ *
+ * 三块补强（零新依赖）：
+ *  ① 列表/图谱双模式（默认列表）：Canvas 节点真机小而难戳，LazyColumn 好扫好点；
+ *  ② 记忆可编辑：MemoryStore.update + 详情卡「编辑」对话框（content/salience/tags）；
+ *  ③ 图谱节点可拖动：dragOffsets 会话内偏移，边线/标签/命中全部经动态 centerOf。
+ */
+private fun testMemoryInteraction() {
+    println("— Z 区：记忆库交互补强（hotfix31） —")
+    val screen = readSource("ui/MemoryScreen.kt")
+    val store = readSource("memory/MemoryStore.kt")
+    val vm = readSource("ui/ChatViewModel.kt")
+
+    check("Z1 双模式：默认列表 + 模式 chip 行 + LazyColumn 列表") {
+        assertContains("Z1", screen, "var listMode by rememberSaveable { mutableStateOf(true) }")
+        assertContains("Z1", screen, "text = \"列表\",")
+        assertContains("Z1", screen, "text = \"图谱\",")
+        assertContains("Z1", screen, "private fun MemoryList(")
+        assertContains("Z1", screen, "items(memories, key = { it.id })")
+        assertContains("Z1", screen, "LazyColumn(")
+    }
+    check("Z2 编辑链路：Store.update 净化纪律 + VM 透传 + 详情卡入口") {
+        assertContains("Z2", store, "fun update(id: String, content: String, salience: Int, tags: List<String>): Boolean")
+        // 与 add 同款净化：trim + 截断 + clamp + tags 去空白去重；空白拒收
+        assertContains("Z2", store, "val normalized = content.trim().take(MAX_CONTENT_CHARS)")
+        assertContains("Z2", store, "salience.coerceIn(MIN_SALIENCE, MAX_SALIENCE)")
+        assertContains("Z2", store, "tags.map { it.trim() }.filter { it.isNotBlank() }.distinct()")
+        assertContains("Z2", store, "if (normalized.isBlank()) return false")
+        assertContains("Z2", vm, "fun updateMemory(id: String, content: String, salience: Int, tags: List<String>): Boolean")
+        assertContains("Z2", vm, "val ok = memoryStore.update(id, content, salience, tags)")
+        assertContains("Z2", screen, "onEdit = {")
+    }
+    check("Z3 编辑对话框：content/salience 滑杆/tags 三件套 + 失败保持不关") {
+        assertContains("Z3", screen, "private fun MemoryEditDialog(")
+        assertContains("Z3", screen, "Slider(")
+        assertContains("Z3", screen, "valueRange = 1f..10f")
+        assertContains("Z3", screen, "label = \"标签\"")
+        // 拒收（空白内容/目标不在）时 Toast 且不关对话框
+        assertContains("Z3", screen, "Toast.makeText(context, \"内容不能为空\", Toast.LENGTH_SHORT).show()")
+        assertContains("Z3", screen, "vm.updateMemory(")
+    }
+    check("Z4 图谱拖动：dragOffsets 偏移 + 动态 centerOf + 双 pointerInput") {
+        assertContains("Z4", screen, "val dragOffsets: SnapshotStateMap<String, Offset> = remember { mutableStateMapOf() }")
+        assertContains("Z4", screen, "var draggingId by remember { mutableStateOf<String?>(null) }")
+        assertContains("Z4", screen, "detectDragGestures(")
+        assertContains("Z4", screen, "onDrag = { _, dragAmount ->")
+        assertContains("Z4", screen, "dragOffsets[node.id] ?: Offset.Zero")
+        // 绘制与命中两侧都用动态位置（边随拖动实时重画）
+        val drawSide = screen.substringAfter("fun centerOf(node: MemNode) =")
+        assertContains("Z4", drawSide.substringBefore("\n        // —— 连边"), "dragOffsets[node.id] ?: Offset.Zero")
+    }
+    check("Z5 详情卡：编辑按钮 alongside 忘记（error 色只留给危险动作）") {
+        assertContains("Z5", screen, "AkTextButton(text = \"编辑\", onClick = onEdit)")
+        assertContains("Z5", screen, "onEdit: () -> Unit = {}")
+    }
+}
+
 fun main() {
     println("== hotfix11 模型快速切换 + 功能四/五 验证 ==")
     testModelQuickSwitch()
@@ -1244,6 +1304,8 @@ fun main() {
     testMarkdownFileExport()
     println()
     testConversationSwitchWhileRunning()
+    println()
+    testMemoryInteraction()
     println()
     println("== 汇总 ==")
     println("PASS: $passed  FAIL: ${failures.size}  TOTAL: ${passed + failures.size}")
