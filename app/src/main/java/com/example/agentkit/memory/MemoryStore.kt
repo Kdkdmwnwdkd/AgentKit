@@ -144,6 +144,20 @@ class MemoryStore(private val dir: File) {
     fun size(): Int = synchronized(lock) { items.size }
 
     /**
+     * 功能五（P1-4b）：全量快照（备份用）。拷贝列表，调用方改不动内部状态。
+     */
+    fun snapshot(): List<MemoryItem> = synchronized(lock) { items.toList() }
+
+    /**
+     * 功能五（P1-4b）：整库重灌（恢复用，**破坏性**——调用方 UI 必须先拿到用户确认）。
+     * 复用 [replaceAll]（内存替换）+ 落盘：恢复后即使进程被杀也不丢。
+     */
+    fun restoreAll(list: List<MemoryItem>) {
+        replaceAll(list)
+        persist()
+    }
+
+    /**
      * 生成注入系统提示的记忆摘要，形如：
      * `免责声明 + <memory><item kind="fact">…</item>…</memory>`
      *

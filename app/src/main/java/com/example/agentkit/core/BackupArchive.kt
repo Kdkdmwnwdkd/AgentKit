@@ -1,0 +1,130 @@
+package com.example.agentkit.core
+
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
+import java.io.ByteArrayOutputStream
+import java.util.zip.ZipEntry
+import java.util.zip.ZipInputStream
+import java.util.zip.ZipOutputStream
+
+/**
+ * 功能五（P1-4b）：备份 ZIP 的打包/解包（纯函数，零 Android 依赖，harness 直接断言）。
+ *
+ * 为什么自制 ZIP 而不是「整个 filesDir 打个包」：
+ *  - 备份件要能跨版本恢复——内部按语义成员（manifest/conversations/memories/config）
+ *    组织，恢复侧逐成员经公开 API 灌入，带迁移与净化；裸目录包只能整包替换，
+ *    一个坏文件就能让 App 起不来；
+ *  - manifest 先行：解包先读信封验版本与条数，不合格直接拒收（[read] 的契约），
+ *    用户拿到「备份文件无法识别」而不是恢复了一半把数据搞丢。
+ *
+ * 防滥用：
+ *  - 解包只认白名单 entry 名（[ENTRY_*]），其他名字（含 `../` 穿越名）一律忽略——
+ *    本实现不落盘、只读内存，穿越无门，但白名单让「包里有奇怪东西」时行为确定；
+ *  - 累计解压上限 [MAX_TOTAL_BYTES]：防 zip 炸弹把内存撑爆（64MB 对会话+记忆
+ *     JSON 足够宽松，正常备份远小于此）。
+ */
+object BackupArchive {
+
+    /** 当前备份格式版本。 */
+    const val VERSION = 1
+
+    internal const val ENTRY_MANIFEST = "manifest.json"
+    internal const val ENTRY_CONVERSATIONS = "conversations.json"
+    internal const val ENTRY_MEMORIES = "memories.json"
+    internal const val ENTRY_CONFIG = "config.json"
+
+    /** 解压累计上限（zip 炸弹防护）。 */
+    private const val MAX_TOTAL_BYTES = 64L * 1024 * 1024
+
+    private val json = Json { ignoreUnknownKeys = true }
+
+    /** 解包结果：成功（含 manifest 与三份 JSON 文本；config 可为 null）或拒收原因。 */
+    sealed class ReadResult {
+        data class Ok(
+            val manifest: BackupManifest,
+            val conversationsJson: String,
+            val memoriesJson: String,
+            val configJson: String?
+        ) : ReadResult()
+
+        /** 拒收：不是 ZIP / 缺 manifest / manifest 解析失败 / 版本不认识 / 条数不一致。 */
+        data class Invalid(val reason: String) : ReadResult()
+    }
+
+    /**
+     * 打包。conversationsJson/memoriesJson 由调用方用 [Json] 编码快照得到
+     * （保留 store 侧的序列化配置）；configJson 为 null 时跳过该成员。
+     */
+    fun create(
+        manifest: BackupManifest,
+        conversationsJson: String,
+        memoriesJson: String,
+        configJson: String?
+    ): ByteArray {
+        val bos = ByteArrayOutputStream()
+        ZipOutputStream(bos).use { zip ->
+            zip.putText(ENTRY_MANIFEST, json.encodeToString(manifest))
+            zip.putText(ENTRY_CONVERSATIONS, conversationsJson)
+            zip.putText(ENTRY_MEMORIES, memoriesJson)
+            if (configJson != null) zip.putText(ENTRY_CONFIG, configJson)
+        }
+        return bos.toByteArray()
+    }
+
+    /**
+     * 解包 + 信封校验。契约：
+     *  ① 可解析为 ZIP 且含 manifest.json；② manifest 版本 ≤ [VERSION]；
+     *  ③ 条数与 manifest 声明一致（ conversations/memories 两个成员必需）。
+     * 任一不满足 → [ReadResult.Invalid]，调用方不得触碰生产数据。
+     */
+    fun read(bytes: ByteArray): ReadResult {
+        val texts = HashMap<String, String>()
+        var total = 0L
+        try {
+            ZipInputStream(bytes.inputStream()).use { zip ->
+                var entry = zip.nextEntry
+                while (entry != null) {
+                    if (!entry.isDirectory && entry.name in ENTRY_WHITELIST) {
+                        val data = zip.readBytes()
+                        total += data.size
+                        if (total > MAX_TOTAL_BYTES) {
+                            return ReadResult.Invalid("备份内容超出大小上限")
+                        }
+                        texts[entry.name] = data.toString(Charsets.UTF_8)
+                    }
+                    entry = zip.nextEntry
+                }
+            }
+        } catch (e: Exception) {
+            return ReadResult.Invalid("不是有效的 ZIP 备份文件")
+        }
+        val manifestText = texts[ENTRY_MANIFEST] ?: return ReadResult.Invalid("缺少备份清单 manifest.json")
+        val manifest = runCatching { json.decodeFromString<BackupManifest>(manifestText) }.getOrNull()
+            ?: return ReadResult.Invalid("备份清单无法解析")
+        if (manifest.version > VERSION) {
+            return ReadResult.Invalid("备份格式版本过新（v${manifest.version}），请升级 App 后重试")
+        }
+        val conversationsJson = texts[ENTRY_CONVERSATIONS] ?: return ReadResult.Invalid("缺少会话数据")
+        val memoriesJson = texts[ENTRY_MEMORIES] ?: return ReadResult.Invalid("缺少记忆数据")
+        val convCount = runCatching { json.parseToJsonElement(conversationsJson).jsonArrayCount() }.getOrNull()
+        val memCount = runCatching { json.parseToJsonElement(memoriesJson).jsonArrayCount() }.getOrNull()
+        if (convCount == null || memCount == null) {
+            return ReadResult.Invalid("会话或记忆数据不是合法 JSON 数组")
+        }
+        if (convCount != manifest.conversationCount || memCount != manifest.memoryCount) {
+            return ReadResult.Invalid("备份条目数与清单不符（清单 ${manifest.conversationCount}/${manifest.memoryCount}，实际 $convCount/$memCount）")
+        }
+        return ReadResult.Ok(manifest, conversationsJson, memoriesJson, texts[ENTRY_CONFIG])
+    }
+
+    private val ENTRY_WHITELIST = setOf(ENTRY_MANIFEST, ENTRY_CONVERSATIONS, ENTRY_MEMORIES, ENTRY_CONFIG)
+
+    private fun ZipOutputStream.putText(name: String, text: String) {
+        putNextEntry(ZipEntry(name))
+        write(text.toByteArray(Charsets.UTF_8))
+        closeEntry()
+    }
+
+    private fun kotlinx.serialization.json.JsonElement.jsonArrayCount(): Int =
+        (this as? kotlinx.serialization.json.JsonArray)?.size ?: -1
+}

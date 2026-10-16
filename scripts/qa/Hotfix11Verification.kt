@@ -608,6 +608,86 @@ private fun testConversationExport() {
     }
 }
 
+/**
+ * R 区：功能五 P1-4b「全局备份/恢复」——对标 RikkaHub Backup.kt（ZIP + manifest 信封）
+ * 与 Coomi data.ts 导出；净室重写。
+ *
+ * 断言的链路完整性：core 数据契约 + ZIP 纯函数（版本门槛/条数校验/白名单）→
+ * 三个 store 的公开重灌 API（不搬 raw prefs）→ VM 导出/恢复入口（SAF Uri）→
+ * 设置页双闸门（确认对话框 + 文件选择器）。
+ */
+private fun testBackupRestore() {
+    println("— R 区：全局备份/恢复（功能五 P1-4b） —")
+    val models = readSource("core/BackupModels.kt")
+    val archive = readSource("core/BackupArchive.kt")
+    val convStore = readSource("core/ConversationStore.kt")
+    val memStore = readSource("memory/MemoryStore.kt")
+    val cfgStore = readSource("core/ConfigStore.kt")
+    val vm = readSource("ui/ChatViewModel.kt")
+    val settings = readSource("ui/SettingsScreen.kt")
+
+    check("R1 core 数据契约：manifest 信封 + ConfigBackup（profilesJson 存原文，恢复与 loadProfiles 共用解码）") {
+        assertContains("R1", models, "data class BackupManifest(")
+        assertContains("R1", models, "val version: Int")
+        assertContains("R1", models, "val conversationCount: Int")
+        assertContains("R1", models, "data class ConfigBackup(")
+        assertContains("R1", models, "val profilesJson: String? = null")
+        assertContains("R1", models, "@Serializable")
+    }
+    check("R2 ZIP 纯函数：白名单 entry + 版本门槛 + 条数一致性 + zip 炸弹上限") {
+        assertContains("R2", archive, "object BackupArchive")
+        assertContains("R2", archive, "const val VERSION = 1")
+        assertContains("R2", archive, "manifest.version > VERSION")
+        assertContains("R2", archive, "entry.name in ENTRY_WHITELIST")
+        assertContains("R2", archive, "MAX_TOTAL_BYTES")
+        assertContains("R2", archive, "备份条目数与清单不符")
+        // 纯函数零 Android 依赖：harness 断言 file 里无 android import
+        assertTrue("R2", !archive.contains("import android."))
+    }
+    check("R3 ConversationStore 重灌：replaceAll 过 migrate（老备份件迁移不丢历史）+ 预约落盘") {
+        assertContains("R3", convStore, "fun replaceAll(list: List<ConversationRecord>)")
+        assertContains("R3", convStore, "items.addAll(list.map { migrate(it) })")
+        assertContains("R3", convStore, "fun snapshot(): List<ConversationRecord>")
+    }
+    check("R4 MemoryStore 重灌：restoreAll = replaceAll + persist（恢复后进程被杀也不丢）") {
+        assertContains("R4", memStore, "fun restoreAll(list: List<MemoryItem>)")
+        assertContains("R4", memStore, "fun snapshot(): List<MemoryItem>")
+    }
+    check("R5 ConfigStore 恢复经公开 API（saveProfiles/saveFavoriteModels/media key/github，不搬 raw prefs）") {
+        assertContains("R5", cfgStore, "fun restoreFrom(backup: ConfigBackup)")
+        assertContains("R5", cfgStore, "fun loadAllMediaKeys(): Map<String, String>")
+        assertContains("R5", cfgStore, "saveProfiles(profiles, backup.activeProfileId")
+        assertContains("R5", cfgStore, "saveFavoriteModels(backup.favoriteModels)")
+        assertContains("R5", cfgStore, "saveGithubConfig(")
+    }
+    check("R6 VM 导出入口：快照 → BackupArchive.create → SAF OutputStream，IO 全离主线程") {
+        assertContains("R6", vm, "fun exportBackupTo(uri: Uri)")
+        assertContains("R6", vm, "conversationStore.snapshot()")
+        assertContains("R6", vm, "memoryStore.snapshot()")
+        assertContains("R6", vm, "BackupArchive.create(")
+        assertContains("R6", vm, "app.contentResolver.openOutputStream(uri)")
+        assertContains("R6", vm, "viewModelScope.launch(Dispatchers.IO)")
+    }
+    check("R7 VM 恢复入口：信封校验先行（坏包不碰生产数据）→ 重灌 → UI 状态全量重载") {
+        assertContains("R7", vm, "fun restoreBackupFrom(uri: Uri)")
+        assertContains("R7", vm, "BackupArchive.read(bytes)")
+        assertContains("R7", vm, "conversationStore.replaceAll(conversations)")
+        assertContains("R7", vm, "memoryStore.restoreAll(memories)")
+        assertContains("R7", vm, "configStore.restoreFrom(it)")
+        assertContains("R7", vm, "loadConversation(conversationStore.ensureNotEmpty())")
+        assertContains("R7", vm, "fun consumeBackupState()")
+    }
+    check("R8 设置页双闸门：恢复先 danger 确认对话框，再开 SAF 文件选择器") {
+        assertContains("R8", settings, "ActivityResultContracts.CreateDocument(\"application/zip\")")
+        assertContains("R8", settings, "ActivityResultContracts.OpenDocument()")
+        assertContains("R8", settings, "var confirmRestore by remember { mutableStateOf(false) }")
+        assertContains("R8", settings, "title = \"恢复备份\"")
+        assertContains("R8", settings, "danger = true")
+        assertContains("R8", settings, "importLauncher.launch(arrayOf(\"application/zip\"))")
+        assertContains("R8", settings, "title = \"备份与恢复\"")
+    }
+}
+
 fun main() {
     println("== hotfix11 模型快速切换 + 功能四/五 验证 ==")
     testModelQuickSwitch()
@@ -631,6 +711,8 @@ fun main() {
     testTokenUsage()
     println()
     testConversationExport()
+    println()
+    testBackupRestore()
     println()
     println("== 汇总 ==")
     println("PASS: $passed  FAIL: ${failures.size}  TOTAL: ${passed + failures.size}")

@@ -486,6 +486,29 @@ class ConversationStore(file: File) {
         return create()
     }
 
+    /**
+     * 功能五（P1-4b）：全量快照（备份用）。返回不可变拷贝——调用方拿到的是
+     * records 的浅拷贝列表，record 内部 list 均为不可变 List，外部改不动。
+     */
+    fun snapshot(): List<ConversationRecord> = synchronized(lock) { items.toList() }
+
+    /**
+     * 功能五（P1-4b）：整库重灌（恢复用，**破坏性**——调用方 UI 必须先拿到用户确认）。
+     *
+     * 三条保证：
+     *  ① 每条都过 [migrate]：恢复老备份件（无 turns 字段）时按新格式迁移，不丢历史；
+     *  ② 同步替换内存 + 预约落盘：恢复完成后即使进程被杀，落盘内容也是恢复后的数据；
+     *  ③ 与 [load] 同语义的 items 替换，无并发窗口（synchronized）。
+     * 调用方负责随后重载 UI 状态（会话列表/当前会话/消息），见 ChatViewModel.restoreBackup。
+     */
+    fun replaceAll(list: List<ConversationRecord>) {
+        synchronized(lock) {
+            items.clear()
+            items.addAll(list.map { migrate(it) })
+        }
+        schedulePersist()
+    }
+
     /* ------------------------------ 内部实现 ------------------------------ */
 
     /**

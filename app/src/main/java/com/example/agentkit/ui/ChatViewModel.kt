@@ -38,6 +38,10 @@ import com.example.agentkit.core.AgentLogger
 import com.example.agentkit.core.agent.ConnectivityNetworkRecoveryWaiter
 import com.example.agentkit.core.ConfigSanitizer
 import com.example.agentkit.core.ConfigStore
+import com.example.agentkit.core.BackupArchive
+import com.example.agentkit.core.BackupManifest
+import com.example.agentkit.core.ConfigBackup
+import com.example.agentkit.core.ConversationRecord
 import com.example.agentkit.core.conversationToMarkdown
 import com.example.agentkit.core.ConversationStore
 import com.example.agentkit.core.ConversationSummary
@@ -111,6 +115,9 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
+import kotlinx.serialization.decodeFromString
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.sync.Mutex
@@ -1831,6 +1838,135 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         val rec = conversationStore.load(convId) ?: return ""
         if (rec.messages.isEmpty()) return ""
         return conversationToMarkdown(rec)
+    }
+
+    /* -------------------- 功能五（P1-4b）：全局备份 / 恢复 -------------------- */
+
+    /**
+     * 备份/恢复的 UI 状态机（设置页「备份与恢复」消费）。
+     *
+     * [Done]/[Failed] 是一次性事件语义：UI 展示后调 [consumeBackupState] 复位，
+     * 避免旋转屏幕/重入页面时旧 toast 复读。
+     */
+    sealed interface BackupUiState {
+        data object Idle : BackupUiState
+        /** @param exporting true=导出中 false=恢复中。 */
+        data class Working(val exporting: Boolean) : BackupUiState
+        data class Done(val message: String) : BackupUiState
+        data class Failed(val reason: String) : BackupUiState
+    }
+
+    private val _backupState = MutableStateFlow<BackupUiState>(BackupUiState.Idle)
+    val backupState: StateFlow<BackupUiState> = _backupState.asStateFlow()
+
+    /** 备份 JSON 编码器：与 store 落盘同配置（ignoreUnknownKeys 容忍跨版本字段增减）。 */
+    private val backupJson = Json { ignoreUnknownKeys = true }
+
+    /** 复位一次性状态（UI 消费完 Done/Failed 后调用）。 */
+    fun consumeBackupState() {
+        _backupState.value = BackupUiState.Idle
+    }
+
+    /**
+     * 导出全局备份到用户选定的 SAF 位置（[androidx.activity.result.contract.ActivityResultContracts.CreateDocument]）。
+     *
+     * 内容 = ZIP(manifest + conversations + memories + config)，组装逻辑在
+     * [BackupArchive]（纯函数）；本方法只负责取快照与写流。IO 全在 Dispatchers.IO，
+     * 快照读取是内存操作（synchronized 内 map），不阻塞主线程。
+     */
+    fun exportBackupTo(uri: Uri) {
+        _backupState.value = BackupUiState.Working(exporting = true)
+        viewModelScope.launch(Dispatchers.IO) {
+            val result = runCatching {
+                val conversations = conversationStore.snapshot()
+                val memories = memoryStore.snapshot()
+                val gh = configStore.loadGithubConfig()
+                val config = ConfigBackup(
+                    profilesJson = backupJson.encodeToString(configStore.loadProfiles()),
+                    activeProfileId = configStore.loadActiveId(),
+                    favoriteModels = configStore.loadFavoriteModels(),
+                    mediaKeys = configStore.loadAllMediaKeys(),
+                    githubOwner = gh?.owner,
+                    githubRepo = gh?.repo,
+                    githubPat = gh?.pat,
+                    githubWorkflow = gh?.workflow
+                )
+                val manifest = BackupManifest(
+                    version = BackupArchive.VERSION,
+                    createdAt = System.currentTimeMillis(),
+                    conversationCount = conversations.size,
+                    memoryCount = memories.size,
+                    hasConfig = true
+                )
+                val bytes = BackupArchive.create(
+                    manifest,
+                    backupJson.encodeToString(conversations),
+                    backupJson.encodeToString(memories),
+                    backupJson.encodeToString(config)
+                )
+                val out = app.contentResolver.openOutputStream(uri)
+                    ?: error("无法写入所选位置（可能已被移除）")
+                out.use { it.write(bytes) }
+                "已导出 ${conversations.size} 个会话、${memories.size} 条记忆"
+            }
+            _backupState.value = result.fold(
+                onSuccess = { BackupUiState.Done(it) },
+                onFailure = { BackupUiState.Failed(it.message ?: "导出失败") }
+            )
+        }
+    }
+
+    /**
+     * 从用户选定的备份文件恢复（**破坏性**：覆盖全部会话/记忆/模型配置）。
+     *
+     * 调用方（UI）必须先弹二次确认；本方法内部还有 [BackupArchive.read] 的信封
+     * 校验——坏包在触碰任何生产数据前就被拒（Invalid 状态）。
+     *
+     * 恢复顺序：store 重灌（内存+落盘）→ UI 状态重载（会话列表/当前会话/消息/
+     * 记忆页/配置档案流）→ Done。任一步抛异常 → Failed，此时数据可能已部分重灌，
+     * 但 store 自身是原子的（replaceAll 内 synchronized），不会留下半截 JSON。
+     */
+    fun restoreBackupFrom(uri: Uri) {
+        _backupState.value = BackupUiState.Working(exporting = false)
+        viewModelScope.launch(Dispatchers.IO) {
+            val bytes = runCatching {
+                app.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+            }.getOrNull() ?: run {
+                _backupState.value = BackupUiState.Failed("无法读取所选文件")
+                return@launch
+            }
+            when (val read = BackupArchive.read(bytes)) {
+                is BackupArchive.ReadResult.Invalid ->
+                    _backupState.value = BackupUiState.Failed(read.reason)
+
+                is BackupArchive.ReadResult.Ok -> {
+                    val result = runCatching {
+                        val conversations =
+                            backupJson.decodeFromString<List<ConversationRecord>>(read.conversationsJson)
+                        val memories =
+                            backupJson.decodeFromString<List<MemoryItem>>(read.memoriesJson)
+                        conversationStore.replaceAll(conversations)
+                        memoryStore.restoreAll(memories)
+                        read.configJson?.let { cfgText ->
+                            runCatching {
+                                backupJson.decodeFromString<ConfigBackup>(cfgText)
+                            }.getOrNull()?.let { configStore.restoreFrom(it) }
+                        }
+                        // UI 重载（StateFlow.value 可跨线程设；loadConversation 内部同步）
+                        refreshConversations()
+                        loadConversation(conversationStore.ensureNotEmpty())
+                        refreshMemories()
+                        _profiles.value = configStore.loadProfiles()
+                        _activeProfileId.value = configStore.loadActiveId().orEmpty()
+                        "已恢复 ${conversations.size} 个会话、${memories.size} 条记忆"
+                    }
+                    _backupState.value = result.fold(
+                        onSuccess = { BackupUiState.Done(it) },
+                        onFailure = { BackupUiState.Failed(it.message ?: "恢复失败") }
+                    )
+                }
+            }
+        }
     }
 
     /** 载入指定会话为当前会话（设 id + 读消息进 _messages + 刷新摘要）。 */

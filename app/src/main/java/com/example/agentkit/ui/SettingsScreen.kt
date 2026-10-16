@@ -1,5 +1,7 @@
 package com.example.agentkit.ui
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -16,8 +18,11 @@ import androidx.compose.material.icons.outlined.Cloud
 import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Extension
+import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Palette
+import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material.icons.outlined.Save
 import androidx.compose.material.icons.outlined.Security
 import androidx.compose.material.icons.outlined.Shield
 import androidx.compose.material.icons.outlined.Storage
@@ -25,9 +30,15 @@ import androidx.compose.material.icons.outlined.TouchApp
 import androidx.compose.material.icons.outlined.ViewInAr
 import androidx.compose.material.icons.outlined.Widgets
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import android.widget.Toast
 
 /**
  * 设置页（UX v1 §1.8）：外观 / 自动化 / 各处入口的收纳页。
@@ -51,6 +62,31 @@ fun SettingsScreen(
     onNavigate: (AppDest) -> Unit
 ) {
     val enabled by vm.automationEnabled.collectAsStateWithLifecycle()
+
+    // —— 功能五（P1-4b）：备份/恢复。SAF 文档选择器（零存储权限，用户自选落点）——
+    val exportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/zip")
+    ) { uri -> uri?.let { vm.exportBackupTo(it) } }
+    val importLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri -> uri?.let { vm.restoreBackupFrom(it) } }
+    // 恢复是破坏性操作：先弹确认，用户点头才开文件选择器（双闸门）
+    var confirmRestore by remember { mutableStateOf(false) }
+    val backupState by vm.backupState.collectAsStateWithLifecycle()
+    val ctx = LocalContext.current
+    LaunchedEffect(backupState) {
+        when (val s = backupState) {
+            is ChatViewModel.BackupUiState.Done -> {
+                Toast.makeText(ctx, s.message, Toast.LENGTH_SHORT).show()
+                vm.consumeBackupState()
+            }
+            is ChatViewModel.BackupUiState.Failed -> {
+                Toast.makeText(ctx, s.reason, Toast.LENGTH_LONG).show()
+                vm.consumeBackupState()
+            }
+            else -> Unit
+        }
+    }
 
     Column(Modifier.fillMaxWidth()) {
         // 设置页无右上动作：本页所有操作都在内容区，顶栏不放可能误触的全局按钮（§6.5.4）
@@ -202,7 +238,42 @@ fun SettingsScreen(
                     onClick = { onNavigate(AppDest.ABOUT) }
                 )
             }
+
+            // —— 备份与恢复：全局数据（会话 + 记忆 + 模型配置）打包到用户自选位置 ——
+            AkSectionCard(
+                title = "备份与恢复",
+                icon = Icons.Outlined.Folder,
+                description = "导出为 ZIP 备份件（含全部会话、记忆与模型配置）；恢复会用备份内容覆盖当前数据。"
+            ) {
+                AkListItem(
+                    icon = Icons.Outlined.Save,
+                    title = "导出备份",
+                    description = "选择保存位置，生成 ZIP 备份文件",
+                    onClick = { exportLauncher.launch("agentkit-backup.zip") }
+                )
+                AkDivider(Modifier.padding(start = AgentSpacing.space4))
+                AkListItem(
+                    icon = Icons.Outlined.Refresh,
+                    title = "恢复备份",
+                    description = "从 ZIP 备份文件恢复，覆盖当前全部数据",
+                    onClick = { confirmRestore = true }
+                )
+            }
         }
+    }
+
+    if (confirmRestore) {
+        AkConfirmDialog(
+            title = "恢复备份",
+            message = "恢复将用备份文件的内容覆盖本机全部会话、记忆与模型配置，当前数据不可找回。确定继续吗？",
+            confirmText = "选择备份文件",
+            danger = true,
+            onConfirm = {
+                confirmRestore = false
+                importLauncher.launch(arrayOf("application/zip"))
+            },
+            onDismiss = { confirmRestore = false }
+        )
     }
 }
 

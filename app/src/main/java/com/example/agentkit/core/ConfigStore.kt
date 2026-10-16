@@ -236,6 +236,58 @@ class ConfigStore(context: Context) {
         )
     }
 
+    /**
+     * 功能五（P1-4b）：读全部媒体 Provider Key（`media_key_<id>` 前缀扫盘）。
+     * providerId 是开放集合（dashscope/openai/volc/minimax…），无法枚举，
+     * 只能按前缀扫 [SharedPreferences.all]；只读不写，无净化需求（写入侧已 trim）。
+     */
+    fun loadAllMediaKeys(): Map<String, String> {
+        val prefix = KEY_MEDIA_KEY_PREFIX
+        return sp.all.filterKeys { it.startsWith(prefix) }
+            .mapNotNull { (k, v) -> (v as? String)?.let { k.removePrefix(prefix) to it } }
+            .toMap()
+    }
+
+    /**
+     * 功能五（P1-4b）：从备份恢复模型配置（**经公开 API 写回，不搬 raw prefs 文件**）。
+     *
+     * 为什么走公开 API：saveProfiles 自带旧四键镜像与档案校验，restore 若直接
+     * putAll raw prefs 会绕过这些不变量（比如 profiles_json 与 api_key 镜像不一致），
+     * 恢复完反而出现「切换档案不生效」的幽灵 bug。
+     *
+     * @param backup 备份件里的配置快照；profilesJson 为空时跳过档案恢复
+     *   （老备份件无此成员时保留现有配置，不做破坏性清空）。
+     */
+    fun restoreFrom(backup: ConfigBackup) {
+        val profilesText = backup.profilesJson
+        if (!profilesText.isNullOrBlank()) {
+            val profiles = runCatching {
+                json.decodeFromString<List<ModelProfile>>(profilesText)
+            }.getOrNull()
+            if (profiles != null) {
+                // activeId 缺失/失效时 saveProfiles 自动回退第一个档案（见其 KDoc）
+                saveProfiles(profiles, backup.activeProfileId ?: profiles.firstOrNull()?.id.orEmpty())
+            }
+        }
+        saveFavoriteModels(backup.favoriteModels)
+        backup.mediaKeys.forEach { (providerId, key) ->
+            sp.edit().putString(KEY_MEDIA_KEY_PREFIX + providerId, key.trim()).apply()
+        }
+        val ghOwner = backup.githubOwner
+        val ghRepo = backup.githubRepo
+        val ghPat = backup.githubPat
+        if (!ghOwner.isNullOrBlank() && !ghRepo.isNullOrBlank() && !ghPat.isNullOrBlank()) {
+            saveGithubConfig(
+                com.example.agentkit.core.build.GitHubConfig(
+                    owner = ghOwner,
+                    repo = ghRepo,
+                    pat = ghPat,
+                    workflow = backup.githubWorkflow?.ifBlank { "build.yml" } ?: "build.yml"
+                )
+            )
+        }
+    }
+
     companion object {
         /** 与现有 SharedPreferences 命名风格保持一致（agentkit_ 前缀）。 */
         private const val PREFS_NAME = "agentkit_model_config"
