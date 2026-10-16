@@ -33,6 +33,10 @@
  *  - P1-1 陈旧窗口防护：[shouldRetryForFreshWindow]：刚切换且 root 为 null/自身包 →
  *    值得再等；root 已是目标应用 / 距切换已久 / maxWaitMs≤0 → 不等。
  *
+ * W-8（真机日志诊断批次）追加覆盖：
+ *  - app_launch 早分支文案：不再诱导 device_foreground_app 轮询（连查 5 次的元凶），
+ *    改引 ui_tree 主通道；未确认分支 ui_tree 前置 + 「复核一次不要反复」。
+ *
  * 运行方式见 scripts/qa/run-appcontrol-verification.sh（kotlin-compiler-embeddable 编译 + java 运行）。
  */
 
@@ -410,10 +414,12 @@ private fun testLaunchConfirmationMapping() {
         assertContains("confirmed msg", message, "已确认切换到前台")
     }
 
-    check("confirmed=false → app_launched_unconfirmed，提示 device_foreground_app 复核且不谎称「已启动」") {
+    check("confirmed=false → app_launched_unconfirmed，ui_tree 主引导 + device_foreground_app 仅一次性复核且不谎称「已启动」") {
         val (code, message) = launchConfirmationResult(entry, confirmed = false)
         assertEquals("code", "app_launched_unconfirmed", code)
-        assertContains("foreground recheck hint", message, "device_foreground_app")
+        assertContains("ui_tree 主引导", message, "ui_tree")
+        assertContains("复核仅一次", message, "device_foreground_app")
+        assertContains("禁反复查询", message, "不要反复查询")
         assertTrue("no misleading 已启动", !message.contains("已启动"))
     }
 }
@@ -510,7 +516,10 @@ private fun testCancellationPropagation() {
             assertEquals("start 已调用", 1, startCalls)
             assertTrue("ok", r.ok)
             assertEquals("code", "app_launched", r.code)
-            assertContains("提示复核", r.message, "device_foreground_app")
+            // W-8：早分支不再诱导 device_foreground_app 轮询（真机日志：连查 5 次 +
+            // 重复 app_launch 纯烧时间），改引主通道 ui_tree
+            assertContains("引导 ui_tree", r.message, "ui_tree")
+            assertTrue("不再诱导 device_foreground_app 轮询", !r.message.contains("device_foreground_app"))
         }
     }
 

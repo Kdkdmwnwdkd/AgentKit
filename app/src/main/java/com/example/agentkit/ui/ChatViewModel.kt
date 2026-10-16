@@ -1004,6 +1004,13 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     /** 本次会话内「始终允许」的工具名集合：仅存进程内存，App 重启即失效，避免长期授权漂移。 */
     private val sessionAllowed = mutableSetOf<String>()
 
+    /**
+     * W-8 P1-C：ui_screenshot 的本回合批准缓存（见 [requestApproval]）。
+     * 每个用户回合（send() 入口）重置——跨回合不继承，每次新任务首次截图仍会问一次。
+     */
+    @Volatile
+    private var screenshotApprovedThisTurn = false
+
     /** 审批互斥锁：并发工具调用时串行排队，保证同一时刻只有一个审批弹窗。 */
     private val approvalMutex = Mutex()
 
@@ -1013,10 +1020,16 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
      */
     private suspend fun requestApproval(tool: AgentTool, args: JsonObject): Boolean = approvalMutex.withLock {
         if (tool.name in sessionAllowed) return@withLock true
+        // W-8 P1-C：ui_screenshot 按回合自动缓存批准——用户在系统设置里开过屏幕捕获开关
+        // （系统级 MediaProjection 许可）+ 本回合已批准过一次截图，后续截图不再重复弹窗。
+        // 修前每次截图都弹：真机日志里模型「看一眼点一下」被对话框反复打断，体感「更久」。
+        // 回合边界在 send() 入口重置（screenshotApprovedThisTurn = false）。
+        if (tool.name == SCREENSHOT_TOOL && screenshotApprovedThisTurn) return@withLock true
         val deferred = CompletableDeferred<Boolean>()
         _pendingApproval.value = ApprovalRequest(tool.name, args.toString().take(500), deferred)
         // finally 保证无论用户怎么关掉弹窗，pending 都会清空，不会残留卡住下一个工具
         val ok = try { deferred.await() } finally { _pendingApproval.value = null }
+        if (ok && tool.name == SCREENSHOT_TOOL) screenshotApprovedThisTurn = true
         AgentLogger.w("Approval", "${tool.name} ${if (ok) "允许" else "拒绝"}")
         ok
     }
@@ -1586,6 +1599,9 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     private companion object {
         const val MAX_EDGE = 1024
 
+        /** W-8 P1-C：截图工具名——本回合批准过一次后后续截图免弹窗（见 [requestApproval]）。 */
+        const val SCREENSHOT_TOOL = "ui_screenshot"
+
         /** 功能五（P1-4）：PDF 最多渲染页数（首页几页通常已够模型读懂主旨）。 */
         const val MAX_PDF_PAGES = 5
 
@@ -1769,6 +1785,8 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     fun send() {
         val text = input.value.trim()
         if (text.isBlank() || isRunning.value) return
+        // W-8 P1-C：新回合重置截图批准缓存——上个回合批准过不算数，本回合首次截图仍询问
+        screenshotApprovedThisTurn = false
         // 功能四（P0-2）/ 功能五（P1-4）：先摘走待发附件并清空，避免本轮发出后仍留在输入区
         val images = _pendingImages.value
         _pendingImages.value = emptyList()

@@ -45,15 +45,40 @@ sealed interface GuardVerdict {
 }
 
 /**
+ * 瞬时故障码集合（W-8）：**基础设施未就绪**类失败——不是「参数错了」，而是「环境还没准备好」。
+ *
+ * 真机日志（23:56-23:58）根因：无障碍服务绑定前 ui_tree 连续两次 `service_not_ready`，
+ * 恒定指纹（ui_tree 无参数）的失败计数跨用户回合永久存活，服务就绪后第 3 次调用起
+ * 仍被熔断挡死——模型「有眼（截图）无手（ui_tree 全挡）」，任务必然失败。
+ * 熔断的本意是阻止「同参打转」，这类故障重试即可自愈，计入失败纯属误伤。
+ */
+internal val TRANSIENT_FAILURE_CODES: Set<String> = setOf(
+    "service_not_ready",   // 自动化桥未就绪（无障碍服务绑定中/用户尚未授权）——就绪后可自愈
+    "service_unavailable", // 系统能力缺失（如 UsageStatsManager 不支持）——非参数错误
+    "capture_not_enabled", // 屏幕捕获总开关未开——用户打开即可，非参数错误
+)
+
+/**
+ * 瞬时故障判据（纯函数，JVM harness 可断言）：
+ * 返回 true 时该次失败**不计入**熔断计数——见 [FailureGuard.onExecuted] 的 transient 形参。
+ */
+internal fun isTransientFailureCode(code: String): Boolean = code in TRANSIENT_FAILURE_CODES
+
+/**
  * 失败熔断 + 调用指纹去重（T04）。
  *
  * 判据（命中任一即 [GuardVerdict.Blocked]，不走真实执行）：
  *  1. **同批重复**：同一批次内出现完全相同的调用（同名同参）——第二个起拦截；
  *  2. **requiresChangedCall**：同一调用历史失败 ≥2 次（[FailureState.requiresChangedCall]）。
  *
- * 生命周期：执行后调 [onExecuted]——成功**清指纹**（同一调用再次出现时重新放行），
- * 失败累加 [FailureState.executions] / [FailureState.failures]（失败时二者同步 +1，
- * 故存活状态中恒相等；不存在只按执行次数单独触发的判据）。
+ * 生命周期（W-8 修订）：
+ *  - **回合作用域**：[RealAgentLoop.send] 入口调 [resetForTurn] 清空——同一用户回合内
+ *    跨批次保留（防模型同参打转的本意不变），跨回合/跨会话不继承（修掉真机日志里
+ *    「上个回合两次 service_not_ready 毒死下个回合全部 ui_tree」的污染）；
+ *  - **回合内**：执行后调 [onExecuted]——成功**清指纹**（同一调用再次出现时重新放行），
+ *    失败累加 [FailureState.executions] / [FailureState.failures]（失败时二者同步 +1，
+ *    故存活状态中恒相等；不存在只按执行次数单独触发的判据），瞬时故障（transient=true）
+ *    三不（不计数、不清除、不拦截）。
  * 被拦截的调用不更新状态：模型必须改参数/换工具才能解锁。
  */
 class FailureGuard {
@@ -102,9 +127,15 @@ class FailureGuard {
     /**
      * 一次真实执行结束后的状态更新。
      *
+     * @param fingerprint [fingerprint] 的返回值。
      * @param failed 本次执行是否失败（以回喂模型的 isError 为准）。
+     * @param transient 是否为瞬时故障（基础设施未就绪，判据见 [isTransientFailureCode]）。
+     *   true 时**三不**：不计数、不清指纹、不影响后续判定——环境就绪后原样重试应被放行。
+     *   修前形态把 service_not_ready 等计入失败，恒定指纹（如无参 ui_tree）被毒化后
+     *   跨回合永久拦截（真机日志 23:58：服务 23:57:47 已就绪，ui_tree 仍被挡死）。
      */
-    fun onExecuted(fingerprint: String, failed: Boolean) {
+    fun onExecuted(fingerprint: String, failed: Boolean, transient: Boolean = false) {
+        if (transient) return
         val cur = states[fingerprint] ?: FailureState()
         if (failed) {
             states[fingerprint] = cur.copy(
@@ -115,6 +146,17 @@ class FailureGuard {
             // 成功清指纹：调用已被证明可工作，允许后续原样重试
             states.remove(fingerprint)
         }
+    }
+
+    /**
+     * 回合作用域重置（W-8）：每个用户回合（[RealAgentLoop.send]）入口调用。
+     *
+     * 修前形态：failureGuard 随 loop 活在 ViewModel 上，全仓无人 clear——失败指纹
+     * 跨回合、跨会话（含 newConversation/switchConversation）永久存活，只有杀 App 能清。
+     * 回合内打转防护不受影响（回合内不清），跨回合污染消除。
+     */
+    fun resetForTurn() {
+        states.clear()
     }
 
     /** 清空全部状态（切会话/重置时用）。 */

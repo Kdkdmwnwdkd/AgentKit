@@ -226,7 +226,7 @@ internal fun launchConfirmationResult(entry: AppEntry, confirmed: Boolean): Pair
     } else {
         "app_launched_unconfirmed" to
             "已发出启动「${entry.label}」的意图，但未在前台确认到（可能被系统拦截、应用异常或无障碍服务未开启）。" +
-            "建议用 device_foreground_app 复核，或用 ui_tree 查看当前界面。"
+            "请用 ui_tree 查看当前界面；确有必要时再用 device_foreground_app 复核一次即可，不要反复查询。"
     }
 
 /**
@@ -473,8 +473,9 @@ internal suspend fun <T> runCatchingRethrowCancel(
  *    PhoneAgent POST_LAUNCH_DELAY_MS=1000L 的思路，设计参考非代码复制）。
  * 3. **前台确认**：[DeviceContextStore.awaitForegroundPackage] 轮询直到目标包名到前台。
  * 4. **三分支**（映射纯函数见 [launchConfirmationResult]）：已确认 → 硬成功；
- *    未确认 → 仍是 ok（意图已发出）但 code 区分开，提示模型用 device_foreground_app
- *    复核——「发了」与「成了」绝不含混。
+ *    未确认 → 仍是 ok（意图已发出）但 code 区分开，引导模型用 ui_tree 看当前界面
+ *    （W-8：device_foreground_app 仅作一次性复核，去掉轮询诱导）——「发了」与
+ *    「成了」绝不含混。
  *
  * 取消语义（W-7 审核 F1）：本函数内部 delay + 轮询全是挂起点，被取消时
  * CancellationException 原样上抛——调用方 [launchWithConfirmation] 从结构上保证
@@ -483,9 +484,12 @@ internal suspend fun <T> runCatchingRethrowCancel(
  */
 internal suspend fun confirmLaunch(entry: AppEntry): ToolResult {
     if (!deviceContextEverUpdated(DeviceContextStore.snapshot().foregroundPackage)) {
+        // W-8：无障碍未喂数据时不再诱导 device_foreground_app 轮询（真机日志：连查 5 次
+        // + 重复 app_launch 纯烧时间）——主通道是 ui_tree，截图兜底，一句话说清。
         return ToolResult.ok(
             code = "app_launched",
-            message = "已启动「${entry.label}」（包名 ${entry.packageName}）。建议用 device_foreground_app 确认是否已切换到目标应用。"
+            message = "已发出启动「${entry.label}」（包名 ${entry.packageName}）的意图。" +
+                "可接着用 ui_tree 查看当前界面是否已切换；若持续未切换，请引导用户手动打开。"
         )
     }
     delay(POST_LAUNCH_SETTLE_MS)

@@ -10,6 +10,7 @@ import com.example.agentkit.core.ToolPart
 import com.example.agentkit.core.ToolRegistry
 import com.example.agentkit.core.ToolResult
 import com.example.agentkit.core.formatToolResult
+import com.example.agentkit.core.isTransientFailureCode
 import com.example.agentkit.core.truncateToolResult
 import kotlinx.coroutines.CancellationException
 
@@ -137,8 +138,9 @@ interface BatchToolExecutor : ToolExecutor {
  * 图片收集，产出 [ToolCallOutcome.Completed]。
  *
  * 依赖注入而非自持：registry / failureGuard / approval / hooks 全部由构造参数
- * 传入——failureGuard 跨轮次持有在 loop 上（T04 熔断状态不随 executor 重建丢失），
- * registry 由 loop 每批按当前字段构造本类（update(registry) 即时生效）。
+ * 传入——failureGuard 持有在 loop 上（T04 熔断状态不随 executor 每批重建丢失；
+ * W-8 起其生命周期改为**回合作用域**：loop.send 入口 resetForTurn，回合内跨批保留、
+ * 跨回合不继承），registry 由 loop 每批按当前字段构造本类（update(registry) 即时生效）。
  */
 class RegistryToolExecutor(
     private val registry: ToolRegistry,
@@ -243,8 +245,13 @@ class RegistryToolExecutor(
             val result = tool.execute(call.arguments)
             val cost = System.currentTimeMillis() - start
             val imgUrls = result.parts.filterIsInstance<ToolPart.Image>().map { it.url }
-            // T04：成功清指纹，失败累加计数
-            failureGuard.onExecuted(fingerprint, failed = result.isError)
+            // T04：成功清指纹，失败累加计数；W-8：瞬时故障（服务未就绪等）三不——
+            // 不计数不清除，环境就绪后原样重试放行（修真机日志恒定指纹被毒化挡死）
+            failureGuard.onExecuted(
+                fingerprint,
+                failed = result.isError,
+                transient = result.isError && isTransientFailureCode(result.code)
+            )
             // T02 + T06：统一契约格式化 + 单结果截断（UI 与模型历史共用同一份文本）
             val text = truncateToolResult(formatToolResult(result))
             AgentLogger.toolResult(call.name, !result.isError, cost, text.take(300))

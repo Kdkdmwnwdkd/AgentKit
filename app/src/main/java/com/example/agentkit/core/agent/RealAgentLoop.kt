@@ -156,7 +156,15 @@ class RealAgentLoop(
         RetryBackoffPolicy.networkAware(backoffPlan, networkRecovery)
 ) : AgentLoop {
 
-    /** T04：失败熔断 + 调用指纹去重（跨轮次持有，切会话不重置——直到成功清指纹）。 */
+    /**
+     * T04：失败熔断 + 调用指纹去重。
+     *
+     * **回合作用域（W-8）**：随 loop 活在 ViewModel 上（不随每批重建的 executor 丢失），
+     * 但 [send] 入口 [FailureGuard.resetForTurn] 清空——回合内跨批次保留（防模型同参
+     * 打转的本意不变），跨回合/跨会话不继承。修前全仓无人 clear：真机日志里上个回合
+     * 两次 service_not_ready（瞬时故障）把恒定指纹的失败计数永久留下，下个回合服务
+     * 就绪后 ui_tree 仍被 requires_changed_call 挡死，模型「有眼无手」任务必败。
+     */
     private val failureGuard = FailureGuard()
 
     /**
@@ -198,6 +206,10 @@ class RealAgentLoop(
      *
      * **stop 标志回合作用域（Round1 QA Minor 修复）**：入口无条件重置
      * [stopRequested]——第 1 回合 stop 后，第 2 回合不被残留标志优雅停止。
+     *
+     * **熔断状态回合作用域（W-8）**：入口同样无条件 [FailureGuard.resetForTurn]——
+     * 上一回合的失败指纹（尤其 service_not_ready 类瞬时故障的累加）不污染本轮；
+     * 回合内跨批次保留，同参打转防护不受影响。
      */
     override suspend fun send(
         userInput: String,
@@ -207,6 +219,9 @@ class RealAgentLoop(
         // Round1 QA Minor 修复：stop 标志回合作用域化——入口先重置（上一回合的
         // 停止请求绝不被本轮继承），再标记在飞；finally 保证异常路径也清零。
         stopRequested.set(false)
+        // W-8：熔断状态同样回合作用域化——上一回合的失败指纹（含 service_not_ready
+        // 瞬时故障累加）绝不被本轮继承；回合内跨批次保留，防同参打转的本意不变。
+        failureGuard.resetForTurn()
         turnActive.set(true)
         try {
             return runTurn(userInput, images)

@@ -7,6 +7,10 @@
  * 直接对 assembleDebug 编译产物里的 core 契约类做行为验证——与审查要点逐条对应。
  *
  * 运行方式见 scripts/qa/run-verification.sh（kotlin-compiler-embeddable 编译 + java 运行）。
+ *
+ * W-8（真机日志诊断批次）追加 [testW8GuardTurnScope]：熔断器回合作用域重置 +
+ * 瞬时故障豁免——修「service_not_ready 类瞬时失败把恒定指纹（无参 ui_tree）毒化后
+ * 跨回合永久挡死」的根因（真机日志 23:58：服务已就绪，ui_tree 仍被熔断拦截）。
  */
 
 import com.example.agentkit.core.*
@@ -243,6 +247,71 @@ private suspend fun testT04FailureGuard() {
         assertEquals("deterministic", h1, h2)
         assertTrue("format", h1.length == 16 && h1.all { it in '0'..'9' || it in 'a'..'f' })
         assertTrue("different input", fnv1a64("hello") != fnv1a64("hellp"))
+    }
+}
+
+/* ------------------------------ W-8：熔断回合作用域 + 瞬时豁免 ------------------------------ */
+
+/**
+ * W-8（真机日志诊断批次）：修「恒定指纹被瞬时故障毒化、跨回合永久挡死」。
+ *
+ * 真机日志根因（23:52-23:58）：无障碍绑定前 ui_tree 连续两次 service_not_ready
+ * （瞬时故障），失败计数随 loop 活在 ViewModel 上、全仓无人 clear；服务 23:57:47
+ * 就绪后，下个回合的 ui_tree 仍被 requires_changed_call 挡死——模型「有眼（截图）
+ * 无手」，任务必败。两处修复：
+ *  1. 瞬时故障三不（不计数/不清除/不拦截）——isTransientFailureCode 判据；
+ *  2. 回合作用域 resetForTurn——send() 入口清空，回合内打转防护不变。
+ */
+private fun testW8GuardTurnScope() {
+    println("\n== W-8 熔断回合作用域 + 瞬时故障豁免（真机日志 23:58 ui_tree 被挡死根因）==")
+    val guard = FailureGuard()
+
+    check("isTransientFailureCode：三个基础设施码 true，参数类错误 false") {
+        assertTrue("service_not_ready", isTransientFailureCode("service_not_ready"))
+        assertTrue("service_unavailable", isTransientFailureCode("service_unavailable"))
+        assertTrue("capture_not_enabled", isTransientFailureCode("capture_not_enabled"))
+        assertTrue("io_error not transient", !isTransientFailureCode("io_error"))
+        assertTrue("missing_param not transient", !isTransientFailureCode("missing_param"))
+        assertTrue("empty not transient", !isTransientFailureCode(""))
+    }
+
+    check("瞬时失败三不·不计数：transient=true 累加 5 次仍放行（修前第 3 次起误挡）") {
+        val fp = guard.fingerprint("ui_tree", argsOf())
+        repeat(5) { guard.onExecuted(fp, failed = true, transient = true) }
+        assertEquals("state untouched", FailureState(), guard.state(fp))
+        assertTrue("still allow", guard.check(fp, false) == GuardVerdict.Allow)
+    }
+
+    check("瞬时失败三不·不清除：参数错误 2 次后被瞬时失败包围，熔断判定不受影响") {
+        val fp = guard.fingerprint("t", argsOf("k" to "w8-noClear"))
+        guard.onExecuted(fp, failed = true) // 参数错误计 1
+        guard.onExecuted(fp, failed = true, transient = true) // 瞬时：不动状态
+        assertEquals("failures still 1", 1, guard.state(fp).failures)
+        guard.onExecuted(fp, failed = true) // 参数错误计 2 → 该拦了
+        assertTrue("blocked after 2 real failures", guard.check(fp, false) is GuardVerdict.Blocked)
+        guard.onExecuted(fp, failed = true, transient = true) // 瞬时不清除
+        assertTrue("still blocked", guard.check(fp, false) is GuardVerdict.Blocked)
+    }
+
+    check("resetForTurn：跨回合污染清除（修前只有杀 App 能清）") {
+        val fp = guard.fingerprint("t", argsOf("k" to "w8-reset"))
+        guard.onExecuted(fp, failed = true)
+        guard.onExecuted(fp, failed = true)
+        assertTrue("blocked before reset", guard.check(fp, false) is GuardVerdict.Blocked)
+        guard.resetForTurn()
+        assertEquals("state cleared", FailureState(), guard.state(fp))
+        assertTrue("allow after reset", guard.check(fp, false) == GuardVerdict.Allow)
+    }
+
+    check("resetForTurn 后重新计 2 次仍熔断（回合内打转防护不退化）") {
+        val fp = guard.fingerprint("t", argsOf("k" to "w8-reset2"))
+        guard.onExecuted(fp, failed = true)
+        guard.onExecuted(fp, failed = true)
+        guard.resetForTurn()
+        guard.onExecuted(fp, failed = true)
+        assertTrue("allow 1st after reset", guard.check(fp, false) == GuardVerdict.Allow)
+        guard.onExecuted(fp, failed = true)
+        assertTrue("blocked 3rd in new turn", guard.check(fp, false) is GuardVerdict.Blocked)
     }
 }
 
@@ -543,6 +612,7 @@ fun main() = runBlocking {
     testT02Contract()
     testT06Truncation()
     testT04FailureGuard()
+    testW8GuardTurnScope()
     testT03Concurrency()
     testT05CancelClosure()
     testIntegration()
