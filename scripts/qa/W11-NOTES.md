@@ -34,4 +34,6 @@ W-10 落地后发现的**真实缺口**：预算压缩救不了「单条结果�
 
 - 第一道门：kotlinc 编译（ContextBudget + ToolLimits + 契约 + harness）0 error。
 - 第二道门：harness **26/26 PASS**。
-- 第三/四道门：push + CI + APK dex 反验（`toolResultLimitChars` 入池）。
+- 第三道门：CI run 152（`33af60d`）Build debug APK **success**。
+- 第四道门：APK dex 反验 **全绿**（run 152 产物，28,255,873 B，
+  sha256 `57d3c555…268c8`；`toolResultLimitChars` 已入池，W-9/W-10 判据同时回归通过）。
