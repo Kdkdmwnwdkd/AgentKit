@@ -74,21 +74,52 @@ object MemoryAutoCapture {
         .take(MAX_CONTENT)
 
     /**
-     * 是否与已有记忆重复：字符二元组 Jaccard ≥ [threshold] 视为同一条。
+     * 是否与已有记忆重复。
      *
-     * 用 bigram 而不是整串相等：用户换个说法（「我不吃辣」/「我不太能吃辣」）也该合并。
+     * 两级判定（顺序即优先级）：
+     *  1. **归一化后相等/包含**：先去掉程度副词与语气词（太/很/能/都/也/非常…），
+     *     「我不吃辣」与「我不太能吃辣」归一后都是「我不吃辣」→ 直接判重；
+     *  2. **bigram Jaccard ≥ [threshold]**：兜底处理语序微调的长句。
+     *
+     * 为什么不能只用 Jaccard：短句插两个虚词就会把相似度打到 0.33 以下（分母小），
+     * 而「我不吃辣 / 我不吃香菜」这类**关键宾语不同**的必须判为不同——
+     * 归一化去掉虚词后它们的尾部差异（辣 vs 香菜）仍在，正好区分开。
      */
     fun isDuplicate(candidate: String, existing: List<String>, threshold: Double = 0.8): Boolean {
-        val a = bigrams(candidate)
-        if (a.isEmpty()) return true
+        val na = normalizeForCompare(candidate)
+        if (na.isEmpty()) return true
         return existing.any { item ->
+            val nb = normalizeForCompare(item)
+            if (nb.length >= 3 && (na == nb || na.contains(nb) || nb.contains(na))) return@any true
+
+            val a = bigrams(candidate)
             val b = bigrams(item)
-            if (b.isEmpty()) return@any false
+            if (a.isEmpty() || b.isEmpty()) return@any false
             val inter = a.count { b.contains(it) }
             val union = a.size + b.size - inter
             union > 0 && inter.toDouble() / union >= threshold
         }
     }
+
+    /** 比对用的归一化：去掉标点、空白与程度副词/语气词（只影响判重，不影响入库原文）。 */
+    internal fun normalizeForCompare(s: String): String {
+        var t = s.lowercase(Locale.getDefault())
+        PADDING_WORDS.forEach { t = t.replace(it, "") }
+        return t.filter { it.isLetterOrDigit() }
+    }
+
+    /**
+     * 判重时忽略的虚词/程度词。
+     *
+     * 只收「不改变语义主体」的词：「太/很/能/都/也/就/还/挺」这类；
+     * 否定词（不/别/没）**绝不能**进这张表——去掉会让「吃辣」与「不吃辣」变成同一条。
+     */
+    private val PADDING_WORDS = listOf(
+        "非常", "特别", "比较", "有点", "一点", "超级",
+        "太", "很", "能", "都", "也", "就", "还", "挺", "蛮",
+        "的", "了", "啊", "吧", "呢", "呀", "嘛", "哈", "啦", "哦", "嗯",
+        " ", "，", ",", "。", ".", "！", "!", "？", "?", "、", "：", ":", "；", ";"
+    )
 
     /** 中英混排的二元组集合（英文按小写整词，中文按相邻两字）。纯函数。 */
     internal fun bigrams(s: String): Set<String> {

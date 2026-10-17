@@ -64,6 +64,13 @@ POOL_GROUPS = {
         ("UiScreenshotTool 类型描述符", "Lcom/example/agentkit/automation/UiScreenshotTool;"),
         ("AgentAccessibilityService 类型描述符", "Lcom/example/agentkit/automation/AgentAccessibilityService;"),
     ],
+    "W16 TTS/记忆（pool 池条目精确匹配）": [
+        ("TTS 封装", "Lcom/example/agentkit/audio/TextSpeaker;"),
+        ("自动记忆抽取", "Lcom/example/agentkit/memory/MemoryAutoCapture;"),
+        ("朗读工具", "Lcom/example/agentkit/tools/SpeakTool;"),
+        ("speak 工具名", "speak"),
+        ("BM25 打分方法", "bm25Scores"),
+    ],
     "W15 浏览器五件套（pool 池条目精确匹配）": [
         ("WebView 宿主", "Lcom/example/agentkit/browser/BrowserHost;"),
         ("浏览器操作封装", "Lcom/example/agentkit/browser/WebViewBrowser;"),
