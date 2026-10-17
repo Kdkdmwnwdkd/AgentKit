@@ -66,3 +66,37 @@
 ## 未完成事项
 
 - QA 对 T07/T08 批出具路由判定 **Engineer**：必修 `ChatViewModel.onCleared()` 资源收口（终端会话/shell 进程泄漏）—— 代码已改完（`onCleared` + `terminalShellCommandRunner` 已接），**回归验证待跑/待确认**
+
+## 通道恢复记录（2026-10-17 实测）
+
+沙箱重置会清掉 `/root/.codebuddy/.mcp.json` 里的 github 条目（本次会话只剩 space-library，
+导致又退回「git push 硬重试」）。恢复步骤：
+
+```bash
+# 1) 注册到 mcporter（CLI 直调，不需要重启会话）
+mcporter config add github "https://api.githubcopilot.com/mcp/" \
+  --transport http --header "Authorization=Bearer <PAT>" --scope home
+mcporter list github          # 能列出工具即通
+
+# 2) 读
+mcporter call github.get_file_contents owner=Kdkdmwnwdkd repo=AgentKit path=docs/x.md ref=main
+
+# 3) 写（一次提交多文件；content 传全文）
+mcporter call github.push_files owner=Kdkdmwnwdkd repo=AgentKit branch=main \
+  message="..." files='[{"path":"docs/x.md","content":"..."}]'
+```
+
+同时把条目写回 `/root/.codebuddy/.mcp.json`（供内置插件下个会话加载）：
+
+```json
+"github": {
+  "type": "http",
+  "url": "https://api.githubcopilot.com/mcp/",
+  "headers": { "Authorization": "Bearer <PAT>" },
+  "transparent_proxy": true
+}
+```
+
+**结论修正**：沙箱 shell 的 `git push` 并非永远不可用——2026-10-17 实测多次成功，
+但极不稳定（单次 TCP 连接超时可达 135 秒，常需 2~6 次重试；大文件下载会中途断）。
+**优先用 MCP 写通道，`git push` 只作兜底。**
