@@ -101,6 +101,19 @@ abstract class FileTool(protected val workspace: File) : AgentTool {
 }
 
 /**
+ * 原子写（W-20）：先写同目录临时文件再 rename，避免写一半崩溃把原文件写坏。
+ * rename 失败（个别文件系统限制）时退回直接覆写。
+ */
+internal fun File.atomicWriteText(text: String) {
+    val tmp = File(parentFile, "${name}.akitmp")
+    tmp.writeText(text)
+    if (!tmp.renameTo(this)) {
+        writeText(text)
+        tmp.delete()
+    }
+}
+
+/**
  * 分段读取（借鉴 Coomi 的 read_file 设计：默认限制约 64KB，支持按 offset 分批续读，
  * 避免一次性把大文件灌爆上下文。
  *
@@ -171,7 +184,89 @@ class ReadFileTool(workspace: File) : FileTool(workspace) {
     }
 }
 
-class WriteFileTool(workspace: File) : FileTool(workspace) {
+/**
+ * 精确编辑（W-20，对齐 AiCode edit 工具的净室重写：字符串匹配 + 唯一性校验 + 原子写）。
+ *
+ * 解决 [WriteFileTool] 全量覆写的痛点：小改动也要把整个文件内容重新生成一遍，
+ * 大文件既费 token 又容易把没读全的部分写坏。本工具只替换指定片段。
+ *
+ * 决策逻辑全部委托纯函数 [EditFileLogic.plan]（与 QA harness 共用一份真源），
+ * 本类只负责 IO 与参数解析：唯一性/出现次数/行号的判定都在纯函数里可测。
+ */
+class EditFileTool(workspace: File) : FileTool(workspace) {
+    override val name = "edit_file"
+    override val description =
+        "对工作区内文件做精确字符串替换（局部修改，不整文件覆写）。" +
+            "old_string 必须与文件内容精确一致且默认只能出现一次；" +
+            "replace_all=true 可替换全部出现处。适合小改动，整文件重写请改用 write_file。"
+
+    override val parameters = JsonSchema.objectSchema(
+        JsonSchema.prop("path", "string", "相对于工作区的文件路径"),
+        JsonSchema.prop("old_string", "string", "要被替换的原文，须与文件内容精确一致（含缩进换行）"),
+        JsonSchema.prop("new_string", "string", "替换后的新文本；传空字符串表示删除该片段"),
+        JsonSchema.prop("replace_all", "boolean", "true=替换全部出现处；默认 false 要求唯一匹配")
+    )
+
+    /** 写操作：修改文件内容，必须串行执行。 */
+    override val readOnly = false
+
+    override suspend fun execute(args: JsonObject): ToolResult = withContext(Dispatchers.IO) {
+        runCatching {
+            val path = args["path"]?.jsonPrimitive?.contentOrNull
+                ?: return@withContext ToolResult.fail(
+                    code = "missing_param",
+                    message = "缺少 path",
+                    hint = "edit_file 必须提供 path（相对于工作区的文件路径），请补充后重试。"
+                )
+            val oldString = args["old_string"]?.jsonPrimitive?.contentOrNull
+                ?: return@withContext ToolResult.fail(
+                    code = "missing_param",
+                    message = "缺少 old_string",
+                    hint = "edit_file 必须提供 old_string（要被替换的原文）。" +
+                        "请先 read_file 读取目标片段，再原样填入。"
+                )
+            val newString = args["new_string"]?.jsonPrimitive?.contentOrNull ?: ""
+            val replaceAll = args["replace_all"]?.jsonPrimitive?.contentOrNull == "true"
+
+            val file = resolve(path)
+            if (!file.exists()) {
+                return@withContext ToolResult.fail(
+                    code = "not_found",
+                    message = "文件不存在：$path",
+                    hint = "确认路径拼写（相对于工作区根目录）；新文件请改用 write_file 创建。"
+                )
+            }
+            if (!file.isFile) {
+                return@withContext ToolResult.fail(
+                    code = "not_a_file",
+                    message = "不是普通文件：$path",
+                    hint = "该路径是目录或特殊文件，edit_file 只能改普通文本文件。"
+                )
+            }
+
+            when (val plan = EditFileLogic.plan(file.readText(), oldString, newString, replaceAll)) {
+                is EditPlan.Reject -> return@withContext ToolResult.fail(
+                    code = plan.code, message = plan.message, hint = plan.hint
+                )
+                is EditPlan.Replace -> {
+                    file.atomicWriteText(plan.replaced)
+                    ToolResult.ok(
+                        code = "edit_ok",
+                        message = "已在 $path 替换 ${plan.count} 处",
+                        data = "修改位置附近（→ 为替换后新文本首行）：\n" +
+                            EditFileLogic.contextAround(plan.replaced, plan.firstOffset)
+                    )
+                }
+            }
+        }.getOrElse {
+            ToolResult.fail(
+                code = "io_error",
+                message = "编辑失败：${it.message}",
+                hint = "确认路径在工作区内、文件可写；如报非法路径请检查是否包含 ../ 穿越。"
+            )
+        }
+    }
+}
     override val name = "write_file"
     override val description = "将文本写入工作区内的文件（覆盖写入）。"
     override val parameters = JsonSchema.objectSchema(
