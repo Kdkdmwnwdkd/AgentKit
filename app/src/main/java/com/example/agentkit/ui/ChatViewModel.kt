@@ -627,6 +627,9 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         register(HttpRequestTool())
         register(ReadFileTool(workspace))
         register(WriteFileTool(workspace))
+        // W-20：精确编辑（局部替换，不整文件覆写）+ 网页搜索（实时信息入口）
+        register(EditFileTool(workspace))
+        register(WebSearchTool())
         register(ClipboardTool(app))
         register(NotificationTool(app))
         // 手机自动化工具组（受总开关 + 无障碍服务连接双重保护）
