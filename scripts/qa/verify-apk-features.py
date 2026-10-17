@@ -129,6 +129,20 @@ POOL_GROUPS = {
         ("MCP 注册就绪信号字段", "mcpReady"),
         ("MCP 超时失败码", "mcp_timeout"),
     ],
+    "W20 精确编辑+网页搜索（pool 池条目精确匹配）": [
+        ("edit 决策纯函数", "Lcom/example/agentkit/tools/EditFileLogic;"),
+        ("edit 工具类", "Lcom/example/agentkit/tools/EditFileTool;"),
+        ("edit 工具名", "edit_file"),
+        ("edit 成功码", "edit_ok"),
+        ("唯一性失败码", "not_unique"),
+        ("过期未找到失败码", "stale_not_found"),
+        ("DDG 解析纯函数", "Lcom/example/agentkit/tools/WebSearchParsing;"),
+        ("web_search 工具类", "Lcom/example/agentkit/tools/WebSearchTool;"),
+        ("web_search 工具名", "web_search"),
+        ("search 成功码", "search_ok"),
+        ("原子写扩展函数", "atomicWriteText"),
+        ("上下文回显纯函数", "contextAround"),
+    ],
 }
 
 # 反向判据：这些符号必须**不在**池中（删除/替换成功的证据，防旧码残留）
@@ -190,6 +204,12 @@ BYTES_GROUPS = {
         ("通知引导说明", "定时任务到点靠通知提醒你"),
         ("去开启通知按钮", "去开启通知"),
         ("MCP 超时文案", "执行超时（60 秒）"),
+    ],
+    "W20 文案（bytes 子串）": [
+        ("替换无变化提示", "替换前后内容相同"),
+        ("无搜索结果提示", "没有搜到"),
+        ("唯一性提示（多处出现）", "在文件中出现"),
+        ("过期提示（重新读取）", "文件中找不到 old_string"),
     ],
 }
 
