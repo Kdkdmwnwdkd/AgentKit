@@ -1,6 +1,7 @@
 package com.example.agentkit.core
 
 import com.example.agentkit.core.agent.AgentLoop as AgentLoopContract
+import com.example.agentkit.core.agent.ContextBudget
 import com.example.agentkit.core.agent.NetworkRecoveryWaiter
 import com.example.agentkit.core.agent.RealAgentLoop
 
@@ -120,12 +121,20 @@ class AgentLoop(
      * 两处默认值必须一致（40）：改这里或改 RealAgentLoop 时，务必同步另一处。
      *
      * 消耗警示（W-7 审核 F3）：步数上调直接放大 token 消耗与单回合时长（最坏 N 次
-     * LLM 往返）；上下文侧由 maxHistoryMessages/maybeCompact 兜底，调整前需评估。
+     * LLM 往返）；上下文侧由 [contextBudgetTokens] / [maxHistoryMessages] 双闸兜底
+     * （W-10：token 预算 + 图像裁剪，见 [ContextBudget]），调整前需评估。
      */
     maxSteps: Int = 40,
     maxParallelTools: Int = 5,
     providerRetry: Int = 2,
     maxHistoryMessages: Int = 40,
+    /**
+     * W-10 上下文预算（估算 token）：每轮请求前构建裁剪视图，超预算丢最老步。
+     * 默认值与 [RealAgentLoop] 同源（[ContextBudget.DEFAULT_BUDGET_TOKENS]）。
+     */
+    contextBudgetTokens: Int = ContextBudget.DEFAULT_BUDGET_TOKENS,
+    /** W-10：请求视图最多保留最近几条工具截图（更早的剥成文字标记）。 */
+    keepRecentImages: Int = ContextBudget.DEFAULT_KEEP_IMAGES,
     approval: ToolApproval? = null,
     checkpoint: ((List<ChatMessage>) -> Unit)? = null,
     memoryProvider: (() -> String)? = null,
@@ -168,6 +177,8 @@ class AgentLoop(
         maxParallelTools = maxParallelTools,
         providerRetry = providerRetry,
         maxHistoryMessages = maxHistoryMessages,
+        contextBudgetTokens = contextBudgetTokens,
+        keepRecentImages = keepRecentImages,
         approval = approval,
         checkpoint = checkpoint,
         memoryProvider = memoryProvider,

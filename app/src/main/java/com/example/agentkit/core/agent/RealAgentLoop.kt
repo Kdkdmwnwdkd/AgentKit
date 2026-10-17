@@ -123,6 +123,16 @@ class RealAgentLoop(
     private val maxParallelTools: Int = 5,
     private val providerRetry: Int = 3,
     private val maxHistoryMessages: Int = 40,
+    /**
+     * W-10 上下文预算（估算 token）。每轮请求前按此预算构建**请求视图**：
+     * 超预算时从最老的完整步开始丢（保留任务锚点与当前步），UI/落盘历史不动。
+     *
+     * 默认 24k token：覆盖 32k 上下文的常见小模型；[maxHistoryMessages] 作为条数硬上限
+     * 继续生效（双闸）。纯函数实现见 [ContextBudget]。
+     */
+    private val contextBudgetTokens: Int = ContextBudget.DEFAULT_BUDGET_TOKENS,
+    /** W-10：请求视图里最多保留最近几条工具截图的 base64（更早的剥成文字标记）。 */
+    private val keepRecentImages: Int = ContextBudget.DEFAULT_KEEP_IMAGES,
     private val approval: ToolApproval? = null,
     private val checkpoint: ((List<ChatMessage>) -> Unit)? = null,
     memoryProvider: (() -> String)? = null,
@@ -257,8 +267,12 @@ class RealAgentLoop(
             // T01 钩子：序列化前（每次 LLM 请求前一次；快照传参，钩子看不到后续变更）
             hooks.beforeSerialization(messages.toList())
             val stepStart = System.currentTimeMillis()
+            // W-10：只把「裁剪后的请求视图」发给 LLM——旧截图剥图、超预算丢最老步；
+            // messages 本身保持完整（UI 工具卡片与落盘历史不受影响）。
+            // 视图在重试循环外算一次：同一请求的多次重试必须发完全相同的载荷。
+            val requestMessages = buildRequestMessages(messages)
             val resp = try {
-                callWithRetry { chatOnce(messages, exposure) }
+                callWithRetry { chatOnce(requestMessages, exposure) }
             } catch (e: Throwable) {
                 AgentLogger.e("LLM", "调用失败", e)
                 throw e
@@ -299,7 +313,9 @@ class RealAgentLoop(
                 messages.add(UserMessage("请看下面由工具返回的画面：", stepImages.toList()))
             }
             checkpoint?.invoke(messages)
-            maybeCompact(messages)
+            // W-10：压缩不再就地改 messages（旧实现 maybeCompact 会删掉 UI 已展示的工具卡片，
+            // 且在「刚丢完又新增」之间来回抖动）——改为下一次请求时按预算构建只读视图，
+            // 见 buildRequestMessages。此处保留 checkpoint，UI/落盘仍拿到完整历史。
 
             // T05：每轮结束再复查一次（工具批可能执行很久，结束时 UI 可能已点停止）
             currentCoroutineContext().ensureActive()
@@ -748,17 +764,30 @@ class RealAgentLoop(
     }
 
     /**
-     * 上下文滑动窗口压缩（Coomi auto_compact 思想的简化版）：
-     * 历史超过上限时，从中间丢弃最早的 User/Tool 对，保留 System 与最近对话。
-     * Phase 3 可升级为调用 LLM 对旧消息做摘要后回填。
+     * W-10：为本轮 LLM 请求构建**只读视图**——先剥旧截图，再按 token 预算压历史。
+     *
+     * 顺序有意为之：先剥图再算预算。一张 768px JPEG 的 base64 约 6~12 万字符，若先按
+     * 字符预算压历史，会把「只是图片大」误判成「文字太多」，白白丢掉有用的工具结果。
+     *
+     * 产物只用于 `chatOnce`，不写回 [runTurn] 的 messages——取消/落盘/UI 仍是完整历史。
+     * 无超限时 [ContextBudget] 原样返回入参（零分配）。
      */
-    private fun maybeCompact(messages: MutableList<ChatMessage>) {
-        while (messages.size > maxHistoryMessages) {
-            val idx = messages.indexOfFirst { it is UserMessage }
-            if (idx <= 0) break
-            messages.removeAt(idx)
-            if (idx < messages.size && messages[idx] is ToolMessage) messages.removeAt(idx)
+    private fun buildRequestMessages(messages: List<ChatMessage>): List<ChatMessage> {
+        val pruned = ContextBudget.pruneImages(messages, keepLast = keepRecentImages)
+        val fitted = ContextBudget.fitToBudget(
+            pruned,
+            budgetTokens = contextBudgetTokens,
+            maxMessages = maxHistoryMessages
+        )
+        if (fitted.size != pruned.size || pruned.size != messages.size) {
+            AgentLogger.i(
+                "ContextBudget",
+                "请求视图：${messages.size} 条 / 估算 ${ContextBudget.totalTokens(messages)} tok" +
+                    " → ${fitted.size} 条 / 估算 ${ContextBudget.totalTokens(fitted)} tok" +
+                    "（预算 $contextBudgetTokens tok）"
+            )
         }
+        return fitted
     }
 }
 
