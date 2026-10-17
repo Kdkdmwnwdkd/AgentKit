@@ -107,5 +107,13 @@
             </intent-filter>
         </service>
 
+        <!-- W-13：Shizuku 提供者（权限/服务发现） -->
+        <provider
+            android:name="rikka.shizuku.ShizukuProvider"
+            android:authorities="${applicationId}.shizuku"
+            android:multiprocess="false"
+            android:enabled="true"
+            android:exported="true"
+            android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
     </application>
 </manifest>
