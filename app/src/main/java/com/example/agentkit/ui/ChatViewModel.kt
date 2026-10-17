@@ -104,6 +104,8 @@ import com.example.agentkit.core.mcp.McpClient
 import com.example.agentkit.core.mcp.McpServerStore
 import com.example.agentkit.core.mcp.McpToolAdapter
 import com.example.agentkit.tools.AskUserTool
+import com.example.agentkit.tools.CalculatorTool
+import com.example.agentkit.tools.ConversationSearchTool
 import com.example.agentkit.tools.SpeakTool
 import com.example.agentkit.tools.WorkflowCreateTool
 import com.example.agentkit.tools.WorkflowDeleteTool
@@ -606,6 +608,14 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     private val _workflows = MutableStateFlow<List<Workflow>>(emptyList())
     val workflows: StateFlow<List<Workflow>> = _workflows.asStateFlow()
 
+    /**
+     * 会话存储（W-18：会话检索工具要用）。
+     *
+     * 声明顺序必须早于 [registry]：Kotlin 属性按声明顺序初始化，
+     * 若工具在 registry 里构造时 store 还没赋值，会拿到 null 并 NPE。
+     */
+    private val conversationStore = ConversationStore(File(app.filesDir, "conversations.json"))
+
     private val registry = ToolRegistry().apply {
         register(HttpRequestTool())
         register(ReadFileTool(workspace))
@@ -632,6 +642,9 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         register(MemoryForgetTool(memoryStore))
         // W-16：系统 TTS 朗读
         register(SpeakTool(speaker))
+        // W-18：会话检索 + 计算器
+        register(ConversationSearchTool(conversationStore))
+        register(CalculatorTool())
         // W-17：定时任务（模型可自建/查询/删除/开关）
         register(WorkflowCreateTool(workflowStore) { refreshWorkflows() })
         register(WorkflowListTool(workflowStore))
@@ -782,7 +795,6 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
 
     // —— 功能三：聊天记录（用户真机录屏反馈：「人家都有聊天记录对话记录，你这都没有」）——
     // 会话持久化：conversations.json 放 filesDir，原子写 + .bak（形态学 MemoryStore）
-    private val conversationStore = ConversationStore(File(app.filesDir, "conversations.json"))
 
     // —— 功能五（P1-8）：每会话独立草稿（drafts.json；切会话存旧取新，发送即清）——
     private val draftStore = DraftStore(File(app.filesDir, "drafts.json"))

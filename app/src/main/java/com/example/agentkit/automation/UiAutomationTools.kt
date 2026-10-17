@@ -1,5 +1,7 @@
 package com.example.agentkit.automation
 
+import com.example.agentkit.automation.shizuku.ShizukuShell
+import com.example.agentkit.core.AgentLogger
 import com.example.agentkit.core.AgentTool
 import com.example.agentkit.core.JsonSchema
 import com.example.agentkit.core.ToolResult
@@ -36,21 +38,68 @@ private suspend fun runOnService(
     failCode: String,
     failMsg: String,
     hint: String,
+    /**
+     * W-18：无障碍不可用时的兜底命令（走 Shizuku 的 `input`，shell uid 2000）。
+     * null = 该动作没有兜底（如 ui_tree/ui_click 需要读取界面结构，input 做不到）。
+     */
+    shizukuCommand: (() -> String)? = null,
     block: suspend (AgentAccessibilityService) -> Boolean
 ): ToolResult {
     val svc = AutomationBridge.service
-    if (!AutomationBridge.isReady() || svc == null) return notReady()
+    if (!AutomationBridge.isReady() || svc == null) {
+        return shizukuFallback(shizukuCommand, okCode, okMsg) ?: notReady()
+    }
     return try {
         val ok = withContext(Dispatchers.Main) { block(svc) }
         if (ok) ToolResult.ok(code = okCode, message = okMsg)
-        else ToolResult.fail(code = failCode, message = failMsg, hint = hint)
+        else shizukuFallback(shizukuCommand, okCode, okMsg)
+            ?: ToolResult.fail(code = failCode, message = failMsg, hint = hint)
     } catch (e: Exception) {
-        ToolResult.fail(
-            code = "exception",
-            message = "执行异常：${e.message}",
-            hint = "确认自动化总开关与无障碍权限仍然有效，然后重试；持续失败请告知用户。"
-        )
+        shizukuFallback(shizukuCommand, okCode, okMsg)
+            ?: ToolResult.fail(
+                code = "exception",
+                message = "执行异常：${e.message}",
+                hint = "确认自动化总开关与无障碍权限仍然有效，然后重试；持续失败请告知用户。"
+            )
     }
+}
+
+/**
+ * W-18：无障碍不可用时，用 Shizuku（uid 2000）的 `input` 命令完成同样的动作。
+ *
+ * 为什么值得做：系统或 ROM 常在息屏/重装后掐掉无障碍，而 Shizuku 仍活着；
+ * 此时「点一下、滑一下」不该整条链路失败。反过来，读界面（ui_tree/ui_click 的查找）
+ * 只能靠无障碍，所以不给它们兜底——**做不到就如实失败**。
+ *
+ * @return 成功返回结果；通道不可用或命令失败返回 null（调用方回落原错误）
+ */
+private suspend fun shizukuFallback(
+    command: (() -> String)?,
+    okCode: String,
+    okMsg: String
+): ToolResult? {
+    if (command == null) return null
+    if (ShizukuShell.status() != ShizukuShell.Status.READY) return null
+    val cmd = command()
+    val result = withContext(Dispatchers.IO) { ShizukuShell.exec(cmd) }
+    return if (result.ok) {
+        AgentLogger.i("UiAutomation", "无障碍不可用，已走调试通道：$cmd")
+        ToolResult.ok(code = "${okCode}_via_shizuku", message = "$okMsg（无障碍不可用，已用调试通道 input 完成）")
+    } else {
+        null
+    }
+}
+
+/**
+ * `input text` 的转义（W-18，纯函数）：空格固定转 `%s`（input 命令的约定），
+ * 单引号/反斜杠按 shell 单引号规则处理，保证文本原样送进输入框。
+ */
+internal fun escapeInputText(raw: String): String {
+    val escaped = raw
+        .replace("\\", "\\\\")
+        .replace("'", "'\\''")
+        .replace(" ", "%s")
+    return "'$escaped'"
 }
 
 private fun intArg(args: JsonObject, key: String): Int? =
@@ -137,7 +186,8 @@ class UiTapTool : AgentTool {
             okMsg = "已在 ($x, $y) 点击",
             failCode = "tap_failed",
             failMsg = "点击失败（服务可能未激活或坐标无效）",
-            hint = "先调 ui_tree 确认界面结构与 bounds 坐标，再用有效坐标重试。"
+            hint = "先调 ui_tree 确认界面结构与 bounds 坐标，再用有效坐标重试。",
+            shizukuCommand = { "input tap $x $y" }
         ) { it.tap(x, y) }
     }
 }
@@ -173,7 +223,8 @@ class UiLongPressTool : AgentTool {
             okMsg = "已在 ($x, $y) 长按",
             failCode = "long_press_failed",
             failMsg = "长按失败",
-            hint = "先调 ui_tree 确认 bounds 坐标后重试。"
+            hint = "先调 ui_tree 确认 bounds 坐标后重试。",
+            shizukuCommand = { "input swipe $x $y $x $y 600" }
         ) { it.longPress(x, y) }
     }
 }
@@ -229,7 +280,8 @@ class UiSwipeTool : AgentTool {
             okMsg = "已从 ($x1,$y1) 滑动到 ($x2,$y2)",
             failCode = "swipe_failed",
             failMsg = "滑动失败",
-            hint = "确认坐标在屏幕范围内；可先 ui_tree 确认可滚动元素的 bounds。"
+            hint = "确认坐标在屏幕范围内；可先 ui_tree 确认可滚动元素的 bounds。",
+            shizukuCommand = { "input swipe $x1 $y1 $x2 $y2 $dur" }
         ) { it.swipe(x1, y1, x2, y2, dur.toLong()) }
     }
 }
@@ -262,7 +314,8 @@ class UiInputTool : AgentTool {
             okMsg = "已输入文本：${text.take(60)}",
             failCode = "input_failed",
             failMsg = "输入失败（当前可能没有聚焦的输入框）",
-            hint = "先 ui_tree 确认 editable 元素，或先 ui_tap 点一下输入框获取焦点后重试。"
+            hint = "先 ui_tree 确认 editable 元素，或先 ui_tap 点一下输入框获取焦点后重试。",
+            shizukuCommand = { "input text ${escapeInputText(text)}" }
         ) { it.inputText(text) }
     }
 }
