@@ -64,6 +64,14 @@ POOL_GROUPS = {
         ("UiScreenshotTool 类型描述符", "Lcom/example/agentkit/automation/UiScreenshotTool;"),
         ("AgentAccessibilityService 类型描述符", "Lcom/example/agentkit/automation/AgentAccessibilityService;"),
     ],
+    "W18 兜底/检索/计算（pool 池条目精确匹配）": [
+        ("会话检索工具类", "Lcom/example/agentkit/tools/ConversationSearchTool;"),
+        ("计算器工具类", "Lcom/example/agentkit/tools/CalculatorTool;"),
+        ("会话检索工具名", "conversation_search"),
+        ("计算器工具名", "calculator"),
+        ("片段提取纯函数", "snippetAround"),
+        ("input 文本转义", "escapeInputText"),
+    ],
     "W17 定时任务（pool 池条目精确匹配）": [
         ("Workflow 模型", "Lcom/example/agentkit/workflow/Workflow;"),
         ("Workflow 存储", "Lcom/example/agentkit/workflow/WorkflowStore;"),
@@ -132,6 +140,9 @@ BYTES_GROUPS = {
     "W9-A 文案（描述 / 失败指引，长常量片段，bytes 子串）": [
         ("描述：已授予无障碍即可使用", "已授予无障碍权限即可使用"),
         ("指引：明确无需屏幕捕捉权限", "无需屏幕捕捉权限"),
+    ],
+    "W18 文案（bytes 子串）": [
+        ("兜底提示", "已用调试通道 input 完成"),
     ],
     "W17 文案（bytes 子串）": [
         ("页面标题", "定时任务"),
