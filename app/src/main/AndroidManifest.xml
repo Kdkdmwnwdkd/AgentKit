@@ -31,7 +31,7 @@
     <!-- ===== L9 构建链路：拉起系统安装器安装 CI 产出的 APK ===== -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS" tools:ignore="ProtectedPermissions" />
-    <!-- REQUEST_INSTALL_PACKAGES：代码中未实现（无静默安装能力），遵循最小权限原则移除；后续实现对应能力时再申请。 -->
+    <!-- REQUEST_INSTALL_PACKAGES：W-13 起用于「一键安装内置 Shizuku」（拉起系统安装器，非静默安装）。 -->
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />

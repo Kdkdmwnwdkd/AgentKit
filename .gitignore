@@ -14,3 +14,6 @@ app/src/main/cpp/llama.cpp/
 
 # CMake/native 构建中间产物
 app/.cxx/
+
+# W-13：内置 Shizuku APK 由 CI 构建时下载，不进仓库
+app/src/main/assets/shizuku.apk

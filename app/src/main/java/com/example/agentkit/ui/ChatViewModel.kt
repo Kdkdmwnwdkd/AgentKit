@@ -94,6 +94,7 @@ import com.example.agentkit.core.capability.CapabilityRequest
 import com.example.agentkit.core.capability.CapabilityResolution
 import com.example.agentkit.core.capability.logTrace
 import com.example.agentkit.core.capability.resolveCapability
+import com.example.agentkit.automation.shizuku.ShizukuInstaller
 import com.example.agentkit.automation.shizuku.ShizukuShell
 import com.example.agentkit.tools.PrivilegedShellOut
 import com.example.agentkit.core.capability.shellCapabilitySnapshot
@@ -331,13 +332,14 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         // 按「四态」动作：已装就拉起、未装才去商店——不再一律劝人装
         when (_shizukuUiState.value) {
             ShizukuShell.UiState.NOT_INSTALLED -> {
-                // 直接开官方发布页：国内应用商店基本没有 Shizuku，`market://` 会落到空白页
-                // （真机录像实证：跳商店显示「当前页面已失效」）。浏览器至少能下载到 APK。
-                val web = Intent(
-                    Intent.ACTION_VIEW,
-                    Uri.parse("https://github.com/RikkaApps/Shizuku/releases")
-                ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                runCatching { context.startActivity(web) }
+                // 优先「一键安装内置 APK」（对齐 Operit 体验）；没有内置包/失败才退官方发布页。
+                // 国内应用商店基本没有 Shizuku，market:// 只会落到空白页（真机录像实证）。
+                when (ShizukuInstaller.install(context)) {
+                    ShizukuInstaller.Result.INSTALLER_LAUNCHED,
+                    ShizukuInstaller.Result.NEED_UNKNOWN_SOURCES -> Unit
+                    ShizukuInstaller.Result.NO_BUNDLED_APK,
+                    ShizukuInstaller.Result.FAILED -> ShizukuInstaller.openReleasePage(context)
+                }
             }
             ShizukuShell.UiState.INSTALLED_NOT_RUNNING -> {
                 // 已安装但没启动：直接拉起 Shizuku 本体（用户在里点「通过无线调试启动」）

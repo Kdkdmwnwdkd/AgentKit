@@ -134,7 +134,7 @@ fun PermissionsScreen(vm: ChatViewModel) {
             grantedHint = "已就绪：Agent 可在后台执行文件清理、停应用、改系统设置（shell uid 2000），不跳屏",
             missingHint = when (shizukuUiState) {
                 ShizukuShell.UiState.NOT_INSTALLED ->
-                    "未安装：点右侧到官方发布页下载 Shizuku（开源工具，不收集数据）；装好回来即自动识别"
+                    "未安装：点右侧一键安装（应用内自带官方 Shizuku 安装包，不跳商店）；装好回来即自动识别"
                 ShizukuShell.UiState.INSTALLED_NOT_RUNNING ->
                     "已安装未启动：点右侧直接打开 Shizuku，在其中点「通过无线调试启动」"
                 ShizukuShell.UiState.NO_PERMISSION ->
@@ -142,7 +142,7 @@ fun PermissionsScreen(vm: ChatViewModel) {
                 ShizukuShell.UiState.READY -> ""
             },
             actionText = when (shizukuUiState) {
-                ShizukuShell.UiState.NOT_INSTALLED -> "去下载"
+                ShizukuShell.UiState.NOT_INSTALLED -> "一键安装"
                 ShizukuShell.UiState.INSTALLED_NOT_RUNNING -> "打开 Shizuku"
                 ShizukuShell.UiState.NO_PERMISSION -> "去授权"
                 ShizukuShell.UiState.READY -> "去开启"

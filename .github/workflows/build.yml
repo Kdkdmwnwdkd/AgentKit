@@ -43,6 +43,19 @@ jobs:
       - name: Fetch llama.cpp b4600 (构建时拉取，不进仓库)
         run: ./scripts/fetch-llama.sh git
 
+      - name: Fetch Shizuku APK (内置一键安装用，构建时拉取，不进仓库)
+        run: |
+          mkdir -p app/src/main/assets
+          URL=$(curl -fsSL --max-time 60 https://api.github.com/repos/RikkaApps/Shizuku/releases/latest \
+            | python3 -c "import json,sys;d=json.load(sys.stdin);a=[x for x in d.get('assets',[]) if x['name'].endswith('.apk')];print(a[0]['browser_download_url'] if a else '')")
+          if [ -n "$URL" ]; then
+            echo "downloading $URL"
+            curl -fL --max-time 180 "$URL" -o app/src/main/assets/shizuku.apk
+            ls -lh app/src/main/assets/shizuku.apk
+          else
+            echo "WARN: 未找到 Shizuku APK，跳过内置安装包（应用会退到官方发布页）"
+          fi
+
       - name: Make gradlew executable
         run: chmod +x ./gradlew
 
