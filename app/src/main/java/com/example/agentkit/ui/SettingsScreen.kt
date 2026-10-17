@@ -35,10 +35,15 @@ import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Save
 import androidx.compose.material.icons.outlined.Security
 import androidx.compose.material.icons.outlined.Shield
+import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Storage
 import androidx.compose.material.icons.outlined.TouchApp
 import androidx.compose.material.icons.outlined.ViewInAr
+import androidx.compose.material.icons.outlined.VpnKey
 import androidx.compose.material.icons.outlined.Widgets
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
@@ -51,7 +56,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import android.widget.Toast
 
@@ -306,6 +315,9 @@ fun SettingsScreen(
                 )
             }
 
+            // —— 备用 Key（W-21）：主 Key 被限流时自动换下一把，不再直接断流 ——
+            BackupKeySection(vm)
+
             // —— 管理与数据：出事时才用的排查型页面 + 关于（同样从抽屉搬来）——
             AkSectionCard(
                 title = "管理与数据",
@@ -380,6 +392,106 @@ fun SettingsScreen(
 }
 
 /** 主题三选 chip（§6.7 筛选 chip 语汇：选中 primary@12% + on-primary-container）。 */
+/**
+ * 备用 Key 管理（W-21）：一个 Key 被限流就自动换下一把。
+ *
+ * 界面纪律：列表只显示脱敏 Key（前 4 后 4），明文永不进 UI 状态也不上屏；
+ * 「重置冷却」用于误判或用户已充值后立刻恢复全部 Key。
+ */
+@Composable
+private fun BackupKeySection(vm: ChatViewModel) {
+    val slots by vm.backupKeys.collectAsStateWithLifecycle()
+    val summary by vm.keyPoolSummary.collectAsStateWithLifecycle()
+    var input by remember { mutableStateOf("") }
+    var label by remember { mutableStateOf("") }
+    val ctx = LocalContext.current
+
+    LaunchedEffect(Unit) { vm.reloadBackupKeys() }
+
+    AkSectionCard(
+        title = "备用 Key",
+        icon = Icons.Outlined.VpnKey,
+        description = "同一个模型服务可以填多把 Key。主 Key 被限流（429）或额度耗尽时自动换下一把，" +
+            "冷却期内不再浪费请求；只影响 OpenAI 兼容协议的服务。"
+    ) {
+        Text(
+            text = summary,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = AgentSpacing.space4)
+        )
+        Spacer(Modifier.height(AgentSpacing.space2))
+
+        if (slots.isEmpty()) {
+            Text(
+                text = "还没有备用 Key。填一把后，主 Key 限流时会自动顶上。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = AgentSpacing.space4)
+            )
+        } else {
+            slots.forEach { slot ->
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = AgentSpacing.space4, vertical = AgentSpacing.space1),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(slot.label, style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            slot.masked,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    IconButton(onClick = { vm.removeBackupKey(slot.id) }) {
+                        Icon(Icons.Outlined.Delete, contentDescription = "删除这把 Key")
+                    }
+                }
+            }
+        }
+
+        Spacer(Modifier.height(AgentSpacing.space3))
+        AkTextField(
+            value = label,
+            onValueChange = { label = it },
+            label = "备注名（可选）",
+            placeholder = "如：备用账号",
+            modifier = Modifier.padding(horizontal = AgentSpacing.space4)
+        )
+        Spacer(Modifier.height(AgentSpacing.space2))
+        AkTextField(
+            value = input,
+            onValueChange = { input = it },
+            label = "API Key",
+            placeholder = "sk-...",
+            modifier = Modifier.padding(horizontal = AgentSpacing.space4),
+            visualTransformation = PasswordVisualTransformation(),
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password)
+        )
+        Spacer(Modifier.height(AgentSpacing.space2))
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = AgentSpacing.space4),
+            horizontalArrangement = Arrangement.spacedBy(AgentSpacing.space2)
+        ) {
+            AkTextButton(
+                text = "添加备用 Key",
+                icon = Icons.Outlined.Add,
+                enabled = input.isNotBlank(),
+                onClick = {
+                    vm.addBackupKey(input, label)
+                    input = ""
+                    label = ""
+                    Toast.makeText(ctx, "已添加，主 Key 限流时会自动切换", Toast.LENGTH_SHORT).show()
+                }
+            )
+        }
+    }
+}
+
 @Composable
 private fun ThemeModeChip(
     label: String,
