@@ -179,6 +179,19 @@ def main():
     if not gone:
         total_fail += 1
 
+    # —— 内置资产：一键安装用的 Shizuku APK（W-13；CI 构建时下载，不进仓库）——
+    print("== W13 内置资产 ==")
+    try:
+        size = zf.getinfo("assets/shizuku.apk").file_size
+        ok = size > 1_000_000
+        print(f"  {'PASS' if ok else 'FAIL'}  assets/shizuku.apk 存在且体积合理  <{size:,} bytes>")
+        if not ok:
+            total_fail += 1
+    except KeyError:
+        print("  FAIL  assets/shizuku.apk 不在包内（CI 的 Fetch Shizuku APK 步骤可能失败）")
+        total_fail += 1
+    print()
+
     print(f"\n=== 反验汇总: {'全部通过' if total_fail == 0 else str(total_fail) + ' 项失败'} ===")
     sys.exit(0 if total_fail == 0 else 1)
 

@@ -106,3 +106,17 @@ stdout 帧跨两个 WRTE 拼接。
 
 验收：CI run 174（`10af272`）success；APK 反验全绿（新增「官方包名候选」「未安装走官方发布页」；
 28,272,297 B，sha256 `be4522cf…463ff`）。
+
+### 内置一键安装（同日，对齐 Operit）
+
+对照 Operit `ShizukuInstaller.kt`（assets 内 `shizuku.apk` 2.5MB + 系统安装器）落地：
+
+- 新增 `automation/shizuku/ShizukuInstaller.kt`：hasBundledApk / install / openReleasePage；
+  Android 8+ 先查「安装未知应用」，未授权跳设置页并返回 NEED_UNKNOWN_SOURCES；
+- `res/xml/file_paths.xml` 加 `cache-path name="shizuku" path="shizuku/"`（复用既有 FileProvider）；
+- 权限页「未安装」→「一键安装」（无内置包自动退官方发布页）；
+- CI 增加 Fetch Shizuku APK（RikkaApps/Shizuku 最新 release，构建时下载，.gitignore 排除）。
+
+验收：CI run 178（`7682e1c`）全步骤 success（含 Fetch Shizuku APK）；
+产物 30,078,041 B（+1.8MB），包内 `assets/shizuku.apk` = 2,571,773 B；
+dex/资产反验全绿（新增「assets/shizuku.apk 存在且体积合理」判据）。
