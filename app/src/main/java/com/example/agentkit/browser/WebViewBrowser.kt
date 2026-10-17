@@ -1,6 +1,5 @@
 package com.example.agentkit.browser
 
-import android.annotation.SuppressLint
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.os.Handler
@@ -52,7 +51,6 @@ class WebViewBrowser {
         return withContext(Dispatchers.Main) {
             suspendCancellableCoroutine { cont ->
                 runCatching {
-                    @SuppressLint("SetJavaScriptEnabled")
                     wv.evaluateJavascript(script) { raw ->
                         if (cont.isActive) cont.resume(decodeJsResult(raw))
                     }

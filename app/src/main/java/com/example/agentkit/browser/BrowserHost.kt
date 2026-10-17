@@ -29,6 +29,13 @@ object BrowserHost {
     private val main = Handler(Looper.getMainLooper())
     private var webRef: WeakReference<WebView>? = null
 
+    /**
+     * WebView 没有 `isDestroyed`（那是 Fragment/Activity 的 API），
+     * 自己记一个「是否已销毁」标志，避免 destroyed 之后继续 loadUrl 崩溃。
+     */
+    @Volatile
+    private var destroyed = true
+
     /** 页面加载完成的等待句柄（由 [WebViewBrowser] 设置/消费）。 */
     internal var onPageFinished: (() -> Unit)? = null
 
@@ -36,7 +43,7 @@ object BrowserHost {
     fun attach(activity: Activity) {
         main.post {
             val existing = webRef?.get()
-            if (existing != null && !existing.isDestroyed) return@post
+            if (existing != null && !destroyed) return@post
             runCatching {
                 val wv = WebView(activity)
                 wv.settings.apply {
@@ -54,6 +61,7 @@ object BrowserHost {
                     }
                 }
                 webRef = WeakReference(wv)
+                destroyed = false
                 AgentLogger.i(TAG, "后台 WebView 已就绪")
             }.onFailure {
                 AgentLogger.w(TAG, "创建 WebView 失败：${it.message}")
@@ -62,7 +70,7 @@ object BrowserHost {
     }
 
     /** 取当前 WebView（必须在主线程访问）。未就绪返回 null。 */
-    fun webView(): WebView? = webRef?.get()?.takeIf { !it.isDestroyed }
+    fun webView(): WebView? = if (destroyed) null else webRef?.get()
 
     /** 释放（Activity 销毁时调用）。 */
     fun release() {
@@ -75,13 +83,14 @@ object BrowserHost {
                 }
             }
             webRef = null
+            destroyed = true
             onPageFinished = null
             AgentLogger.i(TAG, "后台 WebView 已释放")
         }
     }
 
     /** 供工具层判断可用性（无需主线程）。 */
-    fun isReady(): Boolean = webRef?.get()?.isDestroyed == false
+    fun isReady(): Boolean = !destroyed && webRef?.get() != null
 
     /** 给需要 Context 的调用方（如错误提示）。 */
     fun contextOrNull(): Context? = webRef?.get()?.context

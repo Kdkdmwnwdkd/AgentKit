@@ -64,6 +64,15 @@ POOL_GROUPS = {
         ("UiScreenshotTool 类型描述符", "Lcom/example/agentkit/automation/UiScreenshotTool;"),
         ("AgentAccessibilityService 类型描述符", "Lcom/example/agentkit/automation/AgentAccessibilityService;"),
     ],
+    "W15 浏览器五件套（pool 池条目精确匹配）": [
+        ("WebView 宿主", "Lcom/example/agentkit/browser/BrowserHost;"),
+        ("浏览器操作封装", "Lcom/example/agentkit/browser/WebViewBrowser;"),
+        ("web_open", "web_open"),
+        ("web_snapshot", "web_snapshot"),
+        ("web_click", "web_click"),
+        ("web_type", "web_type"),
+        ("web_eval", "web_eval"),
+    ],
     "W14 MCP/追问/清单（pool 池条目精确匹配）": [
         ("MCP 工具适配器", "Lcom/example/agentkit/core/mcp/McpToolAdapter;"),
         ("MCP 服务器存储", "Lcom/example/agentkit/core/mcp/McpServerStore;"),
@@ -106,6 +115,10 @@ BYTES_GROUPS = {
     "W9-A 文案（描述 / 失败指引，长常量片段，bytes 子串）": [
         ("描述：已授予无障碍即可使用", "已授予无障碍权限即可使用"),
         ("指引：明确无需屏幕捕捉权限", "无需屏幕捕捉权限"),
+    ],
+    "W15 文案（bytes 子串）": [
+        ("快照小节标题", "可交互元素"),
+        ("不可用提示", "后台浏览器不可用"),
     ],
     "W14 文案（bytes 子串）": [
         ("提问卡片标题", "需要你确认"),
