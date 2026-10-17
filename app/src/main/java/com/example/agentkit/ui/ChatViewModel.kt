@@ -106,6 +106,7 @@ import com.example.agentkit.core.mcp.McpToolAdapter
 import com.example.agentkit.tools.AskUserTool
 import com.example.agentkit.tools.CalculatorTool
 import com.example.agentkit.tools.ConversationSearchTool
+import com.example.agentkit.tools.EditFileTool
 import com.example.agentkit.tools.SpeakTool
 import com.example.agentkit.tools.WorkflowCreateTool
 import com.example.agentkit.tools.WorkflowDeleteTool
@@ -117,6 +118,7 @@ import com.example.agentkit.workflow.WorkflowStore
 import com.example.agentkit.tools.WebClickTool
 import com.example.agentkit.tools.WebEvalTool
 import com.example.agentkit.tools.WebOpenTool
+import com.example.agentkit.tools.WebSearchTool
 import com.example.agentkit.tools.WebSnapshotTool
 import com.example.agentkit.tools.WebTypeTool
 import com.example.agentkit.tools.PrivilegedShellOut
