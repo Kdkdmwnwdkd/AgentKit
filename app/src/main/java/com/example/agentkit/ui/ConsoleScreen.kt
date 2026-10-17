@@ -17,9 +17,7 @@ import androidx.compose.material.icons.outlined.Accessibility
 import androidx.compose.material.icons.outlined.Apps
 import androidx.compose.material.icons.outlined.Dashboard
 import androidx.compose.material.icons.outlined.Refresh
-import androidx.compose.material.icons.outlined.Screenshot
 import androidx.compose.material.icons.outlined.Security
-import androidx.compose.material.icons.outlined.Stop
 import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -42,8 +40,8 @@ import com.example.agentkit.automation.DeviceContext
 /**
  * 控制台页（UX v1 §1.3 控制台结构直译，替代旧「自动化」大杂页）。
  *
- * 结构自上而下：状态总览三宫格（无障碍服务 / 自动化总开关 / 屏幕捕获）→ 总开关 +
- * 「前往系统设置开启无障碍服务」→ 屏幕捕获启停 → 设备感知实时上下文 → 快捷入口 2×2 →
+ * 结构自上而下：状态总览双栏（无障碍服务 / 自动化总开关）→ 总开关 +
+ * 「前往系统设置开启无障碍服务」→ 设备感知实时上下文 → 快捷入口 2×2 →
  * 可用能力说明。旧页里的技能 / 日志 / 记忆三块已拆去各自的一级页面，这里只留跳转入口。
  *
  * 一级页面：顶栏走 [PageTopBar]（标题「控制台」+ 右上「刷新」），抽屉开关由宿主注入。
@@ -60,7 +58,6 @@ fun ConsoleScreen(
 ) {
     val enabled by vm.automationEnabled.collectAsStateWithLifecycle()
     val connected by vm.serviceConnected.collectAsStateWithLifecycle()
-    val capturing by vm.capturing.collectAsStateWithLifecycle()
     val notificationGranted by vm.notificationGranted.collectAsStateWithLifecycle()
     val usageGranted by vm.usageGranted.collectAsStateWithLifecycle()
     val deviceContext by vm.deviceContext.collectAsStateWithLifecycle()
@@ -69,7 +66,7 @@ fun ConsoleScreen(
     val ctx = LocalContext.current
     val ak = LocalAkColors
 
-    val pendingGrants = pendingGrantCount(connected, capturing, notificationGranted, usageGranted)
+    val pendingGrants = pendingGrantCount(connected, notificationGranted, usageGranted)
 
     // 从系统设置页返回时刷新授予状态：用户在设置里开了无障碍 / 通知 / 使用情况，回到本页要立刻反映
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -80,9 +77,6 @@ fun ConsoleScreen(
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
-
-    // 屏幕捕获授权：调起系统「是否允许截取屏幕」弹窗，RESULT_OK 后才启动前台服务
-    val startCapture = rememberScreenCaptureLauncher(vm)
 
     Column(Modifier.fillMaxWidth()) {
         PageTopBar(
@@ -107,12 +101,11 @@ fun ConsoleScreen(
             AkSectionCard(
                 title = "状态总览",
                 icon = Icons.Outlined.Dashboard,
-                description = "无障碍服务、自动化总开关、屏幕捕获三项就绪后，Agent 才能完整操作并感知手机。"
+                description = "无障碍服务与自动化总开关就绪后，Agent 才能完整操作并感知手机。"
             ) {
                 Row(horizontalArrangement = Arrangement.spacedBy(AgentSpacing.space2)) {
                     ConsoleStatusTile(label = "无障碍服务", ok = connected, modifier = Modifier.weight(1f))
                     ConsoleStatusTile(label = "自动化总开关", ok = enabled, modifier = Modifier.weight(1f))
-                    ConsoleStatusTile(label = "屏幕捕获", ok = capturing, modifier = Modifier.weight(1f))
                 }
             }
 
@@ -147,38 +140,6 @@ fun ConsoleScreen(
                         text = "开启后返回本页，状态会自动刷新。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-
-            // —— 屏幕捕获（截图视觉）——
-            AkSectionCard(
-                title = "屏幕捕获（截图视觉）",
-                icon = Icons.Outlined.Screenshot,
-                description = "开启后，Agent 可通过 ui_screenshot 截取屏幕并“看见”图标、图片、验证码等 " +
-                    "UI 树无法描述的内容。"
-            ) {
-                AkBadge(
-                    text = if (capturing) "捕获中" else "未开启",
-                    container = if (capturing) ak.successContainer else ak.surface2,
-                    content = if (capturing) ak.onSuccessContainer
-                    else MaterialTheme.colorScheme.onSurfaceVariant,
-                    dotColor = if (capturing) ak.success else ak.outlineStrong
-                )
-                Spacer(Modifier.height(AgentSpacing.space3))
-                if (!capturing) {
-                    AkPrimaryButton(
-                        text = "开始屏幕捕获（授权录屏）",
-                        icon = Icons.Outlined.Screenshot,
-                        modifier = Modifier.fillMaxWidth(),
-                        onClick = { startCapture() }
-                    )
-                } else {
-                    AkOutlinedButton(
-                        text = "停止捕获",
-                        icon = Icons.Outlined.Stop,
-                        modifier = Modifier.fillMaxWidth(),
-                        onClick = { vm.stopScreenCapture(ctx) }
                     )
                 }
             }

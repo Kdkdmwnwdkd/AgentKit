@@ -16,15 +16,11 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.agentkit.automation.AutomationBridge
 import com.example.agentkit.automation.AutomationPrefs
-import com.example.agentkit.automation.CaptureFlag
 import com.example.agentkit.automation.DeviceForegroundAppTool
 import com.example.agentkit.automation.AgentNotificationListener
 import com.example.agentkit.automation.DeviceContext
 import com.example.agentkit.automation.DeviceContextStore
 import com.example.agentkit.automation.DeviceNotificationsTool
-import com.example.agentkit.automation.ScreenshotBridge
-import com.example.agentkit.automation.ScreenCaptureStartPolicy
-import com.example.agentkit.automation.ScreenCaptureTrace
 import com.example.agentkit.automation.UiClickTool
 import com.example.agentkit.automation.UiInputTool
 import com.example.agentkit.automation.UiKeyTool
@@ -288,10 +284,6 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     private val _serviceConnected = MutableStateFlow(AutomationBridge.service != null)
     val serviceConnected: StateFlow<Boolean> = _serviceConnected.asStateFlow()
 
-    /** 屏幕捕获状态：供自动化页反映是否正在捕获。 */
-    private val _capturing = MutableStateFlow(ScreenshotBridge.isCapturing)
-    val capturing: StateFlow<Boolean> = _capturing.asStateFlow()
-
     /** 通知访问权限是否已授予（供感知层卡片展示）。 */
     private val _notificationGranted = MutableStateFlow(false)
     val notificationGranted: StateFlow<Boolean> = _notificationGranted.asStateFlow()
@@ -517,7 +509,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         register(UiInputTool())
         register(UiKeyTool())
         register(UiClickTool())
-        // 截图视觉（L2）：喂给视觉模型“看”屏幕
+        // 截图（无障碍）：喂给视觉模型“看”屏幕
         register(UiScreenshotTool(workspace))
         // 设备感知（L3）：通知监听 + 当前前台应用
         register(DeviceNotificationsTool())
@@ -563,11 +555,6 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
             _serviceConnected.value = connected
             refreshCapabilityPlans() // 无障碍连接变化 → 能力就绪度随之刷新
         }
-        // 屏幕捕获开关以「服务真实状态」为唯一真源：服务链路失败/停止 → 开关自动回落，
-        // 杜绝「UI 显示捕获中、其实早就失败」的假状态（真机第七轮「开了之后关不了」）。
-        ScreenshotBridge.onCapturingChanged = { capturing ->
-            _capturing.value = capturing
-        }
         refreshGrants()
         // L8/L9：首屏即有内容可看
         refreshLogs()
@@ -609,60 +596,6 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     fun openAccessibilitySettings(ctx: Context) {
         val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         ctx.startActivity(intent)
-    }
-
-    /**
-     * 屏幕捕获：缓存 MediaProjection 授权结果（来自系统授权回调）。失败 → lastError + ERROR 日志。
-     *
-     * **只缓存，不取 token**（第六轮修复）：Android 14 规则 A 要求 FGS 先以 mediaProjection
-     * 类型进前台才允许 `getMediaProjection`，故 token 由服务在 onStartCommand 第一句进前台
-     * 之后自取；桥只缓存授权 extras，随后 [startScreenCapture] 把它随 intent 传给服务。
-     */
-    fun setScreenCapturePermission(resultCode: Int, data: android.content.Intent?) {
-        try {
-            ScreenshotBridge.setPermission(resultCode, data)
-            ScreenCaptureTrace.log(
-                ScreenCaptureTrace.CACHE_PERMISSION,
-                "resultCode=$resultCode data=${if (data == null) "null" else "ok"}"
-            )
-        } catch (t: Throwable) {
-            // 缓存授权结果本身不该失败，但厂商 ROM 可能在此抛——吞掉并上报，绝不逃逸到主线程。
-            ScreenshotBridge.reportFailure(
-                "缓存屏幕捕获授权失败：${ScreenCaptureStartPolicy.describe(t)}"
-            )
-            AgentLogger.e("ScreenCapture", "setScreenCapturePermission 异常", t)
-        }
-    }
-
-    /**
-     * 屏幕捕获：启动前台服务开始截屏（需先 setScreenCapturePermission）。
-     *
-     * **语义修正（真机第四轮 A3）**：仅当 [ScreenshotBridge.startService] 返回 true 才把
-     * `_capturing` 置 true——失败时保持 false 并在 UI 可见，避免「显示捕获中但服务其实没起来」。
-     */
-    fun startScreenCapture(ctx: Context) {
-        try {
-            val ok = ScreenshotBridge.startService(ctx)
-            val decision = CaptureFlag.decide(ok, ScreenshotBridge.lastError)
-            _capturing.value = decision.capturing
-            if (!ok) {
-                AgentLogger.e("ScreenCapture", "屏幕捕获启动失败：${decision.errorMessage}")
-            }
-            ScreenCaptureTrace.log(
-                ScreenCaptureTrace.START_SERVICE,
-                "startService=$ok lastError=${ScreenshotBridge.lastError}"
-            )
-        } catch (t: Throwable) {
-            ScreenshotBridge.reportFailure(ScreenCaptureStartPolicy.describe(t))
-            _capturing.value = false
-            AgentLogger.e("ScreenCapture", "startScreenCapture 异常", t)
-        }
-    }
-
-    /** 屏幕捕获：停止前台服务。 */
-    fun stopScreenCapture(ctx: Context) {
-        ScreenshotBridge.stopService(ctx)
-        _capturing.value = false
     }
 
     /** 刷新权限授予状态（进入自动化页时调用，反映用户在系统设置里的变更）。 */
@@ -1020,8 +953,8 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
      */
     private suspend fun requestApproval(tool: AgentTool, args: JsonObject): Boolean = approvalMutex.withLock {
         if (tool.name in sessionAllowed) return@withLock true
-        // W-8 P1-C：ui_screenshot 按回合自动缓存批准——用户在系统设置里开过屏幕捕获开关
-        // （系统级 MediaProjection 许可）+ 本回合已批准过一次截图，后续截图不再重复弹窗。
+        // W-8 P1-C：ui_screenshot 按回合自动缓存批准——本回合已批准过一次截图，
+        // 后续截图不再重复弹窗。
         // 修前每次截图都弹：真机日志里模型「看一眼点一下」被对话框反复打断，体感「更久」。
         // 回合边界在 send() 入口重置（screenshotApprovedThisTurn = false）。
         if (tool.name == SCREENSHOT_TOOL && screenshotApprovedThisTurn) return@withLock true

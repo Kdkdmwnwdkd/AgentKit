@@ -9,7 +9,6 @@
 
     <!-- ===== L2 前台服务 / 截图 / 录音 / 相机 / 语音（截图视觉通道） ===== -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SHORT_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
@@ -96,12 +95,6 @@
                 android:name="android.accessibilityservice"
                 android:resource="@xml/agent_accessibility_config" />
         </service>
-
-        <!-- 屏幕捕获前台服务（L2 截图视觉）：Android 14 要求 foregroundServiceType=mediaProjection -->
-        <service
-            android:name=".automation.ScreenCaptureService"
-            android:exported="false"
-            android:foregroundServiceType="mediaProjection" />
 
         <!-- 通知监听服务（L3 感知层）：系统级服务，需在“通知访问权限”中手动授予 -->
         <service

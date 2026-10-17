@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """APK dex 反验（W-9 起）——解析 CI 产出的 classes*.dex 字符串池，
-断言各批次（W-9 截图双通道 / W-10 上下文预算）的代码字面量确实打进包内。
+断言各批次（W-9/W-12 截图通道 / W-10 上下文预算）的代码字面量确实打进包内。
 
 两种判据模式（脚本如实标注，不用一种模式冒充另一种）：
   pool 池条目精确匹配：needle 是编译期常量本体（方法名 / 内联 const / 模板静态段 /
@@ -59,9 +59,8 @@ def dex_string_pool(dex):
 POOL_GROUPS = {
     "W9-A 截图双通道（pool 池条目精确匹配）": [
         ("无障碍截屏服务方法名", "takeScreenshotViaA11y"),
-        ("路由纯函数名", "shouldPreferA11yScreenshot"),
-        ("通道标记 a11y（内联 const VIA_A11Y）", "a11y"),
-        ("通道标记 media_projection（内联 const）", "media_projection"),
+        ("路由纯函数名", "canUseA11yScreenshot"),
+        ("通道标记 a11y（meta 模板值）", "a11y"),
         ("meta 模板含 via 键（静态段，$h 与 $via 之间）", ',"type":"png","via":"'),
         ("UiScreenshotTool 类型描述符", "Lcom/example/agentkit/automation/UiScreenshotTool;"),
         ("AgentAccessibilityService 类型描述符", "Lcom/example/agentkit/automation/AgentAccessibilityService;"),
@@ -79,12 +78,15 @@ POOL_GROUPS = {
 # 反向判据：这些符号必须**不在**池中（删除/替换成功的证据，防旧码残留）
 ABSENT_POOL = [
     ("旧条数压缩方法 maybeCompact 已移除", "maybeCompact"),
+    ("屏幕捕获服务已移除", "Lcom/example/agentkit/automation/ScreenCaptureService;"),
+    ("屏幕捕获桥已移除", "Lcom/example/agentkit/automation/ScreenshotBridge;"),
+    ("媒体投影通道标记已移除", "media_projection"),
 ]
 
 BYTES_GROUPS = {
     "W9-A 文案（描述 / 失败指引，长常量片段，bytes 子串）": [
-        ("描述：优先走无障碍通道", "优先走无障碍通道"),
-        ("指引：无障碍通道一句", "若已授予本应用无障碍权限，截屏会自动走无障碍通道，无需手动开启屏幕捕获"),
+        ("描述：已授予无障碍即可使用", "已授予无障碍权限即可使用"),
+        ("指引：明确无需屏幕捕捉权限", "无需屏幕捕捉权限"),
     ],
     "W10 图片裁剪文案（bytes 子串）": [
         ("旧图省略标记", "早前截图已从上下文省略"),

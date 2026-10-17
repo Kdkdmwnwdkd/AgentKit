@@ -9,24 +9,18 @@
  *  - 崩溃派发 [dispatch] 断言「写成功/写失败/原 handler 抛异常」三种情况下
  *    **原 handler 都恰好被调用一次**，且 dispatch 自身永不抛。
  *
- * **B（ScreenCaptureGuard）**：
+ * **B（已随 W-12 删除屏幕捕捉一并移除）**：
  *  - [sanitizeSize] 断言 0/负数/超大分辨率/密度为 0 的处理；
  *  - [cleanupPlan] 断言「给定异常 → 应执行的清理步骤序列」；
  *  - [guardValue] 断言返回值与失败摘要。
  *
  * **C（接线，源码扫描，不加载 Android 类）**：
  *  - Manifest 声明了 AgentKitApplication、Application.onCreate 里装了 CrashLogger；
- *  - ScreenCaptureService 里每个危险调用都在 guard/guardValue/runCatching 内；
- *    （W-7 起 getMediaProjection 移桥层：服务代码零调用、桥层调用有兜底，见 E5b）
  *  - 日志页有崩溃区块且调用了 CrashLogger。
  *
  * 运行方式见 scripts/qa/run-crashlog-verification.sh。
  */
 
-import com.example.agentkit.automation.ScreenCaptureGuard
-import com.example.agentkit.automation.ScreenCaptureGuard.CleanupStep
-import com.example.agentkit.automation.ScreenCaptureGuard.Resource
-import com.example.agentkit.automation.ScreenCaptureGuard.Stage
 import com.example.agentkit.core.CrashLogger
 import java.io.File
 
@@ -366,141 +360,12 @@ private fun testDispatch() {
 
 /* ------------------------------ D. 屏幕捕捉加固（纯函数） ------------------------------ */
 
-private fun testScreenCaptureGuard() {
-    println("[D] 屏幕捕捉加固：尺寸防御 + 安全停止序列")
-
-    check("D1 宽或高为 0 → 非法，禁止继续") {
-        val c = ScreenCaptureGuard.sanitizeSize(0, 1920, 320)
-        assertFalse("D1 w=0", c.ok)
-        assertTrue("D1 有原因", c.reason?.contains("0") == true)
-        assertFalse("D1 h=0", ScreenCaptureGuard.sanitizeSize(1080, 0, 320).ok)
-    }
-
-    check("D2 负数尺寸 → 非法") {
-        assertFalse("D2", ScreenCaptureGuard.sanitizeSize(-1, 800, 320).ok)
-        assertFalse("D2", ScreenCaptureGuard.sanitizeSize(1080, -800, 320).ok)
-    }
-
-    check("D3 合法尺寸原样通过") {
-        val c = ScreenCaptureGuard.sanitizeSize(1080, 2400, 440)
-        assertTrue("D3 ok", c.ok)
-        assertEquals("D3 w", 1080, c.width)
-        assertEquals("D3 h", 2400, c.height)
-        assertEquals("D3 density", 440, c.density)
-        assertFalse("D3 未缩放", c.clamped)
-    }
-
-    check("D4 超大分辨率 → 等比缩放到 MAX_DIM 内（保持宽高比）") {
-        val c = ScreenCaptureGuard.sanitizeSize(8000, 4000, 640)
-        assertTrue("D4 ok", c.ok)
-        assertTrue("D4 标记 clamped", c.clamped)
-        assertEquals("D4 长边=MAX", ScreenCaptureGuard.MAX_DIM, maxOf(c.width, c.height))
-        assertEquals("D4 短边等比", ScreenCaptureGuard.MAX_DIM / 2, minOf(c.width, c.height))
-    }
-
-    check("D5 密度为 0 / 负数 → 回退 DEFAULT_DENSITY") {
-        assertEquals("D5 0", ScreenCaptureGuard.DEFAULT_DENSITY, ScreenCaptureGuard.sanitizeSize(1080, 1920, 0).density)
-        assertEquals("D5 -1", ScreenCaptureGuard.DEFAULT_DENSITY, ScreenCaptureGuard.sanitizeSize(1080, 1920, -1).density)
-    }
-
-    check("D6 全资源持有 → 完整清理序列（顺序敏感）") {
-        val plan = ScreenCaptureGuard.cleanupPlan(
-            Stage.INIT_PROJECTION,
-            setOf(Resource.PROJECTION, Resource.VIRTUAL_DISPLAY, Resource.IMAGE_READER)
-        )
-        assertEquals(
-            "D6",
-            listOf(
-                CleanupStep.RELEASE_VIRTUAL_DISPLAY,
-                CleanupStep.CLOSE_IMAGE_READER,
-                CleanupStep.STOP_PROJECTION,
-                CleanupStep.CLEAR_STATE,
-                CleanupStep.REPORT_LAST_ERROR,
-                CleanupStep.LOG_ERROR,
-                CleanupStep.STOP_SELF
-            ),
-            plan
-        )
-    }
-
-    check("D7 只持有 Projection → 不产生下游释放步骤") {
-        val plan = ScreenCaptureGuard.cleanupPlan(Stage.START_FOREGROUND, setOf(Resource.PROJECTION))
-        assertEquals(
-            "D7",
-            listOf(
-                CleanupStep.STOP_PROJECTION,
-                CleanupStep.CLEAR_STATE,
-                CleanupStep.REPORT_LAST_ERROR,
-                CleanupStep.LOG_ERROR,
-                CleanupStep.STOP_SELF
-            ),
-            plan
-        )
-    }
-
-    check("D8 无资源（初始化最早期失败）→ 只上报 + 清状态 + 停止") {
-        val plan = ScreenCaptureGuard.cleanupPlan(Stage.INIT_PROJECTION, emptySet())
-        assertEquals(
-            "D8",
-            listOf(
-                CleanupStep.CLEAR_STATE,
-                CleanupStep.REPORT_LAST_ERROR,
-                CleanupStep.LOG_ERROR,
-                CleanupStep.STOP_SELF
-            ),
-            plan
-        )
-        assertTrue("D8 必含 stopSelf（否则前台服务悬挂）", plan.contains(CleanupStep.STOP_SELF))
-    }
-
-    check("D9 DESTROY 阶段不再 stopSelf（服务已经在销毁）") {
-        val plan = ScreenCaptureGuard.cleanupPlan(Stage.DESTROY, setOf(Resource.PROJECTION))
-        assertFalse("D9", plan.contains(CleanupStep.STOP_SELF))
-        assertTrue("D9 仍释放投影", plan.contains(CleanupStep.STOP_PROJECTION))
-    }
-
-    check("D10 任何阶段都「先上报再记日志」（UI 一定看得到原因）") {
-        for (stage in Stage.values()) {
-            val plan = ScreenCaptureGuard.cleanupPlan(stage, setOf(Resource.IMAGE_READER))
-            val r = plan.indexOf(CleanupStep.REPORT_LAST_ERROR)
-            val l = plan.indexOf(CleanupStep.LOG_ERROR)
-            assertTrue("D10 $stage 上报先于日志", r >= 0 && l >= 0 && r < l)
-            assertTrue("D10 $stage 清状态先于上报", plan.indexOf(CleanupStep.CLEAR_STATE) < r)
-        }
-    }
-
-    check("D11 guardValue 成功返回值、失败给摘要且不上抛") {
-        val ok = ScreenCaptureGuard.guardValue { "reader" }
-        assertTrue("D11 成功", ok.succeeded)
-        assertEquals("D11 值", "reader", ok.value)
-        val bad = ScreenCaptureGuard.guardValue<String> { throw SecurityException("token 失效") }
-        assertFalse("D11 失败", bad.succeeded)
-        assertTrue("D11 摘要含类名", bad.failure?.contains("SecurityException") == true)
-        assertTrue("D11 保留原始异常", bad.cause is SecurityException)
-    }
-
-    check("D12 stageLabel 全 stage 有中文名") {
-        for (stage in Stage.values()) {
-            assertTrue("D12 $stage", ScreenCaptureGuard.stageLabel(stage).isNotBlank())
-        }
-    }
-}
-
-/* ------------------------------ E. 接线（源码扫描，不加载 Android 类） ------------------------------ */
-
-private val SRC = File("/workspace/AgentKit/app/src/main/java/com/example/agentkit")
-private val MANIFEST = File("/workspace/AgentKit/app/src/main/AndroidManifest.xml")
-
-private fun read(rel: String): String = File(SRC, rel).readText()
-
 private fun testWiring() {
     println("[E] 接线扫描（源码级，不加载 Android 类）")
 
     val manifest = MANIFEST.readText()
     val app = read("AgentKitApplication.kt")
     val crashLogger = read("core/CrashLogger.kt")
-    val service = read("automation/ScreenCaptureService.kt")
-    val bridge = read("automation/ScreenshotBridge.kt")
     val logs = read("ui/LogsScreen.kt")
 
     check("E1 Manifest 声明了 AgentKitApplication") {
@@ -519,76 +384,6 @@ private fun testWiring() {
         assertContains("E4", crashLogger, "Thread.setDefaultUncaughtExceptionHandler")
         assertContains("E4", crashLogger, "trimToMaxKeep(dir)")
     }
-    check("E5 危险调用全部在 guard/guardValue/runCatching 内（服务层零裸调用）") {
-        val risky = listOf(
-            // 第六轮起 getMediaProjection 回到服务内（进前台之后），重新纳入本清单；
-            // 桥层不得取 token（hotfix6 教训）由 E5b 断言
-            "getMediaProjection(",
-            "ImageReader.newInstance(",
-            "setOnImageAvailableListener(",
-            "createVirtualDisplay(",
-            "registerCallback(",
-            "acquireLatestImage(",
-            "stopSelf()"
-        )
-        // 只看代码行：KDoc 里同样会提到这些 API 名（那正是「为什么兜底」的说明）
-        val lines = service.lines()
-        val isCode = { s: String ->
-            val t = s.trim()
-            t.isNotEmpty() && !t.startsWith("*") && !t.startsWith("//") && !t.startsWith("/*")
-        }
-        for (call in risky) {
-            val hits = lines.withIndex().filter { it.value.contains(call) && isCode(it.value) }
-            assertTrue("E5 出现 $call", hits.isNotEmpty())
-            for ((idx, line) in hits) {
-                // 该行自身或前 4 行内必须出现兜底关键字
-                val window = lines.subList((idx - 4).coerceAtLeast(0), idx + 1).joinToString("\n")
-                val guarded = window.contains("guard") || window.contains("guardValue") ||
-                    window.contains("runCatching") || window.contains("try {") ||
-                    window.contains("catch (")
-                if (!guarded) {
-                    throw AssertionError("E5 裸调用未被兜底：$call @第 ${idx + 1} 行 -> ${line.trim()}")
-                }
-            }
-        }
-    }
-    check("E5b 第六轮顺序：服务 startForeground 先于 getMediaProjection；桥层零取 token") {
-        // hotfix6 教训（真机日志实证）：把取 token 挪到服务生命周期之前 →
-        // getMediaProjection 抛 SecurityException「Media projections require a foreground
-        // service of type FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION」，功能全废。
-        // Android 14 规则 A：必须先有该类型 FGS 运行，才允许取 token（Operit 同款实证）。
-        val isCode = { s: String ->
-            val t = s.trim()
-            t.isNotEmpty() && !t.startsWith("*") && !t.startsWith("//") && !t.startsWith("/*")
-        }
-        val bridge = read("automation/ScreenshotBridge.kt")
-        val bridgeCode = bridge.lines().filter { isCode(it) }
-        assertFalse("桥代码不得取 token", bridgeCode.any { it.contains("getMediaProjection(") })
-        assertFalse("桥不得定义 obtainProjection", bridgeCode.any { it.contains("fun obtainProjection") })
-        // 服务内：startForeground 必须早于取 token（规则 A 前置条件）。
-        // 检索词用调用点而非 API 名——onStartCommand 的注释里会提到 getMediaProjection
-        // （那是「为什么」的说明），真实取 token 调用是 obtainProjectionWithRetry(...)。
-        val cmd = service
-            .substringAfter("override fun onStartCommand")
-            .substringBefore("private fun obtainProjectionWithRetry")
-        val fgIdx = cmd.indexOf("startForegroundSafely()")
-        val tokenIdx = cmd.indexOf("obtainProjectionWithRetry(")
-        assertTrue("调用点均存在", fgIdx >= 0 && tokenIdx >= 0)
-        assertTrue("startForeground($fgIdx) 早于取 token($tokenIdx)", fgIdx < tokenIdx)
-    }
-    check("E6 服务层不再有裸 stopSelf（failSafe 之外）") {
-        val count = service.lines().count { it.contains("stopSelf()") }
-        assertTrue("E6 stopSelf 出现次数受限（$count）", count <= 2)
-    }
-    check("E7 服务注册了 MediaProjection.Callback（感知用户从控制中心停止投屏）") {
-        assertContains("E7", service, "MediaProjection.Callback()")
-        assertContains("E7", service, "override fun onStop()")
-    }
-    check("E8 失败出口统一走 failSafe（lastError + 日志 + 安全停止）") {
-        assertContains("E8", service, "ScreenshotBridge.reportFailure(reason)")
-        assertContains("E8", service, "AgentLogger.e(")
-        assertTrue("E8 failSafe 调用点 ≥3", service.lines().count { it.contains("failSafe(") } >= 4)
-    }
     check("E9 日志页有崩溃区块并调用 CrashLogger") {
         assertContains("E9 列表", logs, "CrashLogger.listCrashFiles(")
         assertContains("E9 回放进日志", logs, "CrashLogger.replayPendingIntoLogger(")
@@ -606,11 +401,10 @@ private fun testWiring() {
 /* ------------------------------ main ------------------------------ */
 
 fun main() {
-    println("=== 崩溃捕获落盘 + 屏幕捕捉加固 QA harness ===")
+    println("=== 崩溃捕获落盘 QA harness ===")
     testReportFormat()
     testRetention()
     testDispatch()
-    testScreenCaptureGuard()
     testWiring()
     println("---------------------------------------------")
     println("PASS=$passed  FAIL=${failures.size}")

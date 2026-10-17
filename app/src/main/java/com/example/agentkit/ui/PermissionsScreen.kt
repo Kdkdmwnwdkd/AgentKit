@@ -19,7 +19,6 @@ import androidx.compose.material.icons.outlined.Apps
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Notifications
 import androidx.compose.material.icons.outlined.Refresh
-import androidx.compose.material.icons.outlined.Screenshot
 import androidx.compose.material.icons.outlined.Shield
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -39,7 +38,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 
 /**
- * 权限中心页（UX v1 §1.4）：四项系统能力的就绪度总览 + 缺失置顶 + 一键跳转。
+ * 权限中心页（UX v1 §1.4）：三项系统能力的就绪度总览 + 缺失置顶 + 一键跳转。
  *
  * 从旧自动化页拆出：权限是「排查型」信息，和「操作型」的控制台分开，
  * 用户出问题时先进权限中心，而不是在一堆开关里找哪一项没开。
@@ -50,12 +49,11 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 @Composable
 fun PermissionsScreen(vm: ChatViewModel) {
     val connected by vm.serviceConnected.collectAsStateWithLifecycle()
-    val capturing by vm.capturing.collectAsStateWithLifecycle()
     val notificationGranted by vm.notificationGranted.collectAsStateWithLifecycle()
     val usageGranted by vm.usageGranted.collectAsStateWithLifecycle()
     val ctx = LocalContext.current
 
-    val pendingGrants = pendingGrantCount(connected, capturing, notificationGranted, usageGranted)
+    val pendingGrants = pendingGrantCount(connected, notificationGranted, usageGranted)
 
     // 从系统设置页返回时刷新：用户刚在设置里开了某项，回到本页要立刻反映
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -67,9 +65,6 @@ fun PermissionsScreen(vm: ChatViewModel) {
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    // 屏幕捕获走系统录屏授权弹窗（与控制台同一启动器实现）
-    val startCapture = rememberScreenCaptureLauncher(vm)
-
     val grants = listOf(
         GrantItem(
             title = "无障碍服务",
@@ -78,14 +73,6 @@ fun PermissionsScreen(vm: ChatViewModel) {
             grantedHint = "已连接，Agent 可读取界面并执行点击、滑动、输入",
             missingHint = "未连接，Agent 无法操作手机，先开这一项",
             onOpen = { vm.openAccessibilitySettings(ctx) }
-        ),
-        GrantItem(
-            title = "屏幕捕获",
-            granted = capturing,
-            icon = Icons.Outlined.Screenshot,
-            grantedHint = "捕获中，Agent 可截取屏幕给视觉模型看",
-            missingHint = "未开启，Agent 看不到图标、图片与验证码",
-            onOpen = { startCapture() }
         ),
         GrantItem(
             title = "通知访问",
@@ -143,7 +130,7 @@ fun PermissionsScreen(vm: ChatViewModel) {
                 )
                 Spacer(Modifier.height(AgentSpacing.space3))
                 Text(
-                    text = "共四项能力：无障碍服务、屏幕捕获、通知访问、使用情况访问。" +
+                    text = "共三项能力：无障碍服务、通知访问、使用情况访问。" +
                         "缺项已置顶排列，点「去开启」会跳转对应的系统设置页，" +
                         "授予后回到本页即自动刷新。",
                     style = MaterialTheme.typography.bodySmall,
@@ -186,8 +173,8 @@ fun PermissionsScreen(vm: ChatViewModel) {
                 title = "这些权限用来做什么",
                 icon = Icons.Outlined.Info,
                 description = "无障碍服务：读取当前界面，在你发出指令后执行点击、滑动、输入，" +
-                    "是 Agent 操作手机的基础，没有它其余三项也没有意义。\n" +
-                    "屏幕捕获：把屏幕截图交给视觉模型，用来识别图标、图片与验证码。\n" +
+                    "是 Agent 操作手机的基础，其余能力都建立在它之上；截图也走无障碍（Android 11+），\n" +
+                    "不需要额外的屏幕录制授权。\n" +
                     "通知访问：读取最近通知，回答“刚才有没有新消息”。\n" +
                     "使用情况访问：读取当前前台应用，让 Agent 知道你在用哪个 App。\n" +
                     "前台应用名与通知内容会随对话一起发送到你配置的模型接口，" +

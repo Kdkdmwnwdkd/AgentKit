@@ -55,7 +55,6 @@ sealed interface GuardVerdict {
 internal val TRANSIENT_FAILURE_CODES: Set<String> = setOf(
     "service_not_ready",   // 自动化桥未就绪（无障碍服务绑定中/用户尚未授权）——就绪后可自愈
     "service_unavailable", // 系统能力缺失（如 UsageStatsManager 不支持）——非参数错误
-    "capture_not_enabled", // 屏幕捕获总开关未开——用户打开即可，非参数错误
 )
 
 /**

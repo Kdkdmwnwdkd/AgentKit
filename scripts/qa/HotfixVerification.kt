@@ -19,8 +19,6 @@
  * 运行方式见 scripts/qa/run-hotfix-verification.sh。
  */
 
-import com.example.agentkit.automation.ScreenCaptureStartPolicy
-import com.example.agentkit.automation.ScreenCaptureStartPolicy.Step
 import com.example.agentkit.core.AgentEvent
 import com.example.agentkit.core.AssistantMessage
 import com.example.agentkit.core.ChatMessage
@@ -377,113 +375,16 @@ private suspend fun testNonRetryableDoesNotWait() {
     }
 }
 
-/* ------------------------------ Bug 2 用例 ------------------------------ */
-
-/** 用例 F：启动顺序纯函数（有授权数据 / 无授权数据 × Android 14 / Android 10）。 */
-private suspend fun testStartOrderPolicy() {
-    println("\n== Bug2-F：先进前台（带类型）→ 再取 token（Android 14 规则 A/B，第六轮确证） ==")
-
-    check("有授权数据（Android 14）→ 先进前台再取 token，且不反过来") {
-        val plan = ScreenCaptureStartPolicy.plan(hasToken = true, sdkInt = 34)
-        assertEquals(
-            "步骤序列",
-            listOf(Step.START_FOREGROUND, Step.OBTAIN_TOKEN),
-            plan
-        )
-        // 规则 A：getMediaProjection 要求 FGS 已以 mediaProjection 类型运行（Operit 实证）
-        assertTrue("startForeground 早于取 token", plan.indexOf(Step.START_FOREGROUND) < plan.indexOf(Step.OBTAIN_TOKEN))
-    }
-
-    check("无授权数据（Android 14）→ 直接放弃，不启动服务") {
-        val plan = ScreenCaptureStartPolicy.plan(hasToken = false, sdkInt = 34)
-        assertEquals("步骤序列", listOf(Step.ABORT), plan)
-        assertTrue("不含 START_FOREGROUND", Step.START_FOREGROUND !in plan)
-    }
-
-    check("Android 10/11/12/13（29-33）同样先进前台再取 token（建议顺序，无副作用）") {
-        assertEquals("有授权数据 @29", listOf(Step.START_FOREGROUND, Step.OBTAIN_TOKEN), ScreenCaptureStartPolicy.plan(true, 29))
-        assertEquals("有授权数据 @33", listOf(Step.START_FOREGROUND, Step.OBTAIN_TOKEN), ScreenCaptureStartPolicy.plan(true, 33))
-        assertEquals("无授权数据 @29", listOf(Step.ABORT), ScreenCaptureStartPolicy.plan(false, 29))
-        assertEquals("无授权数据 @33", listOf(Step.ABORT), ScreenCaptureStartPolicy.plan(false, 33))
-    }
-}
-
-/** 用例 G：异常兜底语义——任何异常都不再上抛（含 Error），只转成交文案。 */
-private suspend fun testStartGuardedNeverThrows() {
-    println("\n== Bug2-G：启动失败兜底（异常绝不上抛）==")
-
-    check("SecurityException（Android 14 类型校验）→ 返回失败原因而非上抛") {
-        val guarded = ScreenCaptureStartPolicy.guard {
-            throw SecurityException("Media projections require a foreground service of type mediaProjection")
-        }
-        assertTrue("判为失败", !guarded.succeeded)
-        assertTrue("原因含 SecurityException", guarded.failure!!.contains("SecurityException"))
-        assertTrue("保留原始异常（供记堆栈）", guarded.cause is SecurityException)
-    }
-
-    check("Error / IllegalStateException / NPE 一律被吞（只转原因）") {
-        assertTrue("Error", ScreenCaptureStartPolicy.guard { throw StackOverflowError("oom-ish") }.failure!!.contains("StackOverflowError"))
-        assertTrue(
-            "IllegalStateException（后台启动限制）",
-            ScreenCaptureStartPolicy.guard { throw IllegalStateException("Not allowed to start service") }
-                .failure!!.contains("IllegalStateException")
-        )
-        assertTrue("NPE", ScreenCaptureStartPolicy.guard { throw NullPointerException("ctx") }.failure!!.contains("NullPointerException"))
-        assertTrue("Cancellation 之外无泄漏：上述三条均未抛出到 harness", true)
-    }
-
-    check("正常路径 → 无失败原因（成功不误报）") {
-        var ran = false
-        val guarded = ScreenCaptureStartPolicy.guard { ran = true }
-        assertTrue("块被执行", ran)
-        assertTrue("判为成功", guarded.succeeded)
-        assertTrue("成功返回 null 原因", guarded.failure == null)
-    }
-}
-
-/** 用例 H：失败文案非空、带原因、可 action（含「可重试」），且 UI 文案与日志同源。 */
-private suspend fun testFailureMessage() {
-    println("\n== Bug2-H：失败文案可见且可重试 ==")
-
-    check("带原因 → 文案含原因 + 可重试") {
-        val msg = ScreenCaptureStartPolicy.failureMessage(
-            ScreenCaptureStartPolicy.guard { throw SecurityException("no token yet") }.failure
-        )
-        assertTrue("文案非空", msg.isNotBlank())
-        assertTrue("含固定前缀", msg.startsWith("屏幕捕获启动失败："))
-        assertTrue("含具体原因", msg.contains("SecurityException"))
-        assertTrue("含后续动作（可重试）", msg.contains("可重试"))
-    }
-
-    check("原因为空 / null → 退化为「未知原因」但仍然可重试（绝不静默）") {
-        val blank = ScreenCaptureStartPolicy.failureMessage("   ")
-        assertTrue("空白原因文案非空", blank.isNotBlank())
-        assertTrue("退化原因", blank.contains("未知原因"))
-        assertTrue("仍可重试", blank.contains("可重试"))
-        val nullish = ScreenCaptureStartPolicy.failureMessage(null)
-        assertTrue("null 原因文案非空", nullish.isNotBlank())
-        assertTrue("null 原因仍可重试", nullish.contains("可重试"))
-    }
-
-    check("未授权时的桥失败出口文案（UI 直接弹的那条）") {
-        val msg = ScreenCaptureStartPolicy.failureMessage("尚未取得屏幕捕获授权")
-        assertTrue("授权类文案可重试", msg.contains("可重试") && msg.contains("授权"))
-    }
-}
-
 /* ------------------------------ 入口 ------------------------------ */
 
 fun main() = runBlocking {
-    println("== 修真机实测 Hotfix（Bug1 退避可见 / Bug2 屏幕捕获不崩）QA 行为验证 ==")
+    println("== 修真机实测 Hotfix（Bug1 退避可见）QA 行为验证 ==")
 
     testBackoffPolicySequence()
     testBackoffHookCalledOncePerRetry()
     testRealBackoffActuallyWaits()
     testCancelDuringBackoff()
     testNonRetryableDoesNotWait()
-    testStartOrderPolicy()
-    testStartGuardedNeverThrows()
-    testFailureMessage()
 
     println("\n== 汇总 ==")
     println("PASS: $passed  FAIL: ${failures.size}  TOTAL: ${passed + failures.size}")

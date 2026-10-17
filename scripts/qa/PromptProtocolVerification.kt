@@ -28,7 +28,7 @@
  * Android 运行时（无需无障碍服务 / 屏幕捕获服务 / Context），可在 JVM 直接跑。
  */
 
-import com.example.agentkit.automation.SCREEN_CAPTURE_OFF_GUIDANCE
+import com.example.agentkit.automation.SCREENSHOT_UNAVAILABLE_GUIDANCE
 import com.example.agentkit.automation.UiClickTool
 import com.example.agentkit.automation.UiScreenshotTool
 import com.example.agentkit.automation.UiTapTool
@@ -182,20 +182,16 @@ private fun testToolHints() {
         assertContains("文件读写", sp, "文件读写")
     }
 
-    check("ui_screenshot 失败指引含「权限中心 / 去开启」可行动作") {
-        assertContains("权限中心", SCREEN_CAPTURE_OFF_GUIDANCE, "权限中心")
-        assertContains("去开启", SCREEN_CAPTURE_OFF_GUIDANCE, "去开启")
-        assertContains("屏幕捕获", SCREEN_CAPTURE_OFF_GUIDANCE, "屏幕捕获")
+    check("ui_screenshot 失败指引指向无障碍服务（W-12：截图只走无障碍）") {
+        assertContains("无障碍", SCREENSHOT_UNAVAILABLE_GUIDANCE, "无障碍服务")
+        assertContains("无需屏幕捕捉", SCREENSHOT_UNAVAILABLE_GUIDANCE, "无需屏幕捕捉权限")
+        assertContains("Android 11", SCREENSHOT_UNAVAILABLE_GUIDANCE, "Android 11")
     }
 
-    check("ui_screenshot 失败指引补一句无障碍通道可用（W-9：主路径可用时别让用户开捕获）") {
-        assertContains("无障碍通道", SCREEN_CAPTURE_OFF_GUIDANCE, "无障碍通道")
-    }
-
-    check("ui_screenshot 描述：无障碍优先 + 兜底才需屏幕捕获（W-9 双通道，引用一致性）") {
+    check("ui_screenshot 描述不再提屏幕捕获（W-12：MediaProjection 已删）") {
         val d = UiScreenshotTool(File("/tmp/prompt-verify")).description
-        assertContains("无障碍优先", d, "优先走无障碍通道")
-        assertContains("兜底需捕获", d, "屏幕捕获")
+        assertContains("无障碍", d, "无障碍")
+        assertTrue("描述不得再提屏幕捕获", !d.contains("屏幕捕获"))
     }
 }
 

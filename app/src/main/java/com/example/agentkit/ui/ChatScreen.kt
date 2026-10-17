@@ -155,7 +155,6 @@ fun ChatScreen(
     val serviceConnected by vm.serviceConnected.collectAsStateWithLifecycle()
     val notificationGranted by vm.notificationGranted.collectAsStateWithLifecycle()
     val usageGranted by vm.usageGranted.collectAsStateWithLifecycle()
-    val capturing by vm.capturing.collectAsStateWithLifecycle()
     val config by vm.config.collectAsStateWithLifecycle()
     // 功能四（模型快速切换，录屏反馈「保存了好多个模型，要换的时候不给换，
     // 都不知道现在用哪个」）：对话页常驻当前模型指示条 + 一键切换弹窗，
@@ -167,7 +166,7 @@ fun ChatScreen(
     val listState = rememberLazyListState()
 
     val pendingGrants = pendingGrantCount(
-        serviceConnected, capturing, notificationGranted, usageGranted
+        serviceConnected, notificationGranted, usageGranted
     )
     val modelReady =
         config.baseUrl.isNotBlank() && config.apiKey.isNotBlank() && config.model.isNotBlank()

@@ -1,12 +1,7 @@
 package com.example.agentkit.ui
 
-import android.app.Activity
 import android.content.Context
-import android.media.projection.MediaProjectionManager
 import android.provider.Settings
-import android.widget.Toast
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
@@ -77,9 +72,6 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
-import com.example.agentkit.automation.ScreenCaptureAuthGuard
-import com.example.agentkit.automation.ScreenCaptureTrace
-import com.example.agentkit.automation.ScreenshotBridge
 import com.example.agentkit.core.AgentLogger
 import com.example.agentkit.core.CrashLogger
 import kotlinx.coroutines.delay
@@ -951,71 +943,6 @@ fun AkTextField(
                 }
             )
             if (trailing != null) trailing()
-        }
-    }
-}
-
-// ———————————————————— 系统意图启动器（跨页复用） ————————————————————
-
-/**
- * 屏幕捕获授权启动器：调起系统「是否允许截取屏幕」弹窗，RESULT_OK 后才交给 ViewModel
- * 启动前台服务（RESULT_CANCELED / data 为空时静默忽略——用户有权拒绝）。
- *
- * 控制台与权限中心两处入口共用同一实现，避免两处各写一遍 resultCode / Intent 判空而漂移。
- *
- * **「点立即开始 → 闪退」最后一刀（本轮回合）**：整个 ActivityResult 回调体
- * （含 `setScreenCapturePermission` / `startScreenCapture` / 弹 Toast 以及取
- * `MediaProjectionManager`）全部包在 [ScreenCaptureAuthGuard.run] 里——
- * **任何 Throwable 都不允许逃逸**（回调跑在主线程，逃逸即杀进程）。失败时：
- * ① `ScreenCaptureTrace.logFailure` 落面包屑 + 堆栈；② 弹可读 Toast（[ScreenCaptureAuthGuard.toastText]）。
- *
- * 同时把「点按钮 → 弹系统框」这一步也兜底：`getSystemService(MEDIA_PROJECTION_SERVICE)`
- * 在极少数 ROM 上可能返回 null（`as MediaProjectionManager` 抛 NPE）。
- *
- * @return 点击「开始屏幕捕获」时调用的动作。
- */
-@Composable
-internal fun rememberScreenCaptureLauncher(vm: ChatViewModel): () -> Unit {
-    val ctx = LocalContext.current
-    val launcher = rememberLauncherForActivityResult(
-        ActivityResultContracts.StartActivityForResult()
-    ) { res ->
-        // 授权回调整段兜底：任何异常都不允许逃逸导致进程崩（真机闪退的最后一刀）。
-        val outcome = ScreenCaptureAuthGuard.run {
-            ScreenCaptureTrace.log(
-                ScreenCaptureTrace.CB_ENTER,
-                "resultCode=${res.resultCode} data=${if (res.data == null) "null" else "ok"}"
-            )
-            if (res.resultCode == Activity.RESULT_OK && res.data != null) {
-                vm.setScreenCapturePermission(res.resultCode, res.data)
-                vm.startScreenCapture(ctx)
-            } else {
-                AgentLogger.w("ScreenCapture", "用户取消或未返回授权数据（resultCode=${res.resultCode}）")
-            }
-        }
-        val guardToast = ScreenCaptureAuthGuard.toastText(outcome)
-        if (guardToast != null) {
-            // 回调体自身抛异常：落栈 + 提示（lastError 由 reportFailure/兜底负责写）
-            AgentLogger.e("ScreenCapture", guardToast, outcome.cause)
-            runCatching { Toast.makeText(ctx, guardToast, Toast.LENGTH_LONG).show() }
-        }
-        // 桥层启动失败（startService=false）：读走一次性 lastError 并显示
-        val failure = ScreenshotBridge.lastError
-        if (failure != null) {
-            ScreenshotBridge.lastError = null // 一次性：读走即清，避免下一次成功还提示旧错
-            runCatching { Toast.makeText(ctx, failure, Toast.LENGTH_LONG).show() }
-        }
-    }
-    return {
-        // 弹系统授权框本身也可能抛（无 MediaProjectionManager / 厂商 ROM 限制）：同样兜底。
-        val outcome = ScreenCaptureAuthGuard.run {
-            val mpm = ctx.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-            launcher.launch(mpm.createScreenCaptureIntent())
-        }
-        val toast = ScreenCaptureAuthGuard.toastText(outcome)
-        if (toast != null) {
-            AgentLogger.e("ScreenCapture", toast, outcome.cause)
-            runCatching { Toast.makeText(ctx, toast, Toast.LENGTH_LONG).show() }
         }
     }
 }

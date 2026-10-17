@@ -245,7 +245,7 @@ fun SettingsScreen(
                 AkListItem(
                     icon = Icons.Outlined.Shield,
                     title = "权限中心",
-                    description = "无障碍服务、屏幕捕获、通知与使用情况四项授予状态",
+                    description = "无障碍服务、通知与使用情况三项授予状态",
                     onClick = { onNavigate(AppDest.PERMISSIONS) }
                 )
             }

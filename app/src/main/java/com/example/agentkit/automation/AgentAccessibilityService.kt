@@ -59,18 +59,17 @@ internal fun shouldRetryForFreshWindow(
 internal const val A11Y_SCREENSHOT_MIN_API = 30
 
 /**
- * 纯函数（W-9）：本次截图是否应走**无障碍 takeScreenshot 主路径**。
+ * 纯函数：当前是否**可以用无障碍截图**（W-12 起的唯一截图通道）。
  * 零 Android 依赖（API 级由调用方传入 `Build.VERSION.SDK_INT`，便于 harness 真值表断言）。
  *
- * 判据：无障碍服务就绪（用户已在系统设置里授予读屏/无障碍——比 MediaProjection
- * 更强的授权，截图授权天然蕴含其中）且 API ≥ [A11Y_SCREENSHOT_MIN_API]。
- * 否则回落 MediaProjection 兜底路径（需用户手动开屏幕捕获授权 + 授权链耗时）。
+ * 判据：无障碍服务就绪（用户已在系统设置里授予读屏/无障碍）且 API ≥ [A11Y_SCREENSHOT_MIN_API]。
+ * W-12 起这是**唯一截图通道**（MediaProjection 已删除）。
+ * 不满足则 ui_screenshot 直接返回可行动指引（不降级到任何录屏授权路径）。
  *
- * 参照策略：Operit 截图三级链（Shizuku shell screencap → 无障碍 takeScreenshot →
- * MediaProjection 兜底）的**中间级**——本项目已有无障碍服务，直接取其第二级为主路径，
- * 净室重写，不引其代码。
+ * 命名从 `shouldPrefer` 改为 `canUse`：W-12 删除 MediaProjection 后不再存在「优先/兜底」
+ * 两条路可选，只有一个判据——能不能用无障碍截图。
  */
-internal fun shouldPreferA11yScreenshot(a11yReady: Boolean, apiLevel: Int): Boolean =
+internal fun canUseA11yScreenshot(a11yReady: Boolean, apiLevel: Int): Boolean =
     a11yReady && apiLevel >= A11Y_SCREENSHOT_MIN_API
 
 /**
@@ -467,16 +466,16 @@ class AgentAccessibilityService : AccessibilityService() {
 
     /**
      * W-9：经无障碍服务截屏（API 30+ `AccessibilityService.takeScreenshot`）——
-     * **ui_screenshot 的主路径**：用户在系统设置里开过无障碍（读屏授权）即可截图，
-     * 无需 MediaProjection 授权链、无需屏幕捕获前台服务启动等待。
+     * **ui_screenshot 的唯一通道**（W-12 起）：用户在系统设置里开过无障碍（读屏授权）即可截图，
+     * 无授权弹窗、无前台服务、无首帧等待。
      *
-     * 参照 Operit 截图三级链的中间级（净室重写，不引其代码）：主路径失败/不支持时
-     * 由调用方（[com.example.agentkit.automation.UiScreenshotTool]）回落 MediaProjection 兜底。
+     * 失败（API<30 / onFailure / 厂商 ROM 抛异常）一律返回 null，由调用方
+     * （[com.example.agentkit.automation.UiScreenshotTool]）给出可行动指引。
      *
      * 在主线程调用（与 rootInActiveWindow 同线程稳定性考虑）；挂起函数——系统回调经
      * suspendCancellableCoroutine 转挂起，协程取消后回调安全失效（isActive 守卫）。
      *
-     * @return 截屏位图；API < 30 / 调用抛异常 / 系统回调 onFailure → null（调用方兜底）
+     * @return 截屏位图；API < 30 / 调用抛异常 / 系统回调 onFailure → null
      */
     suspend fun takeScreenshotViaA11y(): Bitmap? = withContext(Dispatchers.Main) {
         if (Build.VERSION.SDK_INT < A11Y_SCREENSHOT_MIN_API) return@withContext null
@@ -497,7 +496,7 @@ class AgentAccessibilityService : AccessibilityService() {
                     }
                 )
             } catch (t: Throwable) {
-                // 厂商 ROM 可能在不支持的设备上抛异常——降级为 null 让调用方走兜底，绝不逃逸
+                // 厂商 ROM 可能在不支持的设备上抛异常——降级为 null，绝不逃逸
                 AgentLogger.w("ScreenCapture", "a11y takeScreenshot 抛异常: ${t.message}")
                 if (cont.isActive) cont.resume(null, onCancellation = {})
             }
@@ -511,7 +510,7 @@ class AgentAccessibilityService : AccessibilityService() {
  * 只暴露 getHardwareBuffer() / getColorSpace() / getTimestamp()（均 API 30）。
  * 硬件缓冲须 wrapHardwareBuffer + copy(ARGB_8888) 转成软件副本后才能安全使用与回收
  * （copy 出的位图独立于缓冲生命周期；本方法 finally 关闭 HardwareBuffer）。
- * 转换任何一步失败（含厂商 ROM 异常）均回落 null，调用方静默走 MediaProjection 兜底。
+ * 转换任何一步失败（含厂商 ROM 异常）均回落 null，调用方返回失败指引。
  */
 private fun AccessibilityService.ScreenshotResult.toSoftwareBitmap(): Bitmap? =
     try {

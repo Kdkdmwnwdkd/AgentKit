@@ -170,17 +170,16 @@ private const val BACK_EXIT_WINDOW_MS = 2_000L
 private const val MAX_RECENT_CONVERSATIONS = 8
 
 /**
- * 待授权项数：无障碍服务 / 屏幕捕获 / 通知访问 / 使用情况访问 四项中未就绪的数量。
+ * 待授权项数：无障碍服务 / 通知访问 / 使用情况访问 三项中未就绪的数量。
  *
  * 抽屉就绪文字、控制台三宫格、权限中心页三处共用同一函数——同一状态源必须同一计数，
  * 否则用户会看到「抽屉说 3 项、页面说 2 项」的信任裂缝（§6.5.2「与权限中心红点同源」）。
  */
 internal fun pendingGrantCount(
     serviceConnected: Boolean,
-    capturing: Boolean,
     notificationGranted: Boolean,
     usageGranted: Boolean
-): Int = listOf(serviceConnected, capturing, notificationGranted, usageGranted).count { !it }
+): Int = listOf(serviceConnected, notificationGranted, usageGranted).count { !it }
 
 /**
  * 日志行是否为 ERROR 级。日志格式 `HH:mm:ss.SSS LEVEL [tag] message`（core/AgentLogger.format），
@@ -230,7 +229,6 @@ fun AppScaffold(
 
     // —— 就绪文字 / 未读 ERROR 数据源（与权限中心页、控制台同源）——
     val serviceConnected by vm.serviceConnected.collectAsStateWithLifecycle()
-    val capturing by vm.capturing.collectAsStateWithLifecycle()
     val notificationGranted by vm.notificationGranted.collectAsStateWithLifecycle()
     val usageGranted by vm.usageGranted.collectAsStateWithLifecycle()
     val logs by vm.logs.collectAsStateWithLifecycle()
@@ -240,7 +238,7 @@ fun AppScaffold(
     // hotfix30：正在生成的会话 id（抽屉显示「生成中」标识，可点到在途会话续看）
     val generatingConvId by vm.generatingConvId.collectAsStateWithLifecycle()
     val pendingGrants = pendingGrantCount(
-        serviceConnected, capturing, notificationGranted, usageGranted
+        serviceConnected, notificationGranted, usageGranted
     )
     // 功能五（P1-4a）：会话导出走系统分享面板，需要 Context 发起 Intent
     val ctx = LocalContext.current

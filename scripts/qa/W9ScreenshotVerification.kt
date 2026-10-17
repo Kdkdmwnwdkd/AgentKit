@@ -1,30 +1,23 @@
 #!/usr/bin/env kotlin
 /**
- * W-9 QA 行为验证 harness：截图通道升级（无障碍 takeScreenshot 主路径）。
+ * 截图通道 QA harness（W-9 建立，W-12 改为「无障碍唯一通道」）。
  *
- * 背景（真机日志 23:52-23:58 诊断 + W-8 交付后的下一批）：「屏幕捕捉开了和没开
- * 没区别、更久更浪费时间」的剩余耗时在 MediaProjection 授权链（系统弹窗 + 前台
- * 服务启动 + 首帧等待）。本项目已有无障碍服务——`AccessibilityService.takeScreenshot`
- * （API 30+）天然是更快的主路径：用户授过无障碍（读屏）即可截图，零授权链。
+ * W-12 决策：删除 MediaProjection 整条链路。截图只走无障碍 `takeScreenshot`（API 30+）——
+ * 用户授过无障碍（读屏）即可，无授权弹窗、无前台服务、无首帧等待。
  *
- * 本 harness 只测**可脱离 Android 运行时**的部分（JVM 直跑，形态学
- * scripts/qa/AppControlVerification.kt）：
- *  - [shouldPreferA11yScreenshot]：路由真值表（a11yReady × API 级 4×3 全组合）；
- *  - [A11Y_SCREENSHOT_MIN_API]：常量与系统文档一致（API 30）；
- *  - 文案引用一致性：ui_screenshot 描述「无障碍优先」、失败指引含无障碍通道一句；
- *  - DEFAULT_SYSTEM_PROMPT 分工段（与 PromptProtocolVerification 同源，防此处回退）。
+ * 本 harness 只测**可脱离 Android 运行时**的部分（JVM 直跑）：
+ *  A. [canUseA11yScreenshot] 真值表（a11yReady × API 级全组合 + 边界 API=30）；
+ *  B. 文案一致性：描述/失败指引不再引导用户去开屏幕捕获；
+ *  C. 接线反证（源码扫描）：MediaProjection 链路（服务/桥/权限/清单）确实已删除，
+ *     防止后续批次把旧路径又加回来。
  *
- * 服务方法 takeScreenshotViaA11y 的 suspend/回调行为由沙箱 stub 二进制验证覆盖
- * （真实 AgentAccessibilityService 编译 + 假 AccessibilityService.takeScreenshot
- * 三态回调），仓库 harness 不加载 Android 类。
- *
- * 运行方式见 scripts/qa/run-w9-screenshot-verification.sh（离线，仅用 Gradle 缓存内构件）。
+ * 运行方式见 scripts/qa/run-w9-screenshot-verification.sh（离线）。
  */
 
 import com.example.agentkit.automation.A11Y_SCREENSHOT_MIN_API
-import com.example.agentkit.automation.SCREEN_CAPTURE_OFF_GUIDANCE
+import com.example.agentkit.automation.SCREENSHOT_UNAVAILABLE_GUIDANCE
 import com.example.agentkit.automation.UiScreenshotTool
-import com.example.agentkit.automation.shouldPreferA11yScreenshot
+import com.example.agentkit.automation.canUseA11yScreenshot
 import com.example.agentkit.core.DEFAULT_SYSTEM_PROMPT
 import java.io.File
 
@@ -49,7 +42,7 @@ private fun assertTrue(name: String, cond: Boolean) {
 }
 
 private fun assertEquals(name: String, expected: Boolean, actual: Boolean) {
-    if (expected != actual) throw AssertionError("expected <$expected> but was <$actual>")
+    if (expected != actual) throw AssertionError("[$name] expected <$expected> but was <$actual>")
 }
 
 private fun assertContains(name: String, haystack: String?, needle: String) {
@@ -58,35 +51,41 @@ private fun assertContains(name: String, haystack: String?, needle: String) {
     }
 }
 
+private fun assertNotContains(name: String, haystack: String?, needle: String) {
+    if (haystack?.contains(needle) == true) {
+        throw AssertionError("[$name] expected NOT to contain <$needle>")
+    }
+}
+
 /* ------------------------------ A. 路由真值表 ------------------------------ */
 
 private fun testRoutingTruthTable() {
-    println("\n[A] shouldPreferA11yScreenshot 真值表（a11yReady × API 级）")
+    println("\n[A] canUseA11yScreenshot 真值表（a11yReady × API 级）")
 
     check("常量：A11Y_SCREENSHOT_MIN_API = 30（系统 takeScreenshot 自 Android 11 起）") {
         assertEquals("min api", true, A11Y_SCREENSHOT_MIN_API == 30)
     }
 
-    check("就绪 + API30/31/34 → 走无障碍主路径") {
+    check("就绪 + API30/31/34 → 可用") {
         for (api in listOf(30, 31, 34)) {
-            assertEquals("api=$api", true, shouldPreferA11yScreenshot(true, api))
+            assertEquals("api=$api", true, canUseA11yScreenshot(true, api))
         }
     }
 
-    check("就绪 + API29 及以下 → 回落 MediaProjection（系统无此 API）") {
+    check("就绪 + API29 及以下 → 不可用（系统无此 API）") {
         for (api in listOf(29, 28, 26)) {
-            assertEquals("api=$api", false, shouldPreferA11yScreenshot(true, api))
+            assertEquals("api=$api", false, canUseA11yScreenshot(true, api))
         }
     }
 
-    check("未就绪（无障碍没开）+ 任意 API → 回落 MediaProjection") {
+    check("未就绪（无障碍没开）+ 任意 API → 不可用") {
         for (api in listOf(26, 30, 34)) {
-            assertEquals("api=$api", false, shouldPreferA11yScreenshot(false, api))
+            assertEquals("api=$api", false, canUseA11yScreenshot(false, api))
         }
     }
 
-    check("边界：API 恰为 30 且就绪 → 走主路径（>= 语义，不是 >）") {
-        assertEquals("api=30 ready", true, shouldPreferA11yScreenshot(true, 30))
+    check("边界：API 恰为 30 且就绪 → 可用（>= 语义，不是 >）") {
+        assertEquals("api=30 ready", true, canUseA11yScreenshot(true, 30))
     }
 }
 
@@ -95,20 +94,22 @@ private fun testRoutingTruthTable() {
 private fun testCopyConsistency() {
     println("\n[B] 文案引用一致性（描述 / 失败指引 / 提示词分工段）")
 
-    check("ui_screenshot 描述：无障碍优先，兜底才提屏幕捕获") {
-        val d = UiScreenshotTool(File("/tmp/w9-verify")).description
-        assertContains("a11y first", d, "优先走无障碍通道")
-        assertContains("fallback", d, "屏幕捕获")
+    check("ui_screenshot 描述：只说无障碍，不再提屏幕捕获") {
+        val d = UiScreenshotTool(File("/tmp/w12-verify")).description
+        assertContains("a11y", d, "无障碍")
+        assertNotContains("no capture", d, "屏幕捕获")
+        assertNotContains("no capture switch", d, "屏幕录制")
     }
 
-    check("失败指引：权限中心/去开启/屏幕捕获关键词仍在（MediaProjection 兜底路径可行动）") {
-        assertContains("权限中心", SCREEN_CAPTURE_OFF_GUIDANCE, "权限中心")
-        assertContains("去开启", SCREEN_CAPTURE_OFF_GUIDANCE, "去开启")
-        assertContains("屏幕捕获", SCREEN_CAPTURE_OFF_GUIDANCE, "屏幕捕获")
+    check("失败指引：指向无障碍服务 + 明确无需屏幕捕捉权限") {
+        assertContains("a11y", SCREENSHOT_UNAVAILABLE_GUIDANCE, "无障碍服务")
+        assertContains("no capture", SCREENSHOT_UNAVAILABLE_GUIDANCE, "无需屏幕捕捉权限")
+        assertContains("android11", SCREENSHOT_UNAVAILABLE_GUIDANCE, "Android 11")
     }
 
-    check("失败指引：补「无障碍通道」一句（主路径可用时别让用户白开捕获）") {
-        assertContains("a11y 通道", SCREEN_CAPTURE_OFF_GUIDANCE, "无障碍通道")
+    check("失败指引：不再出现「权限中心 → 屏幕捕获 → 去开启」旧引导") {
+        assertNotContains("old path", SCREENSHOT_UNAVAILABLE_GUIDANCE, "权限中心")
+        assertNotContains("old path 2", SCREENSHOT_UNAVAILABLE_GUIDANCE, "去开启")
     }
 
     check("系统提示：分工段在册（ui_tree 定位操作 / 截图看视觉 / 禁每步截图）") {
@@ -117,10 +118,51 @@ private fun testCopyConsistency() {
     }
 }
 
+/* ------------------------------ C. 接线反证（源码扫描） ------------------------------ */
+
+private fun read(rel: String): String = File(rel).readText()
+
+private fun testWiringRemoved() {
+    println("\n[C] MediaProjection 链路删除反证（源码扫描）")
+
+    val tool = read("app/src/main/java/com/example/agentkit/automation/UiScreenshotTool.kt")
+    val manifest = read("app/src/main/AndroidManifest.xml")
+
+    check("UiScreenshotTool 代码不再引用屏幕捕获服务/桥/MediaProjection（注释除外）") {
+        // 只看代码行：KDoc 里会写「为什么删掉 MediaProjection」，那是有价值的说明
+        val code = tool.lines().filter {
+            val t = it.trim()
+            t.isNotEmpty() && !t.startsWith("*") && !t.startsWith("//") && !t.startsWith("/*")
+        }.joinToString("\n")
+        assertNotContains("service", code, "ScreenCaptureService")
+        assertNotContains("bridge", code, "ScreenshotBridge")
+        assertNotContains("projection", code, "MediaProjection")
+        assertNotContains("capture flag", code, "capture_not_enabled")
+    }
+
+    check("清单不再声明屏幕捕获服务与 mediaProjection 前台类型") {
+        assertNotContains("service", manifest, "ScreenCaptureService")
+        assertNotContains("fgs type", manifest, "foregroundServiceType=\"mediaProjection\"")
+        assertNotContains("permission", manifest, "FOREGROUND_SERVICE_MEDIA_PROJECTION")
+    }
+
+    check("源码目录中屏幕捕获服务/桥文件已删除") {
+        assertTrue(
+            "ScreenCaptureService.kt 应已删除",
+            !File("app/src/main/java/com/example/agentkit/automation/ScreenCaptureService.kt").exists()
+        )
+        assertTrue(
+            "ScreenshotBridge.kt 应已删除",
+            !File("app/src/main/java/com/example/agentkit/automation/ScreenshotBridge.kt").exists()
+        )
+    }
+}
+
 fun main() {
-    println("=== W-9 截图通道升级 QA 行为验证（无障碍 takeScreenshot 主路径） ===")
+    println("=== 截图通道 QA harness（W-12：无障碍唯一通道） ===")
     testRoutingTruthTable()
     testCopyConsistency()
+    testWiringRemoved()
     println("\n=== 汇总: $passed passed, ${failures.size} failed ===")
     if (failures.isNotEmpty()) {
         failures.forEach { println("FAILED: $it") }

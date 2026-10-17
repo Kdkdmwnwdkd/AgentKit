@@ -13,7 +13,7 @@
  * [com.example.agentkit.automation.UiNodeMatcher] 的**纯函数**（输入节点摘要列表 + query），
  * 脱离 AccessibilityNodeInfo，故可在纯 JVM 下逐条断言（归一化/包含/前缀/多命中/上溯/候选）。
  *
- * **C（Bug C）**：只确认 `ScreenshotBridge.lastError` 是否进了 AgentLogger——用**源码扫描**
+ * **C（随 W-12 删除屏幕捕捉）**：原 `ScreenshotBridge.lastError` 日志断言已移除。
  * 断言（不加载 Android 类），确保每处非空写入后 4 行内必有日志出口。
  *
  * 运行方式见 scripts/qa/run-hotfix3-verification.sh。
@@ -646,35 +646,10 @@ private suspend fun testResourceIdMatch() {
     }
 }
 
-/* ------------------------------ C：lastError 日志 ------------------------------ */
-
-/** C：确认 ScreenshotBridge.lastError 的每次非空写入都进了 AgentLogger（源码扫描，不加载 Android 类）。 */
-private suspend fun testScreenshotBridgeLastErrorLogged() {
-    println("\n== C：ScreenshotBridge.lastError 是否进日志（源码扫描） ==")
-
-    check("每处 lastError 非空写入后 4 行内必有日志出口") {
-        val file = File("/workspace/AgentKit/app/src/main/java/com/example/agentkit/automation/ScreenshotBridge.kt")
-        assertTrue("源码存在", file.exists())
-        val lines = file.readLines()
-        val writes = lines.indices.filter {
-            val l = lines[it]
-            l.contains("lastError =") && !l.contains("= null")
-        }
-        assertTrue("存在 lastError 写入点", writes.isNotEmpty())
-        for (i in writes) {
-            val window = lines.subList(i, minOf(i + 4, lines.size)).joinToString("\n")
-            assertTrue(
-                "第 ${i + 1} 行（${lines[i].trim()}）写入后 4 行内有日志",
-                window.contains("AgentLogger") || window.contains("logLastError")
-            )
-        }
-    }
-}
-
 /* ------------------------------ 入口 ------------------------------ */
 
 fun main() = runBlocking {
-    println("== 真机第三轮 Hotfix3 + hotfix10 429 限流序列（A 退避+网络恢复 / B ui_click 匹配 / C 日志）QA 行为验证 ==")
+    println("== 真机第三轮 Hotfix3 + hotfix10 429 限流序列（A 退避+网络恢复 / B ui_click 匹配）QA 行为验证 ==")
 
     testBackoffSequence()
     testRateLimitBackoff()
@@ -688,7 +663,6 @@ fun main() = runBlocking {
     testClickableAncestorFallback()
     testCandidates()
     testResourceIdMatch()
-    testScreenshotBridgeLastErrorLogged()
 
     println("\n== 汇总 ==")
     println("PASS: $passed  FAIL: ${failures.size}  TOTAL: ${passed + failures.size}")

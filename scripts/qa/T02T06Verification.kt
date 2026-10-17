@@ -266,10 +266,13 @@ private fun testW8GuardTurnScope() {
     println("\n== W-8 熔断回合作用域 + 瞬时故障豁免（真机日志 23:58 ui_tree 被挡死根因）==")
     val guard = FailureGuard()
 
-    check("isTransientFailureCode：三个基础设施码 true，参数类错误 false") {
+    check("isTransientFailureCode：基础设施码 true，参数类错误 false") {
         assertTrue("service_not_ready", isTransientFailureCode("service_not_ready"))
         assertTrue("service_unavailable", isTransientFailureCode("service_unavailable"))
-        assertTrue("capture_not_enabled", isTransientFailureCode("capture_not_enabled"))
+        assertTrue(
+            "capture_not_enabled 已随 W-12 删除屏幕捕捉",
+            !isTransientFailureCode("capture_not_enabled")
+        )
         assertTrue("io_error not transient", !isTransientFailureCode("io_error"))
         assertTrue("missing_param not transient", !isTransientFailureCode("missing_param"))
         assertTrue("empty not transient", !isTransientFailureCode(""))
