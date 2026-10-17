@@ -22,8 +22,27 @@ object ShizukuShell {
 
     const val REQUEST_CODE = 4210
 
-    /** Shizuku 主应用包名。 */
-    const val PACKAGE = "moe.shizuku.manager"
+    /**
+     * Shizuku 系应用包名的**候选列表**（顺序即优先级）。
+     *
+     * 官方 Shizuku 的 applicationId 是 `moe.shizuku.privileged.api`（GitHub RikkaApps/Shizuku、
+     * Play 商店同一包名）；`moe.shizuku.manager` 只是其内部 manager 模块名，**不是安装包名**。
+     * 之前只查后者，导致「明明装了却显示未安装」（真机录像实证）。
+     * Sui（Magisk 版 Shizuku fork）包名 `com.rosan.sui`，一并纳入。
+     */
+    val PACKAGES = listOf(
+        "moe.shizuku.privileged.api", // 官方 Shizuku
+        "moe.shizuku.manager",        // 个别分支/旧包名
+        "com.rosan.sui"               // Sui（Magisk 模块版）
+    )
+
+    /** 官方 Shizuku 包名（安装引导/应用详情兜底用）。 */
+    const val PACKAGE = "moe.shizuku.privileged.api"
+
+    /** 已安装的 Shizuku 系包名；未安装返回 null。 */
+    fun installedPackage(context: Context): String? = PACKAGES.firstOrNull { pkg ->
+        runCatching { context.packageManager.getPackageInfo(pkg, 0); true }.getOrDefault(false)
+    }
 
     /**
      * Shizuku 是否**已安装**（与「是否在运行」分开判断）。
@@ -31,18 +50,16 @@ object ShizukuShell {
      * 分开的原因（真机反馈）：用户装好了但没启动时，旧文案仍写「先安装 Shizuku」，
      * 把人往应用商店赶——而正确动作是「打开已装的 Shizuku 并点『通过无线调试启动』」。
      */
-    fun isInstalled(context: Context): Boolean = runCatching {
-        context.packageManager.getPackageInfo(PACKAGE, 0)
-        true
-    }.getOrDefault(false)
+    fun isInstalled(context: Context): Boolean = installedPackage(context) != null
 
     /**
      * 拉起 Shizuku 主界面（已安装时）。返回是否成功拉起；
      * 未安装返回 false，由调用方决定是否引导到商店。
      */
     fun launch(context: Context): Boolean {
+        val pkg = installedPackage(context) ?: return false
         val intent = runCatching {
-            context.packageManager.getLaunchIntentForPackage(PACKAGE)
+            context.packageManager.getLaunchIntentForPackage(pkg)
         }.getOrNull() ?: return false
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         return runCatching { context.startActivity(intent); true }.getOrDefault(false)

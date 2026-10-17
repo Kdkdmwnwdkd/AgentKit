@@ -331,19 +331,13 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         // 按「四态」动作：已装就拉起、未装才去商店——不再一律劝人装
         when (_shizukuUiState.value) {
             ShizukuShell.UiState.NOT_INSTALLED -> {
-                val market = Intent(
+                // 直接开官方发布页：国内应用商店基本没有 Shizuku，`market://` 会落到空白页
+                // （真机录像实证：跳商店显示「当前页面已失效」）。浏览器至少能下载到 APK。
+                val web = Intent(
                     Intent.ACTION_VIEW,
-                    Uri.parse("market://details?id=${ShizukuShell.PACKAGE}")
+                    Uri.parse("https://github.com/RikkaApps/Shizuku/releases")
                 ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                // 应用商店不可用（无商店/无该应用）时退到 GitHub releases 页
-                val started = runCatching { context.startActivity(market); true }.getOrDefault(false)
-                if (!started) {
-                    val web = Intent(
-                        Intent.ACTION_VIEW,
-                        Uri.parse("https://github.com/RikkaApps/Shizuku/releases")
-                    ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    runCatching { context.startActivity(web) }
-                }
+                runCatching { context.startActivity(web) }
             }
             ShizukuShell.UiState.INSTALLED_NOT_RUNNING -> {
                 // 已安装但没启动：直接拉起 Shizuku 本体（用户在里点「通过无线调试启动」）
