@@ -102,6 +102,8 @@ BYTES_GROUPS = {
         ("未运行引导", "通过无线调试启动"),
         ("后台执行说明", "shell uid 2000"),
         ("已装未启动引导", "已安装未启动"),
+        ("官方包名候选", "moe.shizuku.privileged.api"),
+        ("未安装走官方发布页", "RikkaApps/Shizuku/releases"),
         ("打开 Shizuku 按钮", "打开 Shizuku"),
     ],
     "W10 图片裁剪文案（bytes 子串）": [

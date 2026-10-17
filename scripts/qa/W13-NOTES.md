@@ -93,3 +93,16 @@ stdout 帧跨两个 WRTE 拼接。
 验收：CI run 172（`be64827`）Build + Publish success；APK 反验全绿
 （新增判据：`isInstalled` / `uiState` /「已安装未启动」/「打开 Shizuku」；
 产物 28,272,297 B，sha256 `e01c584c…41e90`）。
+
+### 包名修正（同日，真机录像）
+
+现象：用户已装 Shizuku，权限页却显示「未安装」，点按钮跳到商店空白页「当前页面已失效」。
+
+根因：`PACKAGE = "moe.shizuku.manager"` —— 这是 Shizuku **内部 manager 模块名**，
+不是安装包名；官方 applicationId 为 **`moe.shizuku.privileged.api`**，`isInstalled` 恒 false。
+
+修正：`PACKAGES` 候选（privileged.api / manager / com.rosan.sui）+ `installedPackage()`；
+未安装时直接开官方 releases 页（不走 market://）；无障碍未连接文案补充「装新版本后需重开」。
+
+验收：CI run 174（`10af272`）success；APK 反验全绿（新增「官方包名候选」「未安装走官方发布页」；
+28,272,297 B，sha256 `be4522cf…463ff`）。
