@@ -7,6 +7,7 @@ import kotlinx.serialization.json.Json
 import java.io.File
 import java.util.Locale
 import java.util.UUID
+import kotlin.math.ln
 
 /**
  * 一条长期记忆（L9「记忆库」，净室原创）。
@@ -32,8 +33,11 @@ data class MemoryItem(
  * 持久化到 `dir/memory.json`（prettyPrint 的 JSON 数组），读写全部 synchronized + runCatching：
  * 记忆损坏/空间不足都不能让主流程崩溃（最多是「这次没记住」）。
  *
- * 检索采用轻量打分（关键词命中 + salience 权重 + 时间衰减），不引入 embedding 依赖，
- * 保证在真机上零额外开销；容量上限 500 条，超出时淘汰「salience 最低且最旧」的条目。
+ * 检索采用 **BM25**（k1=1.2 / b=0.75）+ salience 权重 + 时间衰减（W-16 替换原先的 contains 计数）：
+ *  - 文档频率抑制高频词（「我的」「一下」不再把无关条目顶上来）；
+ *  - 文档长度归一化（长条目不再因为字多就占便宜）；
+ *  - 中文按二元组切分（无分词库，零依赖）。
+ * 容量上限 500 条，超出时淘汰「salience 最低且最旧」的条目。
  */
 class MemoryStore(private val dir: File) {
 
@@ -98,14 +102,20 @@ class MemoryStore(private val dir: File) {
         return item
     }
 
-    /** 关键词检索 + salience/时间衰减打分，返回最相关的 top-K。query 为空时退化为最近列表。 */
+    /**
+     * BM25 检索 + salience/时间衰减，返回最相关的 top-K。query 为空时退化为最近列表。
+     *
+     * 排序键：BM25 分 ×（时间衰减 + salience 加成）。只保留分数 > 0 的条目，
+     * 因此「完全不相关」的查询会返回空列表而不是硬凑 topK——记忆工具据此如实告知「没找到」。
+     */
     fun search(query: String, topK: Int = 10): List<MemoryItem> {
         val keywords = tokenize(query)
         val snapshot = synchronized(lock) { items.toList() }
         if (keywords.isEmpty()) return snapshot.sortedByDescending { it.updatedAt }.take(topK.coerceAtLeast(1))
         val now = System.currentTimeMillis()
+        val scores = bm25Scores(snapshot, keywords)
         return snapshot
-            .map { item -> Scored(item, scoreOf(item, keywords, now)) }
+            .mapIndexed { idx, item -> Scored(item, scores[idx] * timeSalienceFactor(item, now)) }
             .filter { it.score > 0.0 }
             .sortedWith(compareByDescending<Scored> { it.score }.thenByDescending { it.item.updatedAt })
             .take(topK.coerceAtLeast(1))
@@ -310,19 +320,58 @@ class MemoryStore(private val dir: File) {
         return out.take(MAX_TOKENS)
     }
 
-    /** 关键词命中 × 时间衰减 + salience 权重。 */
-    private fun scoreOf(item: MemoryItem, keywords: List<String>, now: Long): Double {
-        val content = item.content.lowercase(Locale.getDefault())
-        val tags = item.tags.map { it.lowercase(Locale.getDefault()) }
-        var hits = 0.0
-        keywords.forEach { k ->
-            if (content.contains(k)) hits += 2.0
-            if (tags.any { it.contains(k) }) hits += 3.0
+    /**
+     * BM25 打分（W-16）。返回与 [docs] 等长的分数数组。
+     *
+     * 标准公式：
+     *   score(q,D) = Σ_t idf(t) · (f(t,D)·(k1+1)) / (f(t,D) + k1·(1-b+b·|D|/avgdl))
+     *   idf(t)     = ln(1 + (N - df(t) + 0.5) / (df(t) + 0.5))
+     *
+     * 标签命中额外 +30%：标签是用户/模型显式给的检索键，比正文偶然出现更可信。
+     * 纯函数（无副作用、不读时间）——同样入参两次调用结果完全一致，便于 harness 断言。
+     */
+    internal fun bm25Scores(docs: List<MemoryItem>, queryTokens: List<String>): DoubleArray {
+        if (docs.isEmpty() || queryTokens.isEmpty()) return DoubleArray(docs.size)
+        val tokensPerDoc = docs.map { tokenize(it.content + " " + it.tags.joinToString(" ")) }
+        val n = docs.size
+        val avgdl = tokensPerDoc.sumOf { it.size }.toDouble() / n
+        val uniqueQuery = queryTokens.distinct()
+
+        // 文档频率：只统计查询词，省去全词表开销
+        val df = HashMap<String, Int>(uniqueQuery.size)
+        uniqueQuery.forEach { t ->
+            df[t] = tokensPerDoc.count { it.contains(t) }
         }
-        if (hits <= 0.0) return 0.0
+
+        return DoubleArray(n) { i ->
+            val tokens = tokensPerDoc[i]
+            val len = tokens.size
+            var score = 0.0
+            uniqueQuery.forEach { t ->
+                val f = tokens.count { it == t }
+                if (f > 0) {
+                    val dfi = df[t] ?: 0
+                    val idf = ln(1.0 + (n - dfi + 0.5) / (dfi + 0.5))
+                    val denom = f + BM25_K1 * (1.0 - BM25_B + BM25_B * len / avgdl.coerceAtLeast(1.0))
+                    score += idf * (f * (BM25_K1 + 1.0)) / denom
+                }
+            }
+            if (score > 0.0 && docs[i].tags.any { tag ->
+                    val lower = tag.lowercase(Locale.getDefault())
+                    uniqueQuery.any { lower.contains(it) }
+                }
+            ) {
+                score *= 1.3
+            }
+            score
+        }
+    }
+
+    /** 时间衰减 + salience 加成（乘性），与 BM25 分相乘后排序。 */
+    private fun timeSalienceFactor(item: MemoryItem, now: Long): Double {
         val ageDays = (now - item.updatedAt).coerceAtLeast(0).toDouble() / DAY_MS
         val decay = 1.0 / (1.0 + ageDays * DECAY_PER_DAY)
-        return hits * (0.5 + 0.5 * decay) + item.salience * SALIENCE_WEIGHT
+        return 0.5 + 0.5 * decay + item.salience * SALIENCE_WEIGHT
     }
 
     /** 摘要必须 XML 转义，否则用户内容里的 `<`/`&` 会破坏注入结构。 */
@@ -356,6 +405,10 @@ class MemoryStore(private val dir: File) {
         const val CONTENT_SNIPPET = 200
         const val DAY_MS = 86_400_000.0
         const val DECAY_PER_DAY = 0.2
-        const val SALIENCE_WEIGHT = 0.2
+        const val SALIENCE_WEIGHT = 0.02
+
+        /** BM25 参数：k1 控制词频饱和，b 控制长度归一化强度（取值同 Lucene/Elasticsearch 常用默认）。 */
+        const val BM25_K1 = 1.2
+        const val BM25_B = 0.75
     }
 }

@@ -83,6 +83,8 @@ import com.example.agentkit.skill.CapabilityRegistry
 import com.example.agentkit.skill.policyFor
 import com.example.agentkit.skill.checkCapabilityGate
 import com.example.agentkit.memory.MemoryItem
+import com.example.agentkit.audio.TextSpeaker
+import com.example.agentkit.memory.MemoryAutoCapture
 import com.example.agentkit.memory.MemoryStore
 import com.example.agentkit.memory.MemoryForgetTool
 import com.example.agentkit.memory.MemoryListTool
@@ -102,6 +104,7 @@ import com.example.agentkit.core.mcp.McpClient
 import com.example.agentkit.core.mcp.McpServerStore
 import com.example.agentkit.core.mcp.McpToolAdapter
 import com.example.agentkit.tools.AskUserTool
+import com.example.agentkit.tools.SpeakTool
 import com.example.agentkit.tools.WebClickTool
 import com.example.agentkit.tools.WebEvalTool
 import com.example.agentkit.tools.WebOpenTool
@@ -433,6 +436,9 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     /** L9 记忆库：跨会话长期记忆，持久化到 filesDir/memory/memory.json。 */
     private val memoryStore = MemoryStore(File(app.filesDir, "memory"))
 
+    /** 系统 TTS（W-16）；onCleared 释放引擎。 */
+    private val speaker = TextSpeaker(app)
+
     // —— 本地 llama.cpp 推理（九步第 3 步）————————————————————————
 
     /** 本地推理参数（active 模型 / ctx / 线程数）持久化。 */
@@ -612,6 +618,8 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         register(MemorySearchTool(memoryStore))
         register(MemoryListTool(memoryStore))
         register(MemoryForgetTool(memoryStore))
+        // W-16：系统 TTS 朗读
+        register(SpeakTool(speaker))
         // 终端 shell（T08）：会话池 + 短句柄；shell_run 执行命令、shell_close 释放会话
         register(
             ShellRunTool(
@@ -705,6 +713,8 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
      */
     override fun onCleared() {
         runCatching { terminalPool.releaseAllAsync() }
+        // W-16：释放 TTS 引擎（不释放会一直占着音频焦点）
+        runCatching { speaker.shutdown() }
         super.onCleared()
     }
 
@@ -914,6 +924,30 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     fun answerAskUser(questionId: String, choice: String) {
         AskUserBroker.answer(questionId, choice)
         AgentLogger.i("Chat", "用户回答了提问：${choice.take(80)}")
+    }
+
+    /**
+     * 自动记忆抽取（W-16）：只在用户消息命中显式信号时写入，宁漏不滥。
+     *
+     * 为什么不在模型回复里抽：模型输出可能包含幻觉或推测，写进长期记忆会自我强化；
+     * 用户亲口说的（「记住…」「我习惯…」）才是可信事实。
+     */
+    private fun autoCaptureMemory(userText: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val candidates = MemoryAutoCapture.extract(userText)
+            if (candidates.isEmpty()) return@launch
+            val existing = memoryStore.snapshot().map { it.content }
+            var added = 0
+            candidates.forEach { c ->
+                if (MemoryAutoCapture.isDuplicate(c.content, existing)) return@forEach
+                runCatching {
+                    memoryStore.add(content = c.content, kind = c.kind, tags = emptyList(), salience = c.salience)
+                    added++
+                    AgentLogger.i("Memory", "自动记住（${c.kind}，重要度 ${c.salience}）：${c.content.take(80)}")
+                }
+            }
+            if (added > 0) refreshMemories()
+        }
     }
 
     /**
@@ -1939,6 +1973,9 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
             fileBlock.takeIf { it.isNotBlank() }
         ).joinToString("\n\n")
         val fullInput = if (prefix.isBlank()) text else "$prefix\n\n用户当前请求：$text"
+
+        // W-16：从用户这句话里抽取「明确值得长期记住」的内容（异步、失败不影响本轮）
+        autoCaptureMemory(text)
 
         // T05：句柄置入 runJob，供 stop() 取消；finally 保证 isRunning/日志必收
         runJob = viewModelScope.launch {
