@@ -74,7 +74,9 @@ import androidx.compose.material.icons.outlined.WarningAmber
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
+import com.example.agentkit.core.agent.AskUserBroker
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -353,6 +355,10 @@ fun ChatScreen(
         // Phase 2 DoD③：断网/失败自动恢复横幅——重试中显示「正在恢复（n/N）· 原因」，
         // 恢复成功 / 最终失败 / 取消时置 null 即消失（最终失败仍走既有错误气泡，不重复提示）
         retryState?.let { RetryBanner(it) }
+        // W-14：模型用 ask_user 提问时，输入栏上方出现选择卡片（回答后自动消失）
+        vm.askUserPending.collectAsStateWithLifecycle().value?.let { q ->
+            AskUserCard(question = q, onAnswer = { vm.answerAskUser(q.id, it) })
+        }
         ChatInputBar(
             text = input,
             running = running,
@@ -2369,6 +2375,67 @@ private fun ApprovalDialog(request: ApprovalRequest, visible: Boolean, vm: ChatV
                                 .background(MaterialTheme.colorScheme.error)
                         )
                     }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * ask_user 的选择卡片（W-14）。
+ *
+ * 为什么不用弹窗：弹窗会遮挡上下文，用户往往需要回看上文才能选；
+ * 贴在输入框上方既醒目又不打断阅读，选完即消失（pending 归 null）。
+ */
+@Composable
+private fun AskUserCard(
+    question: AskUserBroker.Question,
+    onAnswer: (String) -> Unit
+) {
+    var freeText by remember(question.id) { mutableStateOf("") }
+    Surface(
+        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f),
+        shape = RoundedCornerShape(14.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = AgentSpacing.space4, vertical = AgentSpacing.space2)
+    ) {
+        Column(Modifier.padding(AgentSpacing.space4)) {
+            Text(
+                text = "需要你确认",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary
+            )
+            Spacer(Modifier.height(AgentSpacing.space2))
+            Text(
+                text = question.text,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Spacer(Modifier.height(AgentSpacing.space3))
+            if (question.options.isNotEmpty()) {
+                question.options.forEach { option ->
+                    AkTextButton(
+                        text = option,
+                        onClick = { onAnswer(option) },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            } else {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedTextField(
+                        value = freeText,
+                        onValueChange = { freeText = it },
+                        modifier = Modifier.weight(1f),
+                        singleLine = true,
+                        placeholder = { Text("输入回答") }
+                    )
+                    Spacer(Modifier.width(AgentSpacing.space2))
+                    AkTextButton(
+                        text = "发送",
+                        onClick = { if (freeText.isNotBlank()) onAnswer(freeText.trim()) },
+                        enabled = freeText.isNotBlank()
+                    )
                 }
             }
         }

@@ -11,11 +11,24 @@ import kotlinx.serialization.json.Json
 class ToolRegistry {
     private val tools = LinkedHashMap<String, AgentTool>()
 
-    fun register(tool: AgentTool): ToolRegistry = apply { tools[tool.name] = tool }
-    fun unregister(name: String): ToolRegistry = apply { tools.remove(name) }
-    fun get(name: String): AgentTool? = tools[name]
-    fun list(): List<AgentTool> = tools.values.toList()
-    fun names(): List<String> = tools.keys.toList()
+    /**
+     * W-14：MCP 工具在**运行时**异步注册（启动后连服务器、拉 tools/list），
+     * 与主线程的 `list()/descriptors()` 并发。LinkedHashMap 非线程安全，
+     * 不加锁会在扩容时抛 ConcurrentModificationException 或读到半写状态。
+     */
+    private val lock = Any()
+
+    fun register(tool: AgentTool): ToolRegistry = apply {
+        synchronized(lock) { tools[tool.name] = tool }
+    }
+
+    fun unregister(name: String): ToolRegistry = apply {
+        synchronized(lock) { tools.remove(name) }
+    }
+
+    fun get(name: String): AgentTool? = synchronized(lock) { tools[name] }
+    fun list(): List<AgentTool> = synchronized(lock) { tools.values.toList() }
+    fun names(): List<String> = synchronized(lock) { tools.keys.toList() }
 
     /**
      * T01：工具描述符列表（纯映射，无行为）。
@@ -29,7 +42,7 @@ class ToolRegistry {
      * 契约占位——wireName 预留 MCP 前缀化（当前恒等于 name），**不是稳定 API**；
      * 字段集合与语义可能随 MCP 接入调整，外部调用方不得对其做跨版本承诺依赖。
      */
-    fun descriptors(): List<ToolDescriptor> = tools.values.map { tool ->
+    fun descriptors(): List<ToolDescriptor> = list().map { tool ->
         ToolDescriptor(
             name = tool.name,
             wireName = tool.name,
@@ -41,7 +54,7 @@ class ToolRegistry {
      * T01：按工具名取描述符（[descriptors] 的单点版）；未知工具返回 null——
      * loop 据此走未知工具文案路径（T02 模糊匹配），见 RealAgentLoop.executeBatch。
      */
-    fun descriptorOf(name: String): ToolDescriptor? = tools[name]?.let { tool ->
+    fun descriptorOf(name: String): ToolDescriptor? = get(name)?.let { tool ->
         ToolDescriptor(
             name = tool.name,
             wireName = tool.name,
@@ -62,7 +75,7 @@ class ToolRegistry {
      * 未知工具返回 null，按只读处理（它只会得到一条错误结果，无副作用）。
      */
     fun batchHasMutation(calls: List<ToolCall>): Boolean =
-        calls.any { tools[it.name]?.readOnly == false }
+        calls.any { get(it.name)?.readOnly == false }
 
     /**
      * 未知工具模糊匹配（T02，operit #11 思路）：编辑距离 ≤ [maxDistance] 的最佳候选。
@@ -96,7 +109,7 @@ class ToolRegistry {
 
     /** 执行一次工具调用，无论成功失败都返回一个可进入历史的 ToolMessage（统一契约文本）。 */
     suspend fun execute(call: ToolCall): ToolMessage {
-        val tool = tools[call.name]
+        val tool = get(call.name)
             ?: return ToolMessage(
                 call.id, call.name, call.arguments,
                 formatToolResult(

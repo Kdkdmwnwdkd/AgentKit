@@ -1,0 +1,164 @@
+package com.example.agentkit.core.mcp
+
+import com.example.agentkit.core.AgentTool
+import com.example.agentkit.core.JsonSchema
+import com.example.agentkit.core.ToolResult
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+
+/**
+ * MCP 工具 → AgentKit 工具（W-14）。
+ *
+ * 这是「MCP 只做了一半」的补口：此前 [McpClient] 只在 MCP 页面里用于测试连接，
+ * 对话里的模型根本调不到 MCP 工具。本文件把 `tools/list` 的结果包成 [AgentTool]，
+ * 注册进 [com.example.agentkit.core.ToolRegistry]，模型即可像调用内置工具一样调用。
+ *
+ * 命名策略：`mcp_<server>_<tool>`（全部小写、非字母数字转下划线、各段截断）。
+ * 前缀化是为了避免与内置工具重名，也让日志/审批界面一眼看出「这是外部工具」。
+ */
+class McpToolAdapter(
+    serverName: String,
+    private val originalName: String,
+    private val client: McpClient,
+    private val tool: McpTool
+) : AgentTool {
+
+    override val name: String = mcpWireName(serverName, originalName)
+
+    override val description: String = buildString {
+        append(tool.description.ifBlank { "MCP 工具 $originalName" })
+        append("（外部 MCP 服务器「").append(serverName).append("」提供）")
+    }
+
+    override val parameters: JsonSchema = jsonSchemaFromMcp(tool.inputSchema)
+
+    /**
+     * MCP 工具的真实副作用未知：**保守按写操作**处理（走串行批次 + 审批策略），
+     * 宁可慢一点，也不并行调用外部服务。
+     */
+    override val readOnly: Boolean = false
+
+    override val systemPrompt: String =
+        "这是外部 MCP 工具，参数必须严格符合其 JSON Schema；调用失败时先读错误信息修正参数，" +
+            "不要原样重复调用。"
+
+    override suspend fun execute(args: JsonObject): ToolResult {
+        val result = client.callTool(originalName, args.toString())
+        return result.fold(
+            onSuccess = { toolResultFromMcp(it) },
+            onFailure = { e ->
+                ToolResult.fail(
+                    code = "mcp_call_failed",
+                    message = "MCP 工具「$originalName」调用失败：${e.message}",
+                    hint = "检查服务器是否在线、参数是否符合 Schema；连续失败请换用其他工具或告知用户。"
+                )
+            }
+        )
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* 纯函数（JVM harness 可断言）                                        */
+/* ------------------------------------------------------------------ */
+
+/** 合法工具名字符集：`[a-z0-9_]`；用于把 MCP 名称规范化成 function-calling 可接受的形式。 */
+internal fun sanitizeToolSegment(raw: String, maxLen: Int = 24): String {
+    val cleaned = raw.lowercase()
+        .map { if (it.isLetterOrDigit() || it == '_') it else '_' }
+        .joinToString("")
+        .trim('_')
+        .replace(Regex("_+"), "_")
+    return cleaned.take(maxLen).ifEmpty { "tool" }
+}
+
+/** 带前缀的工具名：`mcp_<server>_<tool>`。纯函数，同入参同结果。 */
+fun mcpWireName(serverName: String, toolName: String): String =
+    "mcp_${sanitizeToolSegment(serverName, 12)}_${sanitizeToolSegment(toolName)}"
+
+/**
+ * MCP `inputSchema` → [JsonSchema]。
+ *
+ * [JsonSchema] 只支持扁平字段（首期契约），所以这里：
+ *  - 顶层 `properties` 的标量类型原样映射；
+ *  - `object` / `array` 保留类型名（模型知道要传结构，具体形状由服务器校验）；
+ *  - 枚举只保留纯字符串枚举（数字枚举转字符串会误导）；
+ *  - 描述截断到 200 字，避免一个巨型 schema 撑爆提示词。
+ */
+fun jsonSchemaFromMcp(input: JsonElement?): JsonSchema {
+    val obj = input as? JsonObject ?: return JsonSchema()
+    val required = (obj["required"] as? JsonArray)
+        ?.mapNotNull { it.jsonPrimitive.contentOrNull }
+        ?: emptyList()
+    val propsObj = obj["properties"] as? JsonObject ?: return JsonSchema(required = required)
+
+    val props = LinkedHashMap<String, JsonSchema.Property>()
+    propsObj.forEach { (key, value) ->
+        val p = value as? JsonObject ?: return@forEach
+        val rawType = p["type"]?.jsonPrimitive?.contentOrNull ?: "string"
+        val desc = p["description"]?.jsonPrimitive?.contentOrNull.orEmpty().take(200)
+        props[key] = JsonSchema.Property(
+            type = normalizeSchemaType(rawType),
+            description = desc,
+            enum = stringEnumOf(p["enum"])
+        )
+    }
+    // required 里可能含 properties 中不存在的键（服务器写错），过滤掉以免 schema 不自洽
+    return JsonSchema(properties = props, required = required.filter { it in props })
+}
+
+/** 只接受 function-calling 认识的类型；其余（null/未知）退化为 string。 */
+internal fun normalizeSchemaType(raw: String): String = when (raw) {
+    "string", "number", "integer", "boolean", "array", "object" -> raw
+    else -> "string"
+}
+
+/** 纯字符串枚举才保留；混合类型或数字枚举返回 null（避免误导模型）。 */
+internal fun stringEnumOf(el: JsonElement?): List<String>? {
+    val arr = el as? JsonArray ?: return null
+    val values = arr.mapNotNull { it.jsonPrimitive.contentOrNull }
+    if (values.size != arr.size) return null
+    return values.takeIf { it.isNotEmpty() }
+}
+
+/**
+ * MCP `tools/call` 结果 → [ToolResult]。
+ *
+ * MCP 标准返回形如 `{ content: [{type:"text", text:"..."}], isError?: true }`；
+ * 兼容 image/resource 片段（非文本只留占位，图片 URL 不强行渲染，避免 base64 撑爆历史）。
+ */
+fun toolResultFromMcp(el: JsonElement): ToolResult {
+    val obj = el as? JsonObject
+    val isError = obj?.get("isError")?.jsonPrimitive?.booleanOrNull ?: false
+    val contentArray = obj?.get("content") as? JsonArray
+
+    val text = if (contentArray != null) {
+        contentArray.mapNotNull { part ->
+            val o = part as? JsonObject ?: return@mapNotNull null
+            when (o["type"]?.jsonPrimitive?.contentOrNull) {
+                "text" -> o["text"]?.jsonPrimitive?.contentOrNull
+                "image" -> "[图片内容已省略]"
+                "resource" -> o["resource"]?.jsonObject?.get("text")?.jsonPrimitive?.contentOrNull
+                    ?: "[资源内容已省略]"
+                else -> null
+            }
+        }.joinToString("\n")
+    } else {
+        el.toString()
+    }.ifBlank { "(工具无输出)" }
+
+    return if (isError) {
+        ToolResult.fail(
+            code = "mcp_tool_error",
+            message = "MCP 工具返回错误",
+            hint = "按错误信息修正参数后重试；同一参数不要重复提交。",
+            data = text.take(2_000)
+        )
+    } else {
+        ToolResult.ok(code = "mcp_ok", message = "MCP 工具执行完成", data = text.take(8_000))
+    }
+}

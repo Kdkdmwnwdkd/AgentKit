@@ -25,9 +25,12 @@ import androidx.compose.material.icons.outlined.Build
 import androidx.compose.material.icons.outlined.Cloud
 import androidx.compose.material.icons.outlined.Link
 import androidx.compose.material.icons.outlined.PlayArrow
+import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -50,6 +53,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.agentkit.core.mcp.McpClient
+import com.example.agentkit.core.mcp.McpServerConfig
+import com.example.agentkit.core.mcp.McpServerStore
 import com.example.agentkit.core.mcp.McpServerInfo
 import com.example.agentkit.core.mcp.McpTool
 import kotlinx.coroutines.launch
@@ -77,6 +82,23 @@ fun McpScreen() {
     var argsJson by remember { mutableStateOf("{}") }
     var calling by remember { mutableStateOf(false) }
     var resultText by remember { mutableStateOf<String?>(null) }
+    // W-14：会话级保存的 MCP 服务器（对话启动时会自动连接这些 enabled 项）
+    val serverStore = remember { McpServerStore(context) }
+    var savedServers by remember { mutableStateOf(serverStore.load()) }
+
+    fun saveCurrent() {
+        val u = url.trim()
+        if (u.isEmpty()) return
+        val host = runCatching { java.net.URI(u).host }.getOrNull().orEmpty().ifBlank { "MCP" }
+        val cfg = McpServerConfig(
+            id = host + "_" + Integer.toHexString(u.hashCode()),
+            name = host,
+            url = u,
+            enabled = true
+        )
+        savedServers = serverStore.upsert(cfg)
+        Toast.makeText(context, "已保存，对话中可自动接入其工具", Toast.LENGTH_SHORT).show()
+    }
 
     fun connect() {
         val u = url.trim()
@@ -150,17 +172,72 @@ fun McpScreen() {
                         color = MaterialTheme.colorScheme.primary
                     )
 
-                    is McpStatus.Connected -> Text(
-                        "已连接：${s.info.name} v${s.info.version} · 共 ${tools.size} 个工具",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.primary
-                    )
+                    is McpStatus.Connected -> Column {
+                        Text(
+                            "已连接：${s.info.name} v${s.info.version} · 共 ${tools.size} 个工具",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Spacer(Modifier.height(AgentSpacing.space2))
+                        AkTextButton(text = "保存为常用服务器（对话中自动接入）", onClick = { saveCurrent() })
+                    }
 
                     is McpStatus.Error -> Text(
                         s.message,
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.error
                     )
+                }
+            }
+
+            // ——— 我的服务器（W-14：保存后对话启动时自动接入其工具）———
+            Spacer(Modifier.height(AgentSpacing.space4))
+            AkSectionCard(
+                title = "我的服务器",
+                icon = Icons.Outlined.Cloud,
+                description = "启用的服务器会在 App 启动时自动连接，工具直接出现在对话里（每台最多 30 个，合计 60 个）。"
+            ) {
+                if (savedServers.isEmpty()) {
+                    Text(
+                        "还没有保存的服务器。连接成功后点「保存为常用服务器」即可。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                } else {
+                    savedServers.forEach { cfg ->
+                        Row(
+                            Modifier.fillMaxWidth().padding(vertical = AgentSpacing.space2),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(Modifier.weight(1f).clickable {
+                                url = cfg.url
+                                connect()
+                            }) {
+                                Text(cfg.name, style = MaterialTheme.typography.titleSmall)
+                                Text(
+                                    cfg.url,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1
+                                )
+                            }
+                            Switch(
+                                checked = cfg.enabled,
+                                onCheckedChange = { on ->
+                                    savedServers = serverStore.setEnabled(cfg.id, on)
+                                }
+                            )
+                            IconButton(onClick = {
+                                savedServers = serverStore.remove(cfg.id)
+                            }) {
+                                Icon(
+                                    Icons.Outlined.Delete,
+                                    contentDescription = "删除",
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
                 }
             }
 

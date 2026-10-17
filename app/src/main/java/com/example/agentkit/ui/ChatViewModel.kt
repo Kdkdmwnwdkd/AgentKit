@@ -96,7 +96,15 @@ import com.example.agentkit.core.capability.logTrace
 import com.example.agentkit.core.capability.resolveCapability
 import com.example.agentkit.automation.shizuku.ShizukuInstaller
 import com.example.agentkit.automation.shizuku.ShizukuShell
+import com.example.agentkit.core.agent.AskUserBroker
+import com.example.agentkit.core.agent.TodoStore
+import com.example.agentkit.core.mcp.McpClient
+import com.example.agentkit.core.mcp.McpServerStore
+import com.example.agentkit.core.mcp.McpToolAdapter
+import com.example.agentkit.tools.AskUserTool
 import com.example.agentkit.tools.PrivilegedShellOut
+import com.example.agentkit.tools.TodoReadTool
+import com.example.agentkit.tools.TodoWriteTool
 import com.example.agentkit.core.capability.shellCapabilitySnapshot
 import com.example.agentkit.automation.screenCapabilitySnapshot
 import com.example.agentkit.core.terminal.TerminalSessionPool
@@ -272,6 +280,12 @@ sealed interface FileAttachResult {
     /** 不支持的类型 / 读取失败——[reason] 直接展示给用户。 */
     data class Failed(val reason: String) : FileAttachResult
 }
+
+/** W-14：单台 MCP 服务器最多接入的工具数（工具描述要进系统提示，不能无限扩张）。 */
+private const val MCP_MAX_TOOLS_PER_SERVER = 30
+
+/** W-14：全部 MCP 服务器合计的工具上限（超出部分不注册，日志会记录实际接入数）。 */
+private const val MCP_MAX_TOOLS_TOTAL = 60
 
 class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
 
@@ -563,6 +577,12 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** MCP 服务器清单（W-14）：对话启动后按 enabled 列表批量连接并注册工具。 */
+    private val mcpServerStore = McpServerStore(app)
+
+    /** 任务清单存储（W-14）：按会话隔离。 */
+    private val todoStore = TodoStore(File(app.filesDir, "todos.json"))
+
     private val registry = ToolRegistry().apply {
         register(HttpRequestTool())
         register(ReadFileTool(workspace))
@@ -609,6 +629,10 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
             )
         )
         register(ShellCloseTool(terminalPool))
+        // W-14：结构化追问 + 任务清单（对齐 RikkaHub ask_user / AiCode todo）
+        register(AskUserTool())
+        register(TodoWriteTool(todoStore) { _activeConversationId.value })
+        register(TodoReadTool(todoStore) { _activeConversationId.value })
         // 应用操控（Phase 1 补口）：列出/启动/停止任意已安装应用——「叫它打开快手就能打开」。
         // app_launch 走 Intent（零权限）；app_stop 接**真实 shell 通道**（会话池适配，见下），
         // 通道不可用（池无可用后端）时仍走「诚实降级为需用户手动停止」，绝不静默假装成功。
@@ -642,6 +666,8 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
             _serviceConnected.value = connected
             refreshCapabilityPlans() // 无障碍连接变化 → 能力就绪度随之刷新
         }
+        // W-14：异步连 MCP 服务器并把工具注册进 registry（失败只记日志，不影响启动）
+        registerMcpTools()
         refreshGrants()
         // L8/L9：首屏即有内容可看
         refreshLogs()
@@ -870,6 +896,59 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         _reasoningDraft.value = if (isOwnerActive()) reasoningBuffer else null
     }
 
+    /** 待回答的用户提问（W-14）：非空时聊天页显示选择卡片。 */
+    val askUserPending: StateFlow<AskUserBroker.Question?> = AskUserBroker.pending
+
+    /** UI 回调：用户点了某个选项 / 提交了自由输入。 */
+    fun answerAskUser(questionId: String, choice: String) {
+        AskUserBroker.answer(questionId, choice)
+        AgentLogger.i("Chat", "用户回答了提问：${choice.take(80)}")
+    }
+
+    /**
+     * 连接所有启用的 MCP 服务器，把 tools/list 的结果包成 [McpToolAdapter] 注册进工具表（W-14）。
+     *
+     * 约束：
+     *  - 异步、失败不抛：MCP 服务器挂了不能让 App 启动失败；
+     *  - 每台最多 [MCP_MAX_TOOLS_PER_SERVER] 个、总量 [MCP_MAX_TOOLS_TOTAL] 个：
+     *    工具描述要进系统提示，几十上百个会直接把上下文预算吃光；
+     *  - 只连 enabled 的服务器（用户在 MCP 页关掉的就不连）。
+     */
+    private fun registerMcpTools() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val servers = runCatching { mcpServerStore.load() }
+                .getOrDefault(emptyList())
+                .filter { it.enabled && it.url.isNotBlank() }
+            if (servers.isEmpty()) return@launch
+            var total = 0
+            for (server in servers) {
+                if (total >= MCP_MAX_TOOLS_TOTAL) break
+                val client = McpClient(server.url)
+                val init = client.initialize()
+                if (init.isFailure) {
+                    AgentLogger.w("MCP", "服务器「${server.name}」握手失败：${init.exceptionOrNull()?.message}")
+                    continue
+                }
+                val tools = client.listTools().getOrNull().orEmpty()
+                if (tools.isEmpty()) {
+                    AgentLogger.i("MCP", "服务器「${server.name}」未暴露工具")
+                    continue
+                }
+                var registered = 0
+                for (tool in tools.take(MCP_MAX_TOOLS_PER_SERVER)) {
+                    if (total >= MCP_MAX_TOOLS_TOTAL) break
+                    registry.register(McpToolAdapter(server.name, tool.name, client, tool))
+                    total++
+                    registered++
+                }
+                AgentLogger.i(
+                    "MCP",
+                    "服务器「${server.name}」已接入 $registered/${tools.size} 个工具（累计 $total）"
+                )
+            }
+        }
+    }
+
     /**
      * T05：停止当前运行（流式中点「停止」）。
      * 取消 runJob → AgentLoop 每轮边界 ensureActive 退出 + 树尾闭合补结果。
@@ -880,6 +959,8 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         AgentLogger.i("Chat", "用户请求停止运行")
         job.cancel()
         runJob = null
+        // W-14：挂起中的 ask_user 一并唤醒（否则协程被取消后 deferred 悬着，卡片不消失）
+        AskUserBroker.cancel()
         // Phase 2 DoD③/T05：取消立即清「正在恢复」——不等协程收到取消再清，UI 即刻复原
         _retryState.value = null
     }
