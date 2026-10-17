@@ -143,6 +143,17 @@ POOL_GROUPS = {
         ("原子写扩展函数", "atomicWriteText"),
         ("上下文回显纯函数", "contextAround"),
     ],
+    "W21 多 Key 轮询（pool 池条目精确匹配）": [
+        ("Key 池决策纯函数", "Lcom/example/agentkit/core/llm/KeyPoolPolicy;"),
+        ("Key 池运行时", "Lcom/example/agentkit/core/llm/KeyPoolRuntime;"),
+        ("Key 池持久化", "Lcom/example/agentkit/core/llm/KeyPoolStore;"),
+        ("是否值得切换判定", "worthFailover"),
+        ("选 Key 纯函数", "pickUsable"),
+        ("最早恢复时间函数", "earliestRecoveryMs"),
+        ("冷却时长函数", "cooldownMs"),
+        ("备用 Key UI 模型", "BackupKeyUi"),
+        ("主 Key 槽位 id", "primary"),
+    ],
 }
 
 # 反向判据：这些符号必须**不在**池中（删除/替换成功的证据，防旧码残留）
@@ -210,6 +221,13 @@ BYTES_GROUPS = {
         ("无搜索结果提示", "没有搜到"),
         ("唯一性提示（多处出现）", "在文件中出现"),
         ("过期提示（重新读取）", "文件中找不到 old_string"),
+    ],
+    "W21 文案（bytes 子串）": [
+        ("设置页卡片标题", "备用 Key"),
+        ("限流切换日志段", "被限流（"),
+        ("全部不可用提示", "把 Key 都不可用"),
+        ("未配备用 Key 提示", "未配备用 Key"),
+        ("冷却恢复提示段", "最早"),
     ],
 }
 
