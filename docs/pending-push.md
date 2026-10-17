@@ -2,6 +2,27 @@
 
 > 2026-10-14 建立。**给下一个会话的自己看**：沙箱内 `curl https://api.github.com` 已被出网代理劫持（DNS → 198.18.0.x 保留网段），普通 shell 永远推不上去。
 
+## ⚡ 下载一律走 gh-proxy 加速（2026-10-17 血的教训）
+
+**别再用 api.github.com 的 artifact 接口下 APK**——实测 ~35KB/s，30MB 的包跑了
+30 分钟没下完，后台任务还被 SIGKILL。走镜像 **78 秒**下完。
+
+```bash
+# APK 加速直链（always latest，CI 每次构建后自动发的 Release）
+curl -sL --max-time 300 -o app-debug.apk \
+  "https://gh-proxy.com/https://github.com/Kdkdmwnwdkd/AgentKit/releases/download/latest/app-debug.apk"
+
+# git 同步（只读，秒回）
+git fetch https://gh-proxy.com/https://github.com/Kdkdmwnwdkd/AgentKit.git main
+
+# 整包 tarball（~18MB/s）
+https://gh-proxy.com/https://github.com/<owner>/<repo>/archive/refs/heads/<branch>.tar.gz
+```
+
+⚠️ **不要带 Authorization 头**（带了镜像失效/变慢）；镜像**只读**，推送必须走写通道。
+写入侧提醒：`mcporter` 单参数有 ARG_MAX 上限，**>100KB 的文件（如 ChatViewModel.kt
+137KB）会报 `argument list too long`**，改用 curl + REST API（`--data @payload.json`）。
+
 ## 可用通道（实测）
 
 | 用途 | 通道 | 说明 |
