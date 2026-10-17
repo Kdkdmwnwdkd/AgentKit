@@ -84,6 +84,27 @@ fun PermissionsScreen(vm: ChatViewModel) {
         }
     }
 
+    // Shizuku 服务启动/退出：自动刷新状态（用户在 Shizuku 里点「启动」后回到本页即变「去授权」）
+    DisposableEffect(Unit) {
+        val onReceived = Shizuku.OnBinderReceivedListener {
+            vm.refreshShizukuStatus()
+        }
+        val onDead = Shizuku.OnBinderDeadListener {
+            vm.refreshShizukuStatus()
+        }
+        val ok = runCatching {
+            Shizuku.addBinderReceivedListener(onReceived)
+            Shizuku.addBinderDeadListener(onDead)
+            true
+        }.getOrDefault(false)
+        onDispose {
+            if (ok) runCatching {
+                Shizuku.removeBinderReceivedListener(onReceived)
+                Shizuku.removeBinderDeadListener(onDead)
+            }
+        }
+    }
+
     val grants = listOf(
         GrantItem(
             title = "无障碍服务",
@@ -188,6 +209,37 @@ fun PermissionsScreen(vm: ChatViewModel) {
                         AkDivider(Modifier.padding(start = AgentSpacing.space4))
                     }
                     GrantRow(item)
+                }
+            }
+
+            // —— 调试通道设置步骤（对齐 Operit 的三步向导 + 厂商坑位）——
+            if (shizukuUiState != ShizukuShell.UiState.READY) {
+                AkSectionCard(
+                    title = "调试通道怎么开",
+                    icon = Icons.Outlined.Terminal,
+                    description = "Shizuku 是开源工具（作者 Rikka），它借系统自己的调试接口拿到 shell 权限，" +
+                        "不 root、不联网上传数据。只需配置一次；重启手机后要重新「启动」一次（系统限制）。"
+                ) {
+                    Text(
+                        text = "① 安装 Shizuku（已装跳过）\n" +
+                            "② 打开 Shizuku →「通过无线调试启动」→ 用「分屏」：Shizuku 占一半、" +
+                            "开发者选项里的「无线调试」占另一半。在无线调试页点「使用配对码配对设备」生成 6 位码，" +
+                            "从通知栏把它填进 Shizuku（中途切走页面，配对会被系统终止）\n" +
+                            "③ 看到 Shizuku 显示「已启动」→ 回本页点「去授权」→ 允许",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(AgentSpacing.space3))
+                    Text(
+                        text = "魅族 / Flyme 必须额外开（否则会「一开就关」或随机停止）：\n" +
+                            "· 开发者选项 → 关闭「Flyme 支付保护」\n" +
+                            "· 开发者选项 → 默认 USB 配置 →「不进行数据传输」\n" +
+                            "· 开发者选项 → 打开「停用 adb 授权超时功能」（不开的话配对会被系统回收）\n" +
+                            "· 系统设置 → 应用 → Shizuku → 允许后台运行、电池不限制\n" +
+                            "· 配对与使用期间不要关闭「USB 调试」和「开发者选项」；切换 Wi-Fi 后无线调试会自动关闭，需重新打开",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
             }
 
