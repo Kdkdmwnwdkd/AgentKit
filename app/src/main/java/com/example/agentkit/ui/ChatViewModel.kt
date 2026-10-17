@@ -145,6 +145,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.Dispatchers
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
@@ -600,6 +601,12 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     /** MCP 服务器清单（W-14）：对话启动后按 enabled 列表批量连接并注册工具。 */
     private val mcpServerStore = McpServerStore(app)
 
+    /**
+     * MCP 注册完成信号（W-19）：启动是异步的，首条消息若抢在注册前发出，
+     * 模型会看不到这些工具。send() 最多等 8 秒，超时照常跑（不卡用户）。
+     */
+    private val mcpReady = CompletableDeferred<Unit>()
+
     /** 任务清单存储（W-14）：按会话隔离。 */
     private val todoStore = TodoStore(File(app.filesDir, "todos.json"))
 
@@ -1039,6 +1046,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
      */
     private fun registerMcpTools() {
         viewModelScope.launch(Dispatchers.IO) {
+            try {
             val servers = runCatching { mcpServerStore.load() }
                 .getOrDefault(emptyList())
                 .filter { it.enabled && it.url.isNotBlank() }
@@ -1068,6 +1076,10 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
                     "MCP",
                     "服务器「${server.name}」已接入 $registered/${tools.size} 个工具（累计 $total）"
                 )
+            }
+            } finally {
+                // 无论成功/失败/没配置，都要放行首条消息的等待
+                if (!mcpReady.isCompleted) mcpReady.complete(Unit)
             }
         }
     }
@@ -2058,6 +2070,10 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         // T05：句柄置入 runJob，供 stop() 取消；finally 保证 isRunning/日志必收
         runJob = viewModelScope.launch {
             try {
+                // W-19：MCP 工具启动后异步注册；首条消息最多等 8 秒，避免模型看不到 MCP 工具。
+                if (!mcpReady.isCompleted) {
+                    withTimeoutOrNull(8_000) { mcpReady.await() }
+                }
                 // Hotfix2：用户消息立即上屏；工具调用过程由 handleAgentEvent 实时渲染
                 // （执行中卡 → 终态卡）；最终历史只补文本回答，工具卡按 call.id 去重
                 val userItem = UiItem.User(text)

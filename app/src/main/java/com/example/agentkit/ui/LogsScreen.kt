@@ -25,6 +25,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.ContentCopy
+import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.Error
@@ -49,6 +50,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.agentkit.core.CrashLogger
+import com.example.agentkit.core.DiagnosticsExporter
 import com.example.agentkit.core.CrashRecord
 import kotlinx.coroutines.delay
 import java.text.SimpleDateFormat
@@ -170,6 +172,20 @@ fun LogsScreen(vm: ChatViewModel) {
                     val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                     cm.setPrimaryClip(ClipData.newPlainText("AgentKit 运行日志", text))
                     exportHint = "已复制 ${logs.size} 条日志到剪贴板"
+                }
+            )
+            AkOutlinedButton(
+                text = "诊断包",
+                icon = Icons.Outlined.Share,
+                modifier = Modifier.weight(1f),
+                onClick = {
+                    val file = DiagnosticsExporter.export(ctx, vm.exportLogs())
+                    if (file != null) {
+                        DiagnosticsExporter.share(ctx, file)
+                        exportHint = "诊断包已生成（配置已脱敏），选择应用发送"
+                    } else {
+                        exportHint = "诊断包生成失败，请改用「导出」复制日志"
+                    }
                 }
             )
             AkOutlinedButton(

@@ -1,5 +1,7 @@
 package com.example.agentkit.ui
 
+import android.content.Intent
+import android.provider.Settings
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -23,7 +25,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.core.app.NotificationManagerCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.agentkit.workflow.Workflow
 import com.example.agentkit.workflow.describeTrigger
@@ -38,6 +42,9 @@ import com.example.agentkit.workflow.describeTrigger
 @Composable
 fun WorkflowScreen(vm: ChatViewModel) {
     val list by vm.workflows.collectAsStateWithLifecycle()
+    val ctx = LocalContext.current
+    // W-19：通知权限没开时，定时任务到点不会有任何提示——必须在页面上明说并给入口
+    val notificationsOn = NotificationManagerCompat.from(ctx).areNotificationsEnabled()
 
     Column(Modifier.fillMaxWidth()) {
         PageTopBar(
@@ -58,6 +65,24 @@ fun WorkflowScreen(vm: ChatViewModel) {
                 ),
             verticalArrangement = Arrangement.spacedBy(AgentSpacing.space4)
         ) {
+            if (!notificationsOn) {
+                AkSectionCard(title = "通知权限未开启", icon = Icons.Outlined.Schedule) {
+                    Text(
+                        text = "定时任务到点靠通知提醒你；通知权限关着就不会有任何提示。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                    Spacer(Modifier.height(AgentSpacing.space2))
+                    AkTextButton(text = "去开启通知", onClick = {
+                        ctx.startActivity(
+                            Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                                .putExtra(Settings.EXTRA_APP_PACKAGE, ctx.packageName)
+                                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        )
+                    })
+                }
+            }
+
             AkSectionCard(
                 title = "怎么用",
                 icon = Icons.Outlined.Schedule,

@@ -9,7 +9,11 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.jsonPrimitive
+
+/** 单次 MCP 调用上限（W-19）：挂死的服务器不应拖住整轮任务。 */
+private const val MCP_CALL_TIMEOUT_MS = 60_000L
 
 /**
  * MCP 工具 → AgentKit 工具（W-14）。
@@ -48,7 +52,15 @@ class McpToolAdapter(
             "不要原样重复调用。"
 
     override suspend fun execute(args: JsonObject): ToolResult {
-        val result = client.callTool(originalName, args.toString())
+        // W-19：MCP 服务器可能挂死（网络卡住/服务端不返回），60 秒没结果就明确失败，
+        // 不能让整轮任务无限等待。
+        val result = withTimeoutOrNull(MCP_CALL_TIMEOUT_MS) {
+            client.callTool(originalName, args.toString())
+        } ?: return ToolResult.fail(
+            code = "mcp_timeout",
+            message = "MCP 工具「$originalName」执行超时（60 秒）。",
+            hint = "服务器可能不可用；换用其他工具或稍后重试，不要原样连续重试。"
+        )
         return result.fold(
             onSuccess = { toolResultFromMcp(it) },
             onFailure = { e ->
