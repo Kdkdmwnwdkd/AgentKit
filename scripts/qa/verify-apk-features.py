@@ -104,6 +104,8 @@ BYTES_GROUPS = {
         ("已装未启动引导", "已安装未启动"),
         ("官方包名候选", "moe.shizuku.privileged.api"),
         ("未安装走官方发布页", "RikkaApps/Shizuku/releases"),
+        ("设置向导标题", "调试通道怎么开"),
+        ("魅族必开项", "Flyme 支付保护"),
         ("打开 Shizuku 按钮", "打开 Shizuku"),
     ],
     "W10 图片裁剪文案（bytes 子串）": [
