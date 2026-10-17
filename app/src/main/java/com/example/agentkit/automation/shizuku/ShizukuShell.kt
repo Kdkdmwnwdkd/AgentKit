@@ -1,5 +1,7 @@
 package com.example.agentkit.automation.shizuku
 
+import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import rikka.shizuku.Shizuku
 import java.io.ByteArrayOutputStream
@@ -19,6 +21,32 @@ import java.util.concurrent.TimeUnit
 object ShizukuShell {
 
     const val REQUEST_CODE = 4210
+
+    /** Shizuku 主应用包名。 */
+    const val PACKAGE = "moe.shizuku.manager"
+
+    /**
+     * Shizuku 是否**已安装**（与「是否在运行」分开判断）。
+     *
+     * 分开的原因（真机反馈）：用户装好了但没启动时，旧文案仍写「先安装 Shizuku」，
+     * 把人往应用商店赶——而正确动作是「打开已装的 Shizuku 并点『通过无线调试启动』」。
+     */
+    fun isInstalled(context: Context): Boolean = runCatching {
+        context.packageManager.getPackageInfo(PACKAGE, 0)
+        true
+    }.getOrDefault(false)
+
+    /**
+     * 拉起 Shizuku 主界面（已安装时）。返回是否成功拉起；
+     * 未安装返回 false，由调用方决定是否引导到商店。
+     */
+    fun launch(context: Context): Boolean {
+        val intent = runCatching {
+            context.packageManager.getLaunchIntentForPackage(PACKAGE)
+        }.getOrNull() ?: return false
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        return runCatching { context.startActivity(intent); true }.getOrDefault(false)
+    }
 
     /** Shizuku 服务是否在运行（用户是否启动过 Shizuku）。 */
     fun binderAlive(): Boolean = runCatching { Shizuku.pingBinder() }.getOrDefault(false)
@@ -43,6 +71,24 @@ object ShizukuShell {
     }
 
     enum class Status { NOT_RUNNING, NO_PERMISSION, READY }
+
+    /**
+     * 面向界面的四态（把「未运行」拆成未安装 / 已装未启动）：
+     *  - [NOT_INSTALLED]       → 引导安装（商店 / GitHub releases）
+     *  - [INSTALLED_NOT_RUNNING] → **直接拉起 Shizuku**，提示在其中点「通过无线调试启动」
+     *  - [NO_PERMISSION]       → 直接发起授权请求
+     *  - [READY]               → 已就绪
+     *
+     * 纯函数：入参为探测结果，便于 JVM harness 断言文案/动作路由。
+     */
+    enum class UiState { NOT_INSTALLED, INSTALLED_NOT_RUNNING, NO_PERMISSION, READY }
+
+    fun uiState(status: Status, installed: Boolean): UiState = when {
+        status == Status.READY -> UiState.READY
+        status == Status.NO_PERMISSION -> UiState.NO_PERMISSION
+        installed -> UiState.INSTALLED_NOT_RUNNING
+        else -> UiState.NOT_INSTALLED
+    }
 
     data class ShellOut(
         val exitCode: Int,

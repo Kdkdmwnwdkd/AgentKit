@@ -272,9 +272,6 @@ sealed interface FileAttachResult {
     data class Failed(val reason: String) : FileAttachResult
 }
 
-/** Shizuku 主应用包名（用于「未运行 → 拉起」与「未安装 → 应用商店」）。 */
-private const val SHIZUKU_PACKAGE = "moe.shizuku.manager"
-
 class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
 
     private val workspace = File(app.filesDir, "agent_workspace")
@@ -305,9 +302,21 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     private val _shizukuStatus = MutableStateFlow(ShizukuShell.status())
     val shizukuStatus: StateFlow<ShizukuShell.Status> = _shizukuStatus.asStateFlow()
 
+    /** Shizuku 是否已安装（与「是否在运行」分开：已装就该直接拉起，不再劝人去商店）。 */
+    private val _shizukuInstalled = MutableStateFlow(ShizukuShell.isInstalled(app))
+    val shizukuInstalled: StateFlow<Boolean> = _shizukuInstalled.asStateFlow()
+
+    /** 界面四态（未安装 / 已装未启动 / 未授权 / 就绪）——文案与按钮动作都由它决定。 */
+    private val _shizukuUiState = MutableStateFlow(
+        ShizukuShell.uiState(_shizukuStatus.value, _shizukuInstalled.value)
+    )
+    val shizukuUiState: StateFlow<ShizukuShell.UiState> = _shizukuUiState.asStateFlow()
+
     /** 重新探测调试通道状态（进入权限页 / 授权回调后调用）。 */
     fun refreshShizukuStatus() {
         _shizukuStatus.value = ShizukuShell.status()
+        _shizukuInstalled.value = ShizukuShell.isInstalled(app)
+        _shizukuUiState.value = ShizukuShell.uiState(_shizukuStatus.value, _shizukuInstalled.value)
         // 状态变化可能让「跑 shell 命令」的实际路径改变，能力链需重算
         refreshCapabilityPlans()
     }
@@ -319,22 +328,36 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
      *  - 就绪 → 仅刷新状态。
      */
     fun handleShizukuAction(context: Context) {
-        when (_shizukuStatus.value) {
-            ShizukuShell.Status.NOT_RUNNING -> {
-                val pm = context.packageManager
-                val launch = pm.getLaunchIntentForPackage(SHIZUKU_PACKAGE)
-                if (launch != null) {
-                    launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    runCatching { context.startActivity(launch) }
-                } else {
-                    // 未安装：跳应用商店（各家商店包名不同，用 market:// 让系统路由）
-                    val market = Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=$SHIZUKU_PACKAGE"))
-                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    runCatching { context.startActivity(market) }
+        // 按「四态」动作：已装就拉起、未装才去商店——不再一律劝人装
+        when (_shizukuUiState.value) {
+            ShizukuShell.UiState.NOT_INSTALLED -> {
+                val market = Intent(
+                    Intent.ACTION_VIEW,
+                    Uri.parse("market://details?id=${ShizukuShell.PACKAGE}")
+                ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                // 应用商店不可用（无商店/无该应用）时退到 GitHub releases 页
+                val started = runCatching { context.startActivity(market); true }.getOrDefault(false)
+                if (!started) {
+                    val web = Intent(
+                        Intent.ACTION_VIEW,
+                        Uri.parse("https://github.com/RikkaApps/Shizuku/releases")
+                    ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    runCatching { context.startActivity(web) }
                 }
             }
-            ShizukuShell.Status.NO_PERMISSION -> ShizukuShell.requestPermission()
-            ShizukuShell.Status.READY -> Unit
+            ShizukuShell.UiState.INSTALLED_NOT_RUNNING -> {
+                // 已安装但没启动：直接拉起 Shizuku 本体（用户在里点「通过无线调试启动」）
+                if (!ShizukuShell.launch(context)) {
+                    // 少数 ROM 没有 launcher 入口，退到应用详情页
+                    val details = Intent(
+                        android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                        Uri.parse("package:${ShizukuShell.PACKAGE}")
+                    ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    runCatching { context.startActivity(details) }
+                }
+            }
+            ShizukuShell.UiState.NO_PERMISSION -> ShizukuShell.requestPermission()
+            ShizukuShell.UiState.READY -> Unit
         }
         refreshShizukuStatus()
     }
@@ -684,8 +707,10 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
                 app.packageName
             ) == AppOpsManager.MODE_ALLOWED
         } catch (_: Throwable) { false }
-        // 调试通道（Shizuku）：用户可能刚在 Shizuku 里授权/撤权
+        // 调试通道（Shizuku）：用户可能刚在 Shizuku 里授权/撤权，或刚从商店装完回来
         _shizukuStatus.value = ShizukuShell.status()
+        _shizukuInstalled.value = ShizukuShell.isInstalled(app)
+        _shizukuUiState.value = ShizukuShell.uiState(_shizukuStatus.value, _shizukuInstalled.value)
         // L4 主动感知：刷新 UI 展示的设备上下文快照
         _deviceContext.value = DeviceContextStore.snapshot()
         // DoD⑤：权限/环境变化后重算能力就绪度（能力链一次走完），并逐级落降级轨迹日志

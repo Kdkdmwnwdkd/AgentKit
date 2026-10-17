@@ -54,7 +54,7 @@ fun PermissionsScreen(vm: ChatViewModel) {
     val connected by vm.serviceConnected.collectAsStateWithLifecycle()
     val notificationGranted by vm.notificationGranted.collectAsStateWithLifecycle()
     val usageGranted by vm.usageGranted.collectAsStateWithLifecycle()
-    val shizukuStatus by vm.shizukuStatus.collectAsStateWithLifecycle()
+    val shizukuUiState by vm.shizukuUiState.collectAsStateWithLifecycle()
     val ctx = LocalContext.current
 
     val pendingGrants = pendingGrantCount(connected, notificationGranted, usageGranted)
@@ -108,15 +108,23 @@ fun PermissionsScreen(vm: ChatViewModel) {
         ),
         GrantItem(
             title = "调试通道（Shizuku）",
-            granted = shizukuStatus == ShizukuShell.Status.READY,
+            granted = shizukuUiState == ShizukuShell.UiState.READY,
             icon = Icons.Outlined.Terminal,
             grantedHint = "已就绪：Agent 可在后台执行文件清理、停应用、改系统设置（shell uid 2000），不跳屏",
-            missingHint = when (shizukuStatus) {
-                ShizukuShell.Status.NOT_RUNNING ->
-                    "未运行：先安装并打开 Shizuku，在其中点「通过无线调试启动」，再回来授权（可选增强项）"
-                ShizukuShell.Status.NO_PERMISSION ->
-                    "未授权：点「去授权」，在 Shizuku 弹窗里选「允许」，之后后台命令即可用"
-                ShizukuShell.Status.READY -> ""
+            missingHint = when (shizukuUiState) {
+                ShizukuShell.UiState.NOT_INSTALLED ->
+                    "未安装：点右侧去装 Shizuku（开源工具，不收集数据）；装好回来即可识别"
+                ShizukuShell.UiState.INSTALLED_NOT_RUNNING ->
+                    "已安装未启动：点右侧直接打开 Shizuku，在其中点「通过无线调试启动」"
+                ShizukuShell.UiState.NO_PERMISSION ->
+                    "未授权：点右侧，在 Shizuku 弹窗里选「允许」"
+                ShizukuShell.UiState.READY -> ""
+            },
+            actionText = when (shizukuUiState) {
+                ShizukuShell.UiState.NOT_INSTALLED -> "去安装"
+                ShizukuShell.UiState.INSTALLED_NOT_RUNNING -> "打开 Shizuku"
+                ShizukuShell.UiState.NO_PERMISSION -> "去授权"
+                ShizukuShell.UiState.READY -> "去开启"
             },
             onOpen = { vm.handleShizukuAction(ctx) }
         ),
@@ -226,7 +234,9 @@ private class GrantItem(
     val icon: ImageVector,
     val grantedHint: String,
     val missingHint: String,
-    val onOpen: () -> Unit
+    val onOpen: () -> Unit,
+    /** 按钮文案：按缺什么给什么（安装/打开/授权），避免一律「去开启」把人带错路。 */
+    val actionText: String = "去开启"
 )
 
 @Composable
@@ -270,7 +280,7 @@ private fun GrantRow(item: GrantItem) {
                 dotColor = ak.success
             )
         } else {
-            AkTextButton(text = "去开启", onClick = item.onOpen)
+            AkTextButton(text = item.actionText, onClick = item.onOpen)
         }
     }
 }
