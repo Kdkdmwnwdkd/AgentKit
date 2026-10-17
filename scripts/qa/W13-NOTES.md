@@ -14,6 +14,19 @@
 
 **验证：14/14 PASS**（`bash scripts/qa/run-adb-protocol-verification.sh`）。
 
+## 阶段二 a：连接 / AUTH / shell 执行（已完成）
+
+| 文件 | 内容 |
+|---|---|
+| `automation/adb/AdbClient.kt` | TCP 连接 + `CNXN → AUTH TOKEN → 签名 → CNXN` 握手；`OPEN(shell,v2,raw:cmd)` → `OKAY/WRTE/CLSE` 收流；stdout/stderr 分流、退出码、输出截断；未授权时抛 `AdbAuthException`（引导去配对，绝不假装成功） |
+| `scripts/qa/AdbClientVerification.kt` | **回环假 adbd**（ServerSocket 按 AOSP 协议应答）端到端验证 5 个场景 |
+| `scripts/qa/run-adb-client-verification.sh` | 离线运行器 |
+
+**验证：5/5 PASS**——正常握手+`echo ok`、stderr/退出码 1、密钥被拒、50k 输出截断、
+stdout 帧跨两个 WRTE 拼接。
+
+**边界**：`AdbClient` 只负责「已信任密钥」之后的传输与执行；**首次配对仍是独立流程**。
+
 ## 未完成（阶段二起，需真机）
 
 1. **配对**：无线调试配对端口 + 6 位码 + SPAKE2/TLS-PSK（本阶段最大工作量），
