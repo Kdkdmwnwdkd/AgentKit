@@ -46,7 +46,9 @@ class AdbPairingClient(
         val ssl = openTls()
         try {
             ssl.soTimeout = timeoutMs
-            val material = SSLSockets.exportKeyingMaterial(ssl, KEYING_LABEL, null, 64)
+            // context 用空数组：AOSP 传 null 表示无上下文；Kotlin 侧该参数为非空，
+            // 空数组与 null 在 TLS exporter 中等价（无附加上下文）。
+            val material = SSLSockets.exportKeyingMaterial(ssl, KEYING_LABEL, ByteArray(0), 64)
             val password = pairingCode.toByteArray(Charsets.UTF_8) + material
             val spake = spake2Factory(password)
 
