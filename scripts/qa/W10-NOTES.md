@@ -42,9 +42,13 @@
 - 第一道门（沙箱二进制编译）：`kotlinc` 编译 `AgentContract.kt` + `ToolResult.kt` +
   `ContextBudget.kt` + harness，0 error（`run-context-budget-verification.sh` 的 [1/2]）。
 - 第二道门（harness 断言）：**22/22 PASS**（估算口径 5 / 通道预算 3 / 图片裁剪 3 / 预算压缩 11）。
-- 第三道门：push + CI `assembleDebug`（编译门，验证 `RealAgentLoop` / 适配层接线）。
-- 第四道门：APK dex 反验（特征：`ContextBudget` 类描述符、`buildRequestMessages`
-  方法名、`早前截图已从上下文省略` 文案、默认预算 24000 常量）。
+- 第三道门：push + CI。run 150（`e772bb5`）与 run 151（`c51ade4`）的
+  **Build debug APK 均 success**（编译门验证 `RealAgentLoop` / 适配层接线）。
+- 第四道门：APK dex 反验 **全绿**。对象：run 151 产物（28,255,873 B，
+  sha256 `b22b67f6…86681`）。判据 20 项：W-9 组 7 + W-10 组 5
+  （`ContextBudget` 类描述符 / `buildRequestMessages` / `budgetForProvider` /
+  `pruneImages` / `fitToBudget`）+ 文案 6 + 反证 2（旧描述整串消失、
+  **`maybeCompact` 已从包内消失**）。
 
 ## 已知边界
 
