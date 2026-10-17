@@ -44,16 +44,18 @@
 - **D 文案/提示词**（3 项）：失败指引关键词+无障碍一句；描述「优先走无障碍通道」；
   提示词分工段在册且长度 ≤ `SYSTEM_PROMPT_MAX_CHARS`。
 
-### 沙箱捕获的真机构筑坑（均已修，否则 CI assembleDebug 会挂）
+### 沙箱 + CI 双门捕获的坑（均已修）
 
-1. `import kotlinx.coroutines.resume` —— 该扩展在 coroutines **1.8.1 是 internal**
-   （javap 实证 `CancellableContinuationKt` 无此公开扩展；成员
-   `resume(T, Function1)` 无默认参数）。改用成员形式
-   `cont.resume(value, onCancellation = {})`。
-2. 兜底路径误写 `svc.captureBitmap()` —— `captureBitmap` 在 `ScreenCaptureService` 上，
-   无障碍服务无此方法（git 原版即如此，重写时笔误）。改回
-   `ScreenCaptureService.activeInstance`。
-3. `downscale` 丢 `src` 首参 —— `Bitmap.createScaledBitmap(src, w, h, filter)` 四参笔误。
+| # | 坑 | 捕获门 | 修法 |
+|---|----|--------|------|
+| 1 | `import kotlinx.coroutines.resume` 扩展在 coroutines 1.8.1 是 internal（javap 实证 `CancellableContinuationKt` 无公开扩展；成员 `resume(T, Function1)` 无默认参数） | 沙箱编译 | 成员形式 `cont.resume(value, onCancellation = {})` |
+| 2 | 兜底路径误写 `svc.captureBitmap()`——`captureBitmap` 在 `ScreenCaptureService` 上，无障碍服务无此方法 | 沙箱编译 | 改回 `ScreenCaptureService.activeInstance` |
+| 3 | `downscale` 丢 `createScaledBitmap` 首参 `src`（四参笔误） | 沙箱编译 | 补回 `Bitmap.createScaledBitmap(src, w, h, filter)` |
+| 4 | **`ScreenshotResult` 没有 `getBitmap()`**——真实 API 只有 `getHardwareBuffer()` / `getColorSpace()` / `getTimestamp()`（API 30；官方 reference + CI `compileDebugKotlin` 实证 `Unresolved reference: bitmap`）。沙箱桩当初按臆想字段建，没拦住 | **CI 编译门** | 新增私有助手 `toSoftwareBitmap()`：`wrapHardwareBuffer(buffer, colorSpace)` → `copy(ARGB_8888, false)`，finally `buffer.close()`；转换失败回落 null 走兜底 |
+| 5 | **无障碍配置缺 `android:canTakeScreenshot="true"`**——无此能力声明时 `takeScreenshot` 运行时 onFailure（CI 编译门查不出，纯运行时坑） | 代码审查（参照 Operit 三级链文档） | `agent_accessibility_config.xml` 补上 |
+
+教训：沙箱桩必须按**真实 API 文档**建模（本次 ScreenshotResult 臆造了 `bitmap` 字段），
+桩与真实 API 的偏差要靠 CI 编译门兜底——两道门各有覆盖盲区，缺一不可。
 
 ### 沙箱环境两个非显然点（复跑时须知）
 
@@ -71,7 +73,7 @@
       `UiScreenshotTool` / `AutomationBridge` 源码直编 + 真实提示词 awk 抽取）。
 - [x] 第二道门：仓库 harness `W9ScreenshotVerification` 9/9（对沙箱产物 +
       `-Xfriend-paths` 跑 internal 访问；本机无 Android SDK，`CLASSES` 由沙箱 out 代替）。
-- [ ] 第三道门：push + CI（assembleDebug）。
+- [x] 第三道门：push + CI（首轮 CI 抓出坑 #4，修复后二轮）。
 - [ ] 第四道门：APK dex 反验（特征：`takeScreenshotViaA11y` /
       `shouldPreferA11yScreenshot` / `VIA` 常量 "a11y" / "media_projection" /
       新提示词分工段子串）。

@@ -487,7 +487,7 @@ class AgentAccessibilityService : AccessibilityService() {
                     Executor { command -> command.run() },
                     object : AccessibilityService.TakeScreenshotCallback {
                         override fun onSuccess(result: AccessibilityService.ScreenshotResult) {
-                            if (cont.isActive) cont.resume(result.bitmap, onCancellation = {})
+                            if (cont.isActive) cont.resume(result.toSoftwareBitmap(), onCancellation = {})
                         }
 
                         override fun onFailure(errorCode: Int) {
@@ -502,6 +502,29 @@ class AgentAccessibilityService : AccessibilityService() {
                 if (cont.isActive) cont.resume(null, onCancellation = {})
             }
         }
+    }
+
+/**
+ * W-9 私有助手：[AccessibilityService.ScreenshotResult] → 软件位图。
+ *
+ * API 实证（CI 编译门 + 官方 reference）：ScreenshotResult **没有 getBitmap()**，
+ * 只暴露 getHardwareBuffer() / getColorSpace() / getTimestamp()（均 API 30）。
+ * 硬件缓冲须 wrapHardwareBuffer + copy(ARGB_8888) 转成软件副本后才能安全使用与回收
+ * （copy 出的位图独立于缓冲生命周期；本方法 finally 关闭 HardwareBuffer）。
+ * 转换任何一步失败（含厂商 ROM 异常）均回落 null，调用方静默走 MediaProjection 兜底。
+ */
+private fun AccessibilityService.ScreenshotResult.toSoftwareBitmap(): Bitmap? =
+    try {
+        val buffer = hardwareBuffer
+        try {
+            val hw = Bitmap.wrapHardwareBuffer(buffer, colorSpace)
+            hw?.copy(Bitmap.Config.ARGB_8888, false)
+        } finally {
+            buffer.close()
+        }
+    } catch (t: Throwable) {
+        AgentLogger.w("ScreenCapture", "a11y ScreenshotResult 转位图失败: ${t.message}")
+        null
     }
 
     /** 把根节点解析成快照 JSON（调用方负责 recycle）。 */
