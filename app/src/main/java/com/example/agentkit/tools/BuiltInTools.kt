@@ -267,6 +267,8 @@ class EditFileTool(workspace: File) : FileTool(workspace) {
         }
     }
 }
+
+class WriteFileTool(workspace: File) : FileTool(workspace) {
     override val name = "write_file"
     override val description = "将文本写入工作区内的文件（覆盖写入）。"
     override val parameters = JsonSchema.objectSchema(
