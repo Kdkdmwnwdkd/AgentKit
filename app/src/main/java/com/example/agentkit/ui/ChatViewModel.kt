@@ -105,6 +105,13 @@ import com.example.agentkit.core.mcp.McpServerStore
 import com.example.agentkit.core.mcp.McpToolAdapter
 import com.example.agentkit.tools.AskUserTool
 import com.example.agentkit.tools.SpeakTool
+import com.example.agentkit.tools.WorkflowCreateTool
+import com.example.agentkit.tools.WorkflowDeleteTool
+import com.example.agentkit.tools.WorkflowListTool
+import com.example.agentkit.tools.WorkflowToggleTool
+import com.example.agentkit.workflow.Workflow
+import com.example.agentkit.workflow.WorkflowScheduler
+import com.example.agentkit.workflow.WorkflowStore
 import com.example.agentkit.tools.WebClickTool
 import com.example.agentkit.tools.WebEvalTool
 import com.example.agentkit.tools.WebOpenTool
@@ -594,6 +601,11 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     /** 任务清单存储（W-14）：按会话隔离。 */
     private val todoStore = TodoStore(File(app.filesDir, "todos.json"))
 
+    /** 定时任务存储与列表状态（W-17）。 */
+    private val workflowStore = WorkflowStore(File(app.filesDir, "workflow"))
+    private val _workflows = MutableStateFlow<List<Workflow>>(emptyList())
+    val workflows: StateFlow<List<Workflow>> = _workflows.asStateFlow()
+
     private val registry = ToolRegistry().apply {
         register(HttpRequestTool())
         register(ReadFileTool(workspace))
@@ -620,6 +632,11 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         register(MemoryForgetTool(memoryStore))
         // W-16：系统 TTS 朗读
         register(SpeakTool(speaker))
+        // W-17：定时任务（模型可自建/查询/删除/开关）
+        register(WorkflowCreateTool(workflowStore) { refreshWorkflows() })
+        register(WorkflowListTool(workflowStore))
+        register(WorkflowDeleteTool(workflowStore) { refreshWorkflows() })
+        register(WorkflowToggleTool(workflowStore) { refreshWorkflows() })
         // 终端 shell（T08）：会话池 + 短句柄；shell_run 执行命令、shell_close 释放会话
         register(
             ShellRunTool(
@@ -685,6 +702,9 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
             _serviceConnected.value = connected
             refreshCapabilityPlans() // 无障碍连接变化 → 能力就绪度随之刷新
         }
+        // W-17：注册周期巡检（幂等）并载入列表
+        WorkflowScheduler.ensureScheduled(app)
+        refreshWorkflows()
         // W-14：异步连 MCP 服务器并把工具注册进 registry（失败只记日志，不影响启动）
         registerMcpTools()
         refreshGrants()
@@ -915,6 +935,52 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     private fun syncDraftDisplay() {
         _streamDraft.value = if (isOwnerActive()) draftBuffer else null
         _reasoningDraft.value = if (isOwnerActive()) reasoningBuffer else null
+    }
+
+    /* ------------------------------ W-17 定时任务 ------------------------------ */
+
+    fun refreshWorkflows() {
+        _workflows.value = workflowStore.list()
+    }
+
+    fun setWorkflowEnabled(id: String, enabled: Boolean) {
+        workflowStore.setEnabled(id, enabled)
+        refreshWorkflows()
+    }
+
+    fun deleteWorkflow(id: String) {
+        workflowStore.delete(id)
+        refreshWorkflows()
+        AgentLogger.i("Workflow", "已删除定时任务 $id")
+    }
+
+    /**
+     * 立即运行一个定时任务：把它的 prompt 作为一次对话输入发送。
+     *
+     * 为什么走前台对话而不是后台执行：Agent 需要无障碍/截图/前台应用，后台跑不可信；
+     * 前台执行用户还能看到每一步、随时停止（见 WorkflowNotifier 的说明）。
+     */
+    fun runWorkflowNow(id: String) {
+        val wf = workflowStore.get(id) ?: return
+        if (isRunning.value) {
+            AgentLogger.w("Workflow", "当前有任务在跑，忽略立即运行请求")
+            return
+        }
+        workflowStore.markRun(id, System.currentTimeMillis(), "已在前台执行")
+        refreshWorkflows()
+        input.value = wf.prompt
+        send()
+    }
+
+    /**
+     * 处理「点通知进入 App」携带的任务 id（MainActivity 调用）。
+     *
+     * 只在 App 启动/收到新 Intent 时触发一次；执行后清除，避免旋转屏幕重复跑。
+     */
+    fun consumeWorkflowIntent(id: String?) {
+        if (id.isNullOrBlank()) return
+        AgentLogger.i("Workflow", "从通知进入，准备执行 $id")
+        runWorkflowNow(id)
     }
 
     /** 待回答的用户提问（W-14）：非空时聊天页显示选择卡片。 */

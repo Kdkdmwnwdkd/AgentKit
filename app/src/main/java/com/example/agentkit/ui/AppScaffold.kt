@@ -51,6 +51,7 @@ import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Extension
+import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Palette
 import androidx.compose.material.icons.outlined.Settings
@@ -128,6 +129,7 @@ enum class AppDest(
     BUILD("build", "构建", "构建", Icons.Outlined.Build),
     PERMISSIONS("permissions", "权限中心", "权限中心", Icons.Outlined.Shield),
     SKILLS("skills", "技能中心", "技能中心", Icons.Outlined.Extension),
+    WORKFLOW("workflow", "定时任务", "定时任务", Icons.Outlined.Schedule),
     LOGS("logs", "运行日志", "运行日志", Icons.Outlined.Description),
     MEMORY("memory", "记忆库", "记忆库", Icons.Outlined.Storage),
     PROMPTS("prompts", "提示词库", "提示词库", Icons.Outlined.AutoAwesome),
@@ -146,7 +148,7 @@ enum class AppDest(
  * 其余入口见设置页（[AppDest] 路由一个不少）。
  */
 private val PrimaryGroup = listOf(
-    AppDest.CHAT, AppDest.MODEL, AppDest.CONSOLE, AppDest.TERMINAL
+    AppDest.CHAT, AppDest.MODEL, AppDest.CONSOLE, AppDest.TERMINAL, AppDest.WORKFLOW
 )
 
 /**
@@ -259,6 +261,7 @@ fun AppScaffold(
             }
 
             AppDest.MEMORY -> vm.refreshMemories()
+            AppDest.WORKFLOW -> vm.refreshWorkflows()
             else -> Unit
         }
     }
@@ -593,6 +596,7 @@ private fun ScreenHost(
         AppDest.BUILD -> BuildScreen()
         AppDest.PERMISSIONS -> PermissionsScreen(vm)
         AppDest.SKILLS -> SkillsScreen(vm)
+        AppDest.WORKFLOW -> WorkflowScreen(vm)
         AppDest.LOGS -> LogsScreen(vm)
         AppDest.MEMORY -> MemoryScreen(vm)
         AppDest.PROMPTS -> PromptLibraryScreen(vm)

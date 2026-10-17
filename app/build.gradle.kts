@@ -70,6 +70,8 @@ android {
 dependencies {
     // W-13 B 方案：Shizuku 提权通道（用户需安装 Shizuku 并授权一次）
     implementation("dev.rikka.shizuku:api:13.1.5")
+    // W-17：定时任务调度（WorkManager 周期最长 15 分钟，与我们的最小间隔一致）
+    implementation("androidx.work:work-runtime-ktx:2.9.1")
     implementation("dev.rikka.shizuku:provider:13.1.5")
     val composeBom = platform("androidx.compose:compose-bom:2024.09.00")
     implementation(composeBom)
