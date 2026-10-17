@@ -100,3 +100,15 @@ mcporter call github.push_files owner=Kdkdmwnwdkd repo=AgentKit branch=main \
 **结论修正**：沙箱 shell 的 `git push` 并非永远不可用——2026-10-17 实测多次成功，
 但极不稳定（单次 TCP 连接超时可达 135 秒，常需 2~6 次重试；大文件下载会中途断）。
 **优先用 MCP 写通道，`git push` 只作兜底。**
+
+### 通道分工（2026-10-17 二次实测）
+
+| 操作 | 推荐通道 | 实测 |
+|---|---|---|
+| 写（提交/多文件） | `mcporter call github.push_files ...` | **3 秒完成一次提交**（commit `3f7c5aa`），零重试 |
+| 读单文件 | `mcporter call github.get_file_contents ...` | 秒回（带 SHA） |
+| 拉取/同步本地 | `git fetch https://gh-proxy.com/https://github.com/<owner>/<repo>.git main` | **秒回**（`ls-remote` 同一通道） |
+| 写（git push 经镜像） | ❌ | `remote: No anonymous write access`——镜像不转发鉴权头 |
+| 写（git push 直连） | 兜底 | 可用但常 135 秒超时，需 2~6 次重试 |
+
+同步本地跟踪引用的无网做法：`git update-ref refs/remotes/origin/main <sha>`。
