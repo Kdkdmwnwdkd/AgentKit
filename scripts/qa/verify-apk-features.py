@@ -64,6 +64,12 @@ POOL_GROUPS = {
         ("UiScreenshotTool 类型描述符", "Lcom/example/agentkit/automation/UiScreenshotTool;"),
         ("AgentAccessibilityService 类型描述符", "Lcom/example/agentkit/automation/AgentAccessibilityService;"),
     ],
+    "W13 调试通道 B（pool 池条目精确匹配）": [
+        ("ShizukuShell 类描述符", "Lcom/example/agentkit/automation/shizuku/ShizukuShell;"),
+        ("提权路由纯函数", "shouldUsePrivilegedShell"),
+        ("提权结果类型", "Lcom/example/agentkit/tools/PrivilegedShellOut;"),
+        ("调试通道入口动作", "handleShizukuAction"),
+    ],
     "W10 上下文预算治理（pool 池条目精确匹配）": [
         ("ContextBudget 类描述符", "Lcom/example/agentkit/core/agent/ContextBudget;"),
         ("请求视图构建方法", "buildRequestMessages"),
@@ -88,6 +94,11 @@ BYTES_GROUPS = {
     "W9-A 文案（描述 / 失败指引，长常量片段，bytes 子串）": [
         ("描述：已授予无障碍即可使用", "已授予无障碍权限即可使用"),
         ("指引：明确无需屏幕捕捉权限", "无需屏幕捕捉权限"),
+    ],
+    "W13 权限页文案（bytes 子串）": [
+        ("调试通道授权项标题", "调试通道（Shizuku）"),
+        ("未运行引导", "通过无线调试启动"),
+        ("后台执行说明", "shell uid 2000"),
     ],
     "W10 图片裁剪文案（bytes 子串）": [
         ("旧图省略标记", "早前截图已从上下文省略"),

@@ -69,3 +69,11 @@ stdout 帧跨两个 WRTE 拼接。
 
 **行为**：Shizuku 就绪时 `shell_run` 默认走 uid 2000（不跳屏、可 `settings put` / `pm` / 文件操作）；
 未配置时静默回落原路径（不改变现有体验）。系统拒绝仍显式报 `permission_denied`，绝不假装成功。
+
+### 验收（2026-10-17）
+
+- 第三道门：CI run 170（`f07bf3f`）**Build debug APK success**（Shizuku API/反射/Compose 全部编译通过）。
+- 第四道门：APK dex 反验 **全绿**（29 项判据 + 7 项反证）。对象：run 170 产物
+  （28,272,297 B，sha256 `44b5ce20…2cfcb`）。
+  新增判据：`ShizukuShell` 类描述符 / `shouldUsePrivilegedShell` / `PrivilegedShellOut` /
+  `handleShizukuAction` / 「调试通道（Shizuku）」/「通过无线调试启动」/「shell uid 2000」。
