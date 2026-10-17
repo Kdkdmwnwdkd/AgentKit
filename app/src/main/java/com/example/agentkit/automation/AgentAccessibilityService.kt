@@ -5,17 +5,24 @@ import android.accessibilityservice.GestureDescription
 import android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_BACK
 import android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_HOME
 import android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_RECENTS
+import android.graphics.Bitmap
 import android.graphics.Path
 import android.graphics.Rect
+import android.os.Build
 import android.os.Bundle
+import android.view.Display
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import com.example.agentkit.core.AgentLogger
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import java.text.Normalizer
+import java.util.concurrent.Executor
 
 /**
  * 纯函数（W-7 P1-1）：当前这次 UI 树抓取是否「陈旧到值得再等一轮」。
@@ -44,6 +51,27 @@ internal fun shouldRetryForFreshWindow(
     if (elapsedSinceSwitchMs >= maxWaitMs) return false
     return rootPackage == null || rootPackage == selfPackage
 }
+
+/**
+ * W-9：无障碍截屏所需的最低 API 级——`AccessibilityService.takeScreenshot`
+ * 自 API 30（Android 11）起提供。
+ */
+internal const val A11Y_SCREENSHOT_MIN_API = 30
+
+/**
+ * 纯函数（W-9）：本次截图是否应走**无障碍 takeScreenshot 主路径**。
+ * 零 Android 依赖（API 级由调用方传入 `Build.VERSION.SDK_INT`，便于 harness 真值表断言）。
+ *
+ * 判据：无障碍服务就绪（用户已在系统设置里授予读屏/无障碍——比 MediaProjection
+ * 更强的授权，截图授权天然蕴含其中）且 API ≥ [A11Y_SCREENSHOT_MIN_API]。
+ * 否则回落 MediaProjection 兜底路径（需用户手动开屏幕捕获授权 + 授权链耗时）。
+ *
+ * 参照策略：Operit 截图三级链（Shizuku shell screencap → 无障碍 takeScreenshot →
+ * MediaProjection 兜底）的**中间级**——本项目已有无障碍服务，直接取其第二级为主路径，
+ * 净室重写，不引其代码。
+ */
+internal fun shouldPreferA11yScreenshot(a11yReady: Boolean, apiLevel: Int): Boolean =
+    a11yReady && apiLevel >= A11Y_SCREENSHOT_MIN_API
 
 /**
  * UI 节点的**纯数据镜像**（脱离 [AccessibilityNodeInfo]，可在纯 JVM 下断言）。
@@ -434,6 +462,45 @@ class AgentAccessibilityService : AccessibilityService() {
             // 需要等待：先回收本次拿到的根（可能是 AgentKit 自己的陈旧窗口），再睡一轮
             root?.recycle()
             delay(pollMs.coerceAtLeast(1L))
+        }
+    }
+
+    /**
+     * W-9：经无障碍服务截屏（API 30+ `AccessibilityService.takeScreenshot`）——
+     * **ui_screenshot 的主路径**：用户在系统设置里开过无障碍（读屏授权）即可截图，
+     * 无需 MediaProjection 授权链、无需屏幕捕获前台服务启动等待。
+     *
+     * 参照 Operit 截图三级链的中间级（净室重写，不引其代码）：主路径失败/不支持时
+     * 由调用方（[com.example.agentkit.automation.UiScreenshotTool]）回落 MediaProjection 兜底。
+     *
+     * 在主线程调用（与 rootInActiveWindow 同线程稳定性考虑）；挂起函数——系统回调经
+     * suspendCancellableCoroutine 转挂起，协程取消后回调安全失效（isActive 守卫）。
+     *
+     * @return 截屏位图；API < 30 / 调用抛异常 / 系统回调 onFailure → null（调用方兜底）
+     */
+    suspend fun takeScreenshotViaA11y(): Bitmap? = withContext(Dispatchers.Main) {
+        if (Build.VERSION.SDK_INT < A11Y_SCREENSHOT_MIN_API) return@withContext null
+        suspendCancellableCoroutine { cont ->
+            try {
+                takeScreenshot(
+                    Display.DEFAULT_DISPLAY,
+                    Executor { command -> command.run() },
+                    object : AccessibilityService.TakeScreenshotCallback {
+                        override fun onSuccess(result: AccessibilityService.ScreenshotResult) {
+                            if (cont.isActive) cont.resume(result.bitmap, onCancellation = {})
+                        }
+
+                        override fun onFailure(errorCode: Int) {
+                            AgentLogger.w("ScreenCapture", "a11y takeScreenshot onFailure: $errorCode")
+                            if (cont.isActive) cont.resume(null, onCancellation = {})
+                        }
+                    }
+                )
+            } catch (t: Throwable) {
+                // 厂商 ROM 可能在不支持的设备上抛异常——降级为 null 让调用方走兜底，绝不逃逸
+                AgentLogger.w("ScreenCapture", "a11y takeScreenshot 抛异常: ${t.message}")
+                if (cont.isActive) cont.resume(null, onCancellation = {})
+            }
         }
     }
 

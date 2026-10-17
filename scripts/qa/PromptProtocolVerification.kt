@@ -17,6 +17,8 @@
  *   4. ui_tap 描述强调从 ui_tree 的 bounds 取中心坐标；
  *   5. shell_run 描述/系统提示含「不能操控界面」语义；
  *   6. ui_screenshot 失败指引含「权限中心 / 去开启」可行动作。
+ *   7. W-9：截图/ui_tree 分工段（ui_tree 定位操作、ui_screenshot 看视觉、禁每步截图）；
+ *      ui_screenshot 描述改为「无障碍优先 + 兜底才需屏幕捕获」，失败指引补无障碍通道一句。
  *
  * 仓库无测试源集、离线缓存无 JUnit，沿用纯 main() + 手写断言（形态学
  * scripts/qa/FallbackVerification.kt）。运行方式见
@@ -108,6 +110,13 @@ private fun testInterfaceProtocolSection() {
         assertContains("重新 ui_tree", p, "重新 ui_tree")
     }
 
+    check("W-9 截图/ui_tree 分工：ui_tree 拿结构与坐标，ui_screenshot 看视觉内容，不每步截图") {
+        assertContains("分工段", p, "工具分工")
+        assertContains("ui_tree 定位操作", p, "ui_tree 拿界面结构与坐标")
+        assertContains("截图看视觉", p, "ui_screenshot 用于「看见」视觉内容")
+        assertContains("禁每步截图", p, "不要每个步骤都截图")
+    }
+
     check("不要过早放弃：禁「请你手动核对」，至少自纠两轮") {
         assertContains("不要过早放弃", p, "不要过早放弃")
         assertContains("请你手动核对", p, "请你手动核对")
@@ -179,9 +188,14 @@ private fun testToolHints() {
         assertContains("屏幕捕获", SCREEN_CAPTURE_OFF_GUIDANCE, "屏幕捕获")
     }
 
-    check("ui_screenshot 工具描述仍说明需先开启屏幕捕获（引用一致性）") {
+    check("ui_screenshot 失败指引补一句无障碍通道可用（W-9：主路径可用时别让用户开捕获）") {
+        assertContains("无障碍通道", SCREEN_CAPTURE_OFF_GUIDANCE, "无障碍通道")
+    }
+
+    check("ui_screenshot 描述：无障碍优先 + 兜底才需屏幕捕获（W-9 双通道，引用一致性）") {
         val d = UiScreenshotTool(File("/tmp/prompt-verify")).description
-        assertContains("屏幕捕获", d, "屏幕捕获")
+        assertContains("无障碍优先", d, "优先走无障碍通道")
+        assertContains("兜底需捕获", d, "屏幕捕获")
     }
 }
 

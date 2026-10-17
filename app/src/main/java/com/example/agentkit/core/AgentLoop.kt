@@ -11,7 +11,8 @@ import com.example.agentkit.core.agent.RealAgentLoop
  * （08:27-08:28）暴露的策略错误：`ui_click` 失败后模型转用 `shell_run`（dumpsys /
  * am start / settings）绕路操控界面，而本机 user shell 无对应权限，必然失败，
  * 最终任务失败并放弃、把活推回用户。协议段把「唯一可行通道（无障碍 ui_*）」、
- * 「禁止 shell 操控界面」、失败自纠三步、重读/去重 ui_tree、禁止过早放弃
+ * 「禁止 shell 操控界面」、失败自纠三步、重读/去重 ui_tree、截图与 ui_tree 的
+ * 分工（W-9：小模型曾每步都截图，烧 token 又慢）、禁止过早放弃
  * 逐条写死，供大小模型共同遵守。
  *
  * 预算约束：本常量总长须 ≤ [SYSTEM_PROMPT_MAX_CHARS]（QA harness 断言），
@@ -27,6 +28,7 @@ const val DEFAULT_SYSTEM_PROMPT = """你是一个运行在 Android 设备上的�
 shell_run 只用于文件读写、命令执行、查看本机信息；要「已安装应用列表」用 app_list，要启动应用用 app_launch。
 ui_click 失败就自纠：① 看返回的候选列表，用最接近的候选重试一次；② 仍失败改用 ui_tap 按 ui_tree 的 bounds 中心坐标点击；③ 坐标也失败才向用户求助。
 每次操作后界面已变，必须重新 ui_tree；同一界面内容未变时不要重复 ui_tree。
+工具分工：ui_tree 拿界面结构与坐标（操作前必读），ui_screenshot 用于「看见」视觉内容（图片、验证码、动画，或 ui_tree 描述不清的区域）；优先 ui_tree，需要看画面时再截图，不要每个步骤都截图。
 不要过早放弃：任务未完成前不要输出「请你手动核对」这类把活推回用户的话，至少按上面规则自纠两轮。"""
 
 /** [DEFAULT_SYSTEM_PROMPT] 的长度上限（防提示膨胀失控；QA harness 断言用）。 */
