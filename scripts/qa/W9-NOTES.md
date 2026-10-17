@@ -27,15 +27,17 @@
 | H1 | `scripts/qa/W9ScreenshotVerification.kt`（新） | 路由真值表（4×3 全组合 + 边界 API=30 ≥ 语义）+ 文案一致性（描述/指引/分工段） | 仓库 harness（JVM 直跑，不加载 Android 类） |
 | H2 | `scripts/qa/PromptProtocolVerification.kt` | 补 W-9 分工段断言；截图描述断言改「无障碍优先」；指引断言加「无障碍通道」 | 防提示词/文案回退 |
 | H3 | `scripts/qa/run-w9-screenshot-verification.sh`（新） | H1 的运行脚本（离线，Gradle 缓存内构件） | 与既有 harness 脚本同形态 |
+| H4 | `scripts/qa/verify-w9-apk.py` + `run-w9-apk-verification.sh`（新） | 第四道门：dex 字符串池解析 + 双模式判据 + 反证 | 反验工具自身也要防假阳性/假失败（坑 #6） |
 
-## 沙箱二进制验证（第一道门，17/17 PASS）
+## 沙箱二进制验证（第一道门，18/18 PASS）
 
 `/tmp/w9-check`（kotlinc 1.9.25 + 保真 Android stub + awk 抽取真实提示词常量）：
 
 - **A 路由真值表**（4 项）：常量=30；就绪×API30/31/34→主路径；就绪×API29/28/26→兜底；
   未就绪×任意 API→兜底。
-- **B `takeScreenshotViaA11y` 四态**（真实服务源码 + 可编程 Java 桩）：
-  onSuccess→位图；onFailure→null；takeScreenshot 抛异常→null（厂商 ROM 双保险）；
+- **B `takeScreenshotViaA11y` 五态**（真实服务源码 + 可编程 Java 桩）：
+  onSuccess→位图；`wrapHardwareBuffer` 返回 null→null（转换失败落兜底，绝不逃逸）；
+  onFailure→null；takeScreenshot 抛异常→null（厂商 ROM 双保险）；
   API<30→null 且不触达 takeScreenshot（fail-fast，success 模式下误调会露馅）。
 - **C `UiScreenshotTool.execute` 端到端六场景**：① a11y 就绪+API34+成功→ok/via=a11y；
   ② onFailure+捕获未开→capture_not_enabled（指引含无障碍通道）；③ API29→直接兜底；
@@ -53,9 +55,15 @@
 | 3 | `downscale` 丢 `createScaledBitmap` 首参 `src`（四参笔误） | 沙箱编译 | 补回 `Bitmap.createScaledBitmap(src, w, h, filter)` |
 | 4 | **`ScreenshotResult` 没有 `getBitmap()`**——真实 API 只有 `getHardwareBuffer()` / `getColorSpace()` / `getTimestamp()`（API 30；官方 reference + CI `compileDebugKotlin` 实证 `Unresolved reference: bitmap`）。沙箱桩当初按臆想字段建，没拦住 | **CI 编译门** | 新增私有助手 `toSoftwareBitmap()`：`wrapHardwareBuffer(buffer, colorSpace)` → `copy(ARGB_8888, false)`，finally `buffer.close()`；转换失败回落 null 走兜底 |
 | 5 | **无障碍配置缺 `android:canTakeScreenshot="true"`**——无此能力声明时 `takeScreenshot` 运行时 onFailure（CI 编译门查不出，纯运行时坑） | 代码审查（参照 Operit 三级链文档） | `agent_accessibility_config.xml` 补上 |
+| 6 | **反验脚本 needle 笔误 ×3**（第四道门首轮 3 项 FAIL，实为脚本错不是包错）：① needle 写成 `"a11y"` / `"media_projection"` 带外侧引号——dex 字符串池存的是裸字面量（引号是 Kotlin 源码语法，不进池）；② meta 模板 needle 写成 `","type":"png","via":"` 多一个前引号——`$h` 与 `$via` 间的静态段实为 `,"type":"png","via":"`（21 字符，开头是逗号，池条目长度前缀 `\x15` 实证） | **第四道门反验自身** | 重写 `scripts/qa/verify-w9-apk.py`：解析 dex 字符串池（string_ids → string_data_item，MUTF-8 还原 `\xC0\x80`），判据分两种模式如实标注——**池条目精确匹配**（方法名/内联 const/模板静态段/类型描述符，防 `a11y` 命中 `$a11yServicesEnabled$delegate` 这类标识符子串假阳性）+ **字节子串**（长常量片段：文案/提示词分段） |
 
 教训：沙箱桩必须按**真实 API 文档**建模（本次 ScreenshotResult 臆造了 `bitmap` 字段），
 桩与真实 API 的偏差要靠 CI 编译门兜底——两道门各有覆盖盲区，缺一不可。
+
+教训 2（第四道门）：反验 needle 必须按 **dex 字符串池的真实形态**写——池里是裸字面量
+（无外侧引号）、模板串按 `${}` 切分（段边界容易多数一个引号）；且「常量本体」用池条目
+精确匹配、「长常量片段」用字节子串，两种模式不可混用（前者防标识符子串假阳性，
+后者防把片段当整常量匹配而假失败）。
 
 ### 沙箱环境两个非显然点（复跑时须知）
 
@@ -69,14 +77,19 @@
 
 ## 验收
 
-- [x] 第一道门：沙箱二进制 17/17（含真实 `AgentAccessibilityService` /
+- [x] 第一道门：沙箱二进制 18/18（含真实 `AgentAccessibilityService` /
       `UiScreenshotTool` / `AutomationBridge` 源码直编 + 真实提示词 awk 抽取）。
 - [x] 第二道门：仓库 harness `W9ScreenshotVerification` 9/9（对沙箱产物 +
       `-Xfriend-paths` 跑 internal 访问；本机无 Android SDK，`CLASSES` 由沙箱 out 代替）。
 - [x] 第三道门：push + CI（首轮 CI 抓出坑 #4，修复后二轮）。
-- [ ] 第四道门：APK dex 反验（特征：`takeScreenshotViaA11y` /
-      `shouldPreferA11yScreenshot` / `VIA` 常量 "a11y" / "media_projection" /
-      新提示词分工段子串）。
+- [x] 第四道门：APK dex 反验全绿。对象：CI run 148（head_sha `d17dd1a`）产出的
+      `app-debug.apk`（28,255,873 B，sha256 `e6b7285c…71a1d`，gh-proxy 下载）。
+      工具 `scripts/qa/verify-w9-apk.py`（+ 运行器 `run-w9-apk-verification.sh`）：
+      解析 16 个 dex 的 210,385 个字符串池条目，7 项池条目精确匹配
+      （`takeScreenshotViaA11y` / `shouldPreferA11yScreenshot` / `a11y` /
+      `media_projection` / meta 模板静态段 `,"type":"png","via":"` / 两个类描述符）
+      + 5 项文案/提示词字节子串 + 反证（旧描述整串消失），**14 项判据 + 反证全部 PASS**。
+      首轮 3 项 FAIL 系脚本 needle 笔误（坑 #6），dex 实证后重写脚本重跑转绿。
 - [ ] 真机复测（见交付给用户的复测指南）。
 
 ## 真机复测要点
