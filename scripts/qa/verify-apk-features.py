@@ -72,6 +72,7 @@ POOL_GROUPS = {
         ("通道预算函数", "budgetForProvider"),
         ("图片裁剪函数", "pruneImages"),
         ("预算压缩函数", "fitToBudget"),
+        ("W11 结果上限函数", "toolResultLimitChars"),
     ],
 }
 

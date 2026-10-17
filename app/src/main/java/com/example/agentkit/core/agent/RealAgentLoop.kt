@@ -701,7 +701,15 @@ class RealAgentLoop(
      * executorFactory 注入（测试替身）优先级不变，忽略 [reg]。
      */
     private fun toolExecutor(reg: ToolRegistry): ToolExecutor =
-        executorFactory?.invoke() ?: RegistryToolExecutor(reg, failureGuard, approval, hooks)
+        executorFactory?.invoke() ?: RegistryToolExecutor(
+            reg,
+            failureGuard,
+            approval,
+            hooks,
+            // W-11：结果上限与上下文预算对齐——本地 2k 预算下 24k 字符的一条结果
+            // 单条就撑爆 n_ctx，且当前步不可丢，压缩救不回来
+            maxResultChars = ContextBudget.toolResultLimitChars(llmProvider().id, contextBudgetTokens)
+        )
 
     /**
      * 计算本回合的工具暴露面（Phase 2 DoD④，纯委托 [ToolExposurePolicy.exposureFor]）。

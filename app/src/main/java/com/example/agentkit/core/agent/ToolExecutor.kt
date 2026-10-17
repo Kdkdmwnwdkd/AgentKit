@@ -3,6 +3,7 @@ package com.example.agentkit.core.agent
 import com.example.agentkit.core.AgentLogger
 import com.example.agentkit.core.FailureGuard
 import com.example.agentkit.core.GuardVerdict
+import com.example.agentkit.core.MAX_TOOL_RESULT_CHARS
 import com.example.agentkit.core.ToolApproval
 import com.example.agentkit.core.ToolCall
 import com.example.agentkit.core.ToolMessage
@@ -146,7 +147,12 @@ class RegistryToolExecutor(
     private val registry: ToolRegistry,
     private val failureGuard: FailureGuard,
     private val approval: ToolApproval? = null,
-    private val hooks: Hooks = NoopHooks
+    private val hooks: Hooks = NoopHooks,
+    /**
+     * W-11：单条结果字符上限。默认全局 [MAX_TOOL_RESULT_CHARS]；AgentLoop 会按上下文
+     * 预算传入更小值（本地 2k 预算 → 2.4k 字符），否则一条大结果单条就撑爆 n_ctx。
+     */
+    private val maxResultChars: Int = MAX_TOOL_RESULT_CHARS
 ) : BatchToolExecutor {
 
     /** 基础契约入口：duplicateInBatch 缺省 false（单发调用无同批前驱）。 */
@@ -253,7 +259,7 @@ class RegistryToolExecutor(
                 transient = result.isError && isTransientFailureCode(result.code)
             )
             // T02 + T06：统一契约格式化 + 单结果截断（UI 与模型历史共用同一份文本）
-            val text = truncateToolResult(formatToolResult(result))
+            val text = truncateToolResult(formatToolResult(result), maxResultChars)
             AgentLogger.toolResult(call.name, !result.isError, cost, text.take(300))
             ToolCallOutcome.Completed(
                 ToolMessage(call.id, tool.name, call.arguments, text, result.isError, imgUrls),

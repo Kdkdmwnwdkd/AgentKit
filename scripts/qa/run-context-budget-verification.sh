@@ -47,6 +47,7 @@ compile_ctx() {
     out=$("$KOTLINC_BIN" -classpath "$DEPS" -d "$OUT" \
       "$ROOT/app/src/main/java/com/example/agentkit/core/AgentContract.kt" \
       "$ROOT/app/src/main/java/com/example/agentkit/core/ToolResult.kt" \
+      "$ROOT/app/src/main/java/com/example/agentkit/core/ToolLimits.kt" \
       "$ROOT/app/src/main/java/com/example/agentkit/core/agent/ContextBudget.kt" \
       "$ROOT/scripts/qa/ContextBudgetVerification.kt" 2>&1) || true
   else
@@ -57,6 +58,7 @@ compile_ctx() {
       -no-stdlib -no-reflect -classpath "$DEPS" -d "$OUT" \
       "$ROOT/app/src/main/java/com/example/agentkit/core/AgentContract.kt" \
       "$ROOT/app/src/main/java/com/example/agentkit/core/ToolResult.kt" \
+      "$ROOT/app/src/main/java/com/example/agentkit/core/ToolLimits.kt" \
       "$ROOT/app/src/main/java/com/example/agentkit/core/agent/ContextBudget.kt" \
       "$ROOT/scripts/qa/ContextBudgetVerification.kt" 2>&1) || true
   fi

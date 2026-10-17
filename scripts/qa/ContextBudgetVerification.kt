@@ -120,6 +120,18 @@ fun main() {
     check("本地通道配置更小：尊重配置，绝不上调") {
         assertEquals("min", 1_000, ContextBudget.budgetForProvider("local-llama", 1_000))
     }
+    check("W11 单条结果上限：本地 2k 预算 → 2.4k 字符（原来 24k 单条就爆）") {
+        assertEquals("local-limit", 2_400, ContextBudget.toolResultLimitChars("local-llama", 24_000))
+    }
+    check("W11 单条结果上限：云端仍 24k 封顶（行为不变）") {
+        assertEquals("cloud-cap", 24_000, ContextBudget.toolResultLimitChars("openai", 24_000))
+    }
+    check("W11 单条结果上限：云端小预算按 1.2 倍收敛") {
+        assertEquals("cloud-small", 6_000, ContextBudget.toolResultLimitChars("openai", 5_000))
+    }
+    check("W11 单条结果上限：极预算有 1000 字符下限（不截成残句）") {
+        assertEquals("floor", 1_000, ContextBudget.toolResultLimitChars("local-llama", 100))
+    }
 
     println("\n== W10-B 图片裁剪（只留最近 N 张工具截图）==")
     check("4 张工具截图 keepLast=2：前 2 张剥图 + 追加省略标记，后 2 张原样") {

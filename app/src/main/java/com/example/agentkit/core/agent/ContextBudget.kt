@@ -2,6 +2,7 @@ package com.example.agentkit.core.agent
 
 import com.example.agentkit.core.AssistantMessage
 import com.example.agentkit.core.ChatMessage
+import com.example.agentkit.core.MAX_TOOL_RESULT_CHARS
 import com.example.agentkit.core.SystemMessage
 import com.example.agentkit.core.ToolMessage
 import com.example.agentkit.core.UserMessage
@@ -60,6 +61,26 @@ object ContextBudget {
      */
     fun budgetForProvider(providerId: String, configured: Int = DEFAULT_BUDGET_TOKENS): Int =
         if (providerId == LOCAL_LLAMA_PROVIDER_ID) minOf(configured, LOCAL_LLAMA_BUDGET_TOKENS) else configured
+
+    /**
+     * 单条工具结果的字符上限（W-11）：与上下文预算对齐。
+     *
+     * 背景：全局上限 [MAX_TOOL_RESULT_CHARS]=24k 是按「大上下文云端模型」定的。
+     * 在本地 2k 预算下，一条 24k 字符的结果 ≈ 8k~24k token，**单条就超预算**；
+     * 而当前步不可丢（丢了等于没做），压缩也救不回来——请求仍会撑爆 n_ctx。
+     *
+     * 口径：结果字符数 ≤ 预算的 1.2 倍（CJK 约 1 字 1 token；ASCII 约 4 字 1 token，
+     * 给纯英文结果留出余量）；再与全局上限取小，云端行为不变（24k 封顶）。
+     * 下限 1000 字符，避免预算配置极小时把结果截成残句。
+     */
+    fun toolResultLimitChars(
+        providerId: String,
+        budgetTokens: Int = DEFAULT_BUDGET_TOKENS
+    ): Int {
+        val budget = budgetForProvider(providerId, budgetTokens)
+        val byBudget = (budget * 6 / 5).coerceAtLeast(1_000)
+        return minOf(MAX_TOOL_RESULT_CHARS, byBudget)
+    }
 
     /** 默认保留最近几条带图消息的图片（更早的截图剥成文字标记）。 */
     const val DEFAULT_KEEP_IMAGES: Int = 2
