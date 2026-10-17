@@ -60,8 +60,7 @@ POOL_GROUPS = {
     "W9-A 截图双通道（pool 池条目精确匹配）": [
         ("无障碍截屏服务方法名", "takeScreenshotViaA11y"),
         ("路由纯函数名", "canUseA11yScreenshot"),
-        ("通道标记 a11y（meta 模板值）", "a11y"),
-        ("meta 模板含 via 键（静态段，$h 与 $via 之间）", ',"type":"png","via":"'),
+        ("meta 模板含 via=a11y（完整静态段）", ',"type":"png","via":"a11y"}'),
         ("UiScreenshotTool 类型描述符", "Lcom/example/agentkit/automation/UiScreenshotTool;"),
         ("AgentAccessibilityService 类型描述符", "Lcom/example/agentkit/automation/AgentAccessibilityService;"),
     ],
@@ -80,7 +79,9 @@ ABSENT_POOL = [
     ("旧条数压缩方法 maybeCompact 已移除", "maybeCompact"),
     ("屏幕捕获服务已移除", "Lcom/example/agentkit/automation/ScreenCaptureService;"),
     ("屏幕捕获桥已移除", "Lcom/example/agentkit/automation/ScreenshotBridge;"),
-    ("媒体投影通道标记已移除", "media_projection"),
+    ("屏幕捕获清理策略已移除", "ScreenCaptureStartPolicy"),
+    ("屏幕捕获清理追踪已移除", "ScreenCaptureTrace"),
+    ("旧捕获失败码已移除", "capture_not_enabled"),
 ]
 
 BYTES_GROUPS = {
