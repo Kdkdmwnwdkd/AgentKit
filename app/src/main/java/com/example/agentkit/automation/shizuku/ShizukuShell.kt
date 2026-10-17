@@ -62,7 +62,12 @@ object ShizukuShell {
             return ShellOut(-1, "", "Shizuku 未运行或未授权（请先在 Shizuku 内启动并授权本应用）")
         }
         val process = runCatching {
-            Shizuku.newProcess(arrayOf("sh", "-c", command), null, null)
+            // API 13 起 newProcess 为 private（12.x 也被 provider 的传递依赖顶到 13）。
+            // 用反射调用：方法仍存在，只是不可见；这是目前唯一不改用 UserService 的轻量路径。
+            val strArr = Class.forName("[Ljava.lang.String;")
+            val m = Shizuku::class.java.getDeclaredMethod("newProcess", strArr, strArr, String::class.java)
+            m.isAccessible = true
+            m.invoke(null, arrayOf("sh", "-c", command), null, null) as Process
         }.getOrElse {
             return ShellOut(-1, "", "启动 shell 失败：${it.message}")
         }
