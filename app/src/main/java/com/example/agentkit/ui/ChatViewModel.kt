@@ -102,6 +102,11 @@ import com.example.agentkit.core.mcp.McpClient
 import com.example.agentkit.core.mcp.McpServerStore
 import com.example.agentkit.core.mcp.McpToolAdapter
 import com.example.agentkit.tools.AskUserTool
+import com.example.agentkit.tools.WebClickTool
+import com.example.agentkit.tools.WebEvalTool
+import com.example.agentkit.tools.WebOpenTool
+import com.example.agentkit.tools.WebSnapshotTool
+import com.example.agentkit.tools.WebTypeTool
 import com.example.agentkit.tools.PrivilegedShellOut
 import com.example.agentkit.tools.TodoReadTool
 import com.example.agentkit.tools.TodoWriteTool
@@ -629,6 +634,12 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
             )
         )
         register(ShellCloseTool(terminalPool))
+        // W-15：浏览器五件套（真实 WebView，保留登录态、能点能填）
+        register(WebOpenTool())
+        register(WebSnapshotTool())
+        register(WebClickTool())
+        register(WebTypeTool())
+        register(WebEvalTool())
         // W-14：结构化追问 + 任务清单（对齐 RikkaHub ask_user / AiCode todo）
         register(AskUserTool())
         register(TodoWriteTool(todoStore) { _activeConversationId.value })

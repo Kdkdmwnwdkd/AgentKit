@@ -9,6 +9,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.agentkit.browser.BrowserHost
 import com.example.agentkit.ui.AgentKitTheme
 import com.example.agentkit.ui.AppScaffold
 import com.example.agentkit.ui.ChatViewModel
@@ -17,7 +18,15 @@ import com.example.agentkit.ui.ThemeMode
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // W-15：后台 WebView 宿主（无界面），供 web_* 工具操作网页
+        BrowserHost.attach(this)
         setContent { AgentKitApp() }
+    }
+
+    override fun onDestroy() {
+        // 释放 WebView，避免持有 Activity 造成泄漏
+        BrowserHost.release()
+        super.onDestroy()
     }
 }
 
