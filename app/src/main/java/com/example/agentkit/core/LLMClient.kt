@@ -269,7 +269,7 @@ class OpenAIClient(
             throw e
         }
 
-        resp.use { r ->
+        return resp.use { r ->
             if (!r.isSuccessful) {
                 // ⚠️ resp.body?.string() 只能读一次，必须先存变量再使用
                 val errBody = runCatching { r.body?.string() }.getOrDefault("") ?: ""
