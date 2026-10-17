@@ -42,6 +42,25 @@ object ContextBudget {
     /** 默认预算：24k token（覆盖 32k 上下文的常见小模型，留出输出与工具定义余量）。 */
     const val DEFAULT_BUDGET_TOKENS: Int = 24_000
 
+    /**
+     * 本地 llama.cpp 通道的预算上限（2k token）。
+     *
+     * 依据：`LocalLlamaSetting.DEFAULT_N_CTX = 4096`——手机端默认只开 4k 上下文，
+     * 其中系统提示（含工具片段/记忆摘要）与工具定义已占约 2k，输出再留几百；
+     * 若沿用 24k 预算，压缩形同虚设，请求会直接被 llama.cpp 截断或报错。
+     */
+    const val LOCAL_LLAMA_BUDGET_TOKENS: Int = 2_000
+
+    /** 本地通道的 provider id（与 `ToolExposurePolicy` 同一标识）。 */
+    const val LOCAL_LLAMA_PROVIDER_ID: String = "local-llama"
+
+    /**
+     * 按通道取实际预算：本地小模型取 [LOCAL_LLAMA_BUDGET_TOKENS] 与配置值的较小者
+     * （配置更小则尊重配置，绝不上调）；云端模型直接用配置值。
+     */
+    fun budgetForProvider(providerId: String, configured: Int = DEFAULT_BUDGET_TOKENS): Int =
+        if (providerId == LOCAL_LLAMA_PROVIDER_ID) minOf(configured, LOCAL_LLAMA_BUDGET_TOKENS) else configured
+
     /** 默认保留最近几条带图消息的图片（更早的截图剥成文字标记）。 */
     const val DEFAULT_KEEP_IMAGES: Int = 2
 

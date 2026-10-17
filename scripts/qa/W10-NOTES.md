@@ -19,10 +19,10 @@
 
 | # | 文件 | 改动 |
 |---|------|------|
-| A1 | `core/agent/ContextBudget.kt`（新，纯 JVM） | `estimateTokens`（CJK 1 字≈1 tok / ASCII 4 字≈1 tok）；`messageTokens`（图片按张 900 tok，不按 base64 长度）；`pruneImages`（只留最近 N 张工具截图，首条用户消息的图不裁）；`fitToBudget`（按「完整步」整组丢，保留 System / 任务锚点 / 末段 / 最后一个工具步；`tool_call↔tool` 配对天然不破） |
+| A1 | `core/agent/ContextBudget.kt`（新，纯 JVM） | `estimateTokens`（CJK 1 字≈1 tok / ASCII 4 字≈1 tok）；`messageTokens`（图片按张 900 tok，不按 base64 长度）；`pruneImages`（只留最近 N 张工具截图，首条用户消息的图不裁）；`fitToBudget`（按「完整步」整组丢，保留 System / 任务锚点 / 末段 / 最后一个工具步；`tool_call↔tool` 配对天然不破）；`budgetForProvider`（本地 llama 通道压到 2k——`n_ctx` 默认 4096，不能按云端 24k 发） |
 | A2 | `core/agent/RealAgentLoop.kt` | 新增 `contextBudgetTokens`（默认 24k）/`keepRecentImages`（默认 2）；每轮请求前 `buildRequestMessages()`：先剥旧图再按预算压；**不再就地 `maybeCompact`**（UI/落盘历史保持完整）；`maxHistoryMessages` 转为条数硬上限继续生效 |
 | A3 | `core/AgentLoop.kt`（适配层） | 透传两个新参数，默认值与实现同源（`ContextBudget` 常量） |
-| H1 | `scripts/qa/ContextBudgetVerification.kt`（新） | 19 条断言：估算口径 5 / 图片裁剪 3 / 预算压缩 11 |
+| H1 | `scripts/qa/ContextBudgetVerification.kt`（新） | 22 条断言：估算口径 5 / 通道预算 3 / 图片裁剪 3 / 预算压缩 11 |
 | H2 | `scripts/qa/run-context-budget-verification.sh`（新） | 离线运行器（Gradle 缓存优先，沙箱回落本机 kotlinc + `/tmp/w7-jars`） |
 
 ## 关键设计决策
@@ -34,12 +34,14 @@
 - **钉住最后一个工具步**：若末尾跟着最终文本，`lastIndex` 指向文本段，当前步会变成
   可丢的中间段——harness 抓出后补钉（预算极紧时也不能把「刚做完这一步」的证据删掉）。
 - **图片单独计价**：10 万字符 base64 只算 900 tok；按字符算会高估约 100 倍。
+- **本地通道单独降额**：`LocalLlamaSetting.DEFAULT_N_CTX = 4096`，系统提示 + 工具定义已占约 2k；
+  `budgetForProvider("local-llama")` 压到 2k（配置更小则尊重配置），否则压缩形同虚设。
 
 ## 验证
 
 - 第一道门（沙箱二进制编译）：`kotlinc` 编译 `AgentContract.kt` + `ToolResult.kt` +
   `ContextBudget.kt` + harness，0 error（`run-context-budget-verification.sh` 的 [1/2]）。
-- 第二道门（harness 断言）：**19/19 PASS**（估算口径 5 / 图片裁剪 3 / 预算压缩 11）。
+- 第二道门（harness 断言）：**22/22 PASS**（估算口径 5 / 通道预算 3 / 图片裁剪 3 / 预算压缩 11）。
 - 第三道门：push + CI `assembleDebug`（编译门，验证 `RealAgentLoop` / 适配层接线）。
 - 第四道门：APK dex 反验（特征：`ContextBudget` 类描述符、`buildRequestMessages`
   方法名、`早前截图已从上下文省略` 文案、默认预算 24000 常量）。

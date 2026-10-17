@@ -773,10 +773,12 @@ class RealAgentLoop(
      * 无超限时 [ContextBudget] 原样返回入参（零分配）。
      */
     private fun buildRequestMessages(messages: List<ChatMessage>): List<ChatMessage> {
+        // 本地 llama.cpp 默认 n_ctx=4096，不能用云端预算——按通道自适应（见 ContextBudget）
+        val budget = ContextBudget.budgetForProvider(llmProvider().id, contextBudgetTokens)
         val pruned = ContextBudget.pruneImages(messages, keepLast = keepRecentImages)
         val fitted = ContextBudget.fitToBudget(
             pruned,
-            budgetTokens = contextBudgetTokens,
+            budgetTokens = budget,
             maxMessages = maxHistoryMessages
         )
         if (fitted.size != pruned.size || pruned.size != messages.size) {
@@ -784,7 +786,7 @@ class RealAgentLoop(
                 "ContextBudget",
                 "请求视图：${messages.size} 条 / 估算 ${ContextBudget.totalTokens(messages)} tok" +
                     " → ${fitted.size} 条 / 估算 ${ContextBudget.totalTokens(fitted)} tok" +
-                    "（预算 $contextBudgetTokens tok）"
+                    "（预算 $budget tok）"
             )
         }
         return fitted

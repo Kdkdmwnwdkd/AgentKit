@@ -111,6 +111,15 @@ fun main() {
         val msgs = listOf<ChatMessage>(SystemMessage("提示"), UserMessage("你好"))
         assertEquals("sum", ContextBudget.messageTokens(msgs[0]) + ContextBudget.messageTokens(msgs[1]), ContextBudget.totalTokens(msgs))
     }
+    check("本地 llama 通道：预算压到 2k（n_ctx 默认 4096，不能按云端 24k 发）") {
+        assertEquals("local", ContextBudget.LOCAL_LLAMA_BUDGET_TOKENS, ContextBudget.budgetForProvider("local-llama", 24_000))
+    }
+    check("云端通道：预算原样（不动用户配置）") {
+        assertEquals("cloud", 24_000, ContextBudget.budgetForProvider("openai", 24_000))
+    }
+    check("本地通道配置更小：尊重配置，绝不上调") {
+        assertEquals("min", 1_000, ContextBudget.budgetForProvider("local-llama", 1_000))
+    }
 
     println("\n== W10-B 图片裁剪（只留最近 N 张工具截图）==")
     check("4 张工具截图 keepLast=2：前 2 张剥图 + 追加省略标记，后 2 张原样") {
