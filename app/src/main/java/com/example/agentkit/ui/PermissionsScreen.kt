@@ -20,6 +20,9 @@ import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Notifications
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Shield
+import androidx.compose.material.icons.outlined.Terminal
+import com.example.agentkit.automation.shizuku.ShizukuShell
+import rikka.shizuku.Shizuku
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -51,6 +54,7 @@ fun PermissionsScreen(vm: ChatViewModel) {
     val connected by vm.serviceConnected.collectAsStateWithLifecycle()
     val notificationGranted by vm.notificationGranted.collectAsStateWithLifecycle()
     val usageGranted by vm.usageGranted.collectAsStateWithLifecycle()
+    val shizukuStatus by vm.shizukuStatus.collectAsStateWithLifecycle()
     val ctx = LocalContext.current
 
     val pendingGrants = pendingGrantCount(connected, notificationGranted, usageGranted)
@@ -63,6 +67,21 @@ fun PermissionsScreen(vm: ChatViewModel) {
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    // 调试通道授权回调：用户在 Shizuku 弹窗点「允许」后立刻刷新状态（不等下次进页面）
+    DisposableEffect(Unit) {
+        val listener = Shizuku.OnRequestPermissionResultListener { _, grantResult ->
+            if (grantResult == android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                vm.refreshShizukuStatus()
+            }
+        }
+        val registered = runCatching {
+            Shizuku.addRequestPermissionResultListener(listener)
+        }.isSuccess
+        onDispose {
+            if (registered) runCatching { Shizuku.removeRequestPermissionResultListener(listener) }
+        }
     }
 
     val grants = listOf(
@@ -86,6 +105,20 @@ fun PermissionsScreen(vm: ChatViewModel) {
                         .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 )
             }
+        ),
+        GrantItem(
+            title = "调试通道（Shizuku）",
+            granted = shizukuStatus == ShizukuShell.Status.READY,
+            icon = Icons.Outlined.Terminal,
+            grantedHint = "已就绪：Agent 可在后台执行文件清理、停应用、改系统设置（shell uid 2000），不跳屏",
+            missingHint = when (shizukuStatus) {
+                ShizukuShell.Status.NOT_RUNNING ->
+                    "未运行：先安装并打开 Shizuku，在其中点「通过无线调试启动」，再回来授权（可选增强项）"
+                ShizukuShell.Status.NO_PERMISSION ->
+                    "未授权：点「去授权」，在 Shizuku 弹窗里选「允许」，之后后台命令即可用"
+                ShizukuShell.Status.READY -> ""
+            },
+            onOpen = { vm.handleShizukuAction(ctx) }
         ),
         GrantItem(
             title = "使用情况访问",
@@ -130,9 +163,9 @@ fun PermissionsScreen(vm: ChatViewModel) {
                 )
                 Spacer(Modifier.height(AgentSpacing.space3))
                 Text(
-                    text = "共三项能力：无障碍服务、通知访问、使用情况访问。" +
-                        "缺项已置顶排列，点「去开启」会跳转对应的系统设置页，" +
-                        "授予后回到本页即自动刷新。",
+                    text = "基础能力三项：无障碍服务、通知访问、使用情况访问；另有一项可选增强：" +
+                        "调试通道（Shizuku，提供后台 shell 权限）。" +
+                        "缺项已置顶排列，点「去开启」会跳转对应的设置页，授予后回到本页即自动刷新。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -156,8 +189,8 @@ fun PermissionsScreen(vm: ChatViewModel) {
                 AkSectionCard(
                     title = "能力就绪度",
                     icon = Icons.Outlined.Info,
-                    description = "Agent 执行某类动作时会自动选择可用路径（如「跑 shell 命令」：proot 容器 → 本机 " +
-                        "user shell）。这里一次说清当前会走哪条路、缺什么、你需要做什么，不用逐条工具试。"
+                    description = "Agent 执行某类动作时会自动选择可用路径（如「跑 shell 命令」：调试通道 → " +
+                        "proot 容器 → 本机 user shell）。这里一次说清当前会走哪条路、缺什么、你需要做什么，不用逐条工具试。"
                 ) {
                     plans.forEachIndexed { index, plan ->
                         if (index > 0) {
@@ -177,6 +210,8 @@ fun PermissionsScreen(vm: ChatViewModel) {
                     "不需要额外的屏幕录制授权。\n" +
                     "通知访问：读取最近通知，回答“刚才有没有新消息”。\n" +
                     "使用情况访问：读取当前前台应用，让 Agent 知道你在用哪个 App。\n" +
+                    "调试通道（Shizuku）：借 shell（uid 2000）在后台清理文件、停应用、改系统设置，" +
+                    "不需要跳转界面；不配置时 Agent 仍可用无障碍完成操作。\n" +
                     "前台应用名与通知内容会随对话一起发送到你配置的模型接口，" +
                     "除此之外不会外传到任何地方。"
             )

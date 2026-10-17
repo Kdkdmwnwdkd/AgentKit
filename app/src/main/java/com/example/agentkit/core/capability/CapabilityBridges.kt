@@ -22,13 +22,14 @@ import com.example.agentkit.core.terminal.backend.TerminalIdentity
 const val BACKEND_ACCESSIBILITY = "accessibility"
 
 /* ------------------------------------------------------------------ */
-/* shell 能力：proot 容器 → 本机 user shell                            */
+/* shell 能力：调试通道(Shizuku) → proot 容器 → 本机 user shell        */
 /* ------------------------------------------------------------------ */
 
 /**
  * shell 后端键 → 展示名（纯函数）。
  */
 fun shellBackendLabel(backendKey: String): String = when (backendKey) {
+    TerminalBackend.KEY_SHIZUKU -> "调试通道（Shizuku）"
     TerminalBackend.KEY_PROOT -> "proot 容器"
     TerminalBackend.KEY_USER -> "本机 user shell"
     else -> backendKey
@@ -38,6 +39,7 @@ fun shellBackendLabel(backendKey: String): String = when (backendKey) {
  * shell 后端键 → 不可用原因（纯函数，面向诊断）。
  */
 fun shellBackendReason(backendKey: String): String = when (backendKey) {
+    TerminalBackend.KEY_SHIZUKU -> "调试通道未就绪（Shizuku 未运行或未授权本应用）"
     TerminalBackend.KEY_PROOT -> "proot 容器不可用（未安装 rootfs 或缺少 proot 组件）"
     TerminalBackend.KEY_USER -> "本机 shell（/system/bin/sh）不可执行"
     else -> "后端「$backendKey」不可用"
@@ -47,6 +49,7 @@ fun shellBackendReason(backendKey: String): String = when (backendKey) {
  * shell 后端键 → 不可用时的**可操作提示**（纯函数，具体到下一步）。
  */
 fun shellBackendHint(backendKey: String): String = when (backendKey) {
+    TerminalBackend.KEY_SHIZUKU -> "到「权限中心 → 调试通道」按引导完成一次授权：装好 Shizuku 并在其中「通过无线调试启动」，再回来点「去授权」。"
     TerminalBackend.KEY_PROOT -> "可在「容器」页一键安装并解压 rootfs 后重试；若只想跑普通命令，本机 shell 已足够。"
     TerminalBackend.KEY_USER -> "确认设备可执行本机 shell（一般无需处理），可重启应用后重试。"
     else -> "确认「$backendKey」所需的依赖已就绪后重试。"
@@ -75,10 +78,18 @@ fun shellBackendAvailability(backendKey: String, available: Boolean): BackendAva
  * [TerminalBackendFactory.isAvailable]（proot 探测要碰文件系统，缓存判定；权限/可用性变化后
  * 由调用方 `clearCache()` 让其重新探测）。本函数**不重复实现**任何探测。
  */
-fun TerminalBackendFactory.shellCapabilitySnapshot(): List<BackendAvailability> =
-    providersFor(TerminalIdentity.User, preferProot = true).map { provider ->
-        shellBackendAvailability(provider.backendKey, isAvailable(provider))
-    }
+fun TerminalBackendFactory.shellCapabilitySnapshot(
+    shizukuAvailable: Boolean = false
+): List<BackendAvailability> = buildList {
+    // W-13：调试通道（uid 2000）能做的活最多（改系统设置/停应用/读文件），排在最前；
+    // 不可用时仅作为「诊断条目」呈现，不影响后续 proot/user 的降级链。
+    add(shellBackendAvailability(TerminalBackend.KEY_SHIZUKU, shizukuAvailable))
+    addAll(
+        providersFor(TerminalIdentity.User, preferProot = true).map { provider ->
+            shellBackendAvailability(provider.backendKey, isAvailable(provider))
+        }
+    )
+}
 
 /* ------------------------------------------------------------------ */
 /* 无障碍能力：操作手机界面                                             */

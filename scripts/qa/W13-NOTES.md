@@ -57,3 +57,15 @@ stdout 帧跨两个 WRTE 拼接。
 - 需要 Android 11+ 且用户在开发者选项开启「无线调试」并配对一次；
 - 不在后台点其他应用界面（系统限制），但文件/应用/设置操作完全后台；
 - 不读其他应用私有数据、不绕过锁屏。
+
+## B 方案（Shizuku 兜底）已接线
+
+| 位置 | 改动 |
+|---|---|
+| `tools/ShellTool.kt` | 新增 `privilegedExec` 注入 + 纯函数 `shouldUsePrivilegedShell`（带 session 不走、显式 user/su/ssh 不走、未指定且通道就绪则自动优先）；结果类型 `PrivilegedShellOut` |
+| `ui/ChatViewModel.kt` | 注入 `ShizukuShell.exec` 适配（每次执行实时判态，不缓存）；`shizukuStatus` 状态 + `handleShizukuAction`（未运行→拉起/商店，未授权→申请，就绪→刷新）；能力链传 `shizukuAvailable` |
+| `core/capability/CapabilityBridges.kt` | 候选顺序变为 **调试通道 → proot → 本机 user**，含标签/原因/可操作提示 |
+| `ui/PermissionsScreen.kt` | 「调试通道（Shizuku）」授权项（三态文案）+ 授权结果回调即时刷新 |
+
+**行为**：Shizuku 就绪时 `shell_run` 默认走 uid 2000（不跳屏、可 `settings put` / `pm` / 文件操作）；
+未配置时静默回落原路径（不改变现有体验）。系统拒绝仍显式报 `permission_denied`，绝不假装成功。

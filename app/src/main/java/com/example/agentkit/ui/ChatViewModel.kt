@@ -94,6 +94,8 @@ import com.example.agentkit.core.capability.CapabilityRequest
 import com.example.agentkit.core.capability.CapabilityResolution
 import com.example.agentkit.core.capability.logTrace
 import com.example.agentkit.core.capability.resolveCapability
+import com.example.agentkit.automation.shizuku.ShizukuShell
+import com.example.agentkit.tools.PrivilegedShellOut
 import com.example.agentkit.core.capability.shellCapabilitySnapshot
 import com.example.agentkit.automation.screenCapabilitySnapshot
 import com.example.agentkit.core.terminal.TerminalSessionPool
@@ -270,6 +272,9 @@ sealed interface FileAttachResult {
     data class Failed(val reason: String) : FileAttachResult
 }
 
+/** Shizuku 主应用包名（用于「未运行 → 拉起」与「未安装 → 应用商店」）。 */
+private const val SHIZUKU_PACKAGE = "moe.shizuku.manager"
+
 class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
 
     private val workspace = File(app.filesDir, "agent_workspace")
@@ -291,6 +296,48 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     /** 使用情况访问权限是否已授予（供感知层卡片展示）。 */
     private val _usageGranted = MutableStateFlow(false)
     val usageGranted: StateFlow<Boolean> = _usageGranted.asStateFlow()
+
+    /**
+     * 调试通道（Shizuku）状态（W-13 B 方案）：未运行 / 未授权 / 就绪。
+     *
+     * 初值取一次实时探测（构造时 Shizuku 可能还没启动，随后 [refreshGrants] 会再刷新）。
+     */
+    private val _shizukuStatus = MutableStateFlow(ShizukuShell.status())
+    val shizukuStatus: StateFlow<ShizukuShell.Status> = _shizukuStatus.asStateFlow()
+
+    /** 重新探测调试通道状态（进入权限页 / 授权回调后调用）。 */
+    fun refreshShizukuStatus() {
+        _shizukuStatus.value = ShizukuShell.status()
+        // 状态变化可能让「跑 shell 命令」的实际路径改变，能力链需重算
+        refreshCapabilityPlans()
+    }
+
+    /**
+     * 调试通道入口动作（权限页「去开启/去授权」）：
+     *  - 未运行 → 拉起 Shizuku（未安装则打开应用商店页）；
+     *  - 未授权 → 发起授权请求（弹窗由 Shizuku 提供，结果回调后刷新）；
+     *  - 就绪 → 仅刷新状态。
+     */
+    fun handleShizukuAction(context: Context) {
+        when (_shizukuStatus.value) {
+            ShizukuShell.Status.NOT_RUNNING -> {
+                val pm = context.packageManager
+                val launch = pm.getLaunchIntentForPackage(SHIZUKU_PACKAGE)
+                if (launch != null) {
+                    launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    runCatching { context.startActivity(launch) }
+                } else {
+                    // 未安装：跳应用商店（各家商店包名不同，用 market:// 让系统路由）
+                    val market = Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=$SHIZUKU_PACKAGE"))
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    runCatching { context.startActivity(market) }
+                }
+            }
+            ShizukuShell.Status.NO_PERMISSION -> ShizukuShell.requestPermission()
+            ShizukuShell.Status.READY -> Unit
+        }
+        refreshShizukuStatus()
+    }
 
     /** 当前设备上下文快照（L4 主动感知）：供自动化页展示 Agent 实时感知到的手机状态。 */
     private val _deviceContext = MutableStateFlow(DeviceContextStore.snapshot())
@@ -488,7 +535,9 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     fun refreshCapabilityPlans() {
         _capabilityPlans.value = Capability.entries.map { capability ->
             val snapshot = when (capability) {
-                Capability.RUN_SHELL -> terminalBackendFactory.shellCapabilitySnapshot()
+                Capability.RUN_SHELL -> terminalBackendFactory.shellCapabilitySnapshot(
+                    shizukuAvailable = _shizukuStatus.value == ShizukuShell.Status.READY
+                )
                 Capability.CONTROL_SCREEN -> screenCapabilitySnapshot()
             }
             resolveCapability(CapabilityRequest(capability, snapshot)).also { it.logTrace() }
@@ -520,7 +569,26 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         register(MemoryListTool(memoryStore))
         register(MemoryForgetTool(memoryStore))
         // 终端 shell（T08）：会话池 + 短句柄；shell_run 执行命令、shell_close 释放会话
-        register(ShellRunTool(terminalPool))
+        register(
+            ShellRunTool(
+                pool = terminalPool,
+                privilegedExec = { cmd ->
+                    // 每次执行前实时判态：用户可能在系统里撤了授权，不能吃缓存
+                    if (ShizukuShell.status() != ShizukuShell.Status.READY) {
+                        null
+                    } else {
+                        val r = ShizukuShell.exec(cmd)
+                        // 未运行/未授权（exitCode=-1 且 stderr 含授权提示）→ null 让上层回落
+                        if (r.exitCode == -1 && r.stderr.contains("未运行或未授权")) {
+                            _shizukuStatus.value = ShizukuShell.status()
+                            null
+                        } else {
+                            PrivilegedShellOut(r.exitCode, r.stdout, r.stderr, r.timedOut)
+                        }
+                    }
+                }
+            )
+        )
         register(ShellCloseTool(terminalPool))
         // 应用操控（Phase 1 补口）：列出/启动/停止任意已安装应用——「叫它打开快手就能打开」。
         // app_launch 走 Intent（零权限）；app_stop 接**真实 shell 通道**（会话池适配，见下），
@@ -616,6 +684,8 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
                 app.packageName
             ) == AppOpsManager.MODE_ALLOWED
         } catch (_: Throwable) { false }
+        // 调试通道（Shizuku）：用户可能刚在 Shizuku 里授权/撤权
+        _shizukuStatus.value = ShizukuShell.status()
         // L4 主动感知：刷新 UI 展示的设备上下文快照
         _deviceContext.value = DeviceContextStore.snapshot()
         // DoD⑤：权限/环境变化后重算能力就绪度（能力链一次走完），并逐级落降级轨迹日志

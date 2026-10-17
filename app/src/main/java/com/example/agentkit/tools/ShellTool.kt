@@ -29,6 +29,41 @@ import kotlinx.serialization.json.jsonPrimitive
 /** shell_run 默认是否优先 proot 容器（不可用回落本机 user）。 */
 private const val SHELL_RUN_DEFAULT_PREFER_PROOT = true
 
+/**
+ * 提权通道的执行结果（W-13 B 方案：Shizuku / uid 2000）。
+ *
+ * 与 [com.example.agentkit.core.terminal.TerminalSessionPool] 的结果解耦：提权通道是**一次性**
+ * 执行（无持久会话），语义只有「退出码 + stdout + stderr + 是否超时」。
+ */
+data class PrivilegedShellOut(
+    val exitCode: Int,
+    val stdout: String,
+    val stderr: String,
+    val timedOut: Boolean = false
+)
+
+/**
+ * 纯函数：这条 shell_run 是否应走提权通道（W-13）。
+ *
+ * 规则：
+ *  - 带了 session 句柄 → **不走**（会话已绑定某个后端，中途换通道会让 cwd/环境变量语义断裂）；
+ *  - identity 显式给了 shizuku → 走（若通道不可用则回落，绝不静默假装成功）；
+ *  - identity 显式给了别的（user/su/ssh）→ 不走，尊重调用方选择；
+ *  - identity 未给 → 通道就绪时**自动优先**（默认走能干的活最多的那条）。
+ */
+fun shouldUsePrivilegedShell(
+    identity: String?,
+    hasSession: Boolean,
+    privilegedAvailable: Boolean
+): Boolean {
+    if (hasSession || !privilegedAvailable) return false
+    return when (identity) {
+        null -> true
+        "shizuku" -> true
+        else -> false
+    }
+}
+
 /** 会话池化 shell 的执行器：`am force-stop` 等系统命令经此走真实本机 shell。 */
 private const val SHELL_BRIDGE_ALIAS = "app_control"
 
@@ -45,14 +80,22 @@ private const val SHELL_BRIDGE_ALIAS = "app_control"
  */
 class ShellRunTool(
     private val pool: TerminalSessionPool,
-    private val defaultPreferProot: Boolean = SHELL_RUN_DEFAULT_PREFER_PROOT
+    private val defaultPreferProot: Boolean = SHELL_RUN_DEFAULT_PREFER_PROOT,
+    /**
+     * 提权通道（W-13 B 方案）：Shizuku 就绪时由外部注入，执行 `sh -c <cmd>`（uid 2000）。
+     * 返回 null = 通道此刻不可用（未运行/未授权/启动失败）→ 调用方回落到普通会话池。
+     *
+     * 用函数注入而不是直接 import Shizuku：本文件保持零 Android 依赖，可离线 harness 断言路由。
+     */
+    private val privilegedExec: (suspend (String) -> PrivilegedShellOut?)? = null
 ) : AgentTool {
 
     override val name = "shell_run"
     override val description =
         "在终端会话里执行一条 shell 命令并返回输出与退出码。无 session 时自动开辟一条会话并返回其句柄；" +
             "复用同一 session 句柄可保持工作目录与环境变量（多轮 cd/export 生效）。identity 取值 " +
-            "user/su/shizuku/ssh（首期仅 user 可用），prefer_proot 是否优先容器（默认 true，不可用回落本机 shell）。" +
+            "user/su/shizuku/ssh；identity=shizuku 走提权通道（uid 2000，可改设置/停应用/读文件，需先配好 Shizuku）。" +
+            "prefer_proot 是否优先容器（默认 true，不可用回落本机 shell）。" +
             "无 PTY/交互支持：不要用需要交互输入的命令（如不带 -y 的 apt、分页器 less），必要时改用非交互参数。" +
             "注意：shell_run 不能用来操控界面——dumpsys、am start、settings put/get、input tap 都会因权限不足失败；" +
             "操控界面请改用 ui_tree/ui_tap/ui_click 等 ui_* 工具。"
@@ -60,6 +103,8 @@ class ShellRunTool(
         "用 shell_run 执行终端命令。首次不带 session 调用会返回一个 4 位十六进制句柄，后续把该句柄作为 " +
             "session 传入即可在同一 shell 里继续操作（cwd 与 export 的环境变量会保持）。不再需要的会话用 " +
             "shell_close 关闭。命令输出过长会被截断（只保留头尾），必要时拆小命令分批查看。" +
+            "提权通道（identity=shizuku）可用时，settings put/get、pm、文件操作都能真正生效；" +
+            "未配置 Shizuku 时会自动回落本机 shell（权限不足会明确报 permission_denied）。" +
             "shell_run 只用于文件读写、命令执行、查看本机信息，**不能操控界面**" +
             "（dumpsys/am start/settings put|get 都会因权限不足失败）；操控界面请用 ui_* 工具。"
 
@@ -106,6 +151,51 @@ class ShellRunTool(
             ?.toBooleanStrictOrNull() ?: defaultPreferProot
 
         val sessionArg = args["session"]?.jsonPrimitive?.contentOrNull?.trim()
+
+        // —— 提权通道（W-13）：一次性执行，不占用会话池 ——
+        val privileged = privilegedExec
+        if (privileged != null &&
+            shouldUsePrivilegedShell(
+                identity = rawIdentity,
+                hasSession = !sessionArg.isNullOrBlank(),
+                privilegedAvailable = true
+            )
+        ) {
+            val out = privileged(command)
+            if (out != null) {
+                if (out.timedOut) {
+                    return ToolResult.fail(
+                        code = "timeout",
+                        message = "提权通道执行超时（命令可能仍在后台运行）。",
+                        hint = "拆小命令或加超时参数后重试；需要长时间运行的请放到后台并另行查询。"
+                    )
+                }
+                val denied = out.stderr.contains("Permission Denial", ignoreCase = true) ||
+                    out.stderr.contains("SecurityException", ignoreCase = true) ||
+                    out.stderr.contains("requires android.permission", ignoreCase = true)
+                val output = out.stdout.ifBlank { out.stderr }
+                if (denied) {
+                    return ToolResult.fail(
+                        code = "permission_denied",
+                        message = "提权通道（Shizuku）退出码 ${out.exitCode}（系统拒绝）",
+                        hint = "该命令即使以 shell 身份也被拒绝（可能需 root 或厂商限制）。不要原样重试，改走无障碍 UI 路径。",
+                        data = output.take(400)
+                    )
+                }
+                val header = "通道 Shizuku（uid 2000）退出码 ${out.exitCode}"
+                return if (out.exitCode == 0) {
+                    ToolResult.ok(code = "shell_ok", message = header, data = output.ifBlank { "(命令无输出)" })
+                } else {
+                    ToolResult.fail(
+                        code = "shell_failed",
+                        message = header,
+                        hint = "看 stderr 定位原因；命令本身失败时修正参数重试，不要原样重复。",
+                        data = output.take(2_000)
+                    )
+                }
+            }
+            // null = 通道此刻不可用（授权被收回等）→ 继续走普通会话池，由普通路径如实报权限不足
+        }
 
         val handle: String
         var openedNew = false
