@@ -64,6 +64,16 @@ POOL_GROUPS = {
         ("UiScreenshotTool 类型描述符", "Lcom/example/agentkit/automation/UiScreenshotTool;"),
         ("AgentAccessibilityService 类型描述符", "Lcom/example/agentkit/automation/AgentAccessibilityService;"),
     ],
+    "W17 定时任务（pool 池条目精确匹配）": [
+        ("Workflow 模型", "Lcom/example/agentkit/workflow/Workflow;"),
+        ("Workflow 存储", "Lcom/example/agentkit/workflow/WorkflowStore;"),
+        ("巡检 Worker", "Lcom/example/agentkit/workflow/WorkflowWorker;"),
+        ("到期判定纯函数", "isWorkflowDue"),
+        ("workflow_create", "workflow_create"),
+        ("workflow_list", "workflow_list"),
+        ("workflow_delete", "workflow_delete"),
+        ("workflow_toggle", "workflow_toggle"),
+    ],
     "W16 TTS/记忆（pool 池条目精确匹配）": [
         ("TTS 封装", "Lcom/example/agentkit/audio/TextSpeaker;"),
         ("自动记忆抽取", "Lcom/example/agentkit/memory/MemoryAutoCapture;"),
@@ -122,6 +132,11 @@ BYTES_GROUPS = {
     "W9-A 文案（描述 / 失败指引，长常量片段，bytes 子串）": [
         ("描述：已授予无障碍即可使用", "已授予无障碍权限即可使用"),
         ("指引：明确无需屏幕捕捉权限", "无需屏幕捕捉权限"),
+    ],
+    "W17 文案（bytes 子串）": [
+        ("页面标题", "定时任务"),
+        ("立即运行按钮", "立即运行"),
+        ("通知渠道名", "到点提醒你执行设定好的任务"),
     ],
     "W15 文案（bytes 子串）": [
         ("快照小节标题", "可交互元素"),
