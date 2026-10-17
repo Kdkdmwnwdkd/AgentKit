@@ -56,6 +56,8 @@ import com.example.agentkit.core.LlmHttpException
 import com.example.agentkit.core.LLMConfig
 import com.example.agentkit.core.ModelListFetcher
 import com.example.agentkit.core.ProviderManager
+import com.example.agentkit.core.llm.KeyPoolRuntime
+import com.example.agentkit.core.llm.KeyPoolStore
 import com.example.agentkit.core.AgentEvent
 import com.example.agentkit.core.ToolCall
 import com.example.agentkit.core.ToolMessage
@@ -1312,9 +1314,67 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /**
+     * 备用 Key 池（W-21）：按当前生效档案分组持久化；运行时冷却状态在内存。
+     * 每次取 client 前刷新一次，用户增删备用 Key 后无需重启即生效。
+     */
+    private val keyPoolStore = KeyPoolStore(app)
+    private val keyPoolRuntime = KeyPoolRuntime()
+
+    /** 备用 Key 的 UI 视图：只带脱敏后的 Key，**明文绝不进 UI 状态**。 */
+    data class BackupKeyUi(val id: String, val label: String, val masked: String)
+
+    private val _backupKeys = MutableStateFlow<List<BackupKeyUi>>(emptyList())
+    val backupKeys: StateFlow<List<BackupKeyUi>> = _backupKeys.asStateFlow()
+
+    /** Key 池状态一行摘要（几把可用 / 几把冷却 / 最早多久恢复）。 */
+    private val _keyPoolSummary = MutableStateFlow("")
+    val keyPoolSummary: StateFlow<String> = _keyPoolSummary.asStateFlow()
+
+    /** 把当前档案的备用 Key 灌进 ProviderManager（限流时自动切换）。 */
+    private fun refreshKeyPool() {
+        val profileId = configStore.loadActiveId() ?: "default"
+        val slots = keyPoolStore.list(profileId)
+        providerManager.backupKeys = slots
+        providerManager.keyRuntime = if (slots.isEmpty()) null else keyPoolRuntime
+    }
+
+    /** 重新读取备用 Key 并刷新 UI 状态（设置页增删后调用）。 */
+    fun reloadBackupKeys() {
+        val profileId = configStore.loadActiveId() ?: "default"
+        val slots = keyPoolStore.list(profileId)
+        _backupKeys.value = slots.map {
+            BackupKeyUi(it.id, it.label, keyPoolStore.masked(it.key))
+        }
+        refreshKeyPool()
+        _keyPoolSummary.value = if (slots.isEmpty()) {
+            "未配备用 Key（仅主 Key 在跑）"
+        } else {
+            keyPoolRuntime.summary(slots)
+        }
+    }
+
+    /** 新增一把备用 Key（空白/已存在则忽略）。 */
+    fun addBackupKey(rawKey: String, label: String = "") {
+        val key = rawKey.trim()
+        if (key.isBlank()) return
+        val profileId = configStore.loadActiveId() ?: "default"
+        keyPoolStore.add(profileId, label, key)
+        reloadBackupKeys()
+    }
+
+    fun removeBackupKey(id: String) {
+        val profileId = configStore.loadActiveId() ?: "default"
+        keyPoolStore.remove(profileId, id)
+        keyPoolRuntime.resetAll()
+        reloadBackupKeys()
+    }
+
     private val loop = AgentLoop(
         llmProvider = {
             val c = _config.value
+            // W-21：每次取 client 前刷新备用 Key 池（增删/换档案即时生效）
+            refreshKeyPool()
             providerManager.create(c.providerId, LLMConfig(c.baseUrl, c.apiKey, c.model))
         },
         registry = registry,
