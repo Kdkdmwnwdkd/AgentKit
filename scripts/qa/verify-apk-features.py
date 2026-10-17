@@ -69,6 +69,8 @@ POOL_GROUPS = {
         ("提权路由纯函数", "shouldUsePrivilegedShell"),
         ("提权结果类型", "Lcom/example/agentkit/tools/PrivilegedShellOut;"),
         ("调试通道入口动作", "handleShizukuAction"),
+        ("安装态探测", "isInstalled"),
+        ("四态路由纯函数", "uiState"),
     ],
     "W10 上下文预算治理（pool 池条目精确匹配）": [
         ("ContextBudget 类描述符", "Lcom/example/agentkit/core/agent/ContextBudget;"),
@@ -99,6 +101,8 @@ BYTES_GROUPS = {
         ("调试通道授权项标题", "调试通道（Shizuku）"),
         ("未运行引导", "通过无线调试启动"),
         ("后台执行说明", "shell uid 2000"),
+        ("已装未启动引导", "已安装未启动"),
+        ("打开 Shizuku 按钮", "打开 Shizuku"),
     ],
     "W10 图片裁剪文案（bytes 子串）": [
         ("旧图省略标记", "早前截图已从上下文省略"),

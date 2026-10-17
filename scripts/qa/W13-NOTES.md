@@ -77,3 +77,19 @@ stdout 帧跨两个 WRTE 拼接。
   （28,272,297 B，sha256 `44b5ce20…2cfcb`）。
   新增判据：`ShizukuShell` 类描述符 / `shouldUsePrivilegedShell` / `PrivilegedShellOut` /
   `handleShizukuAction` / 「调试通道（Shizuku）」/「通过无线调试启动」/「shell uid 2000」。
+
+### 四态修正（同日，用户反馈「Shizuku 已装却仍劝去商店」）
+
+问题：`Status` 只有 NOT_RUNNING / NO_PERMISSION / READY，「已装未启动」被归成「未运行」，
+文案一律「先安装 Shizuku」——用户明明装好了，点按钮却往没有该应用的应用商店跳。
+
+修正：
+- `ShizukuShell.isInstalled(context)` / `launch(context)`；
+- `UiState` 四态（NOT_INSTALLED / INSTALLED_NOT_RUNNING / NO_PERMISSION / READY），
+  由纯函数 `uiState(status, installed)` 推导；
+- 动作与按钮文案随态变化：去安装 / **打开 Shizuku** / 去授权；
+- 未安装时商店拉起失败退 GitHub releases；已装但无 launcher 入口退应用详情页。
+
+验收：CI run 172（`be64827`）Build + Publish success；APK 反验全绿
+（新增判据：`isInstalled` / `uiState` /「已安装未启动」/「打开 Shizuku」；
+产物 28,272,297 B，sha256 `e01c584c…41e90`）。
