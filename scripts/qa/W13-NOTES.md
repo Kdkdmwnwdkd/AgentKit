@@ -27,6 +27,21 @@ stdout 帧跨两个 WRTE 拼接。
 
 **边界**：`AdbClient` 只负责「已信任密钥」之后的传输与执行；**首次配对仍是独立流程**。
 
+## 阶段二 b：配对通道骨架（已完成，SPAKE2 待接）
+
+| 文件 | 内容 |
+|---|---|
+| `automation/adb/AdbPairingPacket.kt` | 配对帧（version=1/type/length，大端）、PeerInfo（8192B）、AES/GCM、`Spake2` 接口 |
+| `automation/adb/AdbPairingClient.kt` | TLS（自签不校验）→ `exportKeyingMaterial("adb-label\0", 64B)` → 口令=码+材料 → 帧交换 → 加密 PeerInfo |
+| `scripts/qa/AdbPairingVerification.kt` | 帧/PeerInfo/AES/端到端（假 SPAKE2）**7/7 PASS** |
+
+**协议实证**（对照 AOSP `pairing_connection` 与公开 Kotlin 实现）：AOSP **不用 TLS-PSK**，
+而是普通 TLS + 导出密钥材料；Android 12+ 有公开 API（`SSLSockets.exportKeyingMaterial`），
+所以配对层可纯 Kotlin 实现，无需 native。
+
+**唯一未完成**：`Spake2` 真算法（BoringSSL `spake25519` 的移植，Apache-2.0）。
+接口已就位，接上即可联调；在此之前配对流程不可用。
+
 ## 未完成（阶段二起，需真机）
 
 1. **配对**：无线调试配对端口 + 6 位码 + SPAKE2/TLS-PSK（本阶段最大工作量），
