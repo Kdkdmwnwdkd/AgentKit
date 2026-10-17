@@ -17,6 +17,8 @@ import java.io.IOException
 import com.example.agentkit.core.llm.arrOrNull
 import com.example.agentkit.core.llm.objOrNull
 import com.example.agentkit.core.llm.primOrNull
+import com.example.agentkit.core.llm.KeyPoolPolicy
+import com.example.agentkit.core.llm.KeyPoolRuntime
 
 /**
  * 模型供应商配置：无状态，每次调用都携带。
@@ -138,17 +140,107 @@ fun parseRetryAfterMs(raw: String?): Long {
     }.getOrDefault(0L)
 }
 
+/** 主 Key 在池中的固定槽位 id（备用槽位 id 由 KeyPoolStore 生成）。 */
+private const val PRIMARY_SLOT_ID = "primary"
+
 class OpenAIClient(
     private val config: LLMConfig,
+    /**
+     * 备用 Key 槽位（W-21）：非空时启用「限流自动切换」。
+     * 主 Key（config.apiKey）永远排第一位，这里的槽位排在它后面。
+     */
+    private val backupKeys: List<KeyPoolPolicy.KeySlot> = emptyList(),
+    /** Key 池运行时（冷却状态 + 轮询游标）；null 表示不做切换（保持单 Key 行为）。 */
+    private val keyRuntime: KeyPoolRuntime? = null,
     private val http: OkHttpClient = OkHttpClient()
 ) : LLMClient {
 
     override val id: String = "openai"
 
+    /** 全部可用 Key 槽位：主 Key + 备用池。 */
+    private fun allSlots(): List<KeyPoolPolicy.KeySlot> = listOf(
+        KeyPoolPolicy.KeySlot(id = PRIMARY_SLOT_ID, label = "主 Key", key = ConfigSanitizer.cleanApiKey(config.apiKey))
+    ) + backupKeys
+
+    /** 解析 `Retry-After`：既支持「秒」也支持 HTTP 日期，解析不了返回 0（走指数退避）。 */
+    private fun parseRetryAfterMs(header: String?): Long {
+        val raw = header?.trim().orEmpty()
+        if (raw.isEmpty()) return 0L
+        raw.toLongOrNull()?.let { return (it * 1000L).coerceAtLeast(0) }
+        return runCatching {
+            val date = java.time.ZonedDateTime.parse(raw, java.time.format.DateTimeFormatter.RFC_1123_DATE_TIME)
+            (date.toInstant().toEpochMilli() - System.currentTimeMillis()).coerceAtLeast(0)
+        }.getOrDefault(0L)
+    }
+
+    /**
+     * 对话请求入口（W-21：多 Key 轮询 + 限流自动切换）。
+     *
+     * 单 Key（未配备用池）时行为与改造前**完全一致**——不走切换分支，零回归面。
+     *
+     * 多 Key 时：主 Key 先试；失败且判定为「限流/额度类」（[KeyPoolPolicy.worthFailover]）
+     * 就把该 Key 置入冷却并换下一把，**最多试遍所有槽位**。
+     * 401/403 等鉴权错误**不换 Key**（换一把也是同样的错，快速失败更诚实）。
+     * 全部冷却中 → 抛 429 并明确告知最早多久后恢复（不给用户一句干巴巴的报错）。
+     */
     override suspend fun chat(
         messages: List<ChatMessage>,
         tools: List<AgentTool>
     ): AssistantMessage = withContext(Dispatchers.IO) {
+        val slots = allSlots()
+        val runtime = keyRuntime
+        // 未启用 Key 池：原路径，一字不改
+        if (runtime == null || slots.size <= 1) {
+            return@withContext callOnce(messages, tools, slots.first())
+        }
+
+        val tried = LinkedHashSet<Int>()
+        var lastError: LlmHttpException? = null
+        while (tried.size < slots.size) {
+            val idx = runtime.nextUsableIndex(slots) ?: break
+            if (!tried.add(idx)) break
+            val slot = slots[idx]
+            try {
+                val result = callOnce(messages, tools, slot)
+                runtime.markSuccess(slot.id)
+                return@withContext result
+            } catch (e: LlmHttpException) {
+                lastError = e
+                if (!KeyPoolPolicy.worthFailover(e.code, e.serverBody)) throw e
+                runtime.markFailure(
+                    slotId = slot.id,
+                    code = e.code,
+                    error = e.message ?: "",
+                    retryAfterSeconds = if (e.retryAfterMs > 0) e.retryAfterMs / 1000 else null
+                )
+                AgentLogger.w(
+                    "LLM",
+                    "Key「${slot.label}」被限流（${e.code}），切换下一把：${runtime.summary(slots)}"
+                )
+            }
+            // IOException（网络/DNS/超时）不换 Key —— 换 Key 解决不了网络问题，直接抛出
+        }
+
+        val waitSec = KeyPoolPolicy.earliestRecoveryMs(
+            slots, runtime.statesSnapshot(), System.currentTimeMillis()
+        ) / 1000
+        val detail = if (waitSec > 0) "最早 ${waitSec} 秒后恢复" else "请检查额度或稍后重试"
+        throw LlmHttpException(
+            code = lastError?.code ?: 429,
+            message = "所有 ${slots.size} 把 Key 都不可用（${runtime.summary(slots)}），$detail",
+            serverBody = lastError?.serverBody ?: ""
+        )
+    }
+
+    /**
+     * 单次请求（不做任何切换）：用指定槽位的 Key 真发一次。
+     * 成功/失败的切换决策全部在 [chat] 里，保持这里单一职责。
+     */
+    private suspend fun callOnce(
+        messages: List<ChatMessage>,
+        tools: List<AgentTool>,
+        slot: KeyPoolPolicy.KeySlot
+    ): AssistantMessage {
         val requestJson = buildJsonObject {
             put("model", effectiveModel())
             putJsonArray("messages") { messages.forEach { add(toApiMessage(it)) } }
@@ -161,12 +253,12 @@ class OpenAIClient(
             put("temperature", 0.7)
         }
 
-        val request = buildRequest(requestJson)
+        val request = buildRequest(requestJson, slot.key)
 
         // L8 日志：请求前记录（只记模型/消息数/工具数，绝不记 apiKey）
         AgentLogger.llmRequest(effectiveModel(), messages.size, tools.size)
         // 记录实际端点/模型/Key 指纹，让 401 能在日志里自证（含不可见字符告警）
-        AgentLogger.apiTrace(endpointUrl(), effectiveModel(), effectiveApiKey())
+        AgentLogger.apiTrace(endpointUrl(), effectiveModel(), slot.key)
         val startedAt = System.currentTimeMillis()
 
         // 超时/DNS/连接失败都走 IOException，记下堆栈后原样抛出
@@ -185,7 +277,13 @@ class OpenAIClient(
                 val safeBody = AgentLogger.sanitize(errBody)
                 AgentLogger.httpError(r.code, safeBody)
                 // 带上状态码抛出：上层据此判断是否值得重试、以及给用户什么文案
-                throw LlmHttpException(r.code, "LLM 请求失败 ${r.code}：${safeBody.take(300)}", safeBody)
+                throw LlmHttpException(
+                    r.code,
+                    "LLM 请求失败 ${r.code}：${safeBody.take(300)}",
+                    safeBody,
+                    // W-21：429 优先听服务端的等待建议（秒或 HTTP 日期两种写法都解析）
+                    parseRetryAfterMs(r.header("Retry-After"))
+                )
             }
             val text = r.body!!.string()
             AgentLogger.llmResponse(
@@ -412,10 +510,10 @@ class OpenAIClient(
     /** 实际拼出的请求端点（Base URL + /chat/completions）。 */
     private fun endpointUrl(): String = "${effectiveBaseUrl().trimEnd('/')}/chat/completions"
 
-    private fun buildRequest(bodyJson: JsonObject): Request {
+    private fun buildRequest(bodyJson: JsonObject, apiKeyOverride: String? = null): Request {
         // 防御性双保险：即便调用方忘了清洗，也不会带着 \u00A0 等不可见字符发请求
         val baseUrl = ConfigSanitizer.normalizeBaseUrl(config.baseUrl)
-        val apiKey = ConfigSanitizer.cleanApiKey(config.apiKey)
+        val apiKey = ConfigSanitizer.cleanApiKey(apiKeyOverride ?: config.apiKey)
         val body = bodyJson.toString().toRequestBody("application/json".toMediaType())
         val builder = Request.Builder()
             .url("${baseUrl.trimEnd('/')}/chat/completions")
@@ -649,8 +747,23 @@ internal class OpenAiToolCallAccumulator {
 class ProviderManager {
     private val providers = mutableMapOf<String, (LLMConfig) -> LLMClient>()
 
+    /**
+     * 备用 Key 池（W-21）：设置为非空即启用「限流自动切换」——
+     * 主 Key 被限流后自动换下一把，冷却期内不再浪费请求。
+     *
+     * 只覆盖 OpenAI 兼容协议（deepseek / moonshot / qwen / openrouter / ollama 等
+     * 绝大多数厂商都走这条）；Claude / Gemini 原生协议本批未接入，
+     * 保持单 Key 行为（如实说明，不假装支持）。
+     */
+    @Volatile
+    var backupKeys: List<KeyPoolPolicy.KeySlot> = emptyList()
+
+    /** 冷却状态与轮询游标；null = 不启用切换。 */
+    @Volatile
+    var keyRuntime: KeyPoolRuntime? = null
+
     init {
-        registerProvider("openai") { OpenAIClient(it) }
+        registerProvider("openai") { OpenAIClient(it, backupKeys, keyRuntime) }
         registerProvider("claude") { com.example.agentkit.core.llm.ClaudeClient(it) }
         registerProvider("gemini") { com.example.agentkit.core.llm.GeminiClient(it) }
     }
