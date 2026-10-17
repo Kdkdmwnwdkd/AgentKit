@@ -69,7 +69,7 @@ android {
 
 dependencies {
     // W-13 B 方案：Shizuku 提权通道（用户需安装 Shizuku 并授权一次）
-    implementation("dev.rikka.shizuku:api:13.1.5")
+    implementation("dev.rikka.shizuku:api:12.2.0")
     implementation("dev.rikka.shizuku:provider:13.1.5")
     val composeBom = platform("androidx.compose:compose-bom:2024.09.00")
     implementation(composeBom)
