@@ -42,6 +42,8 @@ import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.ExpandLess
+import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.Memory
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.StarBorder
@@ -58,6 +60,8 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -110,6 +114,18 @@ fun ModelConfigScreen(vm: ChatViewModel, onBack: () -> Unit) {
     var apiKey by remember(config) { mutableStateOf(config.apiKey) }
     var model by remember(config) { mutableStateOf(config.model) }
     var providerId by remember(config) { mutableStateOf(config.providerId) }
+    // W-29：高级参数（自定义请求头/请求体）——默认收起，避免普通用户被吓到
+    var headersText by remember(config) {
+        mutableStateOf(
+            config.customHeaders.entries.joinToString("\n") { "${it.key}: ${it.value}" }
+        )
+    }
+    var bodyText by remember(config) { mutableStateOf(config.customBody) }
+    var showAdvanced by rememberSaveable { mutableStateOf(false) }
+    // W-29：余额查询状态
+    val scope = rememberCoroutineScope()
+    var balanceLoading by remember { mutableStateOf(false) }
+    var balanceText by remember(config) { mutableStateOf<String?>(null) }
     var tab by rememberSaveable { mutableStateOf(0) }
     // 功能二：新建档案对话框开关（用户录屏反馈「点＋新增没有任何 visible 反馈」——
     // 旧行为直接静默建副本，新 chip 还被横向滚动条挤到屏外；参照 App 改为先弹命名框）
@@ -117,7 +133,9 @@ fun ModelConfigScreen(vm: ChatViewModel, onBack: () -> Unit) {
     val ctx = LocalContext.current
 
     val dirty = baseUrl != config.baseUrl || apiKey != config.apiKey ||
-        model != config.model || providerId != config.providerId
+        model != config.model || providerId != config.providerId ||
+        ConfigSanitizer.parseHeaderLines(headersText) != config.customHeaders ||
+        bodyText.trim() != config.customBody
 
     Column(Modifier.fillMaxWidth()) {
         PageTopBar(title = AppDest.MODEL.title)
@@ -199,8 +217,11 @@ fun ModelConfigScreen(vm: ChatViewModel, onBack: () -> Unit) {
                         onSave = {
                             // 保存时统一过 ConfigSanitizer：剔除不可见字符、规范化 URL，避免带着 \u00A0 落盘
                             vm.updateConfig(
-                                ConfigSanitizer.sanitized(baseUrl, apiKey, model, providerId)
-                        )
+                                ConfigSanitizer.sanitized(baseUrl, apiKey, model, providerId).copy(
+                                    customHeaders = ConfigSanitizer.parseHeaderLines(headersText),
+                                    customBody = bodyText.trim()
+                                )
+                            )
                             onBack()
                         },
                         onCancel = onBack
@@ -702,6 +723,51 @@ private fun ModelTab(
                 icon = Icons.Outlined.Memory,
                 onClick = { onProviderChange(ProviderCatalog.STYLE_LOCAL_LLAMA) }
             )
+
+            // W-29：高级参数（自定义请求头 / 请求体）——折叠，默认收起
+            Spacer(Modifier.height(AgentSpacing.space2))
+            AkTextButton(
+                text = if (showAdvanced) "收起高级参数" else "高级：自定义请求头 / 请求体",
+                icon = if (showAdvanced) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
+                onClick = { showAdvanced = !showAdvanced }
+            )
+            if (showAdvanced) {
+                Spacer(Modifier.height(AgentSpacing.space2))
+                AkTextField(
+                    value = headersText,
+                    onValueChange = { headersText = it },
+                    label = "自定义请求头（每行一条 Key: Value，# 开头为注释）",
+                    placeholder = "HTTP-Referer: https://example.com\nX-Title: AgentKit",
+                    singleLine = false,
+                    maxLines = 5,
+                    machine = true
+                )
+                Spacer(Modifier.height(AgentSpacing.space2))
+                AkTextField(
+                    value = bodyText,
+                    onValueChange = { bodyText = it },
+                    label = "自定义请求体（JSON 对象，可留空）",
+                    placeholder = "{\"top_k\": 40}",
+                    singleLine = false,
+                    maxLines = 5,
+                    machine = true
+                )
+                val bodyError = ConfigSanitizer.validateCustomBody(bodyText)
+                if (bodyError != null) {
+                    Spacer(Modifier.height(AgentSpacing.space1))
+                    Text(
+                        bodyError,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+                Spacer(Modifier.height(AgentSpacing.space1))
+                Text(
+                    "请求头会追加到默认头之后；同名会覆盖默认值。请求体会合并进请求 JSON。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
         }
     }
 
@@ -720,6 +786,35 @@ private fun ModelTab(
     }
     testResult?.let { result ->
         TestResultCard(result = result, onCopy = { copyToClipboard(ctx, result) })
+    }
+
+    // W-29：余额查询（只有部分服务商提供接口：DeepSeek / Kimi / 硅基流动 / OpenRouter）
+    if (!isLocal) {
+        Spacer(Modifier.height(AgentSpacing.space2))
+        AkOutlinedButton(
+            text = if (balanceLoading) "查询中…" else "查余额",
+            enabled = baseUrl.isNotBlank() && apiKey.isNotBlank() && !balanceLoading,
+            onClick = {
+                scope.launch {
+                    balanceLoading = true
+                    balanceText = com.example.agentkit.core.llm.BalanceService
+                        .query(providerId, baseUrl, apiKey)
+                        .fold(
+                            onSuccess = { it },
+                            onFailure = { "查询失败：${it.message}" }
+                        )
+                    balanceLoading = false
+                }
+            }
+        )
+        balanceText?.let {
+            Spacer(Modifier.height(AgentSpacing.space1))
+            Text(
+                it,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+        }
     }
 
     // 保存 / 取消：flex 1 等高（§6.8）；无改动时保存禁用（38% alpha）
