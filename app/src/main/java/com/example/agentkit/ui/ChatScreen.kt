@@ -77,6 +77,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import com.example.agentkit.core.agent.AskUserBroker
+import com.example.agentkit.core.agent.PlanBroker
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -358,6 +359,14 @@ fun ChatScreen(
         // W-14：模型用 ask_user 提问时，输入栏上方出现选择卡片（回答后自动消失）
         vm.askUserPending.collectAsStateWithLifecycle().value?.let { q ->
             AskUserCard(question = q, onAnswer = { vm.answerAskUser(q.id, it) })
+        }
+        // W-25：先计划后执行——模型提交计划时，输入栏上方出现计划卡片（批准/拒绝后消失）
+        vm.planPending.collectAsStateWithLifecycle().value?.let { plan ->
+            PlanCard(
+                plan = plan,
+                onApprove = { vm.approvePlan(plan.id) },
+                onReject = { reason -> vm.rejectPlan(plan.id, reason) }
+            )
         }
         ChatInputBar(
             text = input,
@@ -2387,6 +2396,81 @@ private fun ApprovalDialog(request: ApprovalRequest, visible: Boolean, vm: ChatV
  * 为什么不用弹窗：弹窗会遮挡上下文，用户往往需要回看上文才能选；
  * 贴在输入框上方既醒目又不打断阅读，选完即消失（pending 归 null）。
  */
+/**
+ * W-25：计划审批卡片。贴在输入框上方，不遮挡上下文；批准即开始执行，拒绝可附一句修改意见。
+ *
+ * 交互取舍：
+ *  - 「批准执行」是主按钮（实心），「不要执行」是次按钮（描边）——避免误触批准破坏性计划；
+ *  - 拒绝时展开一个输入框写原因（可空），模型据此重新规划；
+ *  - 步骤多时卡片内部滚动，不把输入栏挤出屏幕。
+ */
+@Composable
+private fun PlanCard(
+    plan: PlanBroker.Plan,
+    onApprove: () -> Unit,
+    onReject: (String) -> Unit
+) {
+    var rejecting by remember(plan.id) { mutableStateOf(false) }
+    var reason by remember(plan.id) { mutableStateOf("") }
+    Surface(
+        color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.4f),
+        shape = RoundedCornerShape(14.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = AgentSpacing.space4, vertical = AgentSpacing.space2)
+    ) {
+        Column(Modifier.padding(AgentSpacing.space4)) {
+            Text(
+                text = "计划待确认（${plan.steps.size} 步）",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary
+            )
+            Spacer(Modifier.height(AgentSpacing.space2))
+            Text(
+                text = plan.summary,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Spacer(Modifier.height(AgentSpacing.space2))
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 180.dp)
+                    .verticalScroll(rememberScrollState())
+            ) {
+                plan.steps.forEachIndexed { i, step ->
+                    Text(
+                        text = "${i + 1}. $step",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(vertical = 2.dp)
+                    )
+                }
+            }
+            Spacer(Modifier.height(AgentSpacing.space3))
+            if (rejecting) {
+                OutlinedTextField(
+                    value = reason,
+                    onValueChange = { reason = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    maxLines = 3,
+                    placeholder = { Text("哪里不对？可留空") }
+                )
+                Spacer(Modifier.height(AgentSpacing.space2))
+                Row(horizontalArrangement = Arrangement.spacedBy(AgentSpacing.space2)) {
+                    AkButton(text = "提交意见", onClick = { onReject(reason.trim()) })
+                    AkTextButton(text = "返回", onClick = { rejecting = false })
+                }
+            } else {
+                Row(horizontalArrangement = Arrangement.spacedBy(AgentSpacing.space2)) {
+                    AkButton(text = "批准执行", onClick = onApprove, modifier = Modifier.weight(1f))
+                    AkTextButton(text = "不要执行", onClick = { rejecting = true }, modifier = Modifier.weight(1f))
+                }
+            }
+        }
+    }
+}
+
 @Composable
 private fun AskUserCard(
     question: AskUserBroker.Question,
