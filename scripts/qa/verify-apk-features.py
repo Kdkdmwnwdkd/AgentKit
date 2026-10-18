@@ -159,7 +159,7 @@ POOL_GROUPS = {
         ("译文清洗函数", "stripWrappingQuotes"),
         ("语音清洗纯函数", "Lcom/example/agentkit/core/text/SpeechLogic;"),
         ("语言别名归一函数", "normalizeLanguage"),
-        ("收藏页组件", "Lcom/example/agentkit/ui/BookmarkScreenKt"),
+        ("收藏页组件", "Lcom/example/agentkit/ui/BookmarkScreenKt;"),
         ("收藏操作入口", "toggleBookmark"),
         ("翻译操作入口", "translateMessage"),
     ],
