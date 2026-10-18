@@ -89,4 +89,6 @@ dependencies {
     // Skill 脚本执行引擎（纯 Java，无需 NDK）；将来要换 QuickJS 只需替换 JsEngine 实现
     implementation("org.mozilla:rhino-runtime:1.7.14")
     implementation("androidx.core:core-ktx:1.13.1")
+    // W-24：离线 OCR（中文 + 英文混排，模型打进 APK，不依赖 Google Play 服务/GMS）
+    implementation("com.google.mlkit:text-recognition-chinese:16.0.1")
 }
