@@ -81,6 +81,12 @@ import com.example.agentkit.skill.SkillLoader
 import com.example.agentkit.skill.ImportedSkillRepository
 import com.example.agentkit.skill.SkillManifest
 import com.example.agentkit.skill.createUseSkillTool
+import com.example.agentkit.tools.LoadSkillLogic
+import com.example.agentkit.tools.LoadSkillTool
+import java.io.IOException
+import java.util.concurrent.TimeUnit
+import okhttp3.OkHttpClient
+import okhttp3.Request
 import com.example.agentkit.skill.CapabilityRegistry
 import com.example.agentkit.skill.policyFor
 import com.example.agentkit.skill.checkCapabilityGate
@@ -723,6 +729,18 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
             // 用 skillsProvider 动态感知导入/卸载/授权的技能变化
             registry.register(createUseSkillTool({ skillsSnapshot }, skillExecutor))
         }
+        // W-23：load_skill——模型可自己安装/卸载技能包（装完热生效，立刻能用 use_skill）
+        registry.register(
+            LoadSkillTool(
+                download = { url -> downloadSkillZip(url) },
+                install = { bytes -> importRepo.installZip(bytes) },
+                uninstall = { id -> importRepo.uninstall(id) },
+                installedSkills = {
+                    skillsSnapshot.filter { it.id in importedIds }.map { it.id to it.name }
+                },
+                onChanged = { reloadSkills() }
+            )
+        )
         // 同步总开关到桥；并把服务连接变化回写到 UI 状态流
         AutomationBridge.enabled = automationPrefs.enabled
         AutomationBridge.onConnectionChanged = { connected ->
@@ -2738,5 +2756,47 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     private fun reloadSkills() {
         skillsSnapshot = buildInitialSkills()
         _skillInfos.value = computeSkillInfos()
+    }
+
+    /**
+     * W-23：下载技能包 zip（load_skill 的传输层）。
+     *
+     * 三重限制：只允许 https（由 LoadSkillLogic 先校验）、体积上限 2 MB（流式读取随时中止，
+     * 不信任 Content-Length）、请求超时 20 秒。返回字节供安装器做 Zip Slip / 炸弹检查。
+     */
+    private suspend fun downloadSkillZip(url: String): Result<ByteArray> = withContext(Dispatchers.IO) {
+        runCatching {
+            val client = OkHttpClient.Builder()
+                .connectTimeout(10, TimeUnit.SECONDS)
+                .readTimeout(20, TimeUnit.SECONDS)
+                .build()
+            val request = Request.Builder()
+                .url(url)
+                .header("User-Agent", "AgentKit")
+                .get()
+                .build()
+            client.newCall(request).execute().use { resp ->
+                if (!resp.isSuccessful) throw IOException("HTTP ${resp.code}")
+                val body = resp.body ?: throw IOException("响应体为空")
+                if (body.contentLength() > LoadSkillLogic.MAX_ZIP_BYTES) {
+                    throw IOException("技能包过大（上限 2 MB）")
+                }
+                val out = java.io.ByteArrayOutputStream()
+                body.byteStream().use { input ->
+                    val buf = ByteArray(64 * 1024)
+                    var total = 0
+                    while (true) {
+                        val n = input.read(buf)
+                        if (n < 0) break
+                        total += n
+                        if (total > LoadSkillLogic.MAX_ZIP_BYTES) {
+                            throw IOException("技能包超过 2 MB 上限，已中止")
+                        }
+                        out.write(buf, 0, n)
+                    }
+                }
+                out.toByteArray()
+            }
+        }
     }
 }
