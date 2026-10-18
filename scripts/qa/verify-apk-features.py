@@ -148,6 +148,18 @@ POOL_GROUPS = {
         ("Bing 跳转还原", "realUrlBing"),
         ("Bing 端点常量值", "https://cn.bing.com/search"),
     ],
+    "W31 并行子代理（pool 池条目精确匹配）": [
+        ("子代理逻辑纯函数", "Lcom/example/agentkit/core/agent/SubAgentLogic;"),
+        ("子代理执行器", "Lcom/example/agentkit/core/agent/SubAgentRunner;"),
+        ("子代理工具类", "Lcom/example/agentkit/tools/SubAgentTool;"),
+        ("工具名", "spawn_agents"),
+        ("成功码", "subagents_done"),
+        ("全失败码", "subagents_failed"),
+        ("只读白名单字段", "READ_ONLY_TOOLS"),
+        ("任务校验函数", "parseTasks"),
+        ("结论提取函数", "extractConclusion"),
+        ("并发归一函数", "clampConcurrency"),
+    ],
     "W30 聊天体验批（pool 池条目精确匹配）": [
         ("时间格式化纯函数", "Lcom/example/agentkit/core/text/ChatTime;"),
         ("精确时间函数", "precise"),
@@ -322,6 +334,13 @@ BYTES_GROUPS = {
     "W22 文案（bytes 子串）": [
         ("双引擎全挂提示", "搜索服务不可达"),
         ("Bing 引擎名", "Bing"),
+    ],
+    "W31 文案（bytes 子串）": [
+        ("汇总标题", "子代理结果"),
+        ("任务上限提示", "一次最多派"),
+        ("空任务提示", "没有可执行的子任务"),
+        ("只读约束", "只做只读操作"),
+        ("汇总省略提示", "汇总已达长度上限"),
     ],
     "W30 文案（bytes 子串）": [
         ("译文块标题", "译文"),

@@ -140,7 +140,19 @@ data class JsonSchema(
     data class Property(
         val type: String,
         val description: String = "",
-        val enum: List<String>? = null
+        val enum: List<String>? = null,
+        /**
+         * W-31：数组元素的 schema。
+         *
+         * 为什么现在必须补：`spawn_agents` 的 tasks 是对象数组，而严格校验的
+         * function-calling 实现要求 `type=array` 必须带 `items`，否则整个工具声明被拒。
+         * 默认 null —— 既有工具（全是扁平字段）序列化结果一个字节都不变。
+         */
+        val items: Property? = null,
+        /** W-31：对象字段（type=object 时用；同样默认 null，不影响既有工具）。 */
+        val properties: Map<String, Property>? = null,
+        /** W-31：对象必填字段名。 */
+        val required: List<String>? = null
     )
 
     companion object {
