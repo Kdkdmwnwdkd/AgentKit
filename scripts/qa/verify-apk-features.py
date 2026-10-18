@@ -148,6 +148,16 @@ POOL_GROUPS = {
         ("Bing 跳转还原", "realUrlBing"),
         ("Bing 端点常量值", "https://cn.bing.com/search"),
     ],
+    "W23 load_skill + 本地模型修复（pool 池条目精确匹配）": [
+        ("load_skill 工具类", "Lcom/example/agentkit/tools/LoadSkillTool;"),
+        ("技能校验纯函数", "Lcom/example/agentkit/tools/LoadSkillLogic;"),
+        ("load_skill 工具名", "load_skill"),
+        ("安装成功码", "skill_installed"),
+        ("卸载成功码", "skill_uninstalled"),
+        ("体积上限常量名", "MAX_ZIP_BYTES"),
+        ("SSRF 判定函数", "isPrivateHost"),
+        ("HF 国内镜像域名", "hf-mirror.com"),
+    ],
     "W21 多 Key 轮询（pool 池条目精确匹配）": [
         ("Key 池决策纯函数", "Lcom/example/agentkit/core/llm/KeyPoolPolicy;"),
         ("Key 池运行时", "Lcom/example/agentkit/core/llm/KeyPoolRuntime;"),
@@ -237,6 +247,12 @@ BYTES_GROUPS = {
     "W22 文案（bytes 子串）": [
         ("双引擎全挂提示", "搜索服务不可达"),
         ("Bing 引擎名", "Bing"),
+    ],
+    "W23 文案（bytes 子串）": [
+        ("本地服务无需 Key 说明", "本地服务不需要 API Key"),
+        ("一键切内置按钮", "改用 App 内置模型"),
+        ("本地模型页签直达", "打开「本地模型」页签"),
+        ("技能包安全提示", "技能包必须来自公网 https"),
     ],
 }
 
