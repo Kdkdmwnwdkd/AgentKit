@@ -148,6 +148,16 @@ POOL_GROUPS = {
         ("Bing 跳转还原", "realUrlBing"),
         ("Bing 端点常量值", "https://cn.bing.com/search"),
     ],
+    "W26 任务模型 + 备份 Key 池（pool 池条目精确匹配）": [
+        ("标题清洗纯函数", "Lcom/example/agentkit/core/agent/TitleLogic;"),
+        ("标题值得生成判定", "worthGenerating"),
+        ("引号剥离函数", "stripWrappingQuotes"),
+        ("Key 池导出函数", "exportAll"),
+        ("Key 池导入函数", "importAll"),
+        ("备份池成员名", "keypool.json"),
+        ("任务模型配置键", "task_profile_id"),
+        ("任务模型设置方法", "setTaskProfile"),
+    ],
     "W25 Plan 模式（pool 池条目精确匹配）": [
         ("计划中转站", "Lcom/example/agentkit/core/agent/PlanBroker;"),
         ("计划工具类", "Lcom/example/agentkit/tools/PlanTool;"),
@@ -271,6 +281,12 @@ BYTES_GROUPS = {
     "W22 文案（bytes 子串）": [
         ("双引擎全挂提示", "搜索服务不可达"),
         ("Bing 引擎名", "Bing"),
+    ],
+    "W26 文案（bytes 子串）": [
+        ("标题生成器提示", "你是会话标题生成器"),
+        ("设置页任务模型标题", "任务模型"),
+        ("跟随主配置选项", "跟随主配置"),
+        ("备份恢复日志", "个档案的备用 Key 池"),
     ],
     "W25 文案（bytes 子串）": [
         ("计划卡片标题", "计划待确认"),
