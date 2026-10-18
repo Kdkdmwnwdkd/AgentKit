@@ -136,8 +136,9 @@ class AppUninstallTool(
         // 1. 优先静默卸载（调试通道）
         val outcome = shellRunner.exec("pm uninstall --user 0 $target")
         if (outcome != null) {
+            // ShellOutcome 只有合并输出（stdout+stderr），关键词判定对合并流同样有效
             val (ok, note) = AppManageLogic.interpretUninstall(
-                outcome.exitCode, outcome.stdout, outcome.stderr
+                outcome.exitCode, outcome.output, ""
             )
             return@withContext if (ok) {
                 ToolResult.ok(
