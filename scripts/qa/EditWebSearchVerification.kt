@@ -241,6 +241,58 @@ fun main() {
         assertTrue("摘要无标签", items.single().snippet == "snippet")
     }
 
+    // ---------- W-22：Bing 解析（结构取自 2026-10-18 真实页面） ----------
+    check("Bing：标准结果块解析（a 在外层包 h2）") {
+        val html = """
+            <html><body>
+            <li class="b_algo" data-id iid=SERP.5260><div class="b_algoheader">
+              <a href="https://kotlinlang.org/" h="ID=SERP,1"><h2><strong>Kotlin</strong> 官网</h2></a>
+            </div><div class="b_caption"><p class="b_lineclamp3" data-rslinkclamp-iid="">现代编程语言</p></div></li>
+            <li class="b_algo"><div class="b_algoheader">
+              <a href="https://www.runoob.com/kotlin/" h="ID=SERP,2"><h2>Kotlin 教程</h2></a>
+            </div><div class="b_caption"><p class="b_lineclamp4">菜鸟教程</p></div></li>
+            </body></html>
+        """.trimIndent()
+        val items = WebSearchParsing.parseBing(html, 5)
+        assertTrue("2 条", items.size == 2)
+        assertTrue("标题去标签", items[0].title == "Kotlin 官网")
+        assertTrue("URL", items[0].url == "https://kotlinlang.org/")
+        assertTrue("摘要", items[0].snippet == "现代编程语言")
+        assertTrue("第二条", items[1].url == "https://www.runoob.com/kotlin/")
+    }
+
+    check("Bing：跳转包装 u=a1<base64url> 还原真实地址") {
+        // base64url("https://example.com/page")
+        val html = """
+            <li class="b_algo"><a href="https://www.bing.com/ck/a?!&&p=abc&amp;u=a1aHR0cHM6Ly9leGFtcGxlLmNvbS9wYWdl&amp;ntb=1"><h2>T</h2></a>
+            <p class="b_lineclamp3">S</p></li>
+        """.trimIndent()
+        val items = WebSearchParsing.parseBing(html, 5)
+        assertTrue("还原成功", items.single().url == "https://example.com/page")
+    }
+
+    check("Bing：无结果结构 → 空列表（不误报）") {
+        assertTrue("空页", WebSearchParsing.parseBing("", 5).isEmpty())
+        assertTrue("无关页", WebSearchParsing.parseBing("<html>no result</html>", 5).isEmpty())
+    }
+
+    check("Bing：非 http 链接（javascript: 等）被过滤") {
+        val html = """<li class="b_algo"><a href="javascript:void(0)"><h2>假结果</h2></a></li>"""
+        assertTrue("被过滤", WebSearchParsing.parseBing(html, 5).isEmpty())
+    }
+
+    // ---------- W-22：edit 回显偏移回归（新文本在文件别处已存在） ----------
+    check("firstOffset 指向替换点，而非文件里更早出现的同名新文本") {
+        val src = "val a = 2\nmiddle\nval a = 1\n"
+        // 把第二处的 "val a = 1" 改成 "val a = 2"（新文本在开头早已存在）
+        val plan = EditFileLogic.plan(src, "val a = 1", "val a = 2", replaceAll = false)
+        plan as EditPlan.Replace
+        // 第一处替换点之前的文本没变，所以偏移应指向第 3 行开头（字符下标 16）
+        val before = plan.replaced.take(plan.firstOffset)
+        assertTrue("偏移应在第 3 行前（换行数=2）", before.count { it == '\n' } == 2)
+        assertTrue("偏移处确为新文本", plan.replaced.startsWith("val a = 2", plan.firstOffset))
+    }
+
     println("\n=== 汇总: PASS=$pass FAIL=$fail ===")
     if (fail > 0) kotlin.system.exitProcess(1)
 }

@@ -143,6 +143,11 @@ POOL_GROUPS = {
         ("原子写扩展函数", "atomicWriteText"),
         ("上下文回显纯函数", "contextAround"),
     ],
+    "W22 Bing 主引擎修复（pool 池条目精确匹配）": [
+        ("Bing 解析纯函数", "parseBing"),
+        ("Bing 跳转还原", "realUrlBing"),
+        ("Bing 端点常量值", "cn.bing.com/search"),
+    ],
     "W21 多 Key 轮询（pool 池条目精确匹配）": [
         ("Key 池决策纯函数", "Lcom/example/agentkit/core/llm/KeyPoolPolicy;"),
         ("Key 池运行时", "Lcom/example/agentkit/core/llm/KeyPoolRuntime;"),
@@ -228,6 +233,10 @@ BYTES_GROUPS = {
         ("全部不可用提示", "把 Key 都不可用"),
         ("未配备用 Key 提示", "未配备用 Key"),
         ("冷却恢复提示段", "最早"),
+    ],
+    "W22 文案（bytes 子串）": [
+        ("双引擎全挂提示", "搜索服务不可达"),
+        ("Bing 引擎名", "Bing"),
     ],
 }
 
