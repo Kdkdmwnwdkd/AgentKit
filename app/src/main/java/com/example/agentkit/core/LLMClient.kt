@@ -157,10 +157,21 @@ class OpenAIClient(
 
     override val id: String = "openai"
 
-    /** 全部可用 Key 槽位：主 Key + 备用池。 */
-    private fun allSlots(): List<KeyPoolPolicy.KeySlot> = listOf(
-        KeyPoolPolicy.KeySlot(id = PRIMARY_SLOT_ID, label = "主 Key", key = ConfigSanitizer.cleanApiKey(config.apiKey))
-    ) + backupKeys
+    /**
+     * 全部可用 Key 槽位：主 Key + 备用池。
+     *
+     * W-22 修：主 Key 为空（用户只配了备用 Key）时必须**剔除主槽位**——
+     * 否则首请求带空 Bearer → 401 → 鉴权错误不触发切换 → 备用 Key 永远轮不到。
+     */
+    private fun allSlots(): List<KeyPoolPolicy.KeySlot> {
+        val primaryKey = ConfigSanitizer.cleanApiKey(config.apiKey)
+        val primary = if (primaryKey.isBlank()) {
+            emptyList()
+        } else {
+            listOf(KeyPoolPolicy.KeySlot(id = PRIMARY_SLOT_ID, label = "主 Key", key = primaryKey))
+        }
+        return primary + backupKeys.filter { it.key.isNotBlank() }
+    }
 
     /** 解析 `Retry-After`：既支持「秒」也支持 HTTP 日期，解析不了返回 0（走指数退避）。 */
     private fun parseRetryAfterMs(header: String?): Long {
@@ -189,9 +200,12 @@ class OpenAIClient(
     ): AssistantMessage = withContext(Dispatchers.IO) {
         val slots = allSlots()
         val runtime = keyRuntime
-        // 未启用 Key 池：原路径，一字不改
+        // 未启用 Key 池（或没配任何 Key）：原路径。空池时用空 Key 走原请求，
+        // 让服务端返回 401，与改造前的报错行为一致（不静默、也不伪造成功）。
         if (runtime == null || slots.size <= 1) {
-            return@withContext callOnce(messages, tools, slots.first())
+            val slot = slots.firstOrNull()
+                ?: KeyPoolPolicy.KeySlot(id = PRIMARY_SLOT_ID, label = "主 Key", key = "")
+            return@withContext callOnce(messages, tools, slot)
         }
 
         val tried = LinkedHashSet<Int>()
