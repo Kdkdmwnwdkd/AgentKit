@@ -111,6 +111,7 @@ import com.example.agentkit.automation.shizuku.ShizukuInstaller
 import com.example.agentkit.automation.shizuku.ShizukuShell
 import com.example.agentkit.core.agent.AskUserBroker
 import com.example.agentkit.core.agent.PlanBroker
+import com.example.agentkit.core.agent.TitleLogic
 import com.example.agentkit.core.agent.TodoStore
 import com.example.agentkit.core.mcp.McpClient
 import com.example.agentkit.core.mcp.McpServerStore
@@ -1067,6 +1068,17 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     fun rejectPlan(planId: String, reason: String) {
         PlanBroker.reject(planId, reason)
         AgentLogger.i("Chat", "用户拒绝了计划 $planId：${reason.take(80)}")
+    }
+
+    // —— W-26：任务模型（标题生成等轻量任务用便宜模型，省钱降延迟）——
+    private val _taskProfileId = MutableStateFlow(configStore.taskProfileId())
+    val taskProfileId: StateFlow<String> = _taskProfileId.asStateFlow()
+
+    /** 设置任务模型档案；传空串 = 跟随主配置。 */
+    fun setTaskProfile(id: String) {
+        _taskProfileId.value = id
+        configStore.setTaskProfileId(id)
+        AgentLogger.i("Chat", "任务模型切换为 ${id.ifBlank { "跟随主配置" }}")
     }
 
     /** UI 回调：用户点了某个选项 / 提交了自由输入。 */
@@ -2203,6 +2215,8 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
                 val userItem = UiItem.User(text)
                 _messages.value = _messages.value + userItem
                 appendToStore(userItem) // 功能三：聊天记录同步落盘
+                // W-26：首轮对话后用「任务模型」异步生成标题（不阻塞、失败静默）
+                maybeGenerateTitle(_activeConversationId.value, text)
                 // 先拿到 Result，再在同一个挂起体里做后续 IO：Result.onSuccess 的 lambda 不是 suspend
                 val outcome = runCatching { loop.run(fullInput, images) }
                 // 流式草稿使命结束：最终回答以整条消息落库（防草稿与整条同时显示）。
@@ -2520,7 +2534,9 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
                     backupJson.encodeToString(conversations),
                     backupJson.encodeToString(memories),
                     backupJson.encodeToString(config),
-                    backupJson.encodeToString(prompts)
+                    backupJson.encodeToString(prompts),
+                    // W-26：备用 Key 池一并备份（否则恢复后全丢）
+                    keyPoolStore.exportAll()
                 )
                 val out = app.contentResolver.openOutputStream(uri)
                     ?: error("无法写入所选位置（可能已被移除）")
@@ -2574,6 +2590,11 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
                             }.getOrNull()?.let { configStore.restoreFrom(it) }
                         }
                         // hotfix28：提示词库恢复（老备份件没带该成员 → 跳过，不动现有提示词）
+                        // W-26：恢复备用 Key 池（老备份没有该成员 → 保持现状）
+                        read.keyPoolJson?.let { poolText ->
+                            val n = keyPoolStore.importAll(poolText)
+                            if (n > 0) AgentLogger.i("Backup", "已恢复 $n 个档案的备用 Key 池")
+                        }
                         read.promptsJson?.let { promptText ->
                             runCatching {
                                 backupJson.decodeFromString<List<PromptItem>>(promptText)
@@ -2797,6 +2818,56 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     private fun reloadSkills() {
         skillsSnapshot = buildInitialSkills()
         _skillInfos.value = computeSkillInfos()
+    }
+
+    /**
+     * W-26：构造「任务模型」客户端——标题生成等轻量任务用它。
+     *
+     * 优先用设置里指定的档案；未指定或档案已删 → 回退当前主配置。
+     * 注意：任务请求**不**走 Key 池切换（轻量任务失败就放弃，不占用备用 Key 的冷却额度）。
+     */
+    private fun buildTaskClient(): LLMClient {
+        val taskId = _taskProfileId.value
+        val profile = if (taskId.isNotBlank()) _profiles.value.firstOrNull { it.id == taskId } else null
+        val cfg = profile?.config ?: _config.value
+        return providerManager.create(cfg.providerId, LLMConfig(cfg.baseUrl, cfg.apiKey, cfg.model))
+    }
+
+    /**
+     * W-26：首轮对话后异步生成 AI 标题（补缺口 #33）。
+     *
+     * 触发条件（全部满足才生成，避免浪费调用）：
+     *  1. 用户消息有信息量（[TitleLogic.worthGenerating]：不是"你好"、不是纯表情）；
+     *  2. 标题仍是默认值 / 早期截取的首条消息文本（用户手动改过就不覆盖）。
+     * 失败静默：标题生成不是主流程，失败保持原标题即可。
+     */
+    private fun maybeGenerateTitle(convId: String, userText: String) {
+        if (!TitleLogic.worthGenerating(userText)) return
+        val current = runCatching { conversationStore.load(convId)?.title }.getOrNull().orEmpty()
+        val autoTitle = userText.trim().take(20)
+        if (current.isNotBlank() && current != "新对话" && current != autoTitle) return
+
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching {
+                val client = buildTaskClient()
+                val reply = client.chat(
+                    listOf(
+                        SystemMessage(
+                            "你是会话标题生成器。根据用户的第一句话生成 6~12 个字的中文标题，" +
+                                "概括意图即可；只输出标题本身，不要引号、不要标点、不要解释。"
+                        ),
+                        UserMessage(userText.take(1000))
+                    ),
+                    emptyList()
+                )
+                val title = TitleLogic.clean(reply.content) ?: return@launch
+                conversationStore.rename(convId, title)
+                refreshConversations()
+                AgentLogger.i("Chat", "AI 标题生成：$title")
+            }.onFailure {
+                AgentLogger.w("Chat", "AI 标题生成失败（保持原标题）：${it.message}")
+            }
+        }
     }
 
     /**
