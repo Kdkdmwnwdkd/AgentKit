@@ -135,6 +135,7 @@ enum class AppDest(
     LOGS("logs", "运行日志", "运行日志", Icons.Outlined.Description),
     MEMORY("memory", "记忆库", "记忆库", Icons.Outlined.Storage),
     PROMPTS("prompts", "提示词库", "提示词库", Icons.Outlined.AutoAwesome),
+    BOOKMARKS("bookmarks", "收藏", "收藏", Icons.Outlined.Bookmark),
     SETTINGS("settings", "设置", "设置", Icons.Outlined.Settings),
     ABOUT("about", "关于", "关于", Icons.Outlined.Info);
 
@@ -606,6 +607,7 @@ private fun ScreenHost(
         AppDest.LOGS -> LogsScreen(vm)
         AppDest.MEMORY -> MemoryScreen(vm)
         AppDest.PROMPTS -> PromptLibraryScreen(vm)
+        AppDest.BOOKMARKS -> BookmarkScreen(vm)
         AppDest.SETTINGS -> SettingsScreen(
             vm,
             themeMode,
