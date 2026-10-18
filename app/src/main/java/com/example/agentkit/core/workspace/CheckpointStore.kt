@@ -29,25 +29,29 @@ object CheckpointStore {
     /** 创建检查点：快照当前 workspace。 */
     fun create(context: Context, label: String): Checkpoint? {
         val ws = WorkspaceStore.dir(context)
-        val files = WorkspaceStore.list(context)
-        val size = files.sumOf { it.length() }
+        // W-27：快照要含子目录（Agent 的产出常在 screenshots/、downloads/ 下）
+        val entries = WorkspaceStore.listTree(context).filter { !it.isDir }
+        val size = entries.sumOf { File(ws, it.path).length() }
         val ts = System.currentTimeMillis()
         val safeLabel = label.ifBlank { "checkpoint" }
             .filter { it.isLetterOrDigit() || it in "._- " }.take(40).trim().ifBlank { "checkpoint" }
         val id = "${ts}_$safeLabel"
         val snapDir = File(root(context), id)
         val ok = runCatching {
-            // 逐个复制文件，避免把空目录/异常也带进去；保持结构可预期
-            files.forEach { src ->
-                src.copyTo(File(snapDir, src.name), overwrite = true)
+            // 逐个复制文件（按相对路径建目录），空目录不入快照
+            entries.forEach { entry ->
+                val src = File(ws, entry.path)
+                val dst = File(snapDir, entry.path)
+                dst.parentFile?.mkdirs()
+                src.copyTo(dst, overwrite = true)
             }
             // 写入 meta
             File(root(context), "$id.meta").writeText(
-                "label=$safeLabel\ntimeMs=$ts\nfileCount=${files.size}\nsizeBytes=$size\n"
+                "label=$safeLabel\ntimeMs=$ts\nfileCount=${entries.size}\nsizeBytes=$size\n"
             )
         }.onFailure { AgentLogger.e(TAG, "创建检查点失败：${it.message}") }.isSuccess
         if (!ok) return null
-        return Checkpoint(id, safeLabel, ts, files.size, size)
+        return Checkpoint(id, safeLabel, ts, entries.size, size)
     }
 
     /** 列出所有检查点（按时间倒序）。 */
@@ -80,11 +84,13 @@ object CheckpointStore {
         }
         return runCatching {
             val ws = WorkspaceStore.dir(context)
-            // 清空 workspace 现有文件
-            ws.listFiles()?.forEach { runCatching { if (it.isFile) it.delete() } }
-            // 写回快照
-            snapDir.listFiles()?.filter { it.isFile }?.forEach { src ->
-                src.copyTo(File(ws, src.name), overwrite = true)
+            // 清空 workspace（含子目录，保留根目录本身）
+            ws.listFiles()?.forEach { runCatching { it.deleteRecursively() } }
+            // 写回快照（目录/文件都按原结构恢复）
+            snapDir.listFiles()?.forEach { src ->
+                val dst = File(ws, src.name)
+                if (src.isDirectory) src.copyRecursively(dst, overwrite = true)
+                else src.copyTo(dst, overwrite = true)
             }
         }.onFailure { AgentLogger.e(TAG, "恢复检查点失败：${it.message}") }.isSuccess
     }
