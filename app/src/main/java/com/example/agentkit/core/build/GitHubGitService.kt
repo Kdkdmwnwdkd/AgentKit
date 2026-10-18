@@ -184,6 +184,35 @@ class GitHubGitService(
             }.recoverCatching { e -> throw IOException(friendly(e, branch)) }
         }
 
+    /**
+     * 取远端某个文件的文本内容（`github_diff` 用）。
+     *
+     * @return 成功时 Result.success(内容)；**远端没有该文件时返回 success(null)**——
+     *   "新增文件"是正常情况，不该当成错误；只有网络/权限问题才 failure。
+     */
+    suspend fun fileContent(branch: String, path: String): Result<String?> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val encoded = path.split('/').joinToString("/") {
+                    java.net.URLEncoder.encode(it, "UTF-8").replace("+", "%20")
+                }
+                val obj = try {
+                    get("/repos/${cfg.fullName}/contents/$encoded?ref=$branch")
+                } catch (e: IOException) {
+                    val msg = e.message.orEmpty()
+                    // 404 = 远端没有这个文件（新增），不是错误
+                    if (msg.contains("404")) return@runCatching null
+                    throw e
+                }
+                val encodedContent = obj["content"]?.jsonPrimitive?.contentOrNull ?: return@runCatching null
+                if (obj["encoding"]?.jsonPrimitive?.contentOrNull != "base64") {
+                    // 超过 1MB 的文件 contents API 不返回内容
+                    throw IOException("文件过大，GitHub 不返回内容（>1MB）")
+                }
+                String(Base64.getMimeDecoder().decode(encodedContent), Charsets.UTF_8)
+            }.recoverCatching { e -> throw IOException(friendly(e, branch)) }
+        }
+
     /** 统一取远端分支的 path → blob sha 映射（递归 tree）。 */
     private fun remoteBlobs(branch: String): Map<String, String> {
         val ref = get("/repos/${cfg.fullName}/git/ref/heads/$branch")

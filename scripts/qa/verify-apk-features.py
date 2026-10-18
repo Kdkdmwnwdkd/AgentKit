@@ -148,6 +148,16 @@ POOL_GROUPS = {
         ("Bing 跳转还原", "realUrlBing"),
         ("Bing 端点常量值", "https://cn.bing.com/search"),
     ],
+    "W34 行级 diff（pool 池条目精确匹配）": [
+        ("差异逻辑纯函数", "Lcom/example/agentkit/core/text/LineDiffLogic;"),
+        ("差异行模型", "Lcom/example/agentkit/core/text/DiffLine;"),
+        ("差异工具类", "Lcom/example/agentkit/tools/GitHubDiffTool;"),
+        ("工具名", "github_diff"),
+        ("成功码", "diff_ok"),
+        ("无差异码", "no_diff"),
+        ("统计函数", "countChanges"),
+        ("远端取文函数", "fileContent"),
+    ],
     "W33 后台命令（pool 池条目精确匹配）": [
         ("任务模型", "Lcom/example/agentkit/core/job/JobInfo;"),
         ("任务状态常量", "Lcom/example/agentkit/core/job/JobStatus;"),
@@ -366,6 +376,12 @@ BYTES_GROUPS = {
     "W22 文案（bytes 子串）": [
         ("双引擎全挂提示", "搜索服务不可达"),
         ("Bing 引擎名", "Bing"),
+    ],
+    "W34 文案（bytes 子串）": [
+        ("退化提示", "未逐行比对"),
+        ("二进制拒绝", "二进制文件不支持 diff"),
+        ("删除提示", "这是删除操作"),
+        ("无差异提示", "完全一致"),
     ],
     "W33 文案（bytes 子串）": [
         ("后台启动提示", "已在后台启动"),

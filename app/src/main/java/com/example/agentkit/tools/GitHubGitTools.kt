@@ -9,6 +9,7 @@ import com.example.agentkit.core.build.FileChange
 import com.example.agentkit.core.build.GitHubConfig
 import com.example.agentkit.core.build.GitHubGitLogic
 import com.example.agentkit.core.build.GitHubGitService
+import com.example.agentkit.core.text.LineDiffLogic
 import com.example.agentkit.core.workspace.WorkspaceStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -280,6 +281,109 @@ class GitHubLogTool(private val app: Application) : AgentTool {
                     hint = "检查 PAT 权限与分支名（可能是 master）。"
                 )
             }
+        )
+    }
+}
+
+/**
+ * `github_diff`（W-34）：看某个文件相对远端分支的**行级**改动。
+ *
+ * `github_status` 只说"哪些文件变了"，这个工具回答"具体改了哪几行"——
+ * 提交前确认、review 自己的改动都靠它。
+ *
+ * 边界：
+ *  - 二进制文件（含 NUL）直接拒绝：diff 出来是乱码，没有意义；
+ *  - 本地没有、远端有 → 说明这是删除，而提交工具不支持删除，如实告知；
+ *  - 超大改动由 [LineDiffLogic] 退化为整段替换并标注。
+ */
+class GitHubDiffTool(private val app: Application) : AgentTool {
+
+    override val name = "github_diff"
+
+    override val description =
+        "查看工作区某个文件相对 GitHub 分支的具体改动（行级 + 新增 / - 删除，带上下文）。" +
+            "提交前用它确认自己到底改了什么。只支持文本文件。"
+
+    override val parameters = JsonSchema.objectSchema(
+        JsonSchema.prop("path", "string", "文件在工作区内的相对路径，如 src/main/App.kt"),
+        JsonSchema.prop("branch", "string", "分支名，默认 main"),
+        JsonSchema.prop("context", "integer", "改动前后各显示几行上下文，默认 3，最多 10")
+    )
+
+    override val readOnly = true
+
+    override suspend fun execute(args: JsonObject): ToolResult = withContext(Dispatchers.IO) {
+        val cfg = loadConfig(app) ?: return@withContext notConfigured()
+        val rawPath = args["path"]?.jsonPrimitive?.contentOrNull.orEmpty()
+        val path = GitHubGitLogic.normalizePath(rawPath)
+            ?: return@withContext ToolResult.fail(
+                code = "invalid_path",
+                message = "路径非法：$rawPath",
+                hint = "给工作区内的相对路径（不允许 .. 或绝对路径）。"
+            )
+        val branch = branchOf(args)
+        val context = (args["context"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: 3)
+            .coerceIn(0, 10)
+
+        val localFile = File(WorkspaceStore.dir(app), path)
+        val localExists = localFile.isFile
+        val localText: String = if (localExists) {
+            if (localFile.length() > 1_048_576) {
+                return@withContext ToolResult.fail(
+                    code = "file_too_large",
+                    message = "文件超过 1MB，不做 diff",
+                    hint = "用 read_file 分段查看，或只提交不比对。"
+                )
+            }
+            runCatching { localFile.readText() }.getOrDefault("")
+        } else ""
+
+        val remote = GitHubGitService(cfg).fileContent(branch, path).getOrElse { e ->
+            return@withContext ToolResult.fail(
+                code = "github_diff_failed",
+                message = "读取远端失败：${e.message?.take(200)}",
+                hint = "检查 PAT 权限与分支名（可能是 master）。"
+            )
+        }
+
+        if (!localExists && remote == null) {
+            return@withContext ToolResult.fail(
+                code = "not_found",
+                message = "本地和远端（${cfg.fullName}@$branch）都没有这个文件",
+                hint = "确认路径拼写；新文件请先用 write_file 创建。"
+            )
+        }
+        if (!localExists && remote != null) {
+            return@withContext ToolResult.fail(
+                code = "local_missing",
+                message = "本地没有 $path，但远端有——这是删除操作",
+                hint = "本工具不支持删除远端文件（避免误删）。需要删除请到 GitHub 网页操作。"
+            )
+        }
+
+        // 二进制检测：含 NUL 就拒绝
+        if (localText.contains('\u0000') || (remote?.contains('\u0000') == true)) {
+            return@withContext ToolResult.fail(
+                code = "binary_file",
+                message = "二进制文件不支持 diff",
+                hint = "只能比对文本文件。"
+            )
+        }
+
+        val diff = LineDiffLogic.diff(remote.orEmpty(), localText, context)
+        if (diff.isEmpty()) {
+            return@withContext ToolResult.ok(
+                code = "no_diff",
+                message = "$path 与 ${cfg.fullName}@$branch 完全一致",
+                data = "没有差异。"
+            )
+        }
+        val body = diff.joinToString("\n") { it.render() }
+        val kindNote = if (remote == null) "（远端没有该文件，这是新增）" else ""
+        ToolResult.ok(
+            code = "diff_ok",
+            message = "$path：${LineDiffLogic.summary(diff)}$kindNote",
+            data = body
         )
     }
 }
