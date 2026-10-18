@@ -62,7 +62,9 @@ data class ConversationSummary(
     /** 功能五（P1-3）：置顶标记——置顶会话恒排在列表最前（对标 RikkaHub pinned_chats）。 */
     val pinned: Boolean = false,
     val promptTokens: Long = 0,
-    val completionTokens: Long = 0
+    val completionTokens: Long = 0,
+    /** W-28：绑定的项目目录（空 = 工作区根）。 */
+    val workspaceDir: String = ""
 )
 
 /**
@@ -115,7 +117,12 @@ data class ConversationRecord(
      * 功能五（P1-3）：置顶标记（默认 false，旧文件反序列化自动补齐）。
      * 置顶只影响排序，不改变任何消息语义——取消置顶即回到按时间排序。
      */
-    val pinned: Boolean = false
+    val pinned: Boolean = false,
+    /**
+     * W-28：本会话绑定的项目目录（工作区内的相对路径；空 = 工作区根）。
+     * 绑定时会把该目录下的 AGENTS.md / README.md 作为项目规则注入系统提示。
+     */
+    val workspaceDir: String = ""
 )
 
 /**
@@ -286,7 +293,8 @@ class ConversationStore(file: File) {
                 messageCount = rec.messages.size,
                 pinned = rec.pinned,
                 promptTokens = usage.promptTokens,
-                completionTokens = usage.completionTokens
+                completionTokens = usage.completionTokens,
+                workspaceDir = rec.workspaceDir
             )
         }
             .sortedWith(compareByDescending<ConversationSummary> { it.pinned }
@@ -475,6 +483,22 @@ class ConversationStore(file: File) {
             if (idx < 0) return
             items[idx] = items[idx].copy(
                 title = title.trim().ifBlank { DEFAULT_TITLE },
+                updatedAt = System.currentTimeMillis()
+            )
+        }
+        schedulePersist()
+    }
+
+    /**
+     * W-28：绑定/解绑项目目录（空串 = 解绑，回到工作区根）。
+     * 只改记录字段，不影响消息内容。
+     */
+    fun setWorkspaceDir(convId: String, dir: String) {
+        synchronized(lock) {
+            val idx = items.indexOfFirst { it.id == convId }
+            if (idx < 0) return
+            items[idx] = items[idx].copy(
+                workspaceDir = dir.trim().trim('/'),
                 updatedAt = System.currentTimeMillis()
             )
         }
