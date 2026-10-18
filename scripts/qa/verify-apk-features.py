@@ -148,6 +148,21 @@ POOL_GROUPS = {
         ("Bing 跳转还原", "realUrlBing"),
         ("Bing 端点常量值", "https://cn.bing.com/search"),
     ],
+    "W30 聊天体验批（pool 池条目精确匹配）": [
+        ("时间格式化纯函数", "Lcom/example/agentkit/core/text/ChatTime;"),
+        ("精确时间函数", "precise"),
+        ("毫秒归一函数", "normalizeToMillis"),
+        ("收藏存储类", "Lcom/example/agentkit/core/BookmarkStore;"),
+        ("收藏条目类", "Lcom/example/agentkit/core/Bookmark;"),
+        ("收藏落盘函数", "removeByContent"),
+        ("翻译逻辑纯函数", "Lcom/example/agentkit/core/text/TranslateLogic;"),
+        ("译文清洗函数", "stripWrappingQuotes"),
+        ("语音清洗纯函数", "Lcom/example/agentkit/core/text/SpeechLogic;"),
+        ("语言别名归一函数", "normalizeLanguage"),
+        ("收藏页组件", "Lcom/example/agentkit/ui/BookmarkScreenKt"),
+        ("收藏操作入口", "toggleBookmark"),
+        ("翻译操作入口", "translateMessage"),
+    ],
     "W29 自定义参数 + 余额（pool 池条目精确匹配）": [
         ("请求头解析纯函数", "Lcom/example/agentkit/core/text/HeaderParsing;"),
         ("余额解析纯函数", "Lcom/example/agentkit/core/llm/BalanceParsing;"),
@@ -307,6 +322,16 @@ BYTES_GROUPS = {
     "W22 文案（bytes 子串）": [
         ("双引擎全挂提示", "搜索服务不可达"),
         ("Bing 引擎名", "Bing"),
+    ],
+    "W30 文案（bytes 子串）": [
+        ("译文块标题", "译文"),
+        ("收藏菜单项", "取消收藏"),
+        ("收藏空态标题", "还没有收藏"),
+        ("清空收藏确认", "清空收藏"),
+        ("语音输入按钮", "语音输入"),
+        ("语音未识别提示", "没听清，再说一次试试"),
+        ("无语音服务提示", "本机没有可用的语音识别服务"),
+        ("收藏页说明", "删掉会话也不会丢"),
     ],
     "W29 文案（bytes 子串）": [
         ("高级参数入口", "自定义请求头"),
