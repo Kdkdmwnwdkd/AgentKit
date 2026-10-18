@@ -141,9 +141,23 @@ private fun CodeBlockView(block: MdBlock.CodeBlock) {
         ) {
             // W-30：语法高亮——复用编辑器同一个词法器，模型给的代码块也能着色。
             // 只改显示：复制按钮拿到的仍是 block.code 原文。
+            val keywordColor = MaterialTheme.colorScheme.primary
+            val stringColor = MaterialTheme.colorScheme.tertiary
+            val commentColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+            val numberColor = MaterialTheme.colorScheme.secondary
             Text(
-                text = remember(block.code, block.language) {
-                    highlightCode(block.code.ifEmpty { " " }, block.language)
+                text = remember(
+                    block.code, block.language,
+                    keywordColor, stringColor, commentColor, numberColor
+                ) {
+                    highlightCode(
+                        code = block.code.ifEmpty { " " },
+                        language = block.language,
+                        keyword = keywordColor,
+                        string = stringColor,
+                        comment = commentColor,
+                        number = numberColor
+                    )
                 },
                 style = machine,
                 softWrap = false
@@ -260,13 +274,15 @@ private fun AnnotatedString.Builder.appendSpans(
  * 语言别名先归一再查词法器；不认识的语言返回纯文本——不猜、不硬套关键字。
  * 颜色从 MaterialTheme 取（跟随主题/深色模式），不在词法器里写死色值。
  */
-@Composable
-private fun highlightCode(code: String, language: String): AnnotatedString {
+private fun highlightCode(
+    code: String,
+    language: String,
+    keyword: Color,
+    string: Color,
+    comment: Color,
+    number: Color
+): AnnotatedString {
     val normalized = SyntaxHighlighter.normalizeLanguage(language) ?: return AnnotatedString(code)
-    val keyword = MaterialTheme.colorScheme.primary
-    val string = MaterialTheme.colorScheme.tertiary
-    val comment = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
-    val number = MaterialTheme.colorScheme.secondary
     return buildAnnotatedString {
         append(code)
         SyntaxHighlighter.spans(code, normalized).forEach { span ->
