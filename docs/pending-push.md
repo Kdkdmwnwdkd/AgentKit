@@ -1,5 +1,8 @@
 # 待推送批次交接单（沙箱 GitHub 写通道）
 
+> 📘 **完整通道说明见 `docs/网络通道与加速指南.md`**（沙盒绕过 / MCP 写通道 / gh-proxy 加速链接，
+> 含命令与踩坑清单）。本文只保留最关键速查，**细节一律查那边，不要在这维护两份**。
+
 > 2026-10-14 建立。**给下一个会话的自己看**：沙箱内 `curl https://api.github.com` 已被出网代理劫持（DNS → 198.18.0.x 保留网段），普通 shell 永远推不上去。
 
 ## ⚡ 下载一律走 gh-proxy 加速（2026-10-17 血的教训）
@@ -54,21 +57,12 @@ https://gh-proxy.com/https://github.com/<owner>/<repo>/archive/refs/heads/<branc
 
 ⚠️ **本会话（2026-10-14 19:00 前后启动）不可用** —— MCP 服务在会话启动时加载，改动需**新会话**生效。
 
-## 待推送的 5 个批次（按序，每步等 CI 全绿）
+## 待推送批次（已全部完成，本节归档）
 
-所有内容均为本地已验证状态；快照目录用于防污染，**从快照读取而非 `/workspace`**。
+早期 W-9 之前的 5 个批次（proot 三件套 / T02–T06 / T01 / T07+T08 / 进度文档）**均已推送完成**，
+快照目录与推送脚本不再需要。后续批次直接按《网络通道与加速指南》的通道走。
 
-| # | 批次 | 快照/来源 | 文件数 |
-|---|------|-----------|--------|
-| 1 | proot 三件套 | `$ART/proot-snap/` | 7（含 3 个**二进制**：proot / libtalloc.so.2 / libandroid-shmem.so） |
-| 2 | T02–T06 工具契约批 | `$ART/t02t06-snap/` | 17 |
-| 3 | T01 Agent 运行时内核 | `$ART/t01-snap/` | 18 |
-| 4 | T07+T08+应用操控（Phase 1 收尾） | `$ART/phase1-final-snap/` | 18 |
-| 5 | 进度与计划文档 | `/workspace/docs/phase1-progress-and-plan.md` | 1 |
 
-`$ART = /root/.codebuddy/artifact/2f8a7d30-9c21-4f0b-1d44-61945590b000`
-
-推送脚本（curl 版，**当前不可用**，保留供参考）：`$ART/push_proot.py`、`push_t02t06.py`、`push_t01.py`、`push_phase1final.py`、`push_docs.py`；队列：`$ART/push_queue.txt`；守护：`$ART/autopush2.py`。
 
 ## 用 MCP 推送的做法
 
