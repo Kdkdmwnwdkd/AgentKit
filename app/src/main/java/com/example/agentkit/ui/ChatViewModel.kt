@@ -88,6 +88,11 @@ import com.example.agentkit.skill.SkillManifest
 import com.example.agentkit.skill.createUseSkillTool
 import com.example.agentkit.tools.AppInstallTool
 import com.example.agentkit.tools.AppUninstallTool
+import com.example.agentkit.core.job.JobNotifier
+import com.example.agentkit.core.job.JobRunner
+import com.example.agentkit.core.job.JobStore
+import com.example.agentkit.tools.ShellBackgroundTool
+import com.example.agentkit.tools.ShellJobsTool
 import com.example.agentkit.tools.GitHubCommitTool
 import com.example.agentkit.tools.GitHubLogTool
 import com.example.agentkit.tools.GitHubStatusTool
@@ -679,6 +684,15 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
      * 由 [_bookmarks] 驱动收藏页与菜单勾选态。
      */
     private val bookmarkStore = BookmarkStore(File(app.filesDir, "bookmarks.json"))
+
+    /**
+     * W-33：后台命令。独立进程 + 日志落盘 + 完成通知，
+     * 与会话池完全隔离（不抢 PTY、不排队）。
+     */
+    private val jobStore = JobStore(File(app.filesDir, "jobs"))
+    private val jobRunner = JobRunner(jobStore) { job ->
+        runCatching { JobNotifier.notify(app, job) }
+    }
     private val _bookmarks = MutableStateFlow(bookmarkStore.list())
     val bookmarks: StateFlow<List<Bookmark>> = _bookmarks.asStateFlow()
 
@@ -784,6 +798,9 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         register(GitHubStatusTool(app))
         register(GitHubCommitTool(app))
         register(GitHubLogTool(app))
+        // W-33：后台命令——长命令不再阻塞整轮，跑完发通知
+        register(ShellBackgroundTool(app, jobRunner))
+        register(ShellJobsTool(jobStore, jobRunner))
     }
 
     /** JS 执行引擎（Rhino，纯 Java 无需 NDK）；初始化失败则降级为仅 prompt 形态。 */
@@ -801,6 +818,8 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     init {
         // L8：日志目录就绪后才能记录后续任何一行
         AgentLogger.init(logDir)
+        // W-33：上次进程被杀时残留的 running 任务标为「结果未知」，不假装还在跑
+        runCatching { jobStore.reconcile(System.currentTimeMillis()) }
         if (skillsSnapshot.isNotEmpty()) {
             // use_skill 工具的 systemPrompt 会被 AgentLoop 自动拼进系统提示（利用工具自带提示特性）
             // 用 skillsProvider 动态感知导入/卸载/授权的技能变化
