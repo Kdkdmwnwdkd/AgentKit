@@ -104,7 +104,10 @@ object PlanBroker {
         finish(planId, Decision.Rejected(reason.trim()))
 
     /** 取消当前待批计划（停止按钮 / 离开会话时调用）。 */
-    fun cancel(): Boolean = finish(current?.id ?: return false, Decision.Rejected("已取消"))
+    fun cancel(): Boolean {
+        val id = current?.id ?: return false
+        return finish(id, Decision.Rejected("已取消"))
+    }
 
     private fun finish(planId: String, decision: Decision): Boolean {
         val target: CompletableDeferred<Decision>
