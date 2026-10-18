@@ -25,6 +25,8 @@ import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.Folder
+import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.Save
 import androidx.compose.material.icons.outlined.Storage
 import androidx.compose.material3.Icon
@@ -64,13 +66,14 @@ fun EditorScreen() {
     var current by remember { mutableStateOf<String?>(null) }
     var editorText by remember { mutableStateOf("") }
     var dirty by remember { mutableStateOf(false) }
-    var files by remember { mutableStateOf(WorkspaceStore.list(context).map { it.name }) }
+    var tree by remember { mutableStateOf(WorkspaceStore.listTree(context)) }
+    var collapsed by remember { mutableStateOf(setOf<String>()) }
     var checkpoints by remember { mutableStateOf(CheckpointStore.list(context)) }
     var newName by remember { mutableStateOf("") }
     var cpLabel by remember { mutableStateOf("") }
 
     fun refresh() {
-        files = WorkspaceStore.list(context).map { it.name }
+        tree = WorkspaceStore.listTree(context)
         checkpoints = CheckpointStore.list(context)
     }
 
@@ -91,24 +94,41 @@ fun EditorScreen() {
                     .verticalScroll(rememberScrollState())
                     .padding(AgentSpacing.space5)
             ) {
-                AkSectionCard(title = "工作区文件", icon = Icons.Outlined.Description) {
-                    if (files.isEmpty()) {
+                AkSectionCard(
+                    title = "工作区",
+                    icon = Icons.Outlined.Description,
+                    description = "与 Agent 工具同一个目录（agent_workspace），支持子目录；点目录折叠/展开。"
+                ) {
+                    if (tree.isEmpty()) {
                         Text(
                             "暂无文件，在下方新建。",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     } else {
-                        files.forEach { name ->
-                            FileRow(
-                                name = name,
-                                onClick = {
-                                    val t = WorkspaceStore.read(context, name)
-                                    if (t != null) { current = name; editorText = t; dirty = false }
-                                    else Toast.makeText(context, "无法读取 $name", Toast.LENGTH_SHORT).show()
-                                }
-                            )
-                            Spacer(Modifier.height(AgentSpacing.space2))
+                        // W-27：文件树（目录可折叠）。折叠目录下的子项直接跳过。
+                        tree.forEach { entry ->
+                            val hidden = collapsed.any { entry.path.startsWith("$it/") }
+                            if (!hidden) {
+                                TreeRow(
+                                    entry = entry,
+                                    collapsed = entry.path in collapsed,
+                                    onToggle = {
+                                        collapsed = if (entry.path in collapsed) {
+                                            collapsed - entry.path
+                                        } else collapsed + entry.path
+                                    },
+                                    onOpen = {
+                                        val t = WorkspaceStore.read(context, entry.path)
+                                        if (t != null) {
+                                            current = entry.path; editorText = t; dirty = false
+                                        } else {
+                                            Toast.makeText(context, "无法读取 ${entry.path}", Toast.LENGTH_SHORT).show()
+                                        }
+                                    }
+                                )
+                                Spacer(Modifier.height(AgentSpacing.space1))
+                            }
                         }
                     }
                     Spacer(Modifier.height(AgentSpacing.space3))
@@ -116,14 +136,14 @@ fun EditorScreen() {
                         MonoInput(
                             value = newName,
                             onValueChange = { newName = it },
-                            placeholder = "新文件名，如 script.js",
+                            placeholder = "新文件，如 src/main.js",
                             imeSend = Icons.Outlined.Add,
                             onSend = {
                                 val n = newName.trim()
                                 when {
                                     n.isEmpty() -> Unit
-                                    WorkspaceStore.safeName(n) == null ->
-                                        Toast.makeText(context, "文件名含非法字符", Toast.LENGTH_SHORT).show()
+                                    com.example.agentkit.core.workspace.WorkspacePaths.safeRelPath(n) == null ->
+                                        Toast.makeText(context, "路径含非法字符（不允许 ..）", Toast.LENGTH_SHORT).show()
                                     !WorkspaceStore.create(context, n) ->
                                         Toast.makeText(context, "文件已存在", Toast.LENGTH_SHORT).show()
                                     else -> { newName = ""; refresh(); Toast.makeText(context, "已创建 $n", Toast.LENGTH_SHORT).show() }
@@ -229,12 +249,21 @@ fun EditorScreen() {
                         .background(MaterialTheme.colorScheme.surface)
                         .padding(AgentSpacing.space3)
                 ) {
+                    val language = com.example.agentkit.core.workspace.WorkspacePaths.languageOf(open)
                     BasicTextField(
                         value = editorText,
                         onValueChange = { editorText = it; dirty = true },
                         modifier = Modifier.fillMaxSize(),
                         textStyle = EditorMonoStyle.copy(color = MaterialTheme.colorScheme.onSurface),
-                        cursorBrush = SolidColor(MaterialTheme.colorScheme.primary)
+                        cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                        // W-27：语法高亮只改显示，写进文件的仍是原文
+                        visualTransformation = SyntaxHighlightTransformation(
+                            language = language,
+                            keywordColor = MaterialTheme.colorScheme.primary,
+                            stringColor = MaterialTheme.colorScheme.tertiary,
+                            commentColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f),
+                            numberColor = MaterialTheme.colorScheme.secondary
+                        )
                     )
                 }
                 Spacer(Modifier.height(AgentSpacing.space3))
@@ -273,30 +302,57 @@ fun EditorScreen() {
     }
 }
 
-/** 工作区文件行。 */
+/**
+ * 工作区树节点（W-27）：目录可折叠（点击切换），文件点击打开。
+ * 缩进按 [WorkspaceStore.TreeEntry.depth]，每层 14dp——文件多也看得清层级。
+ */
 @Composable
-private fun FileRow(name: String, onClick: () -> Unit) {
+private fun TreeRow(
+    entry: WorkspaceStore.TreeEntry,
+    collapsed: Boolean,
+    onToggle: () -> Unit,
+    onOpen: () -> Unit
+) {
     Row(
         Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(14.dp))
-            .clickable(onClick = onClick)
-            .padding(horizontal = AgentSpacing.space3, vertical = AgentSpacing.space3),
+            .clip(RoundedCornerShape(12.dp))
+            .clickable { if (entry.isDir) onToggle() else onOpen() }
+            .padding(
+                start = AgentSpacing.space2 + (entry.depth * 14).dp,
+                end = AgentSpacing.space3,
+                top = AgentSpacing.space2,
+                bottom = AgentSpacing.space2
+            ),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Icon(
-            imageVector = Icons.Outlined.Edit,
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.size(20.dp)
+            imageVector = when {
+                entry.isDir && collapsed -> Icons.Outlined.Folder
+                entry.isDir -> Icons.Outlined.FolderOpen
+                else -> Icons.Outlined.Description
+            },
+            contentDescription = if (entry.isDir) (if (collapsed) "展开" else "折叠") else "打开",
+            tint = if (entry.isDir) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.primary,
+            modifier = Modifier.size(19.dp)
         )
-        Spacer(Modifier.width(AgentSpacing.space3))
+        Spacer(Modifier.width(AgentSpacing.space2))
         Text(
-            name,
-            style = MaterialTheme.typography.bodyLarge,
+            entry.name,
+            style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurface,
             modifier = Modifier.weight(1f)
         )
+        if (!entry.isDir) {
+            val lang = com.example.agentkit.core.workspace.WorkspacePaths.languageOf(entry.path)
+            if (lang != null) {
+                Text(
+                    lang,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
     }
 }
 
