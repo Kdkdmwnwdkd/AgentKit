@@ -25,6 +25,7 @@ import com.example.agentkit.automation.UiClickTool
 import com.example.agentkit.automation.UiInputTool
 import com.example.agentkit.automation.UiKeyTool
 import com.example.agentkit.automation.UiLongPressTool
+import com.example.agentkit.automation.OcrTool
 import com.example.agentkit.automation.UiScreenshotTool
 import com.example.agentkit.automation.UiSwipeTool
 import com.example.agentkit.automation.UiTapTool
@@ -81,6 +82,8 @@ import com.example.agentkit.skill.SkillLoader
 import com.example.agentkit.skill.ImportedSkillRepository
 import com.example.agentkit.skill.SkillManifest
 import com.example.agentkit.skill.createUseSkillTool
+import com.example.agentkit.tools.AppInstallTool
+import com.example.agentkit.tools.AppUninstallTool
 import com.example.agentkit.tools.LoadSkillLogic
 import com.example.agentkit.tools.LoadSkillTool
 import java.io.IOException
@@ -707,6 +710,10 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         // 通道不可用（池无可用后端）时仍走「诚实降级为需用户手动停止」，绝不静默假装成功。
         // apply 内传 this（不能传 registry 自身，会触发类型推断递归）
         registerAppControlTools(this, app, terminalShellCommandRunner(terminalPool))
+        // W-24：离线 OCR（截图/读图 → 文字，任何模型都能读）+ 软件安装/卸载
+        register(OcrTool(workspace))
+        register(AppInstallTool(app, workspace))
+        register(AppUninstallTool(app, terminalShellCommandRunner(terminalPool)))
     }
 
     /** JS 执行引擎（Rhino，纯 Java 无需 NDK）；初始化失败则降级为仅 prompt 形态。 */
