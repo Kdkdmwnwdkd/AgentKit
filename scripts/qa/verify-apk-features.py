@@ -148,6 +148,17 @@ POOL_GROUPS = {
         ("Bing 跳转还原", "realUrlBing"),
         ("Bing 端点常量值", "https://cn.bing.com/search"),
     ],
+    "W25 Plan 模式（pool 池条目精确匹配）": [
+        ("计划中转站", "Lcom/example/agentkit/core/agent/PlanBroker;"),
+        ("计划工具类", "Lcom/example/agentkit/tools/PlanTool;"),
+        ("计划解析纯函数", "Lcom/example/agentkit/tools/PlanLogic;"),
+        ("计划工具名", "plan_propose"),
+        ("批准码", "plan_approved"),
+        ("拒绝码", "plan_rejected"),
+        ("超时未批准码", "plan_timeout"),
+        ("步骤清洗函数", "stripBullet"),
+        ("步骤解析函数", "parseSteps"),
+    ],
     "W24 OCR + 软件管理（pool 池条目精确匹配）": [
         ("OCR 工具类", "Lcom/example/agentkit/automation/OcrTool;"),
         ("OCR 工具名", "ocr_image"),
@@ -260,6 +271,13 @@ BYTES_GROUPS = {
     "W22 文案（bytes 子串）": [
         ("双引擎全挂提示", "搜索服务不可达"),
         ("Bing 引擎名", "Bing"),
+    ],
+    "W25 文案（bytes 子串）": [
+        ("计划卡片标题", "计划待确认"),
+        ("批准按钮", "批准执行"),
+        ("拒绝按钮", "不要执行"),
+        ("模式名", "先计划后执行"),
+        ("超时安全提示", "不得执行破坏性步骤"),
     ],
     "W24 文案（bytes 子串）": [
         ("安装器提示", "已打开系统安装器"),
