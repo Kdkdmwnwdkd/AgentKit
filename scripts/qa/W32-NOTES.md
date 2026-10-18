@@ -56,6 +56,13 @@ harness 抓到一个真 bug：`drop(1)` 保留了标题后的空行，不 trim �
 - harness **24/24**（blob sha 4 + 路径 6 + 差异 5 + 消息 4 + 摘要/边界 5）
 - 既有 harness：27/25/14/9/12/13/18/16/34/18 全无回归
 - 反验断言：13 条池条目 + 5 条文案
+- **真实仓库对拍**（用 AgentKit 自己的仓库跑只读接口）：
+  - `/git/ref/heads/main` 的 `object.sha`、`/git/commits/{sha}` 的 `tree.sha`、
+    `/git/trees/{tree}?recursive=1` 的 `tree[].path/sha/type` 字段假设全部成立；
+  - 递归 tree 返回 364 个 blob 条目；
+  - 取 `scripts/qa/W32Verification.kt` 的真实内容按本实现公式算 sha1，
+    与 GitHub 返回的 blob sha **完全一致**（`11f5e6e85113…`）——证明 status 的
+    「未改也判成改了」这类误判不会发生。
 
 ## 本批未做（下一批）
 
