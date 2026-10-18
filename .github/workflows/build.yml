@@ -44,16 +44,17 @@ jobs:
         run: ./scripts/fetch-llama.sh git
 
       - name: Fetch Shizuku APK (内置一键安装用，构建时拉取，不进仓库)
+        # 不阻断构建：GitHub API 对共享 runner IP 常返 403（限流）。
+        # 拿不到就跳过内置包——应用会退到官方发布页，功能不缺失，只是少一步便利。
+        continue-on-error: true
         run: |
           mkdir -p app/src/main/assets
-          URL=$(curl -fsSL --max-time 60 https://api.github.com/repos/RikkaApps/Shizuku/releases/latest \
-            | python3 -c "import json,sys;d=json.load(sys.stdin);a=[x for x in d.get('assets',[]) if x['name'].endswith('.apk')];print(a[0]['browser_download_url'] if a else '')")
+          URL=$(curl -sSL --max-time 60 https://api.github.com/repos/RikkaApps/Shizuku/releases/latest 2>/dev/null | python3 -c "import json,sys;d=json.load(sys.stdin);a=[x for x in d.get('assets',[]) if x['name'].endswith('.apk')];print(a[0]['browser_download_url'] if a else '')" 2>/dev/null || true)
           if [ -n "$URL" ]; then
             echo "downloading $URL"
-            curl -fL --max-time 180 "$URL" -o app/src/main/assets/shizuku.apk
-            ls -lh app/src/main/assets/shizuku.apk
+            curl -fL --max-time 180 "$URL" -o app/src/main/assets/shizuku.apk && ls -lh app/src/main/assets/shizuku.apk || echo "WARN: 下载失败，跳过"
           else
-            echo "WARN: 未找到 Shizuku APK，跳过内置安装包（应用会退到官方发布页）"
+            echo "WARN: 未找到 Shizuku APK（API 限流或发布变更），跳过内置安装包（应用会退到官方发布页）"
           fi
 
       - name: Make gradlew executable
