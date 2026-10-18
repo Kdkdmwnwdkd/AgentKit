@@ -156,7 +156,7 @@ POOL_GROUPS = {
         ("卸载成功码", "skill_uninstalled"),
         ("体积上限常量名", "MAX_ZIP_BYTES"),
         ("SSRF 判定函数", "isPrivateHost"),
-        ("HF 国内镜像域名", "hf-mirror.com"),
+        ("HF 国内镜像域名", "https://hf-mirror.com/"),
     ],
     "W21 多 Key 轮询（pool 池条目精确匹配）": [
         ("Key 池决策纯函数", "Lcom/example/agentkit/core/llm/KeyPoolPolicy;"),
