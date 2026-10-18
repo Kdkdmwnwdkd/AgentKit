@@ -21,6 +21,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.Apps
 import androidx.compose.material.icons.outlined.Bolt
+import androidx.compose.material.icons.outlined.Bookmark
 import androidx.compose.material.icons.outlined.Build
 import androidx.compose.material.icons.outlined.Cloud
 import androidx.compose.material.icons.outlined.Description
@@ -292,6 +293,13 @@ fun SettingsScreen(
                     title = "提示词库",
                     description = "输入栏闪电按钮唤起的快捷指令，可新建与编辑",
                     onClick = { onNavigate(AppDest.PROMPTS) }
+                )
+                AkDivider(Modifier.padding(start = AgentSpacing.space4))
+                AkListItem(
+                    icon = Icons.Outlined.Bookmark,
+                    title = "收藏",
+                    description = "对话里收藏的消息；删会话也不丢",
+                    onClick = { onNavigate(AppDest.BOOKMARKS) }
                 )
                 AkDivider(Modifier.padding(start = AgentSpacing.space4))
                 AkListItem(

@@ -92,7 +92,11 @@ data class MsgRecord(
      * 空 = 无思考（旧文件/非推理模型）；与 content 分字段存储，
      * 读回历史时不把自言自语当对话内容发给下一轮。
      */
-    val reasoning: String = ""
+    val reasoning: String = "",
+    /**
+     * W-30：消息时间（epoch 毫秒）。0 = 旧数据/未记录——UI 不显示时间行，而不是写个 1970。
+     */
+    val timeMs: Long = 0
 )
 
 /**
@@ -135,7 +139,8 @@ internal fun UiItem.toMsgRecord(): MsgRecord = when (this) {
     is UiItem.User -> MsgRecord(
         id = UUID.randomUUID().toString(),
         role = ROLE_USER,
-        content = text.take(MAX_FIELD_CHARS)
+        content = text.take(MAX_FIELD_CHARS),
+        timeMs = timeMs
     )
 
     is UiItem.Assistant -> MsgRecord(
@@ -146,7 +151,8 @@ internal fun UiItem.toMsgRecord(): MsgRecord = when (this) {
         promptTokens = usage?.promptTokens ?: 0L,
         completionTokens = usage?.completionTokens ?: 0L,
         // 功能五（P1-9）：推理过程随气泡落盘（截断纪律同正文）
-        reasoning = reasoning.orEmpty().take(MAX_FIELD_CHARS)
+        reasoning = reasoning.orEmpty().take(MAX_FIELD_CHARS),
+        timeMs = timeMs
     )
 
     is UiItem.Tool -> MsgRecord(
@@ -173,7 +179,7 @@ internal fun MsgRecord.toUiItem(): UiItem = when (role) {
         isError = isError
     )
 
-    ROLE_USER -> UiItem.User(content)
+    ROLE_USER -> UiItem.User(content, timeMs = timeMs)
 
     // 功能五（P1-5）：还原 token 用量；两个计数都 0 = 无数据（旧文件/供应商没给）→ null
     ROLE_ASSISTANT -> UiItem.Assistant(
@@ -184,7 +190,8 @@ internal fun MsgRecord.toUiItem(): UiItem = when (role) {
             null
         },
         // 功能五（P1-9）：还原推理过程（空白 = 无思考，UI 不渲染折叠块）
-        reasoning = reasoning.takeIf { it.isNotBlank() }
+        reasoning = reasoning.takeIf { it.isNotBlank() },
+        timeMs = timeMs
     )
     // 未知 role 兜底按 assistant 渲染：宁可显示不错丢（历史数据兼容）
     else -> UiItem.Assistant(content)
@@ -205,7 +212,7 @@ internal fun List<MsgRecord>.toUiItems(): List<UiItem> = map { it.toUiItem() }
  */
 internal fun ConversationRecord.toUiItems(): List<UiItem> = buildList {
     turns.forEachIndexed { turnIndex, turn ->
-        add(UiItem.User(turn.user.content, turnIndex))
+        add(UiItem.User(turn.user.content, turnIndex, timeMs = turn.user.timeMs))
         turn.trace.forEach { add(it.toUiItem()) }
         val sel = turn.variants.getOrNull(turn.selectedIndex)
         if (sel != null) {
@@ -222,7 +229,8 @@ internal fun ConversationRecord.toUiItems(): List<UiItem> = buildList {
                         null
                     },
                     // 功能五（P1-9）：选中变体的推理过程一起还原（空白 → null）
-                    reasoning = sel.reasoning.takeIf { it.isNotBlank() }
+                    reasoning = sel.reasoning.takeIf { it.isNotBlank() },
+                    timeMs = sel.timeMs
                 )
             )
         }

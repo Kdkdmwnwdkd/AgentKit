@@ -33,6 +33,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
+import com.example.agentkit.core.text.SyntaxHighlighter
 
 /**
  * Markdown 渲染层（Compose）：把 [MarkdownParser] 产出的纯 AST 画成对话气泡内容。
@@ -138,8 +139,12 @@ private fun CodeBlockView(block: MdBlock.CodeBlock) {
                 .fillMaxWidth()
                 .horizontalScroll(rememberScrollState())
         ) {
+            // W-30：语法高亮——复用编辑器同一个词法器，模型给的代码块也能着色。
+            // 只改显示：复制按钮拿到的仍是 block.code 原文。
             Text(
-                text = block.code.ifEmpty { " " },
+                text = remember(block.code, block.language) {
+                    highlightCode(block.code.ifEmpty { " " }, block.language)
+                },
                 style = machine,
                 softWrap = false
             )
@@ -245,6 +250,40 @@ private fun AnnotatedString.Builder.appendSpans(
             is MdSpan.Link -> withStyle(
                 SpanStyle(color = primary, textDecoration = TextDecoration.Underline)
             ) { appendSpans(span.children, primary, codeBg) }
+        }
+    }
+}
+
+/**
+ * 把代码文本转成带颜色的 [AnnotatedString]（W-30）。
+ *
+ * 语言别名先归一再查词法器；不认识的语言返回纯文本——不猜、不硬套关键字。
+ * 颜色从 MaterialTheme 取（跟随主题/深色模式），不在词法器里写死色值。
+ */
+@Composable
+private fun highlightCode(code: String, language: String): AnnotatedString {
+    val normalized = SyntaxHighlighter.normalizeLanguage(language) ?: return AnnotatedString(code)
+    val keyword = MaterialTheme.colorScheme.primary
+    val string = MaterialTheme.colorScheme.tertiary
+    val comment = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+    val number = MaterialTheme.colorScheme.secondary
+    return buildAnnotatedString {
+        append(code)
+        SyntaxHighlighter.spans(code, normalized).forEach { span ->
+            // 词法器保证有序不重叠，但边界仍做一次夹取：渲染层不该因越界崩
+            val start = span.start.coerceIn(0, code.length)
+            val end = span.end.coerceIn(start, code.length)
+            if (end <= start) return@forEach
+            addStyle(
+                SpanStyle(color = when (span.kind) {
+                    SyntaxHighlighter.Kind.KEYWORD -> keyword
+                    SyntaxHighlighter.Kind.STRING -> string
+                    SyntaxHighlighter.Kind.COMMENT -> comment
+                    SyntaxHighlighter.Kind.NUMBER -> number
+                }),
+                start,
+                end
+            )
         }
     }
 }
