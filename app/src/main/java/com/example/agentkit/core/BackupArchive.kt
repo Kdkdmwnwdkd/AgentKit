@@ -34,6 +34,8 @@ object BackupArchive {
     internal const val ENTRY_CONFIG = "config.json"
     /** hotfix28：提示词库快照（老备份件没有该成员，恢复时跳过）。 */
     internal const val ENTRY_PROMPTS = "prompts.json"
+    /** W-26：备用 Key 池快照（老备份件没有该成员，恢复时跳过）。 */
+    internal const val ENTRY_KEYPOOL = "keypool.json"
 
     /** 解压累计上限（zip 炸弹防护）。 */
     private const val MAX_TOTAL_BYTES = 64L * 1024 * 1024
@@ -48,7 +50,9 @@ object BackupArchive {
             val memoriesJson: String,
             val configJson: String?,
             /** hotfix28：提示词库快照（null = 老备份件没带，恢复时不动现有提示词）。 */
-            val promptsJson: String? = null
+            val promptsJson: String? = null,
+            /** W-26：备用 Key 池快照（null = 老备份件没带，恢复时不动现有 Key 池）。 */
+            val keyPoolJson: String? = null
         ) : ReadResult()
 
         /** 拒收：不是 ZIP / 缺 manifest / manifest 解析失败 / 版本不认识 / 条数不一致。 */
@@ -64,7 +68,8 @@ object BackupArchive {
         conversationsJson: String,
         memoriesJson: String,
         configJson: String?,
-        promptsJson: String? = null
+        promptsJson: String? = null,
+        keyPoolJson: String? = null
     ): ByteArray {
         val bos = ByteArrayOutputStream()
         ZipOutputStream(bos).use { zip ->
@@ -73,6 +78,7 @@ object BackupArchive {
             zip.putText(ENTRY_MEMORIES, memoriesJson)
             if (configJson != null) zip.putText(ENTRY_CONFIG, configJson)
             if (promptsJson != null) zip.putText(ENTRY_PROMPTS, promptsJson)
+            if (keyPoolJson != null) zip.putText(ENTRY_KEYPOOL, keyPoolJson)
         }
         return bos.toByteArray()
     }
@@ -133,7 +139,10 @@ object BackupArchive {
                 return ReadResult.Invalid("提示词条数与清单不符（清单 ${manifest.promptCount}，实际 $promptCount）")
             }
         }
-        return ReadResult.Ok(manifest, conversationsJson, memoriesJson, texts[ENTRY_CONFIG], promptsJson)
+        return ReadResult.Ok(
+            manifest, conversationsJson, memoriesJson, texts[ENTRY_CONFIG], promptsJson,
+            texts[ENTRY_KEYPOOL]
+        )
     }
 
     private val ENTRY_WHITELIST = setOf(
@@ -141,7 +150,8 @@ object BackupArchive {
         ENTRY_CONVERSATIONS,
         ENTRY_MEMORIES,
         ENTRY_CONFIG,
-        ENTRY_PROMPTS
+        ENTRY_PROMPTS,
+        ENTRY_KEYPOOL
     )
 
     private fun ZipOutputStream.putText(name: String, text: String) {

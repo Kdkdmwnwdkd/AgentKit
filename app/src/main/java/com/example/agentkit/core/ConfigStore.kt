@@ -309,6 +309,7 @@ class ConfigStore(context: Context) {
         /** 功能五（P1-10）：回答完成提醒开关（默认关——通知是侵入式能力，opt-in）。 */
         private const val KEY_COMPLETION_NOTIFY = "completion_notify"
         private const val KEY_PLAN_MODE = "plan_mode"
+        private const val KEY_TASK_PROFILE = "task_profile_id"
         // hotfix32：聊天背景图（URI + 不透明度）
         private const val KEY_CHAT_BG_URI = "chat_bg_uri"
         private const val KEY_CHAT_BG_ALPHA = "chat_bg_alpha"
@@ -329,6 +330,16 @@ class ConfigStore(context: Context) {
     /** W-25：写任务模式（设置页开关即时生效，落盘供下次启动读取）。 */
     fun setPlanModeEnabled(enabled: Boolean) {
         sp.edit().putBoolean(KEY_PLAN_MODE, enabled).apply()
+    }
+
+    /**
+     * W-26：任务模型（标题生成 / 记忆抽取等轻量任务使用的档案 id）。
+     * 空串 = 跟随当前主配置（默认）。
+     */
+    fun taskProfileId(): String = sp.getString(KEY_TASK_PROFILE, "").orEmpty()
+
+    fun setTaskProfileId(id: String) {
+        sp.edit().putString(KEY_TASK_PROFILE, id.trim()).apply()
     }
 
     /**

@@ -54,6 +54,40 @@ class KeyPoolStore(context: Context) {
         prefs.edit().remove(key(profileId)).apply()
     }
 
+    /**
+     * W-26：导出全部档案的备用 Key 池（备份用）。
+     * 结构：`{"profileId":[{"id","label","key"}...]}`；无池的档案不写。
+     */
+    fun exportAll(): String {
+        val all = prefs.all
+        val map = LinkedHashMap<String, List<KeyPoolPolicy.KeySlot>>()
+        all.forEach { (k, v) ->
+            if (!k.startsWith("pool_") || v !is String) return@forEach
+            val profileId = k.removePrefix("pool_")
+            runCatching {
+                val slots = json.decodeFromString<List<KeyPoolPolicy.KeySlot>>(v)
+                if (slots.isNotEmpty()) map[profileId] = slots
+            }
+        }
+        return json.encodeToString(map)
+    }
+
+    /**
+     * W-26：从备份恢复全部 Key 池（覆盖同档案的现有池）。
+     * @return 恢复的档案数；JSON 非法返回 0（不抛，备份恢复不应因它失败）。
+     */
+    fun importAll(raw: String): Int {
+        if (raw.isBlank()) return 0
+        val map = runCatching {
+            json.decodeFromString<Map<String, List<KeyPoolPolicy.KeySlot>>>(raw)
+        }.getOrDefault(emptyMap())
+        map.forEach { (profileId, slots) ->
+            if (profileId.isBlank() || slots.isEmpty()) return@forEach
+            prefs.edit().putString(key(profileId), json.encodeToString(slots)).apply()
+        }
+        return map.size
+    }
+
     /** 展示用脱敏 Key：只留前 4 后 4，中间统一打码。 */
     fun masked(rawKey: String): String {
         val k = rawKey.trim()
