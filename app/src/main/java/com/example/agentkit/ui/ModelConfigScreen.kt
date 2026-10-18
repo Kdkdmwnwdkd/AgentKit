@@ -42,6 +42,7 @@ import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.Memory
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.StarBorder
 import androidx.compose.material.icons.outlined.Visibility
@@ -175,6 +176,7 @@ fun ModelConfigScreen(vm: ChatViewModel, onBack: () -> Unit) {
                         model = model,
                         onModel = { model = it },
                         providerId = providerId,
+                        onOpenLocalTab = { tab = 1 },
                         onProviderChange = { id ->
                             if (id != providerId) {
                                 // 智能预填：仅当当前值是旧供应商默认值或空时才填新默认值，
@@ -184,6 +186,11 @@ fun ModelConfigScreen(vm: ChatViewModel, onBack: () -> Unit) {
                                 }
                                 if (model == ProviderDefaults.defaultModel(providerId) || model.isBlank()) {
                                     model = ProviderDefaults.defaultModel(id)
+                                }
+                                // W-23：切到内置模型时清掉残留的 Key/端点，避免"本地还带着 API"的困惑
+                                if (id == ProviderCatalog.STYLE_LOCAL_LLAMA) {
+                                    apiKey = ""
+                                    baseUrl = ""
                                 }
                                 providerId = id
                             }
@@ -589,7 +596,8 @@ private fun ModelTab(
     onProviderChange: (String) -> Unit,
     dirty: Boolean,
     onSave: () -> Unit,
-    onCancel: () -> Unit
+    onCancel: () -> Unit,
+    onOpenLocalTab: () -> Unit = {}
 ) {
     val testResult by vm.testResult.collectAsStateWithLifecycle()
     val testing by vm.testing.collectAsStateWithLifecycle()
@@ -627,7 +635,7 @@ private fun ModelTab(
 
         if (isLocal) {
             // 本地模式：端点/Key/模型名三个字段全部不适用，换成当前本地模型状态卡
-            LocalModeSummaryCard(vm = vm)
+            LocalModeSummaryCard(vm = vm, onOpenLocalTab = onOpenLocalTab)
         } else {
             AkTextField(
                 value = baseUrl,
@@ -637,25 +645,36 @@ private fun ModelTab(
                 machine = true
             )
             Spacer(Modifier.height(AgentSpacing.space3))
-            // API Key：默认 masked，眼睛 IconButton（48dp 触控）切换明文
-            AkTextField(
-                value = apiKey,
-                onValueChange = onApiKey,
-                label = "API Key",
-                placeholder = "sk-…",
-                machine = true,
-                visualTransformation = if (keyRevealed) VisualTransformation.None
-                else PasswordVisualTransformation(),
-                trailing = {
-                    AkCircleIconButton(
-                        icon = if (keyRevealed) Icons.Outlined.VisibilityOff else Icons.Outlined.Visibility,
-                        description = if (keyRevealed) "隐藏 Key" else "显示 Key",
-                        onClick = { keyRevealed = !keyRevealed },
-                        iconSize = 20.dp
-                    )
-                }
-            )
-            KeySelfCheck(apiKey)
+            // W-23 修：本地部署（Ollama / LM Studio / vLLM）不需要 Key——
+            // 以前无条件渲染 Key 输入框，用户会以为「本地也要 API」，这是错的。
+            if (needsKey) {
+                // API Key：默认 masked，眼睛 IconButton（48dp 触控）切换明文
+                AkTextField(
+                    value = apiKey,
+                    onValueChange = onApiKey,
+                    label = "API Key",
+                    placeholder = "sk-…",
+                    machine = true,
+                    visualTransformation = if (keyRevealed) VisualTransformation.None
+                    else PasswordVisualTransformation(),
+                    trailing = {
+                        AkCircleIconButton(
+                            icon = if (keyRevealed) Icons.Outlined.VisibilityOff else Icons.Outlined.Visibility,
+                            description = if (keyRevealed) "隐藏 Key" else "显示 Key",
+                            onClick = { keyRevealed = !keyRevealed },
+                            iconSize = 20.dp
+                        )
+                    }
+                )
+                KeySelfCheck(apiKey)
+            } else {
+                Text(
+                    text = "本地服务不需要 API Key（Ollama / LM Studio / vLLM 直接连本机端口）。" +
+                        "填了也会被忽略。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
             Spacer(Modifier.height(AgentSpacing.space3))
             // 模型名： trailing 放大镜 IconButton（48dp 触控）打开「选择模型」弹窗，
             // 从端点拉取可用模型搜索选择，不必盲手填（用法同上方 API Key 字段的眼睛按钮）
@@ -673,6 +692,15 @@ private fun ModelTab(
                         iconSize = 20.dp
                     )
                 }
+            )
+
+            // W-23：给「想用内置模型但选错供应商」的用户一条明路——
+            // 不用再翻「全部供应商」弹窗找「本地模型（内置）」。
+            Spacer(Modifier.height(AgentSpacing.space2))
+            AkTextButton(
+                text = "改用 App 内置模型（无需 API / 不联网）",
+                icon = Icons.Outlined.Memory,
+                onClick = { onProviderChange(ProviderCatalog.STYLE_LOCAL_LLAMA) }
             )
         }
     }
@@ -1498,7 +1526,7 @@ private fun LocalModelsTab(vm: ChatViewModel) {
 
 /** 「模型」页签里本地模式的状态摘要（点「本地模型」页签可管理）。 */
 @Composable
-private fun LocalModeSummaryCard(vm: ChatViewModel) {
+private fun LocalModeSummaryCard(vm: ChatViewModel, onOpenLocalTab: () -> Unit = {}) {
     val active by vm.localActive.collectAsStateWithLifecycle()
     val loaded by vm.localLoaded.collectAsStateWithLifecycle()
     val models by vm.localModels.collectAsStateWithLifecycle()
@@ -1529,6 +1557,14 @@ private fun LocalModeSummaryCard(vm: ChatViewModel) {
             },
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(AgentSpacing.space2))
+        // W-23：给一条直接入口——用户反馈「切到本地模式后下面啥都没有」，
+        // 其实就是没找到顶部的「本地模型」页签。
+        AkTextButton(
+            text = if (active.isBlank()) "打开「本地模型」页签，下载一个模型" else "打开「本地模型」页签管理模型",
+            icon = Icons.Outlined.Memory,
+            onClick = onOpenLocalTab
         )
     }
 }
