@@ -148,6 +148,19 @@ POOL_GROUPS = {
         ("Bing 跳转还原", "realUrlBing"),
         ("Bing 端点常量值", "https://cn.bing.com/search"),
     ],
+    "W24 OCR + 软件管理（pool 池条目精确匹配）": [
+        ("OCR 工具类", "Lcom/example/agentkit/automation/OcrTool;"),
+        ("OCR 工具名", "ocr_image"),
+        ("OCR 成功码", "ocr_ok"),
+        ("ML Kit 中文识别器类", "Lcom/google/mlkit/vision/text/chinese/ChineseTextRecognizerOptions;"),
+        ("软件管理纯函数", "Lcom/example/agentkit/tools/AppManageLogic;"),
+        ("安装工具类", "Lcom/example/agentkit/tools/AppInstallTool;"),
+        ("卸载工具类", "Lcom/example/agentkit/tools/AppUninstallTool;"),
+        ("安装工具名", "app_install"),
+        ("卸载工具名", "app_uninstall"),
+        ("安装器已打开码", "installer_opened"),
+        ("卸载结果判定函数", "interpretUninstall"),
+    ],
     "W23 load_skill + 本地模型修复（pool 池条目精确匹配）": [
         ("load_skill 工具类", "Lcom/example/agentkit/tools/LoadSkillTool;"),
         ("技能校验纯函数", "Lcom/example/agentkit/tools/LoadSkillLogic;"),
@@ -247,6 +260,12 @@ BYTES_GROUPS = {
     "W22 文案（bytes 子串）": [
         ("双引擎全挂提示", "搜索服务不可达"),
         ("Bing 引擎名", "Bing"),
+    ],
+    "W24 文案（bytes 子串）": [
+        ("安装器提示", "已打开系统安装器"),
+        ("自我卸载保护", "不能卸载 AgentKit 自己"),
+        ("OCR 无文字提示", "识别完成，但画面里没有文字"),
+        ("卸载确认提示", "已打开系统卸载确认框"),
     ],
     "W23 文案（bytes 子串）": [
         ("本地服务无需 Key 说明", "本地服务不需要 API Key"),
