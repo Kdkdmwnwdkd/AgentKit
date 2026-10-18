@@ -201,6 +201,20 @@ fun ModelConfigScreen(vm: ChatViewModel, onBack: () -> Unit) {
                         onBodyText = { bodyText = it },
                         showAdvanced = showAdvanced,
                         onToggleAdvanced = { showAdvanced = !showAdvanced },
+                        balanceText = balanceText,
+                        balanceLoading = balanceLoading,
+                        onQueryBalance = {
+                            scope.launch {
+                                balanceLoading = true
+                                balanceText = com.example.agentkit.core.llm.BalanceService
+                                    .query(providerId, baseUrl, apiKey)
+                                    .fold(
+                                        onSuccess = { it },
+                                        onFailure = { "查询失败：${it.message}" }
+                                    )
+                                balanceLoading = false
+                            }
+                        },
                         onProviderChange = { id ->
                             if (id != providerId) {
                                 // 智能预填：仅当当前值是旧供应商默认值或空时才填新默认值，
@@ -631,7 +645,11 @@ private fun ModelTab(
     bodyText: String = "",
     onBodyText: (String) -> Unit = {},
     showAdvanced: Boolean = false,
-    onToggleAdvanced: () -> Unit = {}
+    onToggleAdvanced: () -> Unit = {},
+    // W-29：余额查询（同样由父组件持有状态与协程）
+    balanceText: String? = null,
+    balanceLoading: Boolean = false,
+    onQueryBalance: () -> Unit = {}
 ) {
     val testResult by vm.testResult.collectAsStateWithLifecycle()
     val testing by vm.testing.collectAsStateWithLifecycle()
@@ -807,18 +825,7 @@ private fun ModelTab(
         AkOutlinedButton(
             text = if (balanceLoading) "查询中…" else "查余额",
             enabled = baseUrl.isNotBlank() && apiKey.isNotBlank() && !balanceLoading,
-            onClick = {
-                scope.launch {
-                    balanceLoading = true
-                    balanceText = com.example.agentkit.core.llm.BalanceService
-                        .query(providerId, baseUrl, apiKey)
-                        .fold(
-                            onSuccess = { it },
-                            onFailure = { "查询失败：${it.message}" }
-                        )
-                    balanceLoading = false
-                }
-            }
+            onClick = onQueryBalance
         )
         balanceText?.let {
             Spacer(Modifier.height(AgentSpacing.space1))
