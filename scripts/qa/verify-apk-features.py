@@ -148,6 +148,21 @@ POOL_GROUPS = {
         ("Bing 跳转还原", "realUrlBing"),
         ("Bing 端点常量值", "https://cn.bing.com/search"),
     ],
+    "W32 GitHub 提交（pool 池条目精确匹配）": [
+        ("提交逻辑纯函数", "Lcom/example/agentkit/core/build/GitHubGitLogic;"),
+        ("提交服务", "Lcom/example/agentkit/core/build/GitHubGitService;"),
+        ("变更模型", "Lcom/example/agentkit/core/build/FileChange;"),
+        ("状态工具类", "Lcom/example/agentkit/tools/GitHubStatusTool;"),
+        ("提交工具类", "Lcom/example/agentkit/tools/GitHubCommitTool;"),
+        ("历史工具类", "Lcom/example/agentkit/tools/GitHubLogTool;"),
+        ("状态工具名", "github_status"),
+        ("提交工具名", "github_commit"),
+        ("历史工具名", "github_log"),
+        ("blob sha 函数", "blobSha"),
+        ("路径规范化函数", "normalizePath"),
+        ("提交成功码", "committed"),
+        ("有待提交码", "changes_found"),
+    ],
     "W31 并行子代理（pool 池条目精确匹配）": [
         ("子代理逻辑纯函数", "Lcom/example/agentkit/core/agent/SubAgentLogic;"),
         ("子代理执行器", "Lcom/example/agentkit/core/agent/SubAgentRunner;"),
@@ -334,6 +349,13 @@ BYTES_GROUPS = {
     "W22 文案（bytes 子串）": [
         ("双引擎全挂提示", "搜索服务不可达"),
         ("Bing 引擎名", "Bing"),
+    ],
+    "W32 文案（bytes 子串）": [
+        ("未配置提示", "还没有配置 GitHub 仓库"),
+        ("提交成功提示", "已提交 "),
+        ("跳过说明", "被跳过："),
+        ("一致提示", "没有待提交的变更"),
+        ("权限提示", "Contents 读写权限"),
     ],
     "W31 文案（bytes 子串）": [
         ("汇总标题", "子代理结果"),

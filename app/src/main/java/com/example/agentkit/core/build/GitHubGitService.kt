@@ -1,0 +1,275 @@
+package com.example.agentkit.core.build
+
+import com.example.agentkit.core.AgentLogger
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.add
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonArray
+import kotlinx.serialization.json.putJsonObject
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+import java.io.IOException
+import java.util.Base64
+import java.util.concurrent.TimeUnit
+
+/** 一条提交记录（`github_log` 用）。 */
+data class GitCommitInfo(
+    val sha: String,
+    val message: String,
+    val author: String,
+    val date: String
+)
+
+/**
+ * GitHub 提交服务（W-32）：用 Git Data API 把工作区文件提交到指定分支。
+ *
+ * ## 为什么不用本地 git
+ * 手机端没有 `git` 可执行文件（除非 proot 里装），引 JGit 又要多 3MB + java.nio desugar 风险。
+ * Git Data API 的 blobs→tree→commit→ref 四步能完整表达"提交"这个语义，
+ * 且与已有的 [GitHubBuildService] 共用同一套 PAT 配置。
+ *
+ * ## 为什么不支持删除
+ * 只提交「新增 + 修改」。远端有、本地没有的文件保持不动——
+ * 工作区是用户随手放文件的地方，把「本地没有」当成「要删」会误删仓库文件。
+ *
+ * ## 安全
+ * PAT 只进 Authorization 头；日志只记 owner/repo/branch 与变更数，绝不记 token。
+ */
+class GitHubGitService(
+    private val cfg: GitHubConfig,
+    http: OkHttpClient? = null
+) {
+    private val http: OkHttpClient = http ?: OkHttpClient.Builder()
+        .connectTimeout(15, TimeUnit.SECONDS)
+        .readTimeout(30, TimeUnit.SECONDS)
+        .writeTimeout(30, TimeUnit.SECONDS)
+        .build()
+
+    private val json = Json { ignoreUnknownKeys = true }
+
+    /**
+     * 比对工作区与远端分支，返回待提交的变更。
+     * 分支不存在（404）时给出「可能是 master」的提示。
+     */
+    suspend fun status(
+        branch: String,
+        local: Map<String, ByteArray>
+    ): Result<List<FileChange>> = withContext(Dispatchers.IO) {
+        runCatching {
+            val remote = remoteBlobs(branch)
+            GitHubGitLogic.diff(local, remote)
+        }.recoverCatching { e ->
+            throw IOException(friendly(e, branch))
+        }
+    }
+
+    /**
+     * 提交变更到分支。
+     *
+     * @param changes 由 [status] 得出的变更（调用方负责只传变化的文件）
+     * @param local 这些文件的内容（按路径取）
+     * @return 新 commit 的 sha
+     */
+    suspend fun commit(
+        branch: String,
+        message: String,
+        changes: List<FileChange>,
+        local: Map<String, ByteArray>
+    ): Result<String> = withContext(Dispatchers.IO) {
+        runCatching {
+            if (changes.isEmpty()) throw IOException("没有需要提交的变更")
+            val ref = get("/repos/${cfg.fullName}/git/ref/heads/$branch")
+            val headSha = ref["object"]?.jsonObject?.get("sha")?.jsonPrimitive?.contentOrNull
+                ?: throw IOException("读不到分支 $branch 的最新提交")
+            val headCommit = get("/repos/${cfg.fullName}/git/commits/$headSha")
+            val baseTree = headCommit["tree"]?.jsonObject?.get("sha")?.jsonPrimitive?.contentOrNull
+                ?: throw IOException("读不到最新提交的 tree")
+
+            // 逐个上传 blob：只传变更的文件（sha 已在本地算过，未变的不上传）
+            val treeEntries = buildJsonArray {
+                for (change in changes) {
+                    val bytes = local[change.path]
+                        ?: local.entries.firstOrNull {
+                            GitHubGitLogic.normalizePath(it.key) == change.path
+                        }?.value
+                        ?: throw IOException("缺少文件内容：${change.path}")
+                    val blobSha = post(
+                        "/repos/${cfg.fullName}/git/blobs",
+                        buildJsonObject {
+                            put("content", Base64.getEncoder().encodeToString(bytes))
+                            put("encoding", "base64")
+                        }
+                    )["sha"]?.jsonPrimitive?.contentOrNull
+                        ?: throw IOException("上传 ${change.path} 失败")
+                    add(
+                        buildJsonObject {
+                            put("path", change.path)
+                            put("mode", "100644")
+                            put("type", "blob")
+                            put("sha", blobSha)
+                        }
+                    )
+                }
+            }
+
+            val newTree = post(
+                "/repos/${cfg.fullName}/git/trees",
+                buildJsonObject {
+                    put("base_tree", baseTree)
+                    put("tree", treeEntries)
+                }
+            )["sha"]?.jsonPrimitive?.contentOrNull
+                ?: throw IOException("创建 tree 失败")
+
+            val newCommit = post(
+                "/repos/${cfg.fullName}/git/commits",
+                buildJsonObject {
+                    put("message", message)
+                    put("tree", newTree)
+                    putJsonArray("parents") { add(headSha) }
+                }
+            )
+            val newSha = newCommit["sha"]?.jsonPrimitive?.contentOrNull
+                ?: throw IOException("创建 commit 失败")
+
+            // 快进更新分支：force=false，远端在此期间有新提交会失败（不覆盖别人的改动）
+            patch(
+                "/repos/${cfg.fullName}/git/refs/heads/$branch",
+                buildJsonObject {
+                    put("sha", newSha)
+                    put("force", false)
+                }
+            )
+            AgentLogger.i(
+                "GitHubGit",
+                "已提交 ${changes.size} 个文件到 ${cfg.fullName}@$branch：${newSha.take(8)}"
+            )
+            newSha
+        }.recoverCatching { e ->
+            throw IOException(friendly(e, branch))
+        }
+    }
+
+    /** 最近提交（`github_log` 用）。列表接口返回 JSON 数组，故走 [getArray]。 */
+    suspend fun log(branch: String, limit: Int): Result<List<GitCommitInfo>> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val arr = getArray(
+                    "/repos/${cfg.fullName}/commits?sha=$branch&per_page=${limit.coerceIn(1, 30)}"
+                )
+                arr.mapNotNull { el ->
+                    val obj = el as? JsonObject ?: return@mapNotNull null
+                    val sha = obj["sha"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+                    val commit = obj["commit"]?.jsonObject
+                    val authorObj = commit?.get("author")?.jsonObject
+                    GitCommitInfo(
+                        sha = sha,
+                        message = commit?.get("message")?.jsonPrimitive?.contentOrNull
+                            .orEmpty().lineSequence().firstOrNull().orEmpty(),
+                        author = authorObj?.get("name")?.jsonPrimitive?.contentOrNull.orEmpty(),
+                        date = authorObj?.get("date")?.jsonPrimitive?.contentOrNull.orEmpty()
+                    )
+                }
+            }.recoverCatching { e -> throw IOException(friendly(e, branch)) }
+        }
+
+    /** 统一取远端分支的 path → blob sha 映射（递归 tree）。 */
+    private fun remoteBlobs(branch: String): Map<String, String> {
+        val ref = get("/repos/${cfg.fullName}/git/ref/heads/$branch")
+        val headSha = ref["object"]?.jsonObject?.get("sha")?.jsonPrimitive?.contentOrNull
+            ?: throw IOException("读不到分支 $branch 的最新提交")
+        val headCommit = get("/repos/${cfg.fullName}/git/commits/$headSha")
+        val treeSha = headCommit["tree"]?.jsonObject?.get("sha")?.jsonPrimitive?.contentOrNull
+            ?: throw IOException("读不到最新提交的 tree")
+        val tree = get("/repos/${cfg.fullName}/git/trees/$treeSha?recursive=1")
+        val out = HashMap<String, String>()
+        tree["tree"]?.jsonArray?.forEach { el ->
+            val obj = el.jsonObject
+            if (obj["type"]?.jsonPrimitive?.contentOrNull != "blob") return@forEach
+            val path = obj["path"]?.jsonPrimitive?.contentOrNull ?: return@forEach
+            val sha = obj["sha"]?.jsonPrimitive?.contentOrNull ?: return@forEach
+            out[path] = sha
+        }
+        return out
+    }
+
+    /** 把 HTTP 异常翻译成用户能行动的文案。 */
+    private fun friendly(e: Throwable, branch: String): String {
+        val raw = e.message.orEmpty()
+        return when {
+            raw.contains("401") -> "PAT 无效或已过期：请到「构建」页重新填"
+            raw.contains("403") -> "PAT 权限不足：需要该仓库的 Contents 读写权限"
+            raw.contains("404") ->
+                "找不到仓库 ${cfg.fullName} 或分支 $branch：" +
+                    "检查 owner/repo 拼写、分支名（可能是 master）、PAT 是否有该仓库权限"
+            raw.contains("422") -> "提交被拒绝（可能是分支在此期间有新提交，重试即可）"
+            raw.isBlank() -> e::class.simpleName ?: "GitHub 请求失败"
+            else -> raw.take(200)
+        }
+    }
+
+    // —————————————————— HTTP ——————————————————
+
+    private fun get(path: String): JsonObject = exec(
+        Request.Builder().url(BASE + path).get().build()
+    )
+
+    private fun post(path: String, body: JsonObject): JsonObject = exec(
+        Request.Builder()
+            .url(BASE + path)
+            .post(body.toString().toRequestBody(JSON_MEDIA))
+            .build()
+    )
+
+    private fun patch(path: String, body: JsonObject): JsonObject = exec(
+        Request.Builder()
+            .url(BASE + path)
+            .patch(body.toString().toRequestBody(JSON_MEDIA))
+            .build()
+    )
+
+    private fun getArray(path: String): kotlinx.serialization.json.JsonArray {
+        val text = execRaw(Request.Builder().url(BASE + path).get().build())
+        return json.parseToJsonElement(text) as? kotlinx.serialization.json.JsonArray
+            ?: throw IOException("GitHub 返回了非数组响应")
+    }
+
+    private fun exec(request: Request): JsonObject {
+        val text = execRaw(request)
+        if (text.isBlank()) return JsonObject(emptyMap())
+        return json.parseToJsonElement(text) as? JsonObject ?: JsonObject(emptyMap())
+    }
+
+    /** 发请求并返回原始响应体；非 2xx 抛 IOException（带状态码与服务端消息）。 */
+    private fun execRaw(request: Request): String {
+        val authed = request.newBuilder()
+            .header("Authorization", "Bearer ${cfg.pat}")
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .build()
+        http.newCall(authed).execute().use { resp ->
+            val text = resp.body?.string().orEmpty()
+            if (!resp.isSuccessful) {
+                // 只带状态码与截断后的服务端消息：响应体里不会出现我们的 PAT
+                throw IOException("HTTP ${resp.code}：${text.take(300)}")
+            }
+            return text
+        }
+    }
+
+    private companion object {
+        const val BASE = "https://api.github.com"
+        val JSON_MEDIA = "application/json; charset=utf-8".toMediaType()
+    }
+}
