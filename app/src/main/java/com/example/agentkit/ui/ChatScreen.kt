@@ -44,6 +44,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -359,6 +360,24 @@ fun ChatScreen(
         // W-14：模型用 ask_user 提问时，输入栏上方出现选择卡片（回答后自动消失）
         vm.askUserPending.collectAsStateWithLifecycle().value?.let { q ->
             AskUserCard(question = q, onAnswer = { vm.answerAskUser(q.id, it) })
+        }
+        // W-28：输入框打 @ 时，上方出现工作区文件建议（选中即替换为 @路径）
+        val mentionQuery = com.example.agentkit.core.text.MentionLogic.activeQueryAtEnd(input)
+        if (mentionQuery != null) {
+            val wsFiles = remember(mentionQuery != null) { vm.workspacePaths() }
+            val suggestions = remember(mentionQuery.keyword, wsFiles) {
+                com.example.agentkit.core.text.MentionLogic.match(wsFiles, mentionQuery.keyword, 8)
+            }
+            if (suggestions.isNotEmpty()) {
+                MentionSuggestionBar(
+                    files = suggestions,
+                    onPick = { path ->
+                        vm.input.value = com.example.agentkit.core.text.MentionLogic.replaceTailWith(
+                            vm.input.value, path
+                        )
+                    }
+                )
+            }
         }
         // W-25：先计划后执行——模型提交计划时，输入栏上方出现计划卡片（批准/拒绝后消失）
         vm.planPending.collectAsStateWithLifecycle().value?.let { plan ->
@@ -2404,6 +2423,53 @@ private fun ApprovalDialog(request: ApprovalRequest, visible: Boolean, vm: ChatV
  *  - 拒绝时展开一个输入框写原因（可空），模型据此重新规划；
  *  - 步骤多时卡片内部滚动，不把输入栏挤出屏幕。
  */
+/**
+ * W-28：@提及建议条（横滑 chips）。点一个就把输入框里的 `@关键词` 替换成 `@路径`。
+ *
+ * 为什么贴输入框上方：和 ask/plan 卡片同一位置语汇——都是"正在输入时需要的辅助"，
+ * 不遮挡对话内容，选完即消失。
+ */
+@Composable
+private fun MentionSuggestionBar(files: List<String>, onPick: (String) -> Unit) {
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+        shape = RoundedCornerShape(12.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = AgentSpacing.space4, vertical = AgentSpacing.space1)
+    ) {
+        LazyRow(
+            contentPadding = PaddingValues(horizontal = AgentSpacing.space2, vertical = AgentSpacing.space1),
+            horizontalArrangement = Arrangement.spacedBy(AgentSpacing.space2)
+        ) {
+            item {
+                Text(
+                    "@",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 8.dp)
+                )
+            }
+            items(files) { path ->
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = MaterialTheme.colorScheme.surface,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(10.dp))
+                        .clickable { onPick(path) }
+                ) {
+                    Text(
+                        path,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                    )
+                }
+            }
+        }
+    }
+}
+
 @Composable
 private fun PlanCard(
     plan: PlanBroker.Plan,
