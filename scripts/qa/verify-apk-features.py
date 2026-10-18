@@ -148,6 +148,15 @@ POOL_GROUPS = {
         ("Bing 跳转还原", "realUrlBing"),
         ("Bing 端点常量值", "https://cn.bing.com/search"),
     ],
+    "W28 @提及文件 + 工作区绑定（pool 池条目精确匹配）": [
+        ("提及解析纯函数", "Lcom/example/agentkit/core/text/MentionLogic;"),
+        ("末尾提及检测", "activeQueryAtEnd"),
+        ("子序列匹配", "isSubsequence"),
+        ("提及替换方法", "replaceTailWith"),
+        ("工作区绑定字段", "workspaceDir"),
+        ("绑定设置方法", "setWorkspaceDir"),
+        ("文件列表方法", "workspacePaths"),
+    ],
     "W27 文件树 + 语法高亮 + 工作区统一（pool 池条目精确匹配）": [
         ("路径规则纯函数", "Lcom/example/agentkit/core/workspace/WorkspacePaths;"),
         ("相对路径校验", "safeRelPath"),
@@ -290,6 +299,12 @@ BYTES_GROUPS = {
     "W22 文案（bytes 子串）": [
         ("双引擎全挂提示", "搜索服务不可达"),
         ("Bing 引擎名", "Bing"),
+    ],
+    "W28 文案（bytes 子串）": [
+        ("提及注入标题", "被提及的文件"),
+        ("菜单项", "绑定项目目录"),
+        ("项目规则段", "项目规则"),
+        ("绑定说明", "会作为项目规则注入"),
     ],
     "W27 文案（bytes 子串）": [
         ("工作区卡片说明", "与 Agent 工具同一个目录"),
