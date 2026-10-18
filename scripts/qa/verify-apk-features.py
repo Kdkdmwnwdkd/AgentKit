@@ -148,6 +148,15 @@ POOL_GROUPS = {
         ("Bing 跳转还原", "realUrlBing"),
         ("Bing 端点常量值", "https://cn.bing.com/search"),
     ],
+    "W27 文件树 + 语法高亮 + 工作区统一（pool 池条目精确匹配）": [
+        ("路径规则纯函数", "Lcom/example/agentkit/core/workspace/WorkspacePaths;"),
+        ("相对路径校验", "safeRelPath"),
+        ("语言识别", "languageOf"),
+        ("树列举方法", "listTree"),
+        ("高亮词法器", "Lcom/example/agentkit/core/text/SyntaxHighlighter;"),
+        ("高亮片段类型", "Lcom/example/agentkit/core/text/SyntaxHighlighter$Kind;"),
+        ("工作区目录名", "agent_workspace"),
+    ],
     "W26 任务模型 + 备份 Key 池（pool 池条目精确匹配）": [
         ("标题清洗纯函数", "Lcom/example/agentkit/core/agent/TitleLogic;"),
         ("标题值得生成判定", "worthGenerating"),
@@ -281,6 +290,11 @@ BYTES_GROUPS = {
     "W22 文案（bytes 子串）": [
         ("双引擎全挂提示", "搜索服务不可达"),
         ("Bing 引擎名", "Bing"),
+    ],
+    "W27 文案（bytes 子串）": [
+        ("工作区卡片说明", "与 Agent 工具同一个目录"),
+        ("树折叠提示", "点目录折叠"),
+        ("迁移日志", "工作区已迁移"),
     ],
     "W26 文案（bytes 子串）": [
         ("标题生成器提示", "你是会话标题生成器"),
