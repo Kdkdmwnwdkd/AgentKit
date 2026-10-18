@@ -146,7 +146,7 @@ POOL_GROUPS = {
     "W22 Bing 主引擎修复（pool 池条目精确匹配）": [
         ("Bing 解析纯函数", "parseBing"),
         ("Bing 跳转还原", "realUrlBing"),
-        ("Bing 端点常量值", "cn.bing.com/search"),
+        ("Bing 端点常量值", "https://cn.bing.com/search"),
     ],
     "W21 多 Key 轮询（pool 池条目精确匹配）": [
         ("Key 池决策纯函数", "Lcom/example/agentkit/core/llm/KeyPoolPolicy;"),
