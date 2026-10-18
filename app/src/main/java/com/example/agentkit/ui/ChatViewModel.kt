@@ -88,6 +88,9 @@ import com.example.agentkit.skill.SkillManifest
 import com.example.agentkit.skill.createUseSkillTool
 import com.example.agentkit.tools.AppInstallTool
 import com.example.agentkit.tools.AppUninstallTool
+import com.example.agentkit.tools.GitHubCommitTool
+import com.example.agentkit.tools.GitHubLogTool
+import com.example.agentkit.tools.GitHubStatusTool
 import com.example.agentkit.tools.LoadSkillLogic
 import com.example.agentkit.tools.LoadSkillTool
 import java.io.IOException
@@ -777,6 +780,10 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
                 )
             )
         )
+        // W-32：GitHub 提交三件套——「改完能提交」闭环（复用「构建」页的仓库与 PAT）
+        register(GitHubStatusTool(app))
+        register(GitHubCommitTool(app))
+        register(GitHubLogTool(app))
     }
 
     /** JS 执行引擎（Rhino，纯 Java 无需 NDK）；初始化失败则降级为仅 prompt 形态。 */
