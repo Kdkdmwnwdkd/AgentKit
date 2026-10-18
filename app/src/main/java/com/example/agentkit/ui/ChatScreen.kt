@@ -1,11 +1,13 @@
 package com.example.agentkit.ui
 
+import android.app.Activity
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.speech.RecognizerIntent
 import android.speech.tts.TextToSpeech
 import android.util.Base64
 import android.widget.Toast
@@ -59,15 +61,19 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.AutoAwesome
+import androidx.compose.material.icons.outlined.Bookmark
+import androidx.compose.material.icons.outlined.BookmarkBorder
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.Image
+import androidx.compose.material.icons.outlined.Mic
 import androidx.compose.material.icons.outlined.Notifications
 import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material.icons.outlined.PhoneAndroid
 import androidx.compose.material.icons.outlined.Send
+import androidx.compose.material.icons.outlined.Translate
 import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material.icons.outlined.Shield
 import androidx.compose.material.icons.outlined.TouchApp
@@ -134,6 +140,20 @@ import kotlinx.coroutines.withContext
  * @param onOpenModel 空态「去配置模型」→ 模型页。
  * @param onOpenPermissions 空态检查清单 / 抽屉就绪文字 → 权限中心。
  */
+/**
+ * W-30：消息操作弹窗的目标。
+ *
+ * 为什么不用 Triple：四个字段（正文/轮次/角色/时间）+ 消息下标，位置参数读到第三项就开始猜了。
+ * @param index 该消息在 `messages` 里的下标（翻译结果按它缓存）
+ */
+private data class MenuTarget(
+    val text: String,
+    val turnIndex: Int,
+    val role: String,
+    val timeMs: Long,
+    val index: Int
+)
+
 @Composable
 fun ChatScreen(
     vm: ChatViewModel,
@@ -164,6 +184,9 @@ fun ChatScreen(
     // 都不知道现在用哪个」）：对话页常驻当前模型指示条 + 一键切换弹窗，
     // 不再深埋三层（抽屉 → 模型配置 → 顶部横向档案条）且切换无任何反馈。
     val profiles by vm.profiles.collectAsStateWithLifecycle()
+    // W-30：翻译结果（按消息下标）与正在翻译的下标
+    val translations by vm.translations.collectAsStateWithLifecycle()
+    val translatingIndex by vm.translatingIndex.collectAsStateWithLifecycle()
     val activeProfileId by vm.activeProfileId.collectAsStateWithLifecycle()
     // 功能五（P1-5）：当前会话累计 token 用量（模型指示条下常驻小条）
     val sessionUsage by vm.sessionUsage.collectAsStateWithLifecycle()
@@ -187,7 +210,7 @@ fun ChatScreen(
     // 功能五（P1-1）：消息「更多」菜单 / 从此处删除确认的目标
     // （存「正文 → 轮次」二元组而非 UiItem：UiItem 是 sealed 接口，
     //   弹窗体里取不到 text/turnIndex，还要再 when 一遍）
-    var menuTarget by remember { mutableStateOf<Pair<String, Int>?>(null) }
+    var menuTarget by remember { mutableStateOf<MenuTarget?>(null) }
     var deleteTarget by remember { mutableStateOf<Pair<String, Int>?>(null) }
     // 功能四：模型切换弹窗开关（指示条点击打开）
     var showModelSwitch by remember { mutableStateOf(false) }
@@ -204,6 +227,43 @@ fun ChatScreen(
     // 附件类型选择菜单（「＋」不再直通相册——用户要的是「发东西」，不只是照片）
     var showAttachMenu by remember { mutableStateOf(false) }
     val inputScope = rememberCoroutineScope()
+    /**
+     * W-30：语音输入。
+     *
+     * 用系统的 [RecognizerIntent]（各家 ROM 自带识别服务），不自己录音——
+     * 自己录音要申请 RECORD_AUDIO、要处理采样率/降噪，收益远不如直接借系统。
+     * 识别结果经 [SpeechLogic.cleanResult] 清洗后**追加**到已有输入，不覆盖用户已打的字。
+     */
+    val voiceLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            val spoken = result.data
+                ?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
+                ?.firstOrNull()
+            val cleaned = spoken?.let { SpeechLogic.cleanResult(it) }
+            if (cleaned != null) {
+                vm.input.value = SpeechLogic.appendTo(vm.input.value, cleaned)
+            } else if (spoken != null) {
+                Toast.makeText(ctx, "没听清，再说一次试试", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+    val startVoiceInput: () -> Unit = {
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(
+                RecognizerIntent.EXTRA_LANGUAGE_MODEL,
+                RecognizerIntent.LANGUAGE_MODEL_FREE_FORM
+            )
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, java.util.Locale.getDefault().toString())
+            putExtra(RecognizerIntent.EXTRA_PROMPT, "说出你要问的内容")
+        }
+        val launched = runCatching { voiceLauncher.launch(intent) }
+        if (launched.isFailure) {
+            Toast.makeText(ctx, "本机没有可用的语音识别服务", Toast.LENGTH_SHORT).show()
+        }
+    }
+
     val pickImage = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         uri?.let {
             inputScope.launch {
@@ -297,6 +357,36 @@ fun ChatScreen(
                             // 流式光标只在「末尾且无草稿气泡」时显示；有草稿时草稿自己带光标
                             streaming = running && index == messages.lastIndex && streamDraft == null
                         )
+                        // W-30：翻译结果（按消息下标缓存；只显示、不写入会话内容）
+                        translations[index]?.let { tr ->
+                            TranslationBlock(
+                                ui = tr,
+                                isUser = item is UiItem.User,
+                                onClose = { vm.clearTranslation(index) }
+                            )
+                        }
+                        // W-30：消息时间——旧数据（0）不渲染，避免出现 1970 年
+                        val ts = when (item) {
+                            is UiItem.User -> item.timeMs
+                            is UiItem.Assistant -> item.timeMs
+                            else -> 0L
+                        }
+                        val timeLabel = ChatTime.format(ts, System.currentTimeMillis())
+                        if (timeLabel.isNotEmpty()) {
+                            Text(
+                                text = timeLabel,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                                textAlign = if (item is UiItem.User) TextAlign.End else TextAlign.Start,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(
+                                        top = 2.dp,
+                                        start = if (item is UiItem.User) 0.dp else 36.dp,
+                                        end = if (item is UiItem.User) 36.dp else 0.dp
+                                    )
+                            )
+                        }
                         // Phase 2 DoD②：助手气泡操作区（变体切换器 + 重新生成 + 复制）
                         if (item is UiItem.Assistant) {
                             val showSwitch = item.variantCount > 1
@@ -319,7 +409,15 @@ fun ChatScreen(
                                     onSwitch = { delta -> vm.switchVariant(item.turnIndex, delta) },
                                     onRegenerate = { vm.regenerate() },
                                     onCopy = { copyMessage(ctx, item.text) },
-                                    onMore = { menuTarget = item.text to item.turnIndex },
+                                    onMore = {
+                                        menuTarget = MenuTarget(
+                                            text = item.text,
+                                            turnIndex = item.turnIndex,
+                                            role = "assistant",
+                                            timeMs = item.timeMs,
+                                            index = index
+                                        )
+                                    },
                                     onSpeak = {
                                         if (speakingIndex == index) {
                                             tts.stop()
@@ -340,7 +438,15 @@ fun ChatScreen(
                                 showReask = item.turnIndex >= 0,
                                 showMore = item.turnIndex >= 0,
                                 onCopy = { copyMessage(ctx, item.text) },
-                                onMore = { menuTarget = item.text to item.turnIndex },
+                                onMore = {
+                                    menuTarget = MenuTarget(
+                                        text = item.text,
+                                        turnIndex = item.turnIndex,
+                                        role = "user",
+                                        timeMs = item.timeMs,
+                                        index = index
+                                    )
+                                },
                                 onReask = { reaskTarget = item }
                             )
                         }
@@ -397,6 +503,7 @@ fun ChatScreen(
             onStop = { vm.stop() },
             onPickAttach = { showAttachMenu = true },
             onOpenPrompts = { showPromptPicker = true },
+            onVoiceInput = startVoiceInput,
             onRemoveImage = { vm.removePendingImage(it) },
             onRemoveFile = { vm.removePendingFile(it) },
             // hotfix30：后台有其他对话在生成（generatingConvId != 本会话）时，
@@ -471,9 +578,20 @@ fun ChatScreen(
     AkModalHost(target = menuTarget) { target, visible ->
         MessageActionsDialog(
             visible = visible,
-            showDelete = target.second >= 0,
-            onShare = { shareMessage(ctx, target.first); menuTarget = null },
-            onDelete = { menuTarget = null; deleteTarget = target },
+            showDelete = target.turnIndex >= 0,
+            bookmarked = vm.isBookmarked(target.role, target.text),
+            translating = translatingIndex == target.index,
+            onShare = { shareMessage(ctx, target.text); menuTarget = null },
+            onToggleBookmark = {
+                val added = vm.toggleBookmark(target.role, target.text, target.timeMs)
+                Toast.makeText(ctx, if (added) "已收藏" else "已取消收藏", Toast.LENGTH_SHORT).show()
+                menuTarget = null
+            },
+            onTranslate = {
+                vm.translateMessage(target.index, target.text)
+                menuTarget = null
+            },
+            onDelete = { menuTarget = null; deleteTarget = target.text to target.turnIndex },
             onDismiss = { menuTarget = null }
         )
     }
@@ -812,6 +930,59 @@ internal fun hostOf(baseUrl: String): String =
  * 「正在恢复（n/N）· 原因」；恢复成功 / 最终失败 / 取消时由 VM 将 [ChatViewModel.retryState]
  * 置 null，横幅自动消失。轻量单行（secondaryContainer 底色 + 小号转圈），不抢气泡与输入栏焦点。
  */
+/**
+ * W-30：译文块——贴在原气泡下方，窄一号、左侧缩进，视觉上明确是「附注」而不是新消息。
+ *
+ * 用 [MarkdownText] 渲染：译文里常带列表/代码，纯 Text 会把格式压平。
+ * 失败时用 error 色写原因，不假装「翻译成功但没有内容」。
+ */
+@Composable
+private fun TranslationBlock(ui: TranslationUi, isUser: Boolean, onClose: () -> Unit) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(
+                top = 4.dp,
+                start = if (isUser) 48.dp else 36.dp,
+                end = if (isUser) 0.dp else 48.dp
+            )
+            .clip(RoundedCornerShape(12.dp))
+            .background(LocalAkColors.surface1)
+            .padding(horizontal = 10.dp, vertical = 8.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = "译文",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.weight(1f)
+            )
+            Text(
+                text = "收起",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(6.dp))
+                    .clickable(onClick = onClose)
+                    .padding(horizontal = 6.dp, vertical = 2.dp)
+            )
+        }
+        Spacer(Modifier.height(AgentSpacing.space1))
+        if (ui.error != null) {
+            Text(
+                text = "翻译失败：${ui.error}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error
+            )
+        } else {
+            MarkdownText(
+                text = ui.text.orEmpty(),
+                color = MaterialTheme.colorScheme.onSurface
+            )
+        }
+    }
+}
+
 @Composable
 private fun RetryBanner(state: RetryState) {
     Row(
@@ -1027,7 +1198,11 @@ private fun UserMessageActions(
 private fun MessageActionsDialog(
     visible: Boolean,
     showDelete: Boolean,
+    bookmarked: Boolean,
+    translating: Boolean,
     onShare: () -> Unit,
+    onToggleBookmark: () -> Unit,
+    onTranslate: () -> Unit,
     onDelete: () -> Unit,
     onDismiss: () -> Unit
 ) {
@@ -1060,6 +1235,18 @@ private fun MessageActionsDialog(
                         modifier = Modifier.padding(horizontal = AgentSpacing.space6)
                     )
                     Spacer(Modifier.height(AgentSpacing.space2))
+                    AkListItem(
+                        icon = if (bookmarked) Icons.Outlined.Bookmark else Icons.Outlined.BookmarkBorder,
+                        title = if (bookmarked) "取消收藏" else "收藏",
+                        description = if (bookmarked) "从收藏里移除" else "存到收藏，删会话也不丢",
+                        onClick = onToggleBookmark
+                    )
+                    AkListItem(
+                        icon = Icons.Outlined.Translate,
+                        title = if (translating) "翻译中…" else "翻译",
+                        description = "用任务模型翻成中文，只显示不写入会话",
+                        onClick = onTranslate
+                    )
                     AkListItem(
                         icon = Icons.Outlined.Share,
                         title = "分享",
@@ -1349,6 +1536,8 @@ private fun ChatInputBar(
     onStop: () -> Unit,
     onPickAttach: () -> Unit,
     onOpenPrompts: () -> Unit,
+    // W-30：语音输入（系统识别器）；运行中禁用
+    onVoiceInput: () -> Unit,
     onRemoveImage: (String) -> Unit,
     onRemoveFile: (String) -> Unit,
     // hotfix30：后台有其他对话在生成时的一行说明（null = 不显示）——
@@ -1441,6 +1630,24 @@ private fun ChatInputBar(
                             }
                         }
                     )
+                    // W-30：语音输入——只在输入框为空时出现（不遮挡正在编辑的文本）
+                    if (text.isBlank() && !running) {
+                        Box(
+                            modifier = Modifier
+                                .align(Alignment.CenterEnd)
+                                .size(28.dp)
+                                .clip(CircleShape)
+                                .clickable(onClick = onVoiceInput),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Outlined.Mic,
+                                contentDescription = "语音输入",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                    }
                 }
                 Spacer(Modifier.width(AgentSpacing.space2))
                 if (running) {
