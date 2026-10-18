@@ -48,6 +48,8 @@ import androidx.compose.material.icons.outlined.Chat
 import androidx.compose.material.icons.outlined.Cloud
 import androidx.compose.material.icons.outlined.Dashboard
 import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.Folder
+import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Extension
@@ -402,6 +404,8 @@ fun AppScaffold(
                             onRenameConversation = { id, title -> vm.renameConversation(id, title) },
                             onDeleteConversation = { id -> vm.deleteConversation(id) },
                             onSetPinned = { id, pinned -> vm.setConversationPinned(id, pinned) },
+                            onBindWorkspace = { id, dir -> vm.setConversationWorkspace(id, dir) },
+                            workspaceDirs = { vm.workspaceDirs() },
 onExportConversation = { id ->
     // hotfix29：导出从纯文本升级为 .md 真文件（FileProvider content://）；
     // 文件名取会话标题（净化后），无匹配标题回退「会话」
@@ -523,6 +527,8 @@ onExportConversation = { id ->
                                 onSetPinned = { id, pinned ->
                                     vm.setConversationPinned(id, pinned)
                                 },
+                                onBindWorkspace = { id, dir -> vm.setConversationWorkspace(id, dir) },
+                                workspaceDirs = { vm.workspaceDirs() },
                                 onExportConversation = { id ->
                                     // hotfix29：导出从纯文本升级为 .md 真文件（FileProvider content://）；
                                     // 文件名取会话标题（净化后），无匹配标题回退「会话」
@@ -658,6 +664,10 @@ private fun DrawerContent(
     onRenameConversation: (String, String) -> Unit,
     onDeleteConversation: (String) -> Unit,
     onSetPinned: (String, Boolean) -> Unit,
+    /** W-28：绑定会话的项目目录（convId, 目录相对路径；空 = 解绑）。 */
+    onBindWorkspace: (String, String) -> Unit,
+    /** W-28：工作区内可选目录列表（供绑定对话框）。 */
+    workspaceDirs: () -> List<String>,
     /** 功能五（P1-4a）：导出会话为 Markdown（入参 = 会话 id；空会话由 VM 返空串，UI 不弹面板）。 */
     onExportConversation: (String) -> Unit,
     /** hotfix30：正在生成的会话 id——对应抽屉项显示「生成中」标识（null = 无在途任务）。 */
@@ -666,6 +676,8 @@ private fun DrawerContent(
 ) {
     // 长按菜单 / 重命名 / 删除三个模态的目标会话 id（AkModalHost 三态机承载退场动画）
     var menuConvId by remember { mutableStateOf<String?>(null) }
+    // W-28：绑定项目目录的会话 id（null = 对话框关闭）
+    var bindConvId by remember { mutableStateOf<String?>(null) }
     var renameConvId by remember { mutableStateOf<String?>(null) }
     var deleteConvId by remember { mutableStateOf<String?>(null) }
     // hotfix30：删除在途会话的 Toast 反馈（VM 静默拒绝，UI 补一句人话）
@@ -770,6 +782,8 @@ private fun DrawerContent(
                 menuConvId = null
                 onSetPinned(id, conv?.pinned != true)
             },
+            workspaceDir = conv?.workspaceDir.orEmpty(),
+            onBindWorkspace = { menuConvId = null; bindConvId = id },
             onRename = { menuConvId = null; renameConvId = id },
             onExport = { menuConvId = null; onExportConversation(id) },
             onDelete = { menuConvId = null; deleteConvId = id },
@@ -786,6 +800,16 @@ private fun DrawerContent(
             visible = visible,
             onConfirm = { onRenameConversation(id, text); renameConvId = null },
             onDismiss = { renameConvId = null }
+        )
+    }
+    // W-28：绑定项目目录（列出工作区里的目录 + 「不绑定」）
+    AkModalHost(target = bindConvId) { id, visible ->
+        WorkspaceBindDialog(
+            dirs = remember(id) { workspaceDirs() },
+            current = conversations.firstOrNull { it.id == id }?.workspaceDir.orEmpty(),
+            visible = visible,
+            onConfirm = { dir -> onBindWorkspace(id, dir); bindConvId = null },
+            onDismiss = { bindConvId = null }
         )
     }
     AkModalHost(target = deleteConvId) { id, visible ->
@@ -948,6 +972,8 @@ private fun ConversationMenuDialog(
     title: String,
     visible: Boolean,
     pinned: Boolean,
+    workspaceDir: String = "",
+    onBindWorkspace: () -> Unit = {},
     onTogglePin: () -> Unit,
     onRename: () -> Unit,
     onExport: () -> Unit,
@@ -992,6 +1018,16 @@ private fun ConversationMenuDialog(
                         title = if (pinned) "取消置顶" else "置顶对话",
                         description = if (pinned) "已置顶，取消后回到按时间排序" else "置顶后恒排在列表最前",
                         onClick = onTogglePin
+                    )
+                    AkListItem(
+                        icon = Icons.Outlined.FolderOpen,
+                        title = "绑定项目目录",
+                        description = if (workspaceDir.isBlank()) {
+                            "未绑定；绑定后会把该目录的 AGENTS.md/README.md 作为项目规则"
+                        } else {
+                            "已绑定：$workspaceDir（点此更换或解绑）"
+                        },
+                        onClick = onBindWorkspace
                     )
                     AkListItem(
                         icon = Icons.Outlined.Edit,
@@ -1239,6 +1275,78 @@ private fun DrawerItem(
                 maxLines = 1,
                 modifier = Modifier.weight(1f)
             )
+        }
+    }
+}
+
+/**
+ * W-28：项目目录绑定对话框。
+ *
+ * 只列**工作区内的目录**（不是任意磁盘路径）——绑定后 Agent 仍只能读写工作区，
+ * 不会因为绑定就把越界访问打开。首项「不绑定」用于解绑。
+ */
+@Composable
+private fun WorkspaceBindDialog(
+    dirs: List<String>,
+    current: String,
+    visible: Boolean,
+    onConfirm: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(useDefaultPlatformWidth = false)
+    ) {
+        Surface(
+            shape = RoundedCornerShape(20.dp),
+            color = MaterialTheme.colorScheme.surface,
+            modifier = Modifier
+                .padding(horizontal = 24.dp)
+                .widthIn(max = 360.dp)
+        ) {
+            Column(Modifier.padding(vertical = AgentSpacing.space3)) {
+                Text(
+                    "绑定项目目录",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.padding(horizontal = AgentSpacing.space5)
+                )
+                Spacer(Modifier.height(AgentSpacing.space1))
+                Text(
+                    "绑定后，该目录下的 AGENTS.md / README.md 会作为项目规则注入。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = AgentSpacing.space5)
+                )
+                Spacer(Modifier.height(AgentSpacing.space2))
+                Column(
+                    Modifier
+                        .heightIn(max = 320.dp)
+                        .verticalScroll(rememberScrollState())
+                ) {
+                    AkListItem(
+                        icon = Icons.Outlined.Folder,
+                        title = "不绑定（工作区根）",
+                        selected = current.isBlank(),
+                        onClick = { onConfirm("") }
+                    )
+                    dirs.forEach { dir ->
+                        AkListItem(
+                            icon = Icons.Outlined.FolderOpen,
+                            title = dir,
+                            selected = current == dir,
+                            onClick = { onConfirm(dir) }
+                        )
+                    }
+                }
+                Spacer(Modifier.height(AgentSpacing.space2))
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End
+                ) {
+                    AkTextButton(text = "取消", onClick = onDismiss)
+                }
+            }
         }
     }
 }
