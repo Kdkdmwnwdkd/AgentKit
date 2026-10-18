@@ -341,6 +341,34 @@ fun SettingsScreen(
                 )
             }
 
+            // —— 任务模型（W-26）：标题生成等轻量任务用便宜模型，省钱降延迟 ——
+            val taskProfileId by vm.taskProfileId.collectAsStateWithLifecycle()
+            val profiles by vm.profiles.collectAsStateWithLifecycle()
+            AkSectionCard(
+                title = "任务模型",
+                icon = Icons.Outlined.Bolt,
+                description = "标题生成等轻量任务单独用哪个模型。选便宜的能省 token、降延迟；" +
+                    "默认跟随主配置。"
+            ) {
+                AkListItem(
+                    icon = Icons.Outlined.Bolt,
+                    title = "跟随主配置",
+                    description = "与当前聊天模型相同（默认）",
+                    selected = taskProfileId.isBlank(),
+                    onClick = { vm.setTaskProfile("") }
+                )
+                profiles.forEach { profile ->
+                    AkDivider(Modifier.padding(start = AgentSpacing.space4))
+                    AkListItem(
+                        icon = Icons.Outlined.Bolt,
+                        title = profile.name,
+                        description = profile.config.model.ifBlank { "未命名模型" },
+                        selected = taskProfileId == profile.id,
+                        onClick = { vm.setTaskProfile(profile.id) }
+                    )
+                }
+            }
+
             // —— 备用 Key（W-21）：主 Key 被限流时自动换下一把，不再直接断流 ——
             BackupKeySection(vm)
 
