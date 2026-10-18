@@ -8,6 +8,7 @@ import com.example.agentkit.core.ToolResult
 import com.example.agentkit.core.build.FileChange
 import com.example.agentkit.core.build.GitHubConfig
 import com.example.agentkit.core.build.GitHubGitLogic
+import com.example.agentkit.core.build.CloneLogic
 import com.example.agentkit.core.build.GitHubGitService
 import com.example.agentkit.core.text.LineDiffLogic
 import com.example.agentkit.core.workspace.WorkspaceStore
@@ -17,6 +18,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import java.io.File
+import java.util.zip.ZipInputStream
 
 /**
  * GitHub 提交三件套（W-32）：`github_status` / `github_commit` / `github_log`。
@@ -385,5 +387,123 @@ class GitHubDiffTool(private val app: Application) : AgentTool {
             message = "$path：${LineDiffLogic.summary(diff)}$kindNote",
             data = body
         )
+    }
+}
+
+/**
+ * `github_clone`（W-35）：把 GitHub 仓库整个下载并解压到工作区的一个子目录。
+ *
+ * ## 为什么默认放进子目录
+ * 工作区里有用户/模型自己的文件，直接铺到根目录会把它们盖掉。
+ * 子目录（`repo-<仓库名>`，可指定）是隔离带——clone 是"拿来一整份代码"，
+ * 不是"覆盖我的工作区"。
+ *
+ * ## 安全（Zip Slip 是这类功能的经典漏洞）
+ * 每个条目名都过 [CloneLogic.safeEntryName]：`..`、绝对路径、`.git/` 一律拒绝；
+ * 条目数、单文件、总量三重上限；任一项超限即中止并**删掉已解压的部分**（不留半成品）。
+ */
+class GitHubCloneTool(private val app: Application) : AgentTool {
+
+    override val name = "github_clone"
+
+    override val description =
+        "把 GitHub 仓库下载并解压到工作区的一个子目录（默认 repo-<仓库名>）。" +
+            "从 codeload 取 zip，不消耗 API 配额；国内不可用时自动走镜像。" +
+            "用于「拿到一整份代码来读/改」。仓库很大会明确拒绝并说明上限。"
+
+    override val parameters = JsonSchema.objectSchema(
+        JsonSchema.prop("branch", "string", "分支名，默认 main"),
+        JsonSchema.prop("dir", "string", "解压到工作区的哪个子目录；留空 = repo-<仓库名>")
+    )
+
+    override val readOnly = false
+
+    override suspend fun execute(args: JsonObject): ToolResult = withContext(Dispatchers.IO) {
+        val cfg = loadConfig(app) ?: return@withContext notConfigured()
+        val branch = branchOf(args)
+        val dirName = CloneLogic.safeTargetDir(
+            args["dir"]?.jsonPrimitive?.contentOrNull,
+            cfg.repo
+        )
+        val root = WorkspaceStore.dir(app)
+        val target = File(root, dirName)
+
+        val zip = GitHubGitService(cfg).downloadZip(branch).getOrElse { e ->
+            return@withContext ToolResult.fail(
+                code = "clone_download_failed",
+                message = "下载失败：${e.message?.take(200)}",
+                hint = "确认分支名正确（可能是 master）、仓库不是私有或没权限。"
+            )
+        }
+
+        try {
+            var files = 0
+            var dirs = 0
+            var totalBytes = 0L
+            var entries = 0
+            ZipInputStream(java.io.ByteArrayInputStream(zip)).use { zis ->
+                while (true) {
+                    val entry = zis.nextEntry ?: break
+                    val rel = CloneLogic.safeEntryName(entry.name) ?: continue
+                    if (CloneLogic.isDirectoryEntry(rel)) {
+                        File(target, rel).mkdirs()
+                        dirs++
+                        continue
+                    }
+                    entries++
+                    if (entries > CloneLogic.MAX_ENTRIES) {
+                        throw IOException(
+                            "文件数超过 ${CloneLogic.MAX_ENTRIES} 个，已中止"
+                        )
+                    }
+                    val out = File(target, rel)
+                    out.parentFile?.mkdirs()
+                    out.outputStream().use { os ->
+                        val buf = ByteArray(64 * 1024)
+                        var written = 0L
+                        while (true) {
+                            val n = zis.read(buf)
+                            if (n < 0) break
+                            written += n
+                            totalBytes += n
+                            if (written > CloneLogic.MAX_SINGLE_BYTES) {
+                                throw IOException("单文件超过 ${CloneLogic.MAX_SINGLE_BYTES / 1024 / 1024} MB：$rel")
+                            }
+                            if (totalBytes > CloneLogic.MAX_TOTAL_BYTES) {
+                                throw IOException(
+                                    "解压总量超过 ${CloneLogic.MAX_TOTAL_BYTES / 1024 / 1024} MB，已中止"
+                                )
+                            }
+                            os.write(buf, 0, n)
+                        }
+                    }
+                    files++
+                }
+            }
+            if (files == 0) {
+                return@withContext ToolResult.fail(
+                    code = "clone_empty",
+                    message = "解压后没有任何文件",
+                    hint = "确认分支里有内容，或仓库不是空的。"
+                )
+            }
+            ToolResult.ok(
+                code = "cloned",
+                message = "已克隆 ${cfg.fullName}@$branch → $dirName（$files 个文件）",
+                data = "目录：$dirName\n文件：$files（目录 $dirs 个）\n" +
+                    "大小：${totalBytes / 1024} KB\n\n" +
+                    "后续可用 read_file / github_diff 查看，改完用 github_status + github_commit 提交。"
+            )
+        } catch (e: Exception) {
+            // 不留半成品：超限中断后把目标目录清掉，避免"看起来克隆了其实只来了一半"
+            runCatching { target.deleteRecursively() }
+            ToolResult.fail(
+                code = "clone_failed",
+                message = "克隆失败：${e.message?.take(240)}",
+                hint = "仓库可能过大（上限 ${CloneLogic.MAX_TOTAL_BYTES / 1024 / 1024} MB / " +
+                    "${CloneLogic.MAX_ENTRIES} 个文件）。可以只 clone 需要的分支，或改用 " +
+                    "github_diff 逐文件看。"
+            )
+        }
     }
 }

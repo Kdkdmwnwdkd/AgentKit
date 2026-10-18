@@ -213,6 +213,63 @@ class GitHubGitService(
             }.recoverCatching { e -> throw IOException(friendly(e, branch)) }
         }
 
+    /**
+     * 下载仓库 zip（`github_clone` 用）。
+     *
+     * 走 codeload 而不是 API：**不消耗 API 配额**（zip 是几百 KB 到几十 MB 的文件，
+     * 走 contents API 逐文件拉会瞬间把 5000 次/小时的额度打光）。
+     * 失败时回退 gh-proxy 镜像——国内网络下 codeload 时通时不通，与 HF 镜像同一套纪律。
+     *
+     * 流式读取并随时检查体积：不信任 Content-Length，超 [CloneLogic.MAX_ZIP_BYTES] 立即中止。
+     */
+    suspend fun downloadZip(branch: String): Result<ByteArray> = withContext(Dispatchers.IO) {
+        runCatching {
+            val primary = "https://codeload.github.com/${cfg.fullName}/zip/refs/heads/" +
+                java.net.URLEncoder.encode(branch, "UTF-8").replace("+", "%20")
+            val mirror = "https://gh-proxy.com/$primary"
+            val bytes = fetchRaw(primary) ?: fetchRaw(mirror)
+                ?: throw IOException("下载失败（codeload 与镜像都不可用）")
+            if (bytes.isEmpty()) throw IOException("下载到空文件（分支 $branch 可能不存在）")
+            bytes
+        }
+    }
+
+    /** 原始下载（不走 API，不带 Authorization；失败返回 null）。 */
+    private fun fetchRaw(url: String): ByteArray? {
+        val req = Request.Builder()
+            .url(url)
+            .header("Accept", "application/zip")
+            .get()
+            .build()
+        val out = java.io.ByteArrayOutputStream()
+        val result = runCatching {
+            http.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) return@runCatching null
+                val body = resp.body ?: return@runCatching null
+                body.byteStream().use { input ->
+                    val buf = ByteArray(64 * 1024)
+                    var total = 0L
+                    while (true) {
+                        val n = input.read(buf)
+                        if (n < 0) break
+                        total += n
+                        if (total > CloneLogic.MAX_ZIP_BYTES) {
+                            throw IOException(
+                                "仓库压缩包超过 ${CloneLogic.MAX_ZIP_BYTES / 1024 / 1024} MB，已中止"
+                            )
+                        }
+                        out.write(buf, 0, n)
+                    }
+                }
+                out.toByteArray()
+            }
+        }
+        // 超上限要让用户看到具体原因，不能被当成普通的"下载失败"
+        val error = result.exceptionOrNull()
+        if (error is IOException && error.message?.contains("超过") == true) throw error
+        return result.getOrNull()
+    }
+
     /** 统一取远端分支的 path → blob sha 映射（递归 tree）。 */
     private fun remoteBlobs(branch: String): Map<String, String> {
         val ref = get("/repos/${cfg.fullName}/git/ref/heads/$branch")

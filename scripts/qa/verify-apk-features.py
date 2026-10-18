@@ -148,6 +148,17 @@ POOL_GROUPS = {
         ("Bing 跳转还原", "realUrlBing"),
         ("Bing 端点常量值", "https://cn.bing.com/search"),
     ],
+    "W35 整仓克隆（pool 池条目精确匹配）": [
+        ("克隆逻辑纯函数", "Lcom/example/agentkit/core/build/CloneLogic;"),
+        ("克隆工具类", "Lcom/example/agentkit/tools/GitHubCloneTool;"),
+        ("工具名", "github_clone"),
+        ("成功码", "cloned"),
+        ("失败码", "clone_failed"),
+        ("空仓库码", "clone_empty"),
+        ("条目名校验", "safeEntryName"),
+        ("目标目录校验", "safeTargetDir"),
+        ("顶层目录剥离", "stripTopDir"),
+    ],
     "W34 行级 diff（pool 池条目精确匹配）": [
         ("差异逻辑纯函数", "Lcom/example/agentkit/core/text/LineDiffLogic;"),
         ("差异行模型", "Lcom/example/agentkit/core/text/DiffLine;"),
@@ -376,6 +387,12 @@ BYTES_GROUPS = {
     "W22 文案（bytes 子串）": [
         ("双引擎全挂提示", "搜索服务不可达"),
         ("Bing 引擎名", "Bing"),
+    ],
+    "W35 文案（bytes 子串）": [
+        ("克隆成功提示", "已克隆"),
+        ("条目超限提示", "文件数超过"),
+        ("下载源提示", "codeload"),
+        ("克隆指引", "github_status + github_commit 提交"),
     ],
     "W34 文案（bytes 子串）": [
         ("退化提示", "未逐行比对"),
