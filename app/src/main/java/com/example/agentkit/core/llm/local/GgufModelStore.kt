@@ -146,6 +146,10 @@ class GgufModelStore(private val context: Context) {
     /**
      * 下载目录条目到 models/（断点续传：.part 半成品 + Range 请求）。
      *
+     * ## 下载源顺序（W-23 修）
+     * HuggingFace 在国内直连不可达（沙箱实测超时），先走 **hf-mirror.com 国内镜像**
+     * （实测 302 可达），镜像失败再回退官方源。不这样做用户会看到「点下载没反应」。
+     *
      * @param onProgress (已下载字节, 总字节或 -1) 在 OkHttp 回调线程调用，
      *        实现方只需把值写进 StateFlow，不要碰 UI。
      * @return 成功时 Result.success(模型文件)；失败带 IOException（含取消）。
@@ -155,13 +159,40 @@ class GgufModelStore(private val context: Context) {
         onProgress: (downloaded: Long, total: Long) -> Unit
     ): Result<File> {
         val target = File(modelsDir, entry.fileName)
-        val part = File(modelsDir, "${entry.fileName}.part")
         if (target.isFile && target.length() > 0) {
             return Result.success(target)
         }
 
+        val sources = listOfNotNull(mirrorUrl(entry.url), entry.url).distinct()
+        var lastError: Throwable? = null
+        for ((index, url) in sources.withIndex()) {
+            val result = downloadOnce(url, entry, target, onProgress)
+            if (result.isSuccess) return result
+            lastError = result.exceptionOrNull()
+            AgentLogger.w(
+                "LocalLlama",
+                "下载源 ${index + 1}/${sources.size} 失败：$url（${lastError?.message}）"
+            )
+        }
+        return Result.failure(lastError ?: IOException("没有可用的下载源"))
+    }
+
+    /** HuggingFace → 国内镜像（hf-mirror.com）；非 HF 地址原样返回（不打镜像）。 */
+    private fun mirrorUrl(url: String): String? =
+        if (url.contains("huggingface.co/")) {
+            url.replaceFirst("https://huggingface.co/", "https://hf-mirror.com/")
+        } else null
+
+    /** 单源下载一次（内部含断点续传）。 */
+    private suspend fun downloadOnce(
+        url: String,
+        entry: GgufCatalogEntry,
+        target: File,
+        onProgress: (downloaded: Long, total: Long) -> Unit
+    ): Result<File> {
+        val part = File(modelsDir, "${entry.fileName}.part")
         val resumeFrom = if (part.isFile) part.length() else 0L
-        val builder = Request.Builder().url(entry.url)
+        val builder = Request.Builder().url(url)
         if (resumeFrom > 0) {
             builder.header("Range", "bytes=$resumeFrom-")
             AgentLogger.i("LocalLlama", "断点续传 ${entry.fileName} @ ${resumeFrom / 1024 / 1024} MB")
@@ -173,8 +204,9 @@ class GgufModelStore(private val context: Context) {
             cont.invokeOnCancellation { call.cancel() }
             call.enqueue(object : Callback {
                 override fun onFailure(call: Call, e: IOException) {
-                    part.delete()   // 取消/失败都清理半成品，下次重新来
-                    if (cont.isActive) cont.resumeWithException(e)
+                    // 保留 .part：多源重试时可继续断点；只有协程取消才清理
+                    if (!cont.isActive) part.delete()
+                    if (cont.isActive) cont.resume(Result.failure(e))
                 }
 
                 override fun onResponse(call: Call, response: Response) {
