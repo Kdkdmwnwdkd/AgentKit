@@ -148,6 +148,14 @@ POOL_GROUPS = {
         ("Bing 跳转还原", "realUrlBing"),
         ("Bing 端点常量值", "https://cn.bing.com/search"),
     ],
+    "W29 自定义参数 + 余额（pool 池条目精确匹配）": [
+        ("请求头解析纯函数", "Lcom/example/agentkit/core/text/HeaderParsing;"),
+        ("余额解析纯函数", "Lcom/example/agentkit/core/llm/BalanceParsing;"),
+        ("余额服务", "Lcom/example/agentkit/core/llm/BalanceService;"),
+        ("端点映射函数", "endpointOf"),
+        ("头解析方法", "parseHeaderLines"),
+        ("请求体校验方法", "validateCustomBody"),
+    ],
     "W28 @提及文件 + 工作区绑定（pool 池条目精确匹配）": [
         ("提及解析纯函数", "Lcom/example/agentkit/core/text/MentionLogic;"),
         ("末尾提及检测", "activeQueryAtEnd"),
@@ -299,6 +307,12 @@ BYTES_GROUPS = {
     "W22 文案（bytes 子串）": [
         ("双引擎全挂提示", "搜索服务不可达"),
         ("Bing 引擎名", "Bing"),
+    ],
+    "W29 文案（bytes 子串）": [
+        ("高级参数入口", "自定义请求头"),
+        ("查余额按钮", "查余额"),
+        ("不支持提示", "未提供余额接口"),
+        ("请求体标签", "自定义请求体"),
     ],
     "W28 文案（bytes 子串）": [
         ("提及注入标题", "被提及的文件"),
