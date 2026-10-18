@@ -115,6 +115,8 @@ import com.example.agentkit.automation.shizuku.ShizukuInstaller
 import com.example.agentkit.automation.shizuku.ShizukuShell
 import com.example.agentkit.core.agent.AskUserBroker
 import com.example.agentkit.core.agent.PlanBroker
+import com.example.agentkit.tools.SubAgentTool
+import com.example.agentkit.core.agent.SubAgentRunner
 import com.example.agentkit.core.agent.TitleLogic
 import com.example.agentkit.core.text.MentionLogic
 import com.example.agentkit.core.text.TranslateLogic
@@ -765,6 +767,16 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         register(OcrTool(workspace))
         register(AppInstallTool(app, workspace))
         register(AppUninstallTool(app, terminalShellCommandRunner(terminalPool)))
+        // W-31：并行子代理——只读工具 + 独立上下文，只把结论带回主对话。
+        // baseRegistry 传当前表（apply 内 this）：子代理表由白名单过滤，spawn_agents 自身被排除（防递归）。
+        register(
+            SubAgentTool(
+                SubAgentRunner(
+                    llmProvider = { buildMainClient() },
+                    baseRegistry = { this }
+                )
+            )
+        )
     }
 
     /** JS 执行引擎（Rhino，纯 Java 无需 NDK）；初始化失败则降级为仅 prompt 形态。 */
@@ -1487,22 +1499,30 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         reloadBackupKeys()
     }
 
-    private val loop = AgentLoop(
-        llmProvider = {
-            val c = _config.value
-            // W-21：每次取 client 前刷新备用 Key 池（增删/换档案即时生效）
-            refreshKeyPool()
-            providerManager.create(
-                c.providerId,
-                LLMConfig(
-                    baseUrl = c.baseUrl,
-                    apiKey = c.apiKey,
-                    model = c.model,
-                    customHeaders = c.customHeaders,
-                    customBody = parseCustomBody(c.customBody)
-                )
+    /**
+     * 主模型客户端（W-31 抽出，主循环与子代理共用）。
+     *
+     * 每次调用现建实例：Key 池、自定义头/体、档案切换都即时生效，
+     * 不缓存旧 client（缓存会让「改了 Key 但还用旧的」这种问题复现）。
+     */
+    private fun buildMainClient(): LLMClient {
+        val c = _config.value
+        // W-21：每次取 client 前刷新备用 Key 池（增删/换档案即时生效）
+        refreshKeyPool()
+        return providerManager.create(
+            c.providerId,
+            LLMConfig(
+                baseUrl = c.baseUrl,
+                apiKey = c.apiKey,
+                model = c.model,
+                customHeaders = c.customHeaders,
+                customBody = parseCustomBody(c.customBody)
             )
-        },
+        )
+    }
+
+    private val loop = AgentLoop(
+        llmProvider = { buildMainClient() },
         registry = registry,
         approval = approvalHandler,
         // L9：每轮运行都把当前记忆摘要注入系统提示
