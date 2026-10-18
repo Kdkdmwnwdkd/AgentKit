@@ -93,6 +93,7 @@ import com.example.agentkit.core.job.JobRunner
 import com.example.agentkit.core.job.JobStore
 import com.example.agentkit.tools.ShellBackgroundTool
 import com.example.agentkit.tools.ShellJobsTool
+import com.example.agentkit.tools.GitHubCloneTool
 import com.example.agentkit.tools.GitHubCommitTool
 import com.example.agentkit.tools.GitHubDiffTool
 import com.example.agentkit.tools.GitHubLogTool
@@ -801,6 +802,8 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         register(GitHubLogTool(app))
         // W-34：行级 diff——提交前确认到底改了哪几行
         register(GitHubDiffTool(app))
+        // W-35：整仓克隆到工作区子目录（codeload zip，走镜像回退）
+        register(GitHubCloneTool(app))
         // W-33：后台命令——长命令不再阻塞整轮，跑完发通知
         register(ShellBackgroundTool(app, jobRunner))
         register(ShellJobsTool(jobStore, jobRunner))
