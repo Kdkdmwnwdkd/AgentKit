@@ -2458,12 +2458,12 @@ private fun PlanCard(
                 )
                 Spacer(Modifier.height(AgentSpacing.space2))
                 Row(horizontalArrangement = Arrangement.spacedBy(AgentSpacing.space2)) {
-                    AkButton(text = "提交意见", onClick = { onReject(reason.trim()) })
+                    AkPrimaryButton(text = "提交意见", onClick = { onReject(reason.trim()) })
                     AkTextButton(text = "返回", onClick = { rejecting = false })
                 }
             } else {
                 Row(horizontalArrangement = Arrangement.spacedBy(AgentSpacing.space2)) {
-                    AkButton(text = "批准执行", onClick = onApprove, modifier = Modifier.weight(1f))
+                    AkPrimaryButton(text = "批准执行", onClick = onApprove, modifier = Modifier.weight(1f))
                     AkTextButton(text = "不要执行", onClick = { rejecting = true }, modifier = Modifier.weight(1f))
                 }
             }
