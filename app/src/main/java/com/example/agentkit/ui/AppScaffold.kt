@@ -1295,7 +1295,7 @@ private fun WorkspaceBindDialog(
 ) {
     Dialog(
         onDismissRequest = onDismiss,
-        properties = DialogProperties(useDefaultPlatformWidth = false)
+        properties = DialogProperties(usePlatformDefaultWidth = false)
     ) {
         Surface(
             shape = RoundedCornerShape(20.dp),
