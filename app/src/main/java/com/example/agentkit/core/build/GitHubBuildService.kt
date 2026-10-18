@@ -77,7 +77,9 @@ class GitHubBuildService(
      */
     suspend fun pushWorkspace(context: Context): Result<String> = withContext(Dispatchers.IO) {
         runCatching {
-            val files = WorkspaceStore.list(context)
+            // W-27：递归收集（保留子目录结构），与编辑器看到的文件树一致
+            val wsRoot = WorkspaceStore.dir(context)
+            val files = WorkspaceStore.listTree(context).filter { !it.isDir }
             if (files.isEmpty()) {
                 AgentLogger.d(TAG, "工作区为空，跳过 commit，直接用 HEAD")
                 return@runCatching headSha().getOrThrow()
@@ -87,13 +89,14 @@ class GitHubBuildService(
             val baseTree = commitObj["tree"]?.jsonObject?.get("sha")?.jsonPrimitive?.contentOrNull
                 ?: error("HEAD commit 缺 tree")
 
-            val entries = files.map { f ->
+            val entries = files.map { entry ->
+                val f = java.io.File(wsRoot, entry.path)
                 val blob = post("/repos/${cfg.fullName}/git/blobs", buildJsonObject {
                     put("content", Base64.getEncoder().encodeToString(f.readBytes()))
                     put("encoding", "base64")
                 })
                 buildJsonObject {
-                    put("path", "agentkit-workspace/${f.name}")
+                    put("path", "agentkit-workspace/${entry.path}")
                     put("mode", "100644")
                     put("type", "blob")
                     put("sha", blob["sha"]?.jsonPrimitive?.contentOrNull ?: error("blob 缺 sha"))

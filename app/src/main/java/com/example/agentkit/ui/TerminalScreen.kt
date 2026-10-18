@@ -60,6 +60,7 @@ import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.agentkit.core.AgentLogger
+import com.example.agentkit.core.workspace.WorkspaceStore
 import com.example.agentkit.terminal.COLOR_DEFAULT_BG
 import com.example.agentkit.terminal.COLOR_DEFAULT_FG
 import com.example.agentkit.terminal.TerminalJni
@@ -311,9 +312,8 @@ internal fun TerminalContent(
 fun TerminalScreen() {
     val context = LocalContext.current
     val jniOk = remember { TerminalJni.ensureLoaded() }
-    val cwd = remember {
-        File(context.filesDir, "workspace").apply { runCatching { mkdirs() } }
-    }
+    // W-27：终端 cwd 与 Agent/编辑器同一个工作区（agent_workspace，含老目录迁移）
+    val cwd = remember { WorkspaceStore.dir(context) }
 
     Column(Modifier.fillMaxSize()) {
         PageTopBar(title = AppDest.TERMINAL.title)
