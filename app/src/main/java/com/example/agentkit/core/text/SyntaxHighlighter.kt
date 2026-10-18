@@ -86,6 +86,31 @@ object SyntaxHighlighter {
     )
 
     /**
+     * 语言别名归一（W-30）：模型输出的代码块标记五花八门（`kt`/`js`/`py`/`bash`/`c++`），
+     * 词法器只认规范名。不认识的返回 null（= 不高亮，纯文本显示，不猜）。
+     */
+    fun normalizeLanguage(raw: String?): String? {
+        val key = raw?.trim()?.lowercase()?.takeIf { it.isNotEmpty() } ?: return null
+        return when (key) {
+            "kotlin", "kt", "kts" -> "kotlin"
+            "java" -> "java"
+            "javascript", "js", "mjs", "cjs", "jsx", "node" -> "javascript"
+            "typescript", "ts", "tsx" -> "typescript"
+            "python", "py", "python3" -> "python"
+            "shell", "sh", "bash", "zsh", "console", "shell-session" -> "shell"
+            "go", "golang" -> "go"
+            "rust", "rs" -> "rust"
+            "c", "h", "cpp", "c++", "cc", "hpp", "objective-c" -> "c"
+            "sql" -> "sql"
+            "json" -> "json"
+            "yaml", "yml" -> "yaml"
+            "toml" -> "toml"
+            "css" -> "css"
+            else -> null
+        }
+    }
+
+    /**
      * 扫描整段文本，返回按起点排序、互不重叠的高亮片段。
      * [language] 为 null 或文本过长 → 返回空列表（调用方按纯文本显示）。
      */
