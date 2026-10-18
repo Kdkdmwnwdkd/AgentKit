@@ -1457,7 +1457,16 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
             val c = _config.value
             // W-21：每次取 client 前刷新备用 Key 池（增删/换档案即时生效）
             refreshKeyPool()
-            providerManager.create(c.providerId, LLMConfig(c.baseUrl, c.apiKey, c.model))
+            providerManager.create(
+                c.providerId,
+                LLMConfig(
+                    baseUrl = c.baseUrl,
+                    apiKey = c.apiKey,
+                    model = c.model,
+                    customHeaders = c.customHeaders,
+                    customBody = parseCustomBody(c.customBody)
+                )
+            )
         },
         registry = registry,
         approval = approvalHandler,
@@ -2837,6 +2846,17 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         _skillInfos.value = computeSkillInfos()
     }
 
+    /** W-29：把自定义 body 文本（JSON 对象）解析成 map；非法/空返回空（不阻断请求）。 */
+    private fun parseCustomBody(raw: String): Map<String, JsonElement> {
+        val t = raw.trim()
+        if (t.isEmpty()) return emptyMap()
+        return runCatching {
+            val obj = kotlinx.serialization.json.Json.parseToJsonElement(t)
+                as? kotlinx.serialization.json.JsonObject ?: return emptyMap()
+            obj
+        }.getOrDefault(emptyMap())
+    }
+
     /** W-28：绑定/解绑当前会话的项目目录（空串 = 解绑）。 */
     fun setConversationWorkspace(convId: String, dir: String) {
         conversationStore.setWorkspaceDir(convId, dir)
@@ -2924,7 +2944,16 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         val taskId = _taskProfileId.value
         val profile = if (taskId.isNotBlank()) _profiles.value.firstOrNull { it.id == taskId } else null
         val cfg = profile?.config ?: _config.value
-        return providerManager.create(cfg.providerId, LLMConfig(cfg.baseUrl, cfg.apiKey, cfg.model))
+        return providerManager.create(
+            cfg.providerId,
+            LLMConfig(
+                baseUrl = cfg.baseUrl,
+                apiKey = cfg.apiKey,
+                model = cfg.model,
+                customHeaders = cfg.customHeaders,
+                customBody = parseCustomBody(cfg.customBody)
+            )
+        )
     }
 
     /**
