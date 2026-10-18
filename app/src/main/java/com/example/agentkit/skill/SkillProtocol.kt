@@ -61,7 +61,17 @@ data class ModelConfig(
      * 供应商标识："openai" / "claude" / "gemini"（"local-llama" 第 3 步落地）。
      * 放末尾保源码兼容（旧构造点三参照常可用）；旧配置无此键时默认 "openai"。
      */
-    val providerId: String = "openai"
+    val providerId: String = "openai",
+    /**
+     * W-29：自定义请求头（覆盖/追加到默认头）。空 = 不额外加。
+     * 典型用途：某些中转站要求 `X-Api-Key`、`HTTP-Referer`、`X-Title` 等。
+     */
+    val customHeaders: Map<String, String> = emptyMap(),
+    /**
+     * W-29：自定义请求体片段（JSON 对象文本）。解析失败会被忽略（不阻断请求）。
+     * 典型用途：`{"top_k": 40}`、`{"enable_thinking": false}` 等厂商私有参数。
+     */
+    val customBody: String = ""
 )
 
 /** 路由上下文：根据本次请求的特征给 Skill 打分（Coomi SkillRouter 思路，净室重写）。 */

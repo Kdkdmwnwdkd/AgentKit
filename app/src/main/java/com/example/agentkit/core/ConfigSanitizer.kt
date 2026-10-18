@@ -121,6 +121,25 @@ object ConfigSanitizer {
             providerId = providerId
         )
     }
+
+    /**
+     * W-29：解析自定义请求头文本（每行 `Key: Value`；`#` 开头为注释）。
+     *
+     * 规则：
+     *  - 冒号后可有空格；值里的冒号保留（如 `Referer: https://a.com/x`）；
+     *  - 键名清洗成可打印 ASCII（HTTP 头名不允许中文/空格）；
+     *  - 跳过空行与注释；同名键后者覆盖前者；
+     *  - 值保留原样（去除首尾空白），允许中文（部分中转站用它做备注）。
+     */
+    fun parseHeaderLines(text: String): Map<String, String> =
+        com.example.agentkit.core.text.HeaderParsing.parseHeaderLines(text)
+
+    /**
+     * W-29：校验自定义 body 文本；返回错误文案，null 表示通过。
+     * 允许空（= 不追加），但非空必须是**JSON 对象**（数组/标量会被拒绝，避免把请求体搞坏）。
+     */
+    fun validateCustomBody(text: String): String? =
+        com.example.agentkit.core.text.HeaderParsing.validateCustomBody(text)
 }
 
 /**
