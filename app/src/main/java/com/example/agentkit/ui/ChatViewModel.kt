@@ -114,6 +114,9 @@ import com.example.agentkit.automation.shizuku.ShizukuShell
 import com.example.agentkit.core.agent.AskUserBroker
 import com.example.agentkit.core.agent.PlanBroker
 import com.example.agentkit.core.agent.TitleLogic
+import com.example.agentkit.core.text.MentionLogic
+import com.example.agentkit.core.workspace.WorkspacePaths
+import com.example.agentkit.core.workspace.WorkspaceStore
 import com.example.agentkit.core.agent.TodoStore
 import com.example.agentkit.core.mcp.McpClient
 import com.example.agentkit.core.mcp.McpServerStore
@@ -322,6 +325,12 @@ private const val MCP_MAX_TOOLS_PER_SERVER = 30
 
 /** W-14：全部 MCP 服务器合计的工具上限（超出部分不注册，日志会记录实际接入数）。 */
 private const val MCP_MAX_TOOLS_TOTAL = 60
+
+/** W-28：@提及文件的单文件/总量上限（字符）。 */
+private const val MENTION_PER_FILE_LIMIT = 8_000
+private const val MENTION_TOTAL_LIMIT = 24_000
+/** W-28：项目规则文件（AGENTS.md/README）注入上限。 */
+private const val PROJECT_RULES_LIMIT = 4_000
 
 class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
 
@@ -2196,8 +2205,14 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         // 模型先看到材料、再看问题，符合人的阅读顺序；文件名保留，
         // 模型回答时能引用「在 xx.txt 里...」
         val fileBlock = files.joinToString("\n\n") { "[附件：${it.name}]\n${it.text}" }
+        // W-28：@提及的文件内容（按预算截断），让模型直接看到被点名的文件
+        val mentionBlock = resolveMentionBlock(text)
+        // W-28：会话绑定的项目目录下的 AGENTS.md / README.md（项目规则）
+        val projectRules = projectRulesBlock()
         val prefix = listOfNotNull(
+            projectRules.takeIf { it.isNotBlank() },
             ctxPrompt.takeIf { it.isNotBlank() },
+            mentionBlock.takeIf { it.isNotBlank() },
             fileBlock.takeIf { it.isNotBlank() }
         ).joinToString("\n\n")
         val fullInput = if (prefix.isBlank()) text else "$prefix\n\n用户当前请求：$text"
@@ -2820,6 +2835,83 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     private fun reloadSkills() {
         skillsSnapshot = buildInitialSkills()
         _skillInfos.value = computeSkillInfos()
+    }
+
+    /** W-28：绑定/解绑当前会话的项目目录（空串 = 解绑）。 */
+    fun setConversationWorkspace(convId: String, dir: String) {
+        conversationStore.setWorkspaceDir(convId, dir)
+        refreshConversations()
+        AgentLogger.i("Chat", "会话 $convId 绑定目录：${dir.ifBlank { "工作区根" }}")
+    }
+
+    /** W-28：工作区内可绑定的目录列表（相对路径，含根目录的空串）。 */
+    fun workspaceDirs(): List<String> =
+        runCatching {
+            WorkspaceStore.listTree(app).asSequence()
+                .filter { it.isDir }
+                .map { it.path }
+                .take(200)
+                .toList()
+        }.getOrDefault(emptyList())
+
+    /**
+     * W-28：项目规则块——读会话绑定目录下的 AGENTS.md / README.md。
+     *
+     * 为什么不放进每轮 user 消息：项目规则是**稳定上下文**，放进前缀会被
+     * ContextBudget 当作普通内容压缩；以「项目规则」段喂给模型更容易被遵守。
+     * 上限 4KB（规则文件通常很短，超长说明该拆分）。
+     */
+    private fun projectRulesBlock(): String {
+        val convId = _activeConversationId.value
+        val dir = runCatching { conversationStore.load(convId)?.workspaceDir }.getOrNull().orEmpty()
+        if (dir.isBlank()) return ""
+        val candidates = listOf("AGENTS.md", "README.md", "README.txt")
+        for (name in candidates) {
+            val path = if (dir.isBlank()) name else "$dir/$name"
+            val content = WorkspaceStore.read(app, path) ?: continue
+            val trimmed = content.take(PROJECT_RULES_LIMIT)
+            val note = if (trimmed.length < content.length) "\n…（已截断）" else ""
+            return "[项目规则：$path]\n$trimmed$note"
+        }
+        return ""
+    }
+
+    /** W-28：工作区文件路径列表（供 @ 提及建议；只列文本类文件）。 */
+    fun workspacePaths(): List<String> =
+        runCatching {
+            WorkspaceStore.listTree(app).asSequence()
+                .filter { !it.isDir }
+                .map { it.path }
+                .filter { WorkspacePaths.isTextLikely(it) }
+                .take(500)
+                .toList()
+        }.getOrDefault(emptyList())
+
+    /**
+     * W-28：把消息里 `@path` 提到的文件内容拼成上下文块。
+     *
+     * 预算：单文件 ≤ 8KB、总量 ≤ 24KB（与上下文预算同一量级），
+     * 超出的截断并注明——不让一次 @ 把整轮上下文吃满。
+     * 读取失败的文件跳过（不因一个文件名写错就阻断发送）。
+     */
+    private fun resolveMentionBlock(text: String): String {
+        val mentioned = MentionLogic.extract(text)
+        if (mentioned.isEmpty()) return ""
+        val sb = StringBuilder()
+        var total = 0
+        for (path in mentioned) {
+            if (total >= MENTION_TOTAL_LIMIT) break
+            val content = WorkspaceStore.read(app, path) ?: continue
+            val perFile = content.take(MENTION_PER_FILE_LIMIT)
+            val clipped = if (perFile.length < content.length) {
+                "$perFile\n…（文件较长，已截断到 ${MENTION_PER_FILE_LIMIT} 字符）"
+            } else perFile
+            val block = "[被提及的文件：$path]\n$clipped"
+            if (total + block.length > MENTION_TOTAL_LIMIT) break
+            sb.append(block).append("\n\n")
+            total += block.length
+        }
+        return sb.toString().trim()
     }
 
     /**
