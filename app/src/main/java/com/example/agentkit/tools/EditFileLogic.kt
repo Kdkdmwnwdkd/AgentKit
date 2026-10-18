@@ -86,7 +86,10 @@ object EditFileLogic {
                 hint = "检查 new_string 是否与 old_string 相等。"
             )
         }
-        val firstOffset = replaced.indexOf(newString).let { if (it >= 0) it else 0 }
+        // 回显位置：必须用「第一处替换点」的原始偏移，不能用 replaced.indexOf(newString)——
+        // 若新文本在文件别处早已存在（如把 "a" 改成 "b"，开头就有 "b"），前者会指向错误行。
+        // 第一处替换点之前的文本未变，所以 occurrences[0] 就是替换后新文本的起始偏移。
+        val firstOffset = occurrences.first()
         return EditPlan.Replace(
             replaced = replaced,
             count = if (replaceAll) occurrences.size else 1,

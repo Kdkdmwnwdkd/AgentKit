@@ -29,16 +29,19 @@ class KeyPoolStore(context: Context) {
         prefs.edit().putString(key(profileId), json.encodeToString(slots)).apply()
     }
 
-    /** 追加一把 Key；重复 label 直接覆盖同 id。 */
+    /** 追加一把 Key；同内容已存在则返回已有槽位（不重复添加）。 */
     fun add(profileId: String, label: String, rawKey: String): KeyPoolPolicy.KeySlot {
-        val slot = KeyPoolPolicy.KeySlot(
-            id = "k${System.currentTimeMillis()}",
-            label = label.ifBlank { "备用 Key" },
-            key = rawKey.trim()
-        )
-        // 同 Key 内容已存在则视为重复，不重复添加
+        val trimmed = rawKey.trim()
         val current = list(profileId)
-        if (current.any { it.key == slot.key }) return current.first { it.key == slot.key }
+        // 同 Key 内容已存在则视为重复，不重复添加
+        current.firstOrNull { it.key == trimmed }?.let { return it }
+        // W-22 修：用 UUID 而不是时间戳——同一毫秒连续添加两把会导致 id 相同、
+        // 后一把在 UI/存储里覆盖前一把（用户会看到「加了两把只剩一把」）。
+        val slot = KeyPoolPolicy.KeySlot(
+            id = "k${java.util.UUID.randomUUID().toString().take(8)}",
+            label = label.ifBlank { "备用 Key ${current.size + 1}" },
+            key = trimmed
+        )
         save(profileId, current + slot)
         return slot
     }

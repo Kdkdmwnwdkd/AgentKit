@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import androidx.core.content.FileProvider
+import com.example.agentkit.core.llm.KeyPoolStore
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -45,7 +46,18 @@ object DiagnosticsExporter {
         val config = runCatching { ConfigStore(context).load() }.getOrNull()
         val key = config?.apiKey.orEmpty()
         val maskedKey = maskKey(key)
-        val safeLog = if (key.length >= 8) logText.replace(key, maskedKey) else logText
+
+        // W-22 修：备用 Key 也必须脱敏——日志里可能出现备用 Key（401 回显、切换日志）。
+        // 只替换主 Key 会让诊断包泄露备用池里的全部 Key。
+        val profileId = runCatching { ConfigStore(context).loadActiveId() }.getOrNull() ?: "default"
+        val backupKeys = runCatching { KeyPoolStore(context).list(profileId) }
+            .getOrDefault(emptyList())
+        val allKeys = (listOf(key) + backupKeys.map { it.key })
+            .map { it.trim() }
+            .filter { it.length >= 8 }
+            .distinct()
+        var safeLog = logText
+        allKeys.forEach { k -> safeLog = safeLog.replace(k, maskKey(k)) }
 
         val tail = safeLog.lineSequence().toList().takeLast(MAX_LOG_LINES).joinToString("\n")
         val text = buildString {
@@ -60,6 +72,10 @@ object DiagnosticsExporter {
             appendLine("端点：${config?.baseUrl ?: "?"}")
             appendLine("模型：${config?.model ?: "?"}")
             appendLine("Key：$maskedKey")
+            if (backupKeys.isNotEmpty()) {
+                appendLine("备用 Key（${backupKeys.size} 把）：" +
+                    backupKeys.joinToString("、") { "${it.label}=${maskKey(it.key)}" })
+            }
             appendLine()
             appendLine("—— 最近 $MAX_LOG_LINES 行日志 ——")
             appendLine(tail.ifBlank { "(无日志)" })
