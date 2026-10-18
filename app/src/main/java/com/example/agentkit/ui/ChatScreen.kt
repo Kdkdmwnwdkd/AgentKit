@@ -91,6 +91,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -335,11 +336,11 @@ fun ChatScreen(
                 onPick = { vm.input.value = it }
             )
         } else {
+            // W-33 顺手：包一层 Box，给「回到底部」按钮留悬浮位
+            Box(Modifier.weight(1f).fillMaxWidth()) {
             LazyColumn(
                 state = listState,
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth(),
+                modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(
                     horizontal = AgentSpacing.space4,
                     vertical = AgentSpacing.space2
@@ -458,6 +459,34 @@ fun ChatScreen(
                 if (streamDraft != null) {
                     item(key = "stream-draft") {
                         MessageRow(UiItem.Assistant(streamDraft.orEmpty(), reasoning = reasoningDraft), streaming = true)
+                    }
+                }
+            }
+                // W-33 顺手：不在底部时给一个回到底部的按钮（长对话上翻后一键回最新）
+                val atBottom by remember { derivedStateOf { !listState.canScrollForward } }
+                if (!atBottom) {
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.BottomEnd)
+                            .padding(end = AgentSpacing.space4, bottom = AgentSpacing.space2)
+                            .size(36.dp)
+                            .clip(CircleShape)
+                            .background(MaterialTheme.colorScheme.surfaceVariant)
+                            .clickable {
+                                inputScope.launch {
+                                    if (messages.isNotEmpty()) {
+                                        listState.animateScrollToItem(messages.lastIndex)
+                                    }
+                                }
+                            },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.ExpandMore,
+                            contentDescription = "回到底部",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(20.dp)
+                        )
                     }
                 }
             }
