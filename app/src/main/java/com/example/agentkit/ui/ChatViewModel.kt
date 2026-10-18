@@ -47,6 +47,8 @@ import com.example.agentkit.core.PromptItem
 import com.example.agentkit.core.PromptStore
 import com.example.agentkit.core.PromptUpsertResult
 import com.example.agentkit.core.conversationToMarkdown
+import com.example.agentkit.core.Bookmark
+import com.example.agentkit.core.BookmarkStore
 import com.example.agentkit.core.ConversationStore
 import com.example.agentkit.core.ConversationSummary
 import com.example.agentkit.core.ModelProfile
@@ -115,6 +117,7 @@ import com.example.agentkit.core.agent.AskUserBroker
 import com.example.agentkit.core.agent.PlanBroker
 import com.example.agentkit.core.agent.TitleLogic
 import com.example.agentkit.core.text.MentionLogic
+import com.example.agentkit.core.text.TranslateLogic
 import com.example.agentkit.core.workspace.WorkspacePaths
 import com.example.agentkit.core.workspace.WorkspaceStore
 import com.example.agentkit.core.agent.TodoStore
@@ -209,7 +212,12 @@ sealed interface UiItem {
      * 用户气泡。
      * @param turnIndex 该提问所属轮次下标；重新发问（截断其后轮次）按它定位；< 0 表示未归属（实时上屏的草稿）。
      */
-    data class User(val text: String, val turnIndex: Int = -1) : UiItem
+    data class User(
+        val text: String,
+        val turnIndex: Int = -1,
+        /** W-30：消息时间（epoch 毫秒）；0 = 未记录，UI 不显示时间行。 */
+        val timeMs: Long = 0
+    ) : UiItem
 
     /**
      * 助手气泡。
@@ -232,7 +240,9 @@ sealed interface UiItem {
         val variantCount: Int = 1,
         val turnIndex: Int = -1,
         val usage: TokenUsage? = null,
-        val reasoning: String? = null
+        val reasoning: String? = null,
+        /** W-30：消息时间（epoch 毫秒）；0 = 未记录，UI 不显示时间行。 */
+        val timeMs: Long = 0
     ) : UiItem
 
     data class Tool(
@@ -245,6 +255,14 @@ sealed interface UiItem {
         val running: Boolean = false
     ) : UiItem
 }
+
+/**
+ * W-30：一条消息的翻译状态。
+ *
+ * @param text 译文（成功时非空）
+ * @param error 失败原因（失败时非空，UI 用 error 色显示而不是假装翻出来了）
+ */
+data class TranslationUi(val text: String? = null, val error: String? = null)
 
 /**
  * 一次待确认的危险工具调用（L10）：由 AgentLoop 发起、UI 弹窗、用户决策后回填。
@@ -650,6 +668,22 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
      * 若工具在 registry 里构造时 store 还没赋值，会拿到 null 并 NPE。
      */
     private val conversationStore = ConversationStore(File(app.filesDir, "conversations.json"))
+
+    /**
+     * W-30：消息收藏。独立文件（删会话不丢收藏），列表在内存缓存，
+     * 由 [_bookmarks] 驱动收藏页与菜单勾选态。
+     */
+    private val bookmarkStore = BookmarkStore(File(app.filesDir, "bookmarks.json"))
+    private val _bookmarks = MutableStateFlow(bookmarkStore.list())
+    val bookmarks: StateFlow<List<Bookmark>> = _bookmarks.asStateFlow()
+
+    /** W-30：翻译结果缓存（按消息下标），会话切换时清空。 */
+    private val _translations = MutableStateFlow<Map<Int, TranslationUi>>(emptyMap())
+    val translations: StateFlow<Map<Int, TranslationUi>> = _translations.asStateFlow()
+
+    /** W-30：正在翻译的消息下标（null = 空闲）。同一时刻只翻一条，避免并发打满 Key。 */
+    private val _translatingIndex = MutableStateFlow<Int?>(null)
+    val translatingIndex: StateFlow<Int?> = _translatingIndex.asStateFlow()
 
     private val registry = ToolRegistry().apply {
         register(HttpRequestTool())
@@ -1255,7 +1289,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
                         AgentLogger.i("Chat", "重新生成已停止")
                     } else {
                         AgentLogger.e("Chat", "重新生成失败", it)
-                        val err = UiItem.Assistant(friendlyMessage(it))
+                        val err = UiItem.Assistant(friendlyMessage(it), timeMs = System.currentTimeMillis())
                         // hotfix30：失败变体同样按 owner 落盘
                         conversationStore.appendVariant(
                             owner, turnIndex, err.toMsgRecord()
@@ -2239,7 +2273,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
                 }
                 // Hotfix2：用户消息立即上屏；工具调用过程由 handleAgentEvent 实时渲染
                 // （执行中卡 → 终态卡）；最终历史只补文本回答，工具卡按 call.id 去重
-                val userItem = UiItem.User(text)
+                val userItem = UiItem.User(text, timeMs = System.currentTimeMillis())
                 _messages.value = _messages.value + userItem
                 appendToStore(userItem) // 功能三：聊天记录同步落盘
                 // W-26：首轮对话后用「任务模型」异步生成标题（不阻塞、失败静默）
@@ -2290,7 +2324,10 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
                     // T05：取消是用户主动停止，不是错误——树尾闭合后历史已完整，给停止提示
                     if (it is CancellationException) {
                         AgentLogger.i("Chat", "运行已停止（历史已闭合，可继续提问）")
-                        val stopItem = UiItem.Assistant("⏹ 已停止。已完成的历史保留，可基于它继续提问。")
+                        val stopItem = UiItem.Assistant(
+                            "⏹ 已停止。已完成的历史保留，可基于它继续提问。",
+                            timeMs = System.currentTimeMillis()
+                        )
                         // hotfix30：停止气泡只上屏当前显示的正是 owner 会话时（切走期间只落盘）
                         if (isOwnerActive()) _messages.value = _messages.value + stopItem
                         appendToStore(stopItem)
@@ -2298,7 +2335,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
                     }
                     AgentLogger.e("Chat", "运行失败", it)
                     // 气泡面向用户：技术异常在此映射成可读文案（完整堆栈已在日志里落盘）
-                    val errItem = UiItem.Assistant(friendlyMessage(it))
+                    val errItem = UiItem.Assistant(friendlyMessage(it), timeMs = System.currentTimeMillis())
                     if (isOwnerActive()) _messages.value = _messages.value + errItem
                     appendToStore(errItem) // 功能三：失败气泡也进聊天记录
                 }
@@ -2395,10 +2432,15 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
 
     private fun append(msg: ChatMessage, usage: TokenUsage? = null) {
         val item = when (msg) {
-            is UserMessage -> UiItem.User(msg.content)
+            is UserMessage -> UiItem.User(msg.content, timeMs = System.currentTimeMillis())
             // 功能五（P1-5）：usage 仅在 send() 汇总整轮后传给最终回答（中间轮不传）
             // 功能五（P1-9）：reasoning 随消息透传——加载历史/落库回答都能折叠展示推理过程
-            is AssistantMessage -> UiItem.Assistant(msg.content, usage = usage, reasoning = msg.reasoning)
+            is AssistantMessage -> UiItem.Assistant(
+                msg.content,
+                usage = usage,
+                reasoning = msg.reasoning,
+                timeMs = System.currentTimeMillis()
+            )
             is ToolMessage -> UiItem.Tool(
                 ToolCall(msg.id, msg.name, msg.arguments),
                 msg.content,
@@ -2658,6 +2700,8 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         draftStore.set(_activeConversationId.value, input.value)
         _activeConversationId.value = id
         _messages.value = conversationStore.load(id)?.toUiItems() ?: emptyList()
+        // W-30：会话切换后消息下标全变，旧译文清掉（否则会显示到别的消息下面）
+        _translations.value = emptyMap()
         input.value = draftStore.get(id)
         refreshConversations()
     }
@@ -2665,6 +2709,8 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     /** 用当前会话的轮次变体结构重建 [_messages]（变体切换/重新生成/重新发问后调用）。 */
     private fun reloadActiveMessages() {
         _messages.value = conversationStore.load(_activeConversationId.value)?.toUiItems() ?: emptyList()
+        // W-30：会话切换后消息下标全变，旧译文清掉（否则会显示到别的消息下面）
+        _translations.value = emptyMap()
     }
 
     /**
@@ -2895,6 +2941,84 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
             return "[项目规则：$path]\n$trimmed$note"
         }
         return ""
+    }
+
+    // —— W-30：消息收藏 ——
+
+    /** 当前会话里这条内容是否已收藏（长按菜单据此显示「收藏」或「取消收藏」）。 */
+    fun isBookmarked(role: String, text: String): Boolean =
+        bookmarkStore.contains(_activeConversationId.value, role, text)
+
+    /**
+     * 收藏 / 取消收藏一条消息；返回操作后是否处于「已收藏」。
+     * 会话标题一并快照，收藏页在会话被删后仍能看出它来自哪里。
+     */
+    fun toggleBookmark(role: String, text: String, timeMs: Long): Boolean {
+        val convId = _activeConversationId.value
+        val existed = bookmarkStore.contains(convId, role, text)
+        if (existed) {
+            bookmarkStore.removeByContent(convId, role, text)
+        } else {
+            val title = runCatching { conversationStore.load(convId)?.title }.getOrNull().orEmpty()
+            bookmarkStore.add(convId, title.ifBlank { "未命名对话" }, role, text, timeMs)
+        }
+        _bookmarks.value = bookmarkStore.list()
+        AgentLogger.i("Chat", if (existed) "取消收藏" else "收藏一条消息")
+        return !existed
+    }
+
+    fun removeBookmark(id: String) {
+        bookmarkStore.remove(id)
+        _bookmarks.value = bookmarkStore.list()
+    }
+
+    fun clearBookmarks() {
+        bookmarkStore.clear()
+        _bookmarks.value = emptyList()
+        AgentLogger.i("Chat", "已清空收藏")
+    }
+
+    // —— W-30：翻译 ——
+
+    /**
+     * 翻译一条消息（长按菜单调用）。
+     *
+     * 三条纪律：
+     *  1. 同一时刻只允许一条在翻（[translatingIndex] 非空即忽略）——避免连点几次打满配额；
+     *  2. 走**任务模型**（便宜），失败把原因写进状态而不是静默——用户点了就该有反馈；
+     *  3. 结果按消息下标缓存在内存，不落盘（译文是临时视图，不是会话内容）。
+     */
+    fun translateMessage(index: Int, text: String, target: String = "中文") {
+        if (text.isBlank()) return
+        if (_translations.value.containsKey(index)) return
+        if (_translatingIndex.value != null) return
+        _translatingIndex.value = index
+        viewModelScope.launch(Dispatchers.IO) {
+            val outcome = runCatching {
+                val client = buildTaskClient()
+                val reply = client.chat(
+                    listOf(
+                        SystemMessage(TranslateLogic.systemPrompt(target)),
+                        UserMessage(TranslateLogic.userPrompt(text))
+                    ),
+                    emptyList()
+                )
+                TranslateLogic.clean(reply.content, text)
+                    ?: throw IllegalStateException("模型没有返回译文")
+            }
+            _translations.value = _translations.value + (
+                index to outcome.fold(
+                    onSuccess = { TranslationUi(text = it) },
+                    onFailure = { TranslationUi(error = it.message?.take(160) ?: "翻译失败") }
+                )
+                )
+            _translatingIndex.value = null
+        }
+    }
+
+    /** 收起某条消息的翻译（UI 上的「收起」）。 */
+    fun clearTranslation(index: Int) {
+        _translations.value = _translations.value - index
     }
 
     /** W-28：工作区文件路径列表（供 @ 提及建议；只列文本类文件）。 */
