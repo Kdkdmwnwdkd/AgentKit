@@ -110,11 +110,13 @@ import com.example.agentkit.core.capability.resolveCapability
 import com.example.agentkit.automation.shizuku.ShizukuInstaller
 import com.example.agentkit.automation.shizuku.ShizukuShell
 import com.example.agentkit.core.agent.AskUserBroker
+import com.example.agentkit.core.agent.PlanBroker
 import com.example.agentkit.core.agent.TodoStore
 import com.example.agentkit.core.mcp.McpClient
 import com.example.agentkit.core.mcp.McpServerStore
 import com.example.agentkit.core.mcp.McpToolAdapter
 import com.example.agentkit.tools.AskUserTool
+import com.example.agentkit.tools.PlanTool
 import com.example.agentkit.tools.CalculatorTool
 import com.example.agentkit.tools.ConversationSearchTool
 import com.example.agentkit.tools.EditFileTool
@@ -703,6 +705,8 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         register(WebEvalTool())
         // W-14：结构化追问 + 任务清单（对齐 RikkaHub ask_user / AiCode todo）
         register(AskUserTool())
+        // W-25：先计划后执行——提交多步计划并等待用户批准
+        register(PlanTool(broker = PlanBroker, planModeEnabled = { _planMode.value }))
         register(TodoWriteTool(todoStore) { _activeConversationId.value })
         register(TodoReadTool(todoStore) { _activeConversationId.value })
         // 应用操控（Phase 1 补口）：列出/启动/停止任意已安装应用——「叫它打开快手就能打开」。
@@ -787,6 +791,9 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         runCatching { terminalPool.releaseAllAsync() }
         // W-16：释放 TTS 引擎（不释放会一直占着音频焦点）
         runCatching { speaker.shutdown() }
+        // W-25：唤醒挂起中的提问/计划，避免 deferred 悬着（协程随 ViewModel 取消）
+        runCatching { AskUserBroker.cancel() }
+        runCatching { PlanBroker.cancel() }
         super.onCleared()
     }
 
@@ -1037,6 +1044,31 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     /** 待回答的用户提问（W-14）：非空时聊天页显示选择卡片。 */
     val askUserPending: StateFlow<AskUserBroker.Question?> = AskUserBroker.pending
 
+    // —— W-25：任务模式（PLAN / AUTO）与待批计划 ——
+    private val _planMode = MutableStateFlow(configStore.isPlanModeEnabled())
+    val planMode: StateFlow<Boolean> = _planMode.asStateFlow()
+
+    /** UI 观察：有可批准的计划时显示计划卡片。 */
+    val planPending: StateFlow<PlanBroker.Plan?> = PlanBroker.pending
+
+    fun setPlanMode(enabled: Boolean) {
+        _planMode.value = enabled
+        configStore.setPlanModeEnabled(enabled)
+        AgentLogger.i("Chat", "任务模式切换为 ${if (enabled) "先计划后执行" else "自动执行"}")
+    }
+
+    /** UI 回调：批准计划。 */
+    fun approvePlan(planId: String) {
+        PlanBroker.approve(planId)
+        AgentLogger.i("Chat", "用户批准了计划 $planId")
+    }
+
+    /** UI 回调：拒绝/要求修改计划。 */
+    fun rejectPlan(planId: String, reason: String) {
+        PlanBroker.reject(planId, reason)
+        AgentLogger.i("Chat", "用户拒绝了计划 $planId：${reason.take(80)}")
+    }
+
     /** UI 回调：用户点了某个选项 / 提交了自由输入。 */
     fun answerAskUser(questionId: String, choice: String) {
         AskUserBroker.answer(questionId, choice)
@@ -1128,6 +1160,8 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         runJob = null
         // W-14：挂起中的 ask_user 一并唤醒（否则协程被取消后 deferred 悬着，卡片不消失）
         AskUserBroker.cancel()
+        // W-25：待批计划同样唤醒（视为拒绝），否则计划卡片会一直挂在输入栏上方
+        PlanBroker.cancel()
         // Phase 2 DoD③/T05：取消立即清「正在恢复」——不等协程收到取消再清，UI 即刻复原
         _retryState.value = null
     }
