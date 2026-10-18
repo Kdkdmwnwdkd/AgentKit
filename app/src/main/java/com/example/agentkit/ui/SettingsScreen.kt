@@ -35,6 +35,7 @@ import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Save
 import androidx.compose.material.icons.outlined.Security
 import androidx.compose.material.icons.outlined.Shield
+import androidx.compose.material.icons.outlined.AccountTree
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Storage
@@ -312,6 +313,31 @@ fun SettingsScreen(
                     title = "构建",
                     description = "推源码到 GitHub、CI 构建并装回本机",
                     onClick = { onNavigate(AppDest.BUILD) }
+                )
+            }
+
+            // —— 任务模式（W-25）：先计划后执行 / 自动执行 ——
+            val planMode by vm.planMode.collectAsStateWithLifecycle()
+            AkSectionCard(
+                title = "任务模式",
+                icon = Icons.Outlined.AccountTree,
+                description = "「先计划后执行」：多步任务先列计划，你批准后才动手；" +
+                    "「自动执行」：直接做，只有破坏性操作才来问你。"
+            ) {
+                AkListItem(
+                    icon = Icons.Outlined.AccountTree,
+                    title = if (planMode) "先计划后执行（PLAN）" else "自动执行（AUTO）",
+                    description = if (planMode) {
+                        "3 步以上任务会先弹计划卡片等你批准；被拒绝可按你的意见重规划"
+                    } else {
+                        "直接开始执行；批量删除/装应用等破坏性操作仍会先确认"
+                    },
+                    trailing = {
+                        AkSwitch(
+                            checked = planMode,
+                            onCheckedChange = { vm.setPlanMode(it) }
+                        )
+                    }
                 )
             }
 

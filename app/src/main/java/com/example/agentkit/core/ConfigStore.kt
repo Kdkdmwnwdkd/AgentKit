@@ -308,6 +308,7 @@ class ConfigStore(context: Context) {
         private const val KEY_GH_WORKFLOW = "gh_workflow"
         /** 功能五（P1-10）：回答完成提醒开关（默认关——通知是侵入式能力，opt-in）。 */
         private const val KEY_COMPLETION_NOTIFY = "completion_notify"
+        private const val KEY_PLAN_MODE = "plan_mode"
         // hotfix32：聊天背景图（URI + 不透明度）
         private const val KEY_CHAT_BG_URI = "chat_bg_uri"
         private const val KEY_CHAT_BG_ALPHA = "chat_bg_alpha"
@@ -320,6 +321,14 @@ class ConfigStore(context: Context) {
     /** 功能五（P1-10）：写回答完成提醒开关（设置页开关即时生效，落盘供下次启动读取）。 */
     fun setCompletionNotifyEnabled(enabled: Boolean) {
         sp.edit().putBoolean(KEY_COMPLETION_NOTIFY, enabled).apply()
+    }
+
+    /** W-25：任务模式——true = 先计划后执行（PLAN），false = 自动执行（AUTO，默认）。 */
+    fun isPlanModeEnabled(): Boolean = sp.getBoolean(KEY_PLAN_MODE, false)
+
+    /** W-25：写任务模式（设置页开关即时生效，落盘供下次启动读取）。 */
+    fun setPlanModeEnabled(enabled: Boolean) {
+        sp.edit().putBoolean(KEY_PLAN_MODE, enabled).apply()
     }
 
     /**
