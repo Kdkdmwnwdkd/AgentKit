@@ -195,6 +195,12 @@ fun ModelConfigScreen(vm: ChatViewModel, onBack: () -> Unit) {
                         onModel = { model = it },
                         providerId = providerId,
                         onOpenLocalTab = { tab = 1 },
+                        headersText = headersText,
+                        onHeadersText = { headersText = it },
+                        bodyText = bodyText,
+                        onBodyText = { bodyText = it },
+                        showAdvanced = showAdvanced,
+                        onToggleAdvanced = { showAdvanced = !showAdvanced },
                         onProviderChange = { id ->
                             if (id != providerId) {
                                 // 智能预填：仅当当前值是旧供应商默认值或空时才填新默认值，
@@ -618,7 +624,14 @@ private fun ModelTab(
     dirty: Boolean,
     onSave: () -> Unit,
     onCancel: () -> Unit,
-    onOpenLocalTab: () -> Unit = {}
+    onOpenLocalTab: () -> Unit = {},
+    // W-29：高级参数（由父组件持有状态，本组件只渲染）
+    headersText: String = "",
+    onHeadersText: (String) -> Unit = {},
+    bodyText: String = "",
+    onBodyText: (String) -> Unit = {},
+    showAdvanced: Boolean = false,
+    onToggleAdvanced: () -> Unit = {}
 ) {
     val testResult by vm.testResult.collectAsStateWithLifecycle()
     val testing by vm.testing.collectAsStateWithLifecycle()
@@ -729,13 +742,13 @@ private fun ModelTab(
             AkTextButton(
                 text = if (showAdvanced) "收起高级参数" else "高级：自定义请求头 / 请求体",
                 icon = if (showAdvanced) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
-                onClick = { showAdvanced = !showAdvanced }
+                onClick = onToggleAdvanced
             )
             if (showAdvanced) {
                 Spacer(Modifier.height(AgentSpacing.space2))
                 AkTextField(
                     value = headersText,
-                    onValueChange = { headersText = it },
+                    onValueChange = onHeadersText,
                     label = "自定义请求头（每行一条 Key: Value，# 开头为注释）",
                     placeholder = "HTTP-Referer: https://example.com\nX-Title: AgentKit",
                     singleLine = false,
@@ -745,7 +758,7 @@ private fun ModelTab(
                 Spacer(Modifier.height(AgentSpacing.space2))
                 AkTextField(
                     value = bodyText,
-                    onValueChange = { bodyText = it },
+                    onValueChange = onBodyText,
                     label = "自定义请求体（JSON 对象，可留空）",
                     placeholder = "{\"top_k\": 40}",
                     singleLine = false,
