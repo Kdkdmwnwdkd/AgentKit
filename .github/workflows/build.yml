@@ -4,6 +4,11 @@ on:
   push:
     branches: ["**"]
   workflow_dispatch:
+    inputs:
+      ref:
+        description: "要构建的 commit / 分支 / tag（留空 = 当前分支 HEAD）。回滚用：填旧 commit。"
+        required: false
+        default: ""
 
 jobs:
   build:
@@ -14,6 +19,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # W-41：回滚时用旧 commit 重新出包。版本号取自 run number，天然比旧包大，
+          # 可覆盖安装、不丢数据（Android 不允许版本号倒退的包覆盖安装）。
+          ref: ${{ inputs.ref || github.sha }}
+          fetch-depth: 0
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -62,6 +72,32 @@ jobs:
 
       - name: Build debug APK
         run: ./gradlew assembleDebug --no-daemon --stacktrace
+
+      # QA harness：把仓库里全部断言跑一遍（纯 JVM + APK 静态反验）。
+      #
+      # 为什么是「只报告」而不是硬门禁：这批断言是历史批次陆续写的，第一次进 CI 可能
+      # 因环境差异（JDK/缓存/路径）报红。先用一批观察，稳定后把 continue-on-error 删掉
+      # 就是硬门禁——**不要直接改死**，否则一次误报就把所有人堵在门口。
+      #
+      # 回滚开关：仓库变量 QA_HARNESS=off 即可整步跳过，无需改代码。
+      - name: QA harness (report only)
+        if: ${{ vars.QA_HARNESS != 'off' }}
+        continue-on-error: true
+        run: |
+          set +e
+          bash scripts/qa/run-all.sh app/build/outputs/apk/debug/app-debug.apk 2>&1 | tee /tmp/qa.log
+          echo "runner exit=$?" >> /tmp/qa.log
+
+      - name: QA harness summary
+        if: always()
+        run: |
+          {
+            echo "### QA harness（report only，不阻塞构建）"
+            echo ""
+            echo '```'
+            tail -80 /tmp/qa.log 2>/dev/null || echo "(无日志：该步被 QA_HARNESS=off 跳过，或脚本缺失)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
