@@ -1,7 +1,11 @@
 package com.example.agentkit.core.llm.local
 
 import android.content.Context
+import android.provider.OpenableColumns
 import com.example.agentkit.core.AgentLogger
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.suspendCancellableCoroutine
 import okhttp3.Call
 import okhttp3.Callback
@@ -127,6 +131,105 @@ class GgufModelStore(private val context: Context) {
 
     fun isDownloaded(fileName: String): Boolean =
         File(modelsDir, fileName).let { it.isFile && it.length() > 0 }
+
+    /**
+     * W-45：导入用户**已有**的 .gguf 文件（系统文件选择器给的是 content:// URI）。
+     *
+     * 真机反馈原话：「我已下好的话，不需要和内置的下（载）」。之前只有内置目录一条路，
+     * 用户手机里存着模型也只能重下一遍——几 GB 的流量和等待。
+     *
+     * 校验两道，防的是"选错文件后加载崩溃"这种更难受的失败：
+     *  1) 扩展名补成 .gguf；
+     *  2) 文件头必须是 "GGUF" 魔数（4 字节 ASCII），否则直接拒绝并说明原因。
+     */
+    suspend fun importFrom(
+        uri: android.net.Uri,
+        onProgress: (copied: Long, total: Long) -> Unit = { _, _ -> }
+    ): Result<String> = withContext(Dispatchers.IO) {
+        runCatching {
+            val resolver = context.contentResolver
+            val target = uniqueTarget(sanitize(queryDisplayName(uri)))
+            val part = File(modelsDir, target.name + ".part")
+            modelsDir.mkdirs()
+            val total = querySize(uri)
+
+            resolver.openInputStream(uri)?.use { input ->
+                part.outputStream().use { out ->
+                    val buf = ByteArray(64 * 1024)
+                    var copied = 0L
+                    while (true) {
+                        ensureActive()
+                        val n = input.read(buf)
+                        if (n < 0) break
+                        out.write(buf, 0, n)
+                        copied += n
+                        onProgress(copied, total)
+                    }
+                }
+            } ?: throw IOException("无法读取所选文件（可能没有持久化访问权限）")
+
+            val head = ByteArray(4)
+            val read = part.inputStream().use { it.read(head) }
+            if (read < 4 || String(head, Charsets.US_ASCII) != "GGUF") {
+                part.delete()
+                throw IOException("不是 GGUF 模型文件（缺少 GGUF 文件头），请确认选的是 .gguf")
+            }
+            if (!part.renameTo(target)) {
+                part.delete()
+                throw IOException("写入失败，存储空间可能不足")
+            }
+            AgentLogger.i(
+                "LocalLlama",
+                "已导入本地模型 ${target.name}（${target.length() / 1024 / 1024} MB）"
+            )
+            target.name
+        }
+    }
+
+    private fun queryDisplayName(uri: android.net.Uri): String {
+        runCatching {
+            context.contentResolver.query(
+                uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null
+            )?.use { c ->
+                if (c.moveToFirst()) {
+                    val idx = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                    if (idx >= 0) c.getString(idx)?.let { if (it.isNotBlank()) return it }
+                }
+            }
+        }
+        return "imported-${System.currentTimeMillis()}.gguf"
+    }
+
+    private fun querySize(uri: android.net.Uri): Long = runCatching {
+        context.contentResolver.query(uri, arrayOf(OpenableColumns.SIZE), null, null, null)?.use { c ->
+            if (c.moveToFirst()) {
+                val idx = c.getColumnIndex(OpenableColumns.SIZE)
+                if (idx >= 0 && !c.isNull(idx)) c.getLong(idx) else 0L
+            } else 0L
+        } ?: 0L
+    }.getOrDefault(0L)
+
+    /** 文件名清洗：只留安全字符，扩展名统一 .gguf（SAF 给的名字可能没有后缀）。 */
+    private fun sanitize(name: String): String {
+        val cleaned = name.substringAfterLast('/').replace(Regex("[^A-Za-z0-9._-]"), "_")
+        if (cleaned.isBlank() || cleaned == ".gguf") {
+            return "model-${System.currentTimeMillis()}.gguf"
+        }
+        return if (cleaned.endsWith(".gguf", ignoreCase = true)) cleaned else "$cleaned.gguf"
+    }
+
+    /** 同名不覆盖：my.gguf → my-1.gguf → my-2.gguf。 */
+    private fun uniqueTarget(name: String): File {
+        var f = File(modelsDir, name)
+        if (!f.exists()) return f
+        val stem = name.removeSuffix(".gguf").removeSuffix(".GGUF")
+        var i = 1
+        while (f.exists()) {
+            f = File(modelsDir, "$stem-$i.gguf")
+            i++
+        }
+        return f
+    }
 
     fun modelFile(fileName: String): File = File(modelsDir, fileName)
 
