@@ -91,6 +91,12 @@ jobs:
           mkdir -p /tmp/kotlinc/bin
           {
             echo '#!/usr/bin/env bash'
+            # 官方 kotlinc 会自动带上 stdlib；直接调 K2JVMCompiler 不会，
+            # 调用方没给 -classpath 时补上，否则报 "cannot access built-in declaration kotlin.Int"
+            echo 'STD="'"$STD"'"'
+            echo 'if ! printf "%s\n" "$@" | grep -q -- "-classpath"; then'
+            echo '  set -- -classpath "$STD" "$@"'
+            echo 'fi'
             echo "exec java -cp \"$KJAR:$STD:$TROVE:$ANN\" org.jetbrains.kotlin.cli.jvm.K2JVMCompiler \"\$@\""
           } > /tmp/kotlinc/bin/kotlinc
           chmod +x /tmp/kotlinc/bin/kotlinc
