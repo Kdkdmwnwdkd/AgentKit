@@ -124,6 +124,7 @@ import com.example.agentkit.core.capability.resolveCapability
 import com.example.agentkit.automation.shizuku.ShizukuInstaller
 import com.example.agentkit.automation.shizuku.ShizukuShell
 import com.example.agentkit.core.agent.AskUserBroker
+import com.example.agentkit.core.agent.ApprovalGrouping
 import com.example.agentkit.core.agent.PlanBroker
 import com.example.agentkit.tools.SubAgentTool
 import com.example.agentkit.core.agent.SubAgentRunner
@@ -286,7 +287,9 @@ data class TranslationUi(val text: String? = null, val error: String? = null)
 data class ApprovalRequest(
     val toolName: String,
     val argsPreview: String,
-    val deferred: CompletableDeferred<Boolean>
+    val deferred: CompletableDeferred<Boolean>,
+    /** 同类操作的展示名（W-36）：弹窗据此说明「不再询问<哪一类>」，与放行粒度一致。 */
+    val groupLabel: String = ""
 )
 
 /**
@@ -748,18 +751,24 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
             ShellRunTool(
                 pool = terminalPool,
                 privilegedExec = { cmd ->
-                    // 每次执行前实时判态：用户可能在系统里撤了授权，不能吃缓存
-                    if (ShizukuShell.status() != ShizukuShell.Status.READY) {
+                    // W-36：不再用 status() 预判——它会与 exec 内部判断打架（真机日志里
+                    // 同一秒内 CapabilityChain 报「可用」、执行却秒失败，用户看到「连上了但调不动」）。
+                    // 是否可用由 exec 实际起进程说了算，这里只区分「该回落」与「该如实报错」。
+                    val r = ShizukuShell.exec(cmd)
+                    // 未运行/未授权（通道压根没起来）→ null 让上层回落本机 user shell。
+                    // 其余启动失败（newProcess 抛异常等）必须如实上抛，不能伪装成超时。
+                    if (r.startError != null && r.startError.contains("未运行或未授权")) {
+                        _shizukuStatus.value = ShizukuShell.status()
                         null
                     } else {
-                        val r = ShizukuShell.exec(cmd)
-                        // 未运行/未授权（exitCode=-1 且 stderr 含授权提示）→ null 让上层回落
-                        if (r.exitCode == -1 && r.stderr.contains("未运行或未授权")) {
-                            _shizukuStatus.value = ShizukuShell.status()
-                            null
-                        } else {
-                            PrivilegedShellOut(r.exitCode, r.stdout, r.stderr, r.timedOut)
-                        }
+                        PrivilegedShellOut(
+                            exitCode = r.exitCode,
+                            stdout = r.stdout,
+                            stderr = r.stderr,
+                            timedOut = r.timedOut,
+                            startError = r.startError,
+                            elapsedMs = r.elapsedMs
+                        )
                     }
                 }
             )
@@ -1427,17 +1436,25 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
      * 已在本次会话「始终允许」过的工具直接放行，不再打扰用户。
      */
     private suspend fun requestApproval(tool: AgentTool, args: JsonObject): Boolean = approvalMutex.withLock {
-        if (tool.name in sessionAllowed) return@withLock true
+        // W-36：按「同类操作」放行，而不是按工具名。原来 ui_key 允许过，ui_tap 还要再问一遍，
+        // 弹窗文案却写着「不再询问同类操作」——真机上一次任务被迫点十几次。
+        val group = ApprovalGrouping.groupOf(tool.name)
+        if (group in sessionAllowed) return@withLock true
         // W-8 P1-C：ui_screenshot 按回合自动缓存批准——本回合已批准过一次截图，
         // 后续截图不再重复弹窗。
         // 修前每次截图都弹：真机日志里模型「看一眼点一下」被对话框反复打断，体感「更久」。
         // 回合边界在 send() 入口重置（screenshotApprovedThisTurn = false）。
-        if (tool.name == SCREENSHOT_TOOL && screenshotApprovedThisTurn) return@withLock true
+        if (group == ApprovalGrouping.GROUP_UI_SCREENSHOT && screenshotApprovedThisTurn) return@withLock true
         val deferred = CompletableDeferred<Boolean>()
-        _pendingApproval.value = ApprovalRequest(tool.name, args.toString().take(500), deferred)
+        _pendingApproval.value = ApprovalRequest(
+            toolName = tool.name,
+            argsPreview = args.toString().take(500),
+            deferred = deferred,
+            groupLabel = ApprovalGrouping.labelOf(group)
+        )
         // finally 保证无论用户怎么关掉弹窗，pending 都会清空，不会残留卡住下一个工具
         val ok = try { deferred.await() } finally { _pendingApproval.value = null }
-        if (ok && tool.name == SCREENSHOT_TOOL) screenshotApprovedThisTurn = true
+        if (ok && group == ApprovalGrouping.GROUP_UI_SCREENSHOT) screenshotApprovedThisTurn = true
         AgentLogger.w("Approval", "${tool.name} ${if (ok) "允许" else "拒绝"}")
         ok
     }
@@ -1450,7 +1467,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     /** 用户选择「本次会话始终允许」：记入会话白名单后放行，后续同类调用不再弹窗。 */
     fun approveAlways() {
         val pending = _pendingApproval.value ?: return
-        sessionAllowed += pending.toolName
+        sessionAllowed += ApprovalGrouping.groupOf(pending.toolName)
         pending.deferred.complete(true)
     }
 
