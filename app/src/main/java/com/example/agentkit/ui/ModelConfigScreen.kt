@@ -794,7 +794,8 @@ private fun ModelTab(
                 }
                 Spacer(Modifier.height(AgentSpacing.space1))
                 Text(
-                    "请求头会追加到默认头之后；同名会覆盖默认值。请求体会合并进请求 JSON。",
+                    "请求头会追加到默认头之后，同名覆盖默认值；请求体会合并进请求 JSON，" +
+                        "同名会覆盖内置默认值（例如 temperature）。仅对 OpenAI 兼容端点生效。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
