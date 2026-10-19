@@ -2,6 +2,9 @@
 # Phase1 T01 QA 对抗性补充探针（Edward）：编译 + 运行（离线，仅用 Gradle 缓存内构件）
 set -euo pipefail
 
+# W-39：仓库根目录由脚本位置推导，不再硬编码 /workspace/AgentKit
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+
 CACHE=/root/.gradle/caches/modules-2/files-2.1
 KOTLINC=$CACHE/org.jetbrains.kotlin/kotlin-compiler-embeddable/1.9.25/6e698f23ca1f74d6672827f61e92c2fe015d1b88/kotlin-compiler-embeddable-1.9.25.jar
 STDLIB=$CACHE/org.jetbrains.kotlin/kotlin-stdlib/1.9.25/f700a2f2b8f0d6d0fde48f56d894dc722fb029d7/kotlin-stdlib-1.9.25.jar
@@ -11,7 +14,15 @@ SER_CORE=$(find $CACHE/org.jetbrains.kotlinx/kotlinx-serialization-core-jvm -nam
 TROVE=$CACHE/org.jetbrains.intellij.deps/trove4j/1.0.20200330/3afb14d5f9ceb459d724e907a21145e8ff394f02/trove4j-1.0.20200330.jar
 JB_ANNOTATIONS=$CACHE/org.jetbrains/annotations/23.0.0/8cc20c07506ec18e0834947b84a864bfc094484e/annotations-23.0.0.jar
 
-CLASSES=/workspace/AgentKit/app/build/tmp/kotlin-classes/debug
+CLASSES=${AGENTKIT_CLASSES:-$ROOT/app/build/tmp/kotlin-classes/debug}
+# W-39：集成型 harness 需要 AGP 编译产物。缺失时明确跳过（exit 3），
+# 绝不把「环境不具备」伪装成「验证失败」，也不伪装成通过。
+if [ ! -d "$CLASSES" ]; then
+  echo "KS_HARNESS_SKIP $(basename "$0") 缺少 Gradle 编译产物：$CLASSES" >&2
+  echo "  先执行 ./gradlew :app:compileDebugKotlin，或用 AGENTKIT_CLASSES 指向已有目录" >&2
+  exit 3
+fi
+
 OUT=/tmp/qa-verify-t01-probe
 
 rm -rf "$OUT" && mkdir -p "$OUT"
@@ -21,7 +32,7 @@ java -cp "$KOTLINC:$STDLIB:$TROVE:$JB_ANNOTATIONS" org.jetbrains.kotlin.cli.jvm.
   -no-stdlib -no-reflect \
   -Xfriend-paths="$CLASSES" \
   -classpath "$CLASSES:$STDLIB:$COROUTINES:$SERIALIZATION:$SER_CORE" \
-  -d "$OUT" /workspace/AgentKit/scripts/qa/T01AdversarialProbe.kt
+  -d "$OUT" $ROOT/scripts/qa/T01AdversarialProbe.kt
 
 echo "[2/2] running ..."
 java -cp "$OUT:$CLASSES:$STDLIB:$COROUTINES:$SERIALIZATION:$SER_CORE" \

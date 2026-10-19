@@ -2,6 +2,9 @@
 # Phase 2 · T11「聊天消息 Markdown 渲染」QA 行为验证：编译 + 运行（离线，仅用 Gradle 缓存内构件）
 set -euo pipefail
 
+# W-39：仓库根目录由脚本位置推导，不再硬编码 /workspace/AgentKit
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+
 CACHE=/root/.gradle/caches/modules-2/files-2.1
 KOTLINC=$CACHE/org.jetbrains.kotlin/kotlin-compiler-embeddable/1.9.25/6e698f23ca1f74d6672827f61e92c2fe015d1b88/kotlin-compiler-embeddable-1.9.25.jar
 STDLIB=$CACHE/org.jetbrains.kotlin/kotlin-stdlib/1.9.25/f700a2f2b8f0d6d0fde48f56d894dc722fb029d7/kotlin-stdlib-1.9.25.jar
@@ -10,7 +13,15 @@ TROVE=$CACHE/org.jetbrains.intellij.deps/trove4j/1.0.20200330/3afb14d5f9ceb459d7
 # JB_ANNOTATIONS 用 QA 本地稳定副本（scripts/qa/lib/）：避免并发 Gradle 进程瞬时扰动缓存副本
 JB_ANNOTATIONS=/root/.gradle/caches/modules-2/files-2.1/org.jetbrains/annotations/23.0.0/8cc20c07506ec18e0834947b84a864bfc094484e/annotations-23.0.0.jar
 
-CLASSES=/workspace/AgentKit/app/build/tmp/kotlin-classes/debug
+CLASSES=${AGENTKIT_CLASSES:-$ROOT/app/build/tmp/kotlin-classes/debug}
+# W-39：集成型 harness 需要 AGP 编译产物。缺失时明确跳过（exit 3），
+# 绝不把「环境不具备」伪装成「验证失败」，也不伪装成通过。
+if [ ! -d "$CLASSES" ]; then
+  echo "KS_HARNESS_SKIP $(basename "$0") 缺少 Gradle 编译产物：$CLASSES" >&2
+  echo "  先执行 ./gradlew :app:compileDebugKotlin，或用 AGENTKIT_CLASSES 指向已有目录" >&2
+  exit 3
+fi
+
 OUT=/tmp/qa-verify-markdown
 DEPS=$CLASSES:$STDLIB:$COROUTINES:$JB_ANNOTATIONS
 
@@ -22,7 +33,7 @@ java -cp "$KOTLINC:$STDLIB:$TROVE:$JB_ANNOTATIONS" org.jetbrains.kotlin.cli.jvm.
   -no-stdlib -no-reflect \
   -Xfriend-paths="$CLASSES" \
   -classpath "$DEPS" \
-  -d "$OUT" /workspace/AgentKit/scripts/qa/MarkdownVerification.kt
+  -d "$OUT" $ROOT/scripts/qa/MarkdownVerification.kt
 
 echo "[2/2] running ..."
 java -cp "$OUT:$DEPS" \
