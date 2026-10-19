@@ -21,3 +21,4 @@ run-t01-verification.sh	loop.stop()/update() 断言失败（5 条），停止语
 run-t07t08-adversarial.sh	跨池隔离断言抛异常（T07T08AdversarialProbe.kt:169）
 run-t07t08-verification.sh	TerminalSessionPool.open 抛异常（:255），会话池契约已变
 run-localmodel-verification.sh	本地模型断言与现 GgufModelStore/LocalLlamaSetting 接口不符
+run-hotfix11-verification.sh	170/173 通过；L1「⋯」入口、P12 regenerate 用量、U9 reasoningDraft 三条断言按旧标识符写（功能仍在，标识符已在 W-30 重构中改名）
