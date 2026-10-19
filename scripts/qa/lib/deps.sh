@@ -14,7 +14,23 @@
 #
 # 约定：解析不到时返回空串，由调用方决定回落还是跳过——**绝不返回一个假路径假装存在**。
 
-QA_GRADLE_CACHE=${AGENTKIT_GRADLE_CACHE:-/root/.gradle/caches/modules-2/files-2.1}
+# Gradle 缓存根：优先 GRADLE_USER_HOME（CI 上是 /home/runner/.gradle），
+# 其次 ~/.gradle，最后才回落到 /root/.gradle（沙箱）。
+# 之前写死 /root/.gradle，导致 CI 里所有构件都解析不到、整片假红。
+if [ -z "${QA_GRADLE_CACHE:-}" ]; then
+    QA_GRADLE_CACHE="${AGENTKIT_GRADLE_CACHE:-}"
+fi
+if [ -z "${QA_GRADLE_CACHE:-}" ]; then
+    _cand="${GRADLE_USER_HOME:-$HOME/.gradle}/caches/modules-2/files-2.1"
+    if [ -d "$_cand" ]; then
+        QA_GRADLE_CACHE="$_cand"
+    elif [ -d /root/.gradle/caches/modules-2/files-2.1 ]; then
+        QA_GRADLE_CACHE=/root/.gradle/caches/modules-2/files-2.1
+    else
+        QA_GRADLE_CACHE="$_cand"
+    fi
+fi
+export QA_GRADLE_CACHE
 KC_HOME=${KOTLINC_HOME:-/tmp/kotlinc}
 
 # qa_find_jar <组织路径目录> <构件通配>

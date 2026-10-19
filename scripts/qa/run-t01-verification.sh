@@ -6,7 +6,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 source "$ROOT/scripts/qa/lib/deps.sh"
 
-CACHE=/root/.gradle/caches/modules-2/files-2.1
+CACHE="$QA_GRADLE_CACHE"
 KOTLINC=$(qa_find_jar "$CACHE/org.jetbrains.kotlin/kotlin-compiler-embeddable" "kotlin-compiler-embeddable-*.jar")
 STDLIB=$(qa_find_jar "$CACHE/org.jetbrains.kotlin/kotlin-stdlib" "kotlin-stdlib-*.jar")
 COROUTINES=$(qa_find_jar "$CACHE/org.jetbrains.kotlinx/kotlinx-coroutines-core-jvm" "kotlinx-coroutines-core-jvm-*.jar")
@@ -21,6 +21,11 @@ OKIO=$(qa_find_jar "$CACHE/com.squareup.okio/okio-jvm" "okio-jvm-*.jar")
 # W-40：Gradle 缓存缺失时回落本机 kotlinc 发行版（沙箱/净机器都能跑）
 [ -n "${KOTLINC:-}" ] || KOTLINC="$KC_HOME/lib/kotlin-compiler.jar"
 [ -n "${STDLIB:-}" ] || STDLIB="$KC_HOME/lib/kotlin-stdlib.jar"
+# W-41：编译器两条路都没有 → 明确 SKIP（exit 3），不让它变成一堆「找不到类」
+if [ ! -f "$KOTLINC" ]; then
+  echo "KS_HARNESS_SKIP $(basename "$0") 找不到 Kotlin 编译器（$KOTLINC）" >&2
+  exit 3
+fi
 
 CLASSES=${AGENTKIT_CLASSES:-$ROOT/app/build/tmp/kotlin-classes/debug}
 # W-39：集成型 harness 需要 AGP 编译产物。缺失时明确跳过（exit 3），
