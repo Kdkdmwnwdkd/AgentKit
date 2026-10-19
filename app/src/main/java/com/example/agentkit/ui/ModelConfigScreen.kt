@@ -33,6 +33,8 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.outlined.Add
@@ -1427,6 +1429,10 @@ private fun LocalModelsTab(vm: ChatViewModel) {
     val ctx = LocalContext.current
     val catalog = remember(ctx) { com.example.agentkit.core.llm.local.GgufModelStore(ctx).catalog() }
     var pendingDelete by remember { mutableStateOf<String?>(null) }
+    // W-45：用户手机里已有的 .gguf 直接导入，不必再从内置目录下一遍
+    val importLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri -> if (uri != null) vm.importLocalModel(uri) }
     val config by vm.config.collectAsStateWithLifecycle()
     val onLocalProvider =
         config.providerId == com.example.agentkit.core.llm.ProviderCatalog.STYLE_LOCAL_LLAMA
@@ -1513,9 +1519,16 @@ private fun LocalModelsTab(vm: ChatViewModel) {
         title = "已下载模型",
         description = "点选即设为当前模型，下次对话生效。删除会同时清理文件。"
     ) {
+        // 已有模型文件的用户不必再走「模型目录」重下一遍（几 GB 的流量）
+        AkOutlinedButton(
+            text = "从本地文件导入 .gguf",
+            onClick = { importLauncher.launch(arrayOf("*/*")) },
+            icon = Icons.Outlined.Add
+        )
+        Spacer(Modifier.height(AgentSpacing.space3))
         if (models.isEmpty()) {
             Text(
-                text = "还没有模型。从下方「模型目录」下载一个（建议 1.5B 起步）。",
+                text = "还没有模型：可以直接导入手机里已有的 .gguf，或从下方「模型目录」下载一个（建议 1.5B 起步）。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
