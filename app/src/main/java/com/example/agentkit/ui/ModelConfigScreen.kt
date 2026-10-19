@@ -1427,6 +1427,46 @@ private fun LocalModelsTab(vm: ChatViewModel) {
     val ctx = LocalContext.current
     val catalog = remember(ctx) { com.example.agentkit.core.llm.local.GgufModelStore(ctx).catalog() }
     var pendingDelete by remember { mutableStateOf<String?>(null) }
+    val config by vm.config.collectAsStateWithLifecycle()
+    val onLocalProvider =
+        config.providerId == com.example.agentkit.core.llm.ProviderCatalog.STYLE_LOCAL_LLAMA
+
+    // W-44：下载 ≠ 使用。真机反馈「下好了但不知道咋用」——选了本地模型文件，
+    // 但「当前模型」仍是云端供应商，对话照样走云。这里把状态和下一步摆在最上面。
+    if (!onLocalProvider) {
+        AkSectionCard(
+            title = "本地模型还没生效",
+            description = "只有把「当前模型」切到「本地模型（内置）」，对话才会走本地推理；" +
+                "现在这条对话走的是云端。"
+        ) {
+            Text(
+                text = "当前供应商：" + config.providerId.ifBlank { "未配置" },
+                style = machineSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(Modifier.height(AgentSpacing.space3))
+            if (models.isNotEmpty()) {
+                AkOutlinedButton(
+                    text = "切换为本地模型",
+                    onClick = {
+                        vm.updateConfig(
+                            config.copy(
+                                providerId = com.example.agentkit.core.llm.ProviderCatalog.STYLE_LOCAL_LLAMA,
+                                baseUrl = "",
+                                apiKey = ""
+                            )
+                        )
+                    }
+                )
+            } else {
+                Text(
+                    text = "先在下面「模型目录」下载一个（建议 1.5B 起步，手机内存紧张就选更小的）。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+    }
 
     // —— 运行状态 ————————————————————————————————————————————
     val nativeOk = remember { com.example.agentkit.core.llm.local.LlamaJni.ensureLoaded() }
