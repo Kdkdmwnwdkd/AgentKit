@@ -98,6 +98,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -203,9 +204,35 @@ fun ChatScreen(
 
     // 新消息入场后贴底滚动（无 spring 无位移，只做位置归位）；
     // 流式草稿出现/消失也算一次「新项」，一并归位到尾部。
-    LaunchedEffect(messages.size, streamDraft != null) {
+    //
+    // 【W-36 修复】原实现无条件贴底：用户上滑看「思考过程」时，下一条工具结果一到就被拽回
+    // 底部，且 animateScrollToItem 与手势互相打架（表现为「滑不动 / 滑下去又弹回顶部」）。
+    // 现在改为「只要用户上过手，就不再自动跟随；滑回底部才恢复」。
+    var followTail by remember { mutableStateOf(true) }
+    LaunchedEffect(listState) {
+        // 用户往「上」翻（可见起点前移）= 他在看历史，立刻停止自动贴底。
+        // 只用公开 API（firstVisibleItemIndex/Offset）——LazyListState 的 interactionSource
+        // 是 internal，拿不到拖拽事件。
+        var lastIdx = listState.firstVisibleItemIndex
+        var lastOff = listState.firstVisibleItemScrollOffset
+        snapshotFlow { listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset }
+            .collect { (idx, off) ->
+                val movedBack = idx < lastIdx || (idx == lastIdx && off < lastOff)
+                if (movedBack) followTail = false
+                lastIdx = idx
+                lastOff = off
+            }
+    }
+    LaunchedEffect(listState) {
+        // 回到底部（content 末尾可见）才恢复自动跟随
+        snapshotFlow { listState.canScrollForward }.collect { canForward ->
+            if (!canForward) followTail = true
+        }
+    }
+    LaunchedEffect(messages.size, streamDraft != null, reasoningDraft) {
         val count = messages.size + if (streamDraft != null) 1 else 0
-        if (count > 0) listState.animateScrollToItem(count - 1)
+        // scrollToItem 而非 animate：瞬时归位，不与用户手势争夺滚动权
+        if (count > 0 && followTail) listState.scrollToItem(count - 1)
     }
 
     // 「从中间轮重新发问」待编辑的用户气泡（长按/点击「重新发问」入口置位，确认后截断+重问）
@@ -473,6 +500,7 @@ fun ChatScreen(
                             .clip(CircleShape)
                             .background(MaterialTheme.colorScheme.surfaceVariant)
                             .clickable {
+                                followTail = true // 明确要求回底部 → 恢复自动跟随
                                 inputScope.launch {
                                     if (messages.isNotEmpty()) {
                                         listState.animateScrollToItem(messages.lastIndex)
@@ -2592,7 +2620,7 @@ private fun ApprovalDialog(request: ApprovalRequest, visible: Boolean, vm: ChatV
                             onCheckedChange = { askNoMore = it }
                         )
                         Text(
-                            text = "本次会话不再询问同类操作",
+                            text = "本次会话不再询问" + request.groupLabel.ifBlank { "同类操作" },
                             style = MaterialTheme.typography.bodyLarge,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier
