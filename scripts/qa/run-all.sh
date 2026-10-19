@@ -12,26 +12,28 @@
 #
 # 退出码：只有 FAIL 才非 0（SKIP / XFAIL 不阻塞 CI/本地检查）。
 set -uo pipefail
-cd "$(dirname "$0")"
+# 断言脚本按「仓库根」为 CWD 写（要读 app/src/main/... 与 scripts/qa/...），
+# 所以这里必须停在仓库根，不能停在本目录——否则 read() 全找不到文件。
+cd "$(dirname "$0")/../.."
 
 APK="${1:-}"
 pass=0; skip=0; fail=0; xfail=0; failed=""
 
 # 已知失效清单：这些断言源码已与主代码脱节，编译就过不了。
 # 它们照跑（避免假装不存在），但归为 XFAIL，不阻塞；修好后从清单删掉即可。
-BROKEN_FILE="known-broken.txt"
+BROKEN_FILE="scripts/qa/known-broken.txt"
 is_known_broken() {
     [ -f "$BROKEN_FILE" ] || return 1
     grep -qvE '^\s*(#|$)' "$BROKEN_FILE" || return 1
-    awk '!/^[[:space:]]*(#|$)/ {print $1}' "$BROKEN_FILE" | grep -qx "$1"
+    awk '!/^[[:space:]]*(#|$)/ {print $1}' "$BROKEN_FILE" | grep -qx "$(basename "$1")"
 }
 
-for s in run-*.sh; do
-  [ "$s" = "run-all.sh" ] && continue
+for s in scripts/qa/run-*.sh; do
+  [ "$(basename "$s")" = "run-all.sh" ] && continue
   case "$s" in
     *apk-verification*)
       if [ -z "$APK" ]; then
-        echo "SKIP  $s（未传 APK 路径，静态反验未执行）"
+        echo "SKIP  $(basename "$s")（未传 APK 路径，静态反验未执行）"
         skip=$((skip + 1)); continue
       fi
       out=$(bash "$s" "$APK" 2>&1); rc=$?
@@ -43,7 +45,7 @@ for s in run-*.sh; do
 
   if [ $rc -eq 3 ]; then
     skip=$((skip + 1))
-    echo "SKIP  $s"
+    echo "SKIP  $(basename "$s")"
   elif [ $rc -ne 0 ]; then
     if is_known_broken "$s"; then
       xfail=$((xfail + 1))

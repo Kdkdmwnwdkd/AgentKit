@@ -92,6 +92,17 @@ jobs:
           # 老 harness 还会直接引用 $KC_HOME/lib/kotlin-stdlib.jar，一并放好
           mkdir -p /tmp/kotlinc/lib
           cp "$STD" /tmp/kotlinc/lib/kotlin-stdlib.jar
+          # 早期批次脚本把这两个路径写死成了本机临时目录，这里复原（找不到就退化成 SKIP）
+          mkdir -p /tmp/w7-jars
+          SER_JSON=$(find "$CACHE/org.jetbrains.kotlinx/kotlinx-serialization-json-jvm" -name 'kotlinx-serialization-json-jvm-*.jar' 2>/dev/null | grep -v sources | head -1)
+          SER_CORE=$(find "$CACHE/org.jetbrains.kotlinx/kotlinx-serialization-core-jvm" -name 'kotlinx-serialization-core-jvm-*.jar' 2>/dev/null | grep -v sources | head -1)
+          [ -n "$SER_JSON" ] && cp "$SER_JSON" /tmp/w7-jars/kotlinx-serialization-json-jvm-1.6.3.jar
+          [ -n "$SER_CORE" ] && cp "$SER_CORE" /tmp/w7-jars/kotlinx-serialization-core-jvm-1.6.3.jar
+          # 序列化编译器插件（-Xplugin 用），从 Maven Central 取，版本与编译器对齐
+          curl -sSL --max-time 120 \
+            https://repo1.maven.org/maven2/org/jetbrains/kotlin/kotlin-serialization-compiler-plugin/1.9.25/kotlin-serialization-compiler-plugin-1.9.25.jar \
+            -o /tmp/kotlinc/lib/kotlinx-serialization-compiler-plugin.jar \
+            && ls -lh /tmp/kotlinc/lib/kotlinx-serialization-compiler-plugin.jar || echo "WARN: 序列化插件下载失败"
           {
             echo '#!/usr/bin/env bash'
             # 官方 kotlinc 会自动带上 stdlib；直接调 K2JVMCompiler 不会，
