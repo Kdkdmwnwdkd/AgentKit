@@ -263,8 +263,11 @@ class OpenAIClient(
                 putJsonArray("tools") { tools.forEach { add(toApiTool(it)) } }
             }
             config.reasoningLevel?.let { put("reasoning_effort", it) }
-            config.customBody.forEach { (k, v) -> put(k, v) }
+            // 【W-38 修复】默认温度必须写在 customBody **之前**。
+            // 原顺序是先应用用户自定义体、再硬写 0.7，导致用户在「自定义参数」里填的
+            // temperature 被静默覆盖——功能在、但不生效，属于最伤信任的那类 bug。
             put("temperature", 0.7)
+            config.customBody.forEach { (k, v) -> put(k, v) }
         }
 
         val request = buildRequest(requestJson, slot.key)
