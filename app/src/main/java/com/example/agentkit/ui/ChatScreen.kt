@@ -229,10 +229,15 @@ fun ChatScreen(
             if (!canForward) followTail = true
         }
     }
-    LaunchedEffect(messages.size, streamDraft != null, reasoningDraft) {
+    // 【W-43 修复】只按「条目数」跟随，且必须落到内容**底部**。
+    // 原实现 `scrollToItem(count - 1)` 只传 index，等于把该条消息的**顶部**对齐到视口顶端：
+    // 思考过程一条就有几百行，看起来就是「被拽回最开始思考的地方」。加上 reasoningDraft
+    // 做 key，每来一个 token 就重跑一次 → 用户根本滑不动。
+    // 现在：① 不再用 reasoningDraft 做 key（同一条消息内增长不算新条目）；
+    //       ② scrollOffset 传大值，滚到内容末尾（LazyList 会自动钳制）。
+    LaunchedEffect(messages.size, streamDraft != null) {
         val count = messages.size + if (streamDraft != null) 1 else 0
-        // scrollToItem 而非 animate：瞬时归位，不与用户手势争夺滚动权
-        if (count > 0 && followTail) listState.scrollToItem(count - 1)
+        if (count > 0 && followTail) listState.scrollToItem(count - 1, Int.MAX_VALUE)
     }
 
     // 「从中间轮重新发问」待编辑的用户气泡（长按/点击「重新发问」入口置位，确认后截断+重问）
