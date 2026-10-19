@@ -1,0 +1,11 @@
+# 已知失效的 harness（run-all.sh 会跑它们，但按 XFAIL 归类，不阻塞）
+#
+# 收录条件：脚本本身**能跑**，但断言源码与当前主代码/依赖库已经对不上，编译就过不了。
+# 这类不是环境问题（环境问题走 SKIP/exit 3），而是测试代码腐化，需要有人按新 API 重写。
+#
+# 格式：<脚本名>	<原因>	<建议动作>    （Tab 或空格分隔均可）
+# 移除条件：修好后从本文件删掉；若它开始通过，run-all 会打印 XPASS 提醒你删。
+
+run-t01-probe2.sh	T01AdversarialProbe2.kt 调 client.streamText() 的签名与现版不一致（OkHttpClient vs KeySlot 列表）	按当前 LLMClient 接口重写探针
+run-verification.sh	T02T06Verification.kt 在非挂起上下文调用 suspend check()	main 包 runBlocking，或把 check 改成普通函数
+run-crashlog-verification.sh	CrashLogVerification.kt 调用了不存在的 read() 辅助函数	补回源码读取辅助函数

@@ -89,6 +89,9 @@ jobs:
             exit 0
           fi
           mkdir -p /tmp/kotlinc/bin
+          # 老 harness 还会直接引用 $KC_HOME/lib/kotlin-stdlib.jar，一并放好
+          mkdir -p /tmp/kotlinc/lib
+          cp "$STD" /tmp/kotlinc/lib/kotlin-stdlib.jar
           {
             echo '#!/usr/bin/env bash'
             # 官方 kotlinc 会自动带上 stdlib；直接调 K2JVMCompiler 不会，
