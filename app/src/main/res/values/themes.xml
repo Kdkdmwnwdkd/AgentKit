@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      仅替换窗口背景，父主题保持与原来一致（DeviceDefault.NoActionBar），
+      不动状态栏/导航栏，避免影响现有 edge-to-edge 表现。
+    -->
+    <style name="Theme.AgentKit" parent="@android:style/Theme.DeviceDefault.NoActionBar">
+        <item name="android:windowBackground">@color/window_bg</item>
+    </style>
+</resources>

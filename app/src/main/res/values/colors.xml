@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  W-44：启动窗口底色。
+
+  之前 Manifest 用的是 @android:style/Theme.DeviceDefault.NoActionBar，窗口背景由系统主题决定
+  （深色模式下接近纯黑）。首帧 Compose 还没画出来，用户看到的就是一块黑屏，
+  随后才切到壁纸——表现为「进去黑一下才变成我的壁纸」。
+
+  这里把窗口底色固定成品牌纸色，和 Compose 里的 background 一致，黑屏变成纸色过渡。
+-->
+<resources>
+    <color name="window_bg">#F8EFE9</color>
+</resources>

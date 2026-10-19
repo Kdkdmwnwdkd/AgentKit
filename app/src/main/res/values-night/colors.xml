@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 深色主题下的纸色（与 ui/Color.kt 的 DarkBg 一致），避免夜间启动闪白 -->
+    <color name="window_bg">#17110E</color>
+</resources>

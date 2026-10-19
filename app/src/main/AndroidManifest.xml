@@ -59,7 +59,7 @@
         android:allowBackup="false"
         android:label="AgentKit"
         android:supportsRtl="true"
-        android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
+        android:theme="@style/Theme.AgentKit">
 
         <!-- ===== L8 创作工坊：作品库文件分享/播放的 content:// 通道 ===== -->
         <provider
