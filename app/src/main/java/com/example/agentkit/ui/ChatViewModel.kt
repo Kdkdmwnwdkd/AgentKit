@@ -597,6 +597,34 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /**
+     * W-45：导入已有的 .gguf（系统文件选择器 → content:// URI）。
+     *
+     * 与下载共用同一条进度通道：UI 不需要区分"在下"还是"在拷"，都显示百分比。
+     * 导入成功后自动设为当前模型（与下载完的行为一致）。
+     */
+    fun importLocalModel(uri: Uri) {
+        if (_localDownloading.value != null) return
+        viewModelScope.launch {
+            _localDownloading.value = "本地文件" to null
+            val outcome = runCatching {
+                modelStore.importFrom(uri) { copied, total ->
+                    _localDownloading.value = "本地文件" to
+                        if (total > 0) copied.toFloat() / total else null
+                }
+            }
+            _localDownloading.value = null
+            _localModels.value = modelStore.listDownloaded()
+            _importStatus.value = outcome.fold(
+                onSuccess = { name ->
+                    setActiveLocalModel(name)
+                    "已导入并选用 $name"
+                },
+                onFailure = { "导入失败：${it.message}" }
+            )
+        }
+    }
+
     fun setLocalNCtx(v: Int) {
         localSetting.nCtx = v
         _localNCtx.value = localSetting.nCtx
