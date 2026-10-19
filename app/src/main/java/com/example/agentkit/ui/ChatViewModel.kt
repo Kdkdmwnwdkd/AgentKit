@@ -607,11 +607,10 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         if (_localDownloading.value != null) return
         viewModelScope.launch {
             _localDownloading.value = "本地文件" to null
-            val outcome = runCatching {
-                modelStore.importFrom(uri) { copied, total ->
-                    _localDownloading.value = "本地文件" to
-                        if (total > 0) copied.toFloat() / total else null
-                }
+            // importFrom 内部已经 runCatching 并返回 Result<String>，不要再包一层
+            val outcome = modelStore.importFrom(uri) { copied, total ->
+                _localDownloading.value = "本地文件" to
+                    if (total > 0) copied.toFloat() / total else null
             }
             _localDownloading.value = null
             _localModels.value = modelStore.listDownloaded()
