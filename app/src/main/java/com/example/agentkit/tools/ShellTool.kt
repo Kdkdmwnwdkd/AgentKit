@@ -39,7 +39,10 @@ data class PrivilegedShellOut(
     val exitCode: Int,
     val stdout: String,
     val stderr: String,
-    val timedOut: Boolean = false
+    val timedOut: Boolean = false,
+    /** 通道启动即失败的真实原因（null = 进程起来了）。 */
+    val startError: String? = null,
+    val elapsedMs: Long = 0
 )
 
 /**
@@ -163,10 +166,32 @@ class ShellRunTool(
         ) {
             val out = privileged(command)
             if (out != null) {
+                // W-36：通道**启动失败** ≠ 命令**超时**。原来二者共用 code=timeout 与
+                // 「拆小命令重试」的 hint，模型被骗着反复重试（真机日志：`echo hello`
+                // 6ms 报 timeout，连试 12 次，40 步用光任务没完成）。
+                out.startError?.let { why ->
+                    return ToolResult.fail(
+                        code = "privileged_unavailable",
+                        message = "提权通道（Shizuku）不可用：$why",
+                        hint = "不要重试。依次确认：① Shizuku 里已点「通过无线调试启动」且服务在运行；" +
+                            "② 本应用已在 Shizuku 内授权（授权后需回本应用点一次「检测」）；" +
+                            "③ 仍不行就改用 identity=user，普通文件操作不需要提权。",
+                        data = why
+                    )
+                }
                 if (out.timedOut) {
+                    // 秒级「超时」= 进程根本没起来，不是命令跑得慢——两者对模型的动作要求完全不同
+                    if (out.elapsedMs < 1_500 && out.stdout.isBlank() && out.stderr.isBlank()) {
+                        return ToolResult.fail(
+                            code = "privileged_unavailable",
+                            message = "提权通道（Shizuku）无响应（${out.elapsedMs}ms 内即断）。",
+                            hint = "这不是命令慢，是通道没通。不要原样重试，改用 identity=user；" +
+                                "需要提权时去「自动化」页按提示重新启动 Shizuku 的无线调试服务。"
+                        )
+                    }
                     return ToolResult.fail(
                         code = "timeout",
-                        message = "提权通道执行超时（命令可能仍在后台运行）。",
+                        message = "提权通道执行超时（已等待 ${out.elapsedMs / 1000} 秒，命令可能仍在后台运行）。",
                         hint = "拆小命令或加超时参数后重试；需要长时间运行的请放到后台并另行查询。"
                     )
                 }

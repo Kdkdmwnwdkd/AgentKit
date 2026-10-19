@@ -5,7 +5,6 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import rikka.shizuku.Shizuku
 import java.io.ByteArrayOutputStream
-import java.util.concurrent.TimeUnit
 
 /**
  * Shizuku 提权执行（W-13 B 方案）。
@@ -111,9 +110,13 @@ object ShizukuShell {
         val exitCode: Int,
         val stdout: String,
         val stderr: String,
-        val timedOut: Boolean = false
+        val timedOut: Boolean = false,
+        /** 通道**启动**就失败时的真实原因（null = 进程确实起来了）。与 timedOut 互斥。 */
+        val startError: String? = null,
+        /** 实际耗时（毫秒）——用于区分「真超时」与「秒失败」。 */
+        val elapsedMs: Long = 0
     ) {
-        val ok: Boolean get() = !timedOut && exitCode == 0
+        val ok: Boolean get() = !timedOut && startError == null && exitCode == 0
     }
 
     /**
@@ -121,8 +124,10 @@ object ShizukuShell {
      * 调用方据此决定是否回退本机 user shell。
      */
     fun exec(command: String, timeoutSec: Long = 20): ShellOut {
+        val started = System.currentTimeMillis()
         if (!hasPermission()) {
-            return ShellOut(-1, "", "Shizuku 未运行或未授权（请先在 Shizuku 内启动并授权本应用）")
+            val why = "Shizuku 未运行或未授权（请先在 Shizuku 内启动并授权本应用）"
+            return ShellOut(-1, "", why, startError = why, elapsedMs = 0)
         }
         val process = runCatching {
             // API 13 起 newProcess 为 private（12.x 也被 provider 的传递依赖顶到 13）。
@@ -132,7 +137,8 @@ object ShizukuShell {
             m.isAccessible = true
             m.invoke(null, arrayOf("sh", "-c", command), null, null) as Process
         }.getOrElse {
-            return ShellOut(-1, "", "启动 shell 失败：${it.message}")
+            val why = "启动 shell 失败：${it.javaClass.simpleName}: ${it.message}"
+            return ShellOut(-1, "", why, startError = why, elapsedMs = System.currentTimeMillis() - started)
         }
 
         val out = ByteArrayOutputStream()
@@ -142,17 +148,50 @@ object ShizukuShell {
         tOut.start()
         tErr.start()
 
-        val finished = runCatching { process.waitFor(timeoutSec, TimeUnit.SECONDS) }.getOrDefault(false)
-        if (!finished) {
+        // 【W-36 修复】原实现用 process.waitFor(timeout, SECONDS)。Shizuku 返回的 Process
+        // 是远端进程代理，其定时 waitFor 会立刻抛异常；异常被 runCatching 吞成 false，
+        // 于是「启动失败」被误报成「超时」——真机日志里 `echo hello` 6ms 就报 timeout，
+        // 模型被骗着反复重试十几轮。
+        // 改为自己轮询 exitValue()：任何 Process 实现都成立，且异常能被如实记录。
+        var exitCode: Int? = null
+        var waitError: String? = null
+        val deadline = started + timeoutSec * 1000
+        while (System.currentTimeMillis() < deadline) {
+            val code = runCatching { process.exitValue() }
+            if (code.isSuccess) {
+                exitCode = code.getOrDefault(-1)
+                break
+            }
+            val e = code.exceptionOrNull()
+            // IllegalThreadStateException = 进程还在跑，正常；其余（RemoteException 等）= 通道异常
+            if (e != null && e !is IllegalThreadStateException) {
+                waitError = "${e.javaClass.simpleName}: ${e.message}"
+                break
+            }
+            try {
+                Thread.sleep(25)
+            } catch (ie: InterruptedException) {
+                Thread.currentThread().interrupt()
+                break
+            }
+        }
+
+        if (exitCode == null) {
             runCatching { process.destroy() }
             tOut.join(300)
             tErr.join(300)
-            return ShellOut(-1, out.text(), err.text(), timedOut = true)
+            val elapsed = System.currentTimeMillis() - started
+            val partial = out.text()
+            // 秒退 + 无任何输出 + 有异常 → 是通道坏了，不是命令跑久了
+            if (waitError != null && elapsed < 1_500) {
+                val why = "提权通道异常：$waitError"
+                return ShellOut(-1, partial, err.text().ifBlank { why }, startError = why, elapsedMs = elapsed)
+            }
+            return ShellOut(-1, partial, err.text(), timedOut = true, elapsedMs = elapsed)
         }
         tOut.join(500)
         tErr.join(500)
-        val code = runCatching { process.exitValue() }.getOrDefault(-1)
-        return ShellOut(code, out.text(), err.text())
+        return ShellOut(exitCode, out.text(), err.text(), elapsedMs = System.currentTimeMillis() - started)
     }
 
     private fun ByteArrayOutputStream.text(): String = String(toByteArray(), Charsets.UTF_8)
