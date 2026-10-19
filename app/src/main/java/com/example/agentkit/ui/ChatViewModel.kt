@@ -751,10 +751,9 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
             ShellRunTool(
                 pool = terminalPool,
                 privilegedExec = { cmd ->
-                    // W-36：不再用 status() 预判——它会与 exec 内部判断打架（真机日志里
-                    // 同一秒内 CapabilityChain 报「可用」、执行却秒失败，用户看到「连上了但调不动」）。
-                    // 是否可用由 exec 实际起进程说了算，这里只区分「该回落」与「该如实报错」。
-                    val r = ShizukuShell.exec(cmd)
+                    // W-37：优先 UserService（shell 进程内起本地进程，waitFor 语义正常，进程常驻）；
+                    // 不可用时回落 W-36 的 newProcess 轮询通道；两者都不可用才回落本机 user shell。
+                    val r = ShizukuShell.execViaUserService(cmd) ?: ShizukuShell.exec(cmd)
                     // 未运行/未授权（通道压根没起来）→ null 让上层回落本机 user shell。
                     // 其余启动失败（newProcess 抛异常等）必须如实上抛，不能伪装成超时。
                     if (r.startError != null && r.startError.contains("未运行或未授权")) {
