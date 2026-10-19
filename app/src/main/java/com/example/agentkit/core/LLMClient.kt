@@ -255,6 +255,7 @@ class OpenAIClient(
         tools: List<AgentTool>,
         slot: KeyPoolPolicy.KeySlot
     ): AssistantMessage {
+        requireUsableEndpoint()
         val requestJson = buildJsonObject {
             put("model", effectiveModel())
             putJsonArray("messages") { messages.forEach { add(toApiMessage(it)) } }
@@ -445,6 +446,7 @@ class OpenAIClient(
         tools: List<AgentTool>,
         onData: suspend (JsonObject) -> Unit
     ): SseReadOutcome {
+        requireUsableEndpoint()
         val requestJson = buildJsonObject {
             put("model", effectiveModel())
             put("stream", true)
@@ -527,6 +529,21 @@ class OpenAIClient(
     /** 实际拼出的请求端点（Base URL + /chat/completions）。 */
     private fun endpointUrl(): String = "${effectiveBaseUrl().trimEnd('/')}/chat/completions"
 
+    /**
+     * W-43：端点没配就**立刻**报清楚，别让 OkHttp 抛「Expected URL scheme…」再去重试。
+     * 真机日志：切过模型后 baseUrl 为空，连续两次 3s/10s 退避，用户只看到「调用失败」，
+     * 完全不知道是没填地址。这类配置错误重试一百次也不会好。
+     */
+    private fun requireUsableEndpoint() {
+        val url = endpointUrl()
+        if (!url.startsWith("http://") && !url.startsWith("https://")) {
+            throw LlmHttpException(
+                code = 400,
+                message = "模型端点未配置（当前值「$url」）。请到「设置 → 模型」选择供应商并填写 Base URL。"
+            )
+        }
+    }
+
     private fun buildRequest(bodyJson: JsonObject, apiKeyOverride: String? = null): Request {
         // 防御性双保险：即便调用方忘了清洗，也不会带着 \u00A0 等不可见字符发请求
         val baseUrl = ConfigSanitizer.normalizeBaseUrl(config.baseUrl)
@@ -547,6 +564,7 @@ class OpenAIClient(
      * @return [PingResult] 状态码与响应体预览（均已脱敏处理）。
      */
     override suspend fun testPing(): PingResult = withContext(Dispatchers.IO) {
+        requireUsableEndpoint()
         val requestJson = buildJsonObject {
             put("model", effectiveModel())
             putJsonArray("messages") {

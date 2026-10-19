@@ -119,7 +119,7 @@ class RealAgentLoop(
     private val llmProvider: () -> LLMClient,
     registry: ToolRegistry,
     systemPrompt: String = DEFAULT_SYSTEM_PROMPT,
-    maxSteps: Int = 40,
+    maxSteps: Int = 60,
     private val maxParallelTools: Int = 5,
     private val providerRetry: Int = 3,
     private val maxHistoryMessages: Int = 40,
@@ -330,7 +330,12 @@ class RealAgentLoop(
 
         AgentLogger.w("AgentLoop", "达到最大步数 $maxSteps，任务可能未完成")
         hooks.beforeStop()
-        messages.add(AssistantMessage("⚠️ 已达到最大步数（$maxSteps），任务可能未完全完成。"))
+        messages.add(
+            AssistantMessage(
+                "⚠️ 本次任务已用满 $maxSteps 步（防止无限打转的硬上限），不是字数或 token 用完。\n" +
+                    "回复「继续」即可接着做，历史和工作区都保留着。"
+            )
+        )
         AgentLogger.i(
             "AgentLoop",
             "运行结束：${System.currentTimeMillis() - loopStart}ms，消息数=${messages.size}"

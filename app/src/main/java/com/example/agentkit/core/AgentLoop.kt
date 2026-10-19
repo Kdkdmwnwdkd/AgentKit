@@ -124,7 +124,7 @@ class AgentLoop(
      * LLM 往返）；上下文侧由 [contextBudgetTokens] / [maxHistoryMessages] 双闸兜底
      * （W-10：token 预算 + 图像裁剪，见 [ContextBudget]），调整前需评估。
      */
-    maxSteps: Int = 40,
+    maxSteps: Int = 60,
     maxParallelTools: Int = 5,
     providerRetry: Int = 2,
     maxHistoryMessages: Int = 40,
