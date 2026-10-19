@@ -46,7 +46,8 @@ private fun assertContains(name: String, haystack: String, needle: String) {
 
 /* ------------------------------ 源码读取（纯文本扫描） ------------------------------ */
 
-private const val APP_SRC = "/workspace/AgentKit/app/src/main/java/com/example/agentkit"
+// W-42：路径相对仓库根（run-all 会把 CWD 定在仓库根）。写死 /workspace/AgentKit 只在本机成立。
+private const val APP_SRC = "app/src/main/java/com/example/agentkit"
 
 private fun readSource(rel: String): String = File(APP_SRC, rel).readText()
 
@@ -1098,7 +1099,7 @@ private fun testMarkdownFileExport() {
     println("— X 区：会话导出 .md 真文件（hotfix29） —")
     val share = readSource("ui/ShareActions.kt")
     val scaffold = readSource("ui/AppScaffold.kt")
-    val paths = File("/workspace/AgentKit/app/src/main/res/xml/file_paths.xml").readText()
+    val paths = File("app/src/main/res/xml/file_paths.xml").readText()
 
     check("X1 FileProvider：cacheDir/exports 路径声明（导出 .md 的落点）") {
         assertContains("X1", paths, "<cache-path name=\"exports\" path=\"exports/\" />")
@@ -1284,7 +1285,7 @@ private fun testChatBackground() {
     val vm = readSource("ui/ChatViewModel.kt")
     val screen = readSource("ui/ChatScreen.kt")
     val settings = readSource("ui/SettingsScreen.kt")
-    val loader = File("/workspace/AgentKit/app/src/main/java/com/example/agentkit/ui/BackgroundLoader.kt").readText()
+    val loader = File("app/src/main/java/com/example/agentkit/ui/BackgroundLoader.kt").readText()
 
     check("AA1 ConfigStore：URI + 浓度两键（URI 存轻量字符串，位图不占存储）") {
         assertContains("AA1", config, "private const val KEY_CHAT_BG_URI = \"chat_bg_uri\"")
@@ -1342,7 +1343,7 @@ private fun testChatBackground() {
  */
 private fun testJsonSafeAndGlobalBackground() {
     println("— AB 区：JSON 安全化 + 背景 100%/全局（hotfix33） —")
-    val base = "/workspace/AgentKit/app/src/main/java/com/example/agentkit/"
+    val base = "app/src/main/java/com/example/agentkit/"
     val safe = File(base + "core/llm/JsonSafe.kt").readText()
     val llm = readSource("core/LLMClient.kt")
     val loader = readSource("ui/BackgroundLoader.kt")
@@ -1412,7 +1413,7 @@ private fun testJsonSafeAndGlobalBackground() {
  */
 private fun testProviderCatalog() {
     println("— AC 区：供应商全量适配（hotfix34） —")
-    val base = "/workspace/AgentKit/app/src/main/java/com/example/agentkit/"
+    val base = "app/src/main/java/com/example/agentkit/"
     val catalog = File(base + "core/llm/ProviderCatalog.kt").readText()
     val llm = readSource("core/LLMClient.kt")
     val modelScreen = readSource("ui/ModelConfigScreen.kt")
