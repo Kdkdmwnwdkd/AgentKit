@@ -73,6 +73,29 @@ jobs:
       - name: Build debug APK
         run: ./gradlew assembleDebug --no-daemon --stacktrace
 
+      # CI runner 没有预装 kotlinc 发行版，但 Gradle 已经下过 kotlin-compiler-embeddable。
+      # 这里包一层同名命令，让只认 `$KOTLINC_HOME/bin/kotlinc` 的老 harness 也能跑。
+      - name: Prepare kotlinc shim (老 harness 只认 kotlinc 命令)
+        if: ${{ vars.QA_HARNESS != 'off' }}
+        continue-on-error: true
+        run: |
+          CACHE="$HOME/.gradle/caches/modules-2/files-2.1"
+          KJAR=$(find "$CACHE/org.jetbrains.kotlin/kotlin-compiler-embeddable" -name 'kotlin-compiler-embeddable-*.jar' 2>/dev/null | grep -v sources | head -1)
+          STD=$(find "$CACHE/org.jetbrains.kotlin/kotlin-stdlib" -name 'kotlin-stdlib-*.jar' 2>/dev/null | grep -v sources | head -1)
+          TROVE=$(find "$CACHE/org.jetbrains.intellij.deps/trove4j" -name 'trove4j-*.jar' 2>/dev/null | head -1)
+          ANN=$(find "$CACHE/org.jetbrains/annotations" -name 'annotations-*.jar' 2>/dev/null | head -1)
+          if [ -z "$KJAR" ] || [ -z "$STD" ]; then
+            echo "WARN: 缓存里没有 kotlin 编译器，跳过 shim（相关 harness 会自行 SKIP）"
+            exit 0
+          fi
+          mkdir -p /tmp/kotlinc/bin
+          {
+            echo '#!/usr/bin/env bash'
+            echo "exec java -cp \"$KJAR:$STD:$TROVE:$ANN\" org.jetbrains.kotlin.cli.jvm.K2JVMCompiler \"\$@\""
+          } > /tmp/kotlinc/bin/kotlinc
+          chmod +x /tmp/kotlinc/bin/kotlinc
+          /tmp/kotlinc/bin/kotlinc -version
+
       # QA harness：把仓库里全部断言跑一遍（纯 JVM + APK 静态反验）。
       #
       # 为什么是「只报告」而不是硬门禁：这批断言是历史批次陆续写的，第一次进 CI 可能
