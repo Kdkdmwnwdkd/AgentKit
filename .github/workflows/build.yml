@@ -98,9 +98,10 @@ jobs:
           SER_CORE=$(find "$CACHE/org.jetbrains.kotlinx/kotlinx-serialization-core-jvm" -name 'kotlinx-serialization-core-jvm-*.jar' 2>/dev/null | grep -v sources | head -1)
           [ -n "$SER_JSON" ] && cp "$SER_JSON" /tmp/w7-jars/kotlinx-serialization-json-jvm-1.6.3.jar
           [ -n "$SER_CORE" ] && cp "$SER_CORE" /tmp/w7-jars/kotlinx-serialization-core-jvm-1.6.3.jar
-          # 序列化编译器插件（-Xplugin 用），从 Maven Central 取，版本与编译器对齐
+          # 序列化编译器插件（-Xplugin 用）。必须与编译器同为 embeddable 变体：
+          # 非 embeddable 插件配 embeddable 编译器会在编译期内部崩溃（exit=2）。
           curl -sSL --max-time 120 \
-            https://repo1.maven.org/maven2/org/jetbrains/kotlin/kotlin-serialization-compiler-plugin/1.9.25/kotlin-serialization-compiler-plugin-1.9.25.jar \
+            https://repo1.maven.org/maven2/org/jetbrains/kotlin/kotlin-serialization-compiler-plugin-embeddable/1.9.25/kotlin-serialization-compiler-plugin-embeddable-1.9.25.jar \
             -o /tmp/kotlinc/lib/kotlinx-serialization-compiler-plugin.jar \
             && ls -lh /tmp/kotlinc/lib/kotlinx-serialization-compiler-plugin.jar || echo "WARN: 序列化插件下载失败"
           {
@@ -141,6 +142,16 @@ jobs:
             tail -80 /tmp/qa.log 2>/dev/null || echo "(无日志：该步被 QA_HARNESS=off 跳过，或脚本缺失)"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # 失败时只看 tail 定位不了（编译器内部错误的关键行在前面），完整日志随包上传
+      - name: Upload QA logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qa-logs
+          path: qa-logs/
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Upload APK
         uses: actions/upload-artifact@v4

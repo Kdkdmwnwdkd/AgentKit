@@ -17,6 +17,10 @@ set -uo pipefail
 cd "$(dirname "$0")/../.."
 
 APK="${1:-}"
+# 每个脚本的完整输出落到 qa-logs/，CI 作为 artifact 上传——
+# 失败时只看 tail 无法定位（编译器内部错误的关键行在前面）。
+LOG_DIR="${QA_LOG_DIR:-qa-logs}"
+mkdir -p "$LOG_DIR"
 pass=0; skip=0; fail=0; xfail=0; failed=""
 
 # 已知失效清单：这些断言源码已与主代码脱节，编译就过不了。
@@ -43,6 +47,8 @@ for s in scripts/qa/run-*.sh; do
       ;;
   esac
 
+  echo "$out" > "$LOG_DIR/$(basename "$s" .sh).log"
+
   if [ $rc -eq 3 ]; then
     skip=$((skip + 1))
     echo "SKIP  $(basename "$s")"
@@ -52,8 +58,8 @@ for s in scripts/qa/run-*.sh; do
       echo "XFAIL $s（已知失效，见 known-broken.txt）"
     else
       fail=$((fail + 1)); failed="$failed $s"
-      echo "FAIL  $s（exit=$rc）"
-      echo "$out" | tail -6
+      echo "FAIL  $s（exit=$rc） 完整日志：$LOG_DIR/$(basename "$s" .sh).log"
+      echo "$out" | tail -12
     fi
   elif echo "$out" | grep -qE "0 failed|FAIL=0|0 失败|_OK [0-9]|全部通过"; then
     if is_known_broken "$s"; then
@@ -67,8 +73,8 @@ for s in scripts/qa/run-*.sh; do
       echo "XFAIL $s（已知失效，见 known-broken.txt）"
     else
       fail=$((fail + 1)); failed="$failed $s"
-      echo "FAIL  $s（无通过标记，可能是断言没跑到）"
-      echo "$out" | tail -6
+      echo "FAIL  $s（无通过标记） 完整日志：$LOG_DIR/$(basename "$s" .sh).log"
+      echo "$out" | tail -12
     fi
   fi
 done

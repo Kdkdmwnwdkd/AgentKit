@@ -1,11 +1,23 @@
 # 已知失效的 harness（run-all.sh 会跑它们，但按 XFAIL 归类，不阻塞）
 #
-# 收录条件：脚本本身**能跑**，但断言源码与当前主代码/依赖库已经对不上，编译就过不了。
-# 这类不是环境问题（环境问题走 SKIP/exit 3），而是测试代码腐化，需要有人按新 API 重写。
+# 收录条件：脚本本身**能跑**，但断言与当前主代码/依赖库已经对不上。
+# 这类不是环境问题（环境问题走 SKIP/exit 3），而是测试代码腐化：当年写的断言对象已经变了。
+# 它们仍会执行——不假装不存在——但归 XFAIL，不阻塞构建；修好后从本文件删掉。
 #
-# 格式：<脚本名>	<原因>	<建议动作>    （Tab 或空格分隔均可）
-# 移除条件：修好后从本文件删掉；若它开始通过，run-all 会打印 XPASS 提醒你删。
+# 格式：<脚本名>	<原因>
+# 移除条件：修好后删除对应行；若它开始通过，run-all 会打印 XPASS 提醒。
 
-run-t01-probe2.sh	T01AdversarialProbe2.kt 调 client.streamText() 的签名与现版不一致（OkHttpClient vs KeySlot 列表）	按当前 LLMClient 接口重写探针
-run-verification.sh	T02T06Verification.kt 在非挂起上下文调用 suspend check()	main 包 runBlocking，或把 check 改成普通函数
-run-crashlog-verification.sh	CrashLogVerification.kt 调用了不存在的 read() 辅助函数	补回源码读取辅助函数
+run-t01-probe2.sh	T01AdversarialProbe2.kt 调 client.streamText() 的签名与现版不一致（OkHttpClient vs KeySlot 列表）
+run-verification.sh	T02T06Verification.kt 在非挂起上下文调用 suspend check()
+run-crashlog-verification.sh	CrashLogVerification.kt 调用了不存在的 read() 辅助函数
+
+# 以下 9 个是断言语义与现实现脱节（2026-10-19 CI 首跑实证）：
+run-fallback-verification.sh	能力链快照/选中顺序断言与现 CapabilityBridges 不一致（4 条失败：proot→user 顺序、logTrace 旁路）
+run-hotfix-verification.sh	runBlocking 内抛异常（HotfixVerification.kt:380），断言对象已改
+run-hotfix3-verification.sh	runBlocking 内抛异常（Hotfix3Verification.kt:651）
+run-retry-verification.sh	runBlocking 内抛异常（RetryVerification.kt:399）
+run-t01-probe.sh	工具取消/并行/钩子配对断言失败（4 条），假调度器时序与现依赖不符
+run-t01-verification.sh	loop.stop()/update() 断言失败（5 条），停止语义已演进
+run-t07t08-adversarial.sh	跨池隔离断言抛异常（T07T08AdversarialProbe.kt:169）
+run-t07t08-verification.sh	TerminalSessionPool.open 抛异常（:255），会话池契约已变
+run-localmodel-verification.sh	本地模型断言与现 GgufModelStore/LocalLlamaSetting 接口不符
