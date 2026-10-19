@@ -3,6 +3,7 @@ package com.example.agentkit
 import android.app.Activity
 import android.app.Application
 import android.os.Bundle
+import com.example.agentkit.automation.shizuku.ShizukuShell
 import com.example.agentkit.core.AgentLogger
 import com.example.agentkit.core.CrashLogger
 
@@ -42,6 +43,10 @@ class AgentKitApplication : Application() {
                 )
             }
         }
+        // W-37：Shizuku UserService 需要 Context 构造 UserServiceArgs，且 binder 死亡监听
+        // 要尽早挂上（否则服务重启后代理悬空，第一次调用必挂）。内部全程 runCatching，
+        // 失败不影响启动，只是提权通道回落 newProcess。
+        runCatching { ShizukuShell.init(this) }
         // 功能五（P1-10）：前台 Activity 计数——「回答完成提醒」只在 App 退到后台时
         // 发通知（用户正盯着聊天界面时提醒是噪音）。用 ActivityLifecycleCallbacks
         // 而不是 ProcessLifecycleOwner：不引 lifecycle-process 新依赖，计数语义也够用。

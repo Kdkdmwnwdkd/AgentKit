@@ -49,7 +49,11 @@ android {
         // 不要动 release（本项目不产出 release 包）
     }
 
-    buildFeatures { compose = true }
+    // W-37：Shizuku UserService 走 AIDL 跨进程接口（app/src/main/aidl），显式开启
+    buildFeatures {
+        compose = true
+        aidl = true
+    }
     composeOptions { kotlinCompilerExtensionVersion = "1.5.15" }
 
     // 本地 llama.cpp 推理：只出 arm64-v8a（市面手机全覆盖，先做扎实再扩 x86_64 模拟器）

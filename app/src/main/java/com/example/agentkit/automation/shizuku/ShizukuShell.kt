@@ -1,8 +1,18 @@
 package com.example.agentkit.automation.shizuku
 
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.ServiceConnection
+import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
+import android.os.IBinder
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import rikka.shizuku.Shizuku
 import java.io.ByteArrayOutputStream
 
@@ -20,6 +30,9 @@ import java.io.ByteArrayOutputStream
 object ShizukuShell {
 
     const val REQUEST_CODE = 4210
+
+    /** UserService 绑定的等待上限（毫秒）。Shizuku 自身启动服务约 3~10 秒。 */
+    private const val BIND_TIMEOUT_MS = 15_000L
 
     /**
      * Shizuku 系应用包名的**候选列表**（顺序即优先级）。
@@ -118,6 +131,160 @@ object ShizukuShell {
     ) {
         val ok: Boolean get() = !timedOut && startError == null && exitCode == 0
     }
+
+    /* ================================================================== */
+    /* W-37：UserService 通道（首选执行路径）                              */
+    /*                                                                     */
+    /* 对标 AiCode：命令在 shell 进程内起「本地进程」，waitFor(timeout) 语义 */
+    /* 正常；而 newProcess 返回的是远端代理，定时 waitFor 未实现会直接抛异常。*/
+    /* 保留 newProcess 轮询作为兜底（Shizuku 版本差异时仍可降级）。          */
+    /* ================================================================== */
+
+    private val bindMutex = Mutex()
+
+    @Volatile
+    private var userService: IShizukuShellService? = null
+
+    @Volatile
+    private var pendingBind: CompletableDeferred<IShizukuShellService>? = null
+
+    @Volatile
+    private var serviceArgs: Shizuku.UserServiceArgs? = null
+
+    @Volatile
+    private var appContext: Context? = null
+
+    private val serviceConnection = object : ServiceConnection {
+        override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
+            val bound = IShizukuShellService.Stub.asInterface(service)
+            userService = bound
+            runCatching { pendingBind?.complete(bound) }
+            pendingBind = null
+        }
+
+        override fun onServiceDisconnected(name: ComponentName?) {
+            userService = null
+            runCatching {
+                pendingBind?.completeExceptionally(IllegalStateException("Shizuku UserService 已断开"))
+            }
+            pendingBind = null
+        }
+    }
+
+    /**
+     * 初始化（幂等）。必须在 Application 里尽早调用一次：
+     * 构造 UserServiceArgs 需要 Context，且 binder 死亡监听要尽早挂上。
+     */
+    fun init(context: Context) {
+        if (appContext != null) return
+        val ctx = context.applicationContext
+        appContext = ctx
+        serviceArgs = runCatching {
+            Shizuku.UserServiceArgs(
+                ComponentName(ctx.packageName, ShizukuShellUserService::class.java.name)
+            )
+                .daemon(false)
+                .tag("agentkit_shell")
+                .processNameSuffix("shizuku_shell")
+                .debuggable((ctx.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0)
+                .version(appVersionCode(ctx))
+        }.getOrNull()
+        runCatching {
+            Shizuku.addBinderDeadListener(
+                Shizuku.OnBinderDeadListener {
+                    // Shizuku 服务死了，代理立刻作废，否则下一次调用会挂在死 binder 上
+                    userService = null
+                    runCatching {
+                        pendingBind?.completeExceptionally(IllegalStateException("Shizuku 服务已断开"))
+                    }
+                    pendingBind = null
+                }
+            )
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun appVersionCode(context: Context): Int = runCatching {
+        val info = context.packageManager.getPackageInfo(context.packageName, 0)
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+            info.longVersionCode.toInt()
+        } else {
+            info.versionCode
+        }
+    }.getOrDefault(1)
+
+    /**
+     * 用 UserService 执行命令。返回 null = 该通道当前不可用（未初始化 / 未授权 / 绑定失败），
+     * 调用方应回落到 [exec]（newProcess 轮询）。
+     */
+    suspend fun execViaUserService(command: String, timeoutSec: Long = 20): ShellOut? {
+        val ctx = appContext ?: return null
+        if (!hasPermission()) return null
+        // Shizuku v11 之前没有 UserService
+        if (runCatching { Shizuku.isPreV11() }.getOrDefault(true)) return null
+        val service = ensureBound(ctx) ?: return null
+
+        val started = System.currentTimeMillis()
+        return try {
+            val bundle = withContext(Dispatchers.IO) {
+                service.exec(command, (timeoutSec * 1000).coerceAtMost(1_800_000L).toInt())
+            }
+            val outcome = ShizukuResultLogic.map(
+                stdout = bundle.getString(ShizukuShellUserService.KEY_STDOUT).orEmpty(),
+                stderr = bundle.getString(ShizukuShellUserService.KEY_STDERR).orEmpty(),
+                exitCode = bundle.getInt(
+                    ShizukuShellUserService.KEY_EXIT_CODE,
+                    ShizukuResultLogic.EXIT_FAILURE
+                )
+            )
+            ShellOut(
+                exitCode = outcome.exitCode,
+                stdout = outcome.stdout,
+                stderr = outcome.stderr,
+                timedOut = outcome.timedOut,
+                startError = outcome.startError,
+                elapsedMs = bundle.getLong(ShizukuShellUserService.KEY_ELAPSED_MS).takeIf { it > 0 }
+                    ?: (System.currentTimeMillis() - started)
+            )
+        } catch (e: Throwable) {
+            val why = "UserService 调用失败：${e.javaClass.simpleName}: ${e.message}"
+            ShellOut(
+                exitCode = -1,
+                stdout = "",
+                stderr = why,
+                startError = why,
+                elapsedMs = System.currentTimeMillis() - started
+            )
+        }
+    }
+
+    /** 幂等绑定 UserService；失败返回 null（由调用方降级，不抛给模型）。 */
+    private suspend fun ensureBound(context: Context): IShizukuShellService? {
+        userService?.let { return it }
+        val args = serviceArgs ?: return null
+        return bindMutex.withLock {
+            userService?.let { return@withLock it }
+            val deferred = CompletableDeferred<IShizukuShellService>()
+            pendingBind = deferred
+            runCatching {
+                // Shizuku 要求在主线程绑定
+                withContext(Dispatchers.Main) {
+                    Shizuku.bindUserService(args, serviceConnection)
+                }
+            }.onFailure {
+                pendingBind = null
+                return@withLock null
+            }
+            withTimeoutOrNull(BIND_TIMEOUT_MS) { deferred.await() }.also { bound ->
+                if (bound == null) {
+                    // 超时：解开绑定，避免僵尸连接占着 shell 进程
+                    runCatching { Shizuku.unbindUserService(args, serviceConnection, true) }
+                    pendingBind = null
+                }
+            }
+        }
+    }
+
 
     /**
      * 以 shell 身份执行命令。未授权/未运行时返回 exitCode=-1 且 stderr 说明原因，
