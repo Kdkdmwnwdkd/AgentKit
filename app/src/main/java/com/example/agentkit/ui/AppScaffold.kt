@@ -39,6 +39,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Public
 import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.outlined.Add
@@ -131,6 +132,8 @@ enum class AppDest(
     BUILD("build", "构建", "构建", Icons.Outlined.Build),
     PERMISSIONS("permissions", "权限中心", "权限中心", Icons.Outlined.Shield),
     SKILLS("skills", "技能中心", "技能中心", Icons.Outlined.Extension),
+    /** W-48：插件市场（远端可装清单；与技能中心分工见 SkillMarketScreen 注释）。 */
+    MARKET("market", "插件市场", "插件市场", Icons.Outlined.Public),
     WORKFLOW("workflow", "定时任务", "定时任务", Icons.Outlined.Schedule),
     LOGS("logs", "运行日志", "运行日志", Icons.Outlined.Description),
     MEMORY("memory", "记忆库", "记忆库", Icons.Outlined.Storage),
@@ -602,7 +605,8 @@ private fun ScreenHost(
         AppDest.MEDIA -> MediaScreen()
         AppDest.BUILD -> BuildScreen()
         AppDest.PERMISSIONS -> PermissionsScreen(vm)
-        AppDest.SKILLS -> SkillsScreen(vm)
+        AppDest.SKILLS -> SkillsScreen(vm, onOpenMarket = { onNavigate(AppDest.MARKET) })
+        AppDest.MARKET -> SkillMarketScreen(vm)
         AppDest.WORKFLOW -> WorkflowScreen(vm)
         AppDest.LOGS -> LogsScreen(vm)
         AppDest.MEMORY -> MemoryScreen(vm)

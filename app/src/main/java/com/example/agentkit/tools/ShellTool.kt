@@ -1,5 +1,6 @@
 package com.example.agentkit.tools
 
+import com.example.agentkit.core.llm.primOrNull
 import com.example.agentkit.core.AgentTool
 import com.example.agentkit.core.JsonSchema
 import com.example.agentkit.core.ToolResult
@@ -125,7 +126,7 @@ class ShellRunTool(
     override val readOnly = false
 
     override suspend fun execute(args: JsonObject): ToolResult {
-        val command = args["command"]?.jsonPrimitive?.contentOrNull
+        val command = args["command"]?.primOrNull()?.contentOrNull
             ?: return ToolResult.fail(
                 code = "missing_param",
                 message = "缺少 command",
@@ -140,7 +141,7 @@ class ShellRunTool(
         }
 
         // identity：未给 = null（沿用会话身份 / 开辟时默认 user）；给了但非法 = 显式报错
-        val rawIdentity = args["identity"]?.jsonPrimitive?.contentOrNull
+        val rawIdentity = args["identity"]?.primOrNull()?.contentOrNull
         val declaredIdentity: TerminalIdentity? = when {
             rawIdentity.isNullOrBlank() -> null
             else -> TerminalIdentity.fromWire(rawIdentity) ?: return ToolResult.fail(
@@ -150,10 +151,10 @@ class ShellRunTool(
             )
         }
 
-        val preferProot = args["prefer_proot"]?.jsonPrimitive?.contentOrNull
+        val preferProot = args["prefer_proot"]?.primOrNull()?.contentOrNull
             ?.toBooleanStrictOrNull() ?: defaultPreferProot
 
-        val sessionArg = args["session"]?.jsonPrimitive?.contentOrNull?.trim()
+        val sessionArg = args["session"]?.primOrNull()?.contentOrNull?.trim()
 
         // —— 提权通道（W-13）：一次性执行，不占用会话池 ——
         val privileged = privilegedExec
@@ -322,7 +323,7 @@ class ShellCloseTool(private val pool: TerminalSessionPool) : AgentTool {
     override val readOnly = false
 
     override suspend fun execute(args: JsonObject): ToolResult {
-        val session = args["session"]?.jsonPrimitive?.contentOrNull?.trim()
+        val session = args["session"]?.primOrNull()?.contentOrNull?.trim()
         if (session.isNullOrBlank()) {
             return ToolResult.fail(
                 code = "missing_param",

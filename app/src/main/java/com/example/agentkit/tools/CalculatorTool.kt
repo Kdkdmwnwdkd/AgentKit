@@ -1,5 +1,6 @@
 package com.example.agentkit.tools
 
+import com.example.agentkit.core.llm.primOrNull
 import com.example.agentkit.core.AgentTool
 import com.example.agentkit.core.JsonSchema
 import com.example.agentkit.core.ToolResult
@@ -33,7 +34,7 @@ class CalculatorTool : AgentTool {
     override val readOnly = true
 
     override suspend fun execute(args: JsonObject): ToolResult {
-        val expr = args["expression"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+        val expr = args["expression"]?.primOrNull()?.contentOrNull?.trim().orEmpty()
         if (expr.isBlank()) {
             return ToolResult.fail("missing_param", "缺少 expression", "传入算式，例如 (120+80)*0.85。")
         }

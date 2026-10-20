@@ -1,5 +1,6 @@
 package com.example.agentkit.tools
 
+import com.example.agentkit.core.llm.primOrNull
 import android.app.Application
 import com.example.agentkit.core.AgentTool
 import com.example.agentkit.core.JsonSchema
@@ -48,7 +49,7 @@ class ShellBackgroundTool(
     override val readOnly = false
 
     override suspend fun execute(args: JsonObject): ToolResult = withContext(Dispatchers.IO) {
-        val command = args["command"]?.jsonPrimitive?.contentOrNull.orEmpty()
+        val command = args["command"]?.primOrNull()?.contentOrNull.orEmpty()
         if (JobLogic.normalizeCommand(command) == null) {
             return@withContext ToolResult.fail(
                 code = "invalid_command",
@@ -56,7 +57,7 @@ class ShellBackgroundTool(
                 hint = "给一条完整的非交互命令，例如 `find . -name '*.log' | wc -l`。"
             )
         }
-        val cwdArg = args["cwd"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+        val cwdArg = args["cwd"]?.primOrNull()?.contentOrNull?.trim().orEmpty()
         val root = WorkspaceStore.dir(app)
         val cwd: File = if (cwdArg.isEmpty()) {
             root
@@ -124,9 +125,9 @@ class ShellJobsTool(
     override val readOnly = false
 
     override suspend fun execute(args: JsonObject): ToolResult = withContext(Dispatchers.IO) {
-        val id = args["id"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
-        val cancel = args["cancel"]?.jsonPrimitive?.contentOrNull == "true"
-        val lines = args["lines"]?.jsonPrimitive?.contentOrNull?.toIntOrNull()
+        val id = args["id"]?.primOrNull()?.contentOrNull?.trim().orEmpty()
+        val cancel = args["cancel"]?.primOrNull()?.contentOrNull == "true"
+        val lines = args["lines"]?.primOrNull()?.contentOrNull?.toIntOrNull()
             ?: JobLogic.DEFAULT_TAIL_LINES
         val now = System.currentTimeMillis()
 

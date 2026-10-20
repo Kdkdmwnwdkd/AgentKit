@@ -1,5 +1,6 @@
 package com.example.agentkit.tools
 
+import com.example.agentkit.core.llm.primOrNull
 import com.example.agentkit.browser.WebViewBrowser
 import com.example.agentkit.core.AgentTool
 import com.example.agentkit.core.JsonSchema
@@ -44,7 +45,7 @@ class WebOpenTool : AgentTool {
     override val readOnly = false
 
     override suspend fun execute(args: JsonObject): ToolResult {
-        val url = args["url"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+        val url = args["url"]?.primOrNull()?.contentOrNull?.trim().orEmpty()
         if (url.isBlank()) {
             return ToolResult.fail("missing_param", "缺少 url", "传入完整地址，例如 https://example.com")
         }
@@ -54,7 +55,7 @@ class WebOpenTool : AgentTool {
                 "补全协议后重试，例如 https://example.com。"
             )
         }
-        val timeout = args["timeout_ms"]?.jsonPrimitive?.contentOrNull?.toLongOrNull() ?: 20_000L
+        val timeout = args["timeout_ms"]?.primOrNull()?.contentOrNull?.toLongOrNull() ?: 20_000L
         return browser.open(url, timeout.coerceIn(3_000L, 60_000L)).fold(
             onSuccess = { finalUrl ->
                 ToolResult.ok("web_opened", "已打开：$finalUrl", data = "下一步可用 web_snapshot 查看页面结构。")
@@ -108,7 +109,7 @@ class WebClickTool : AgentTool {
     override val readOnly = false
 
     override suspend fun execute(args: JsonObject): ToolResult {
-        val target = args["target"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+        val target = args["target"]?.primOrNull()?.contentOrNull?.trim().orEmpty()
         if (target.isBlank()) return ToolResult.fail("missing_param", "缺少 target", "传 CSS 选择器或可见文本。")
         return browser.click(target).fold(
             onSuccess = { r ->
@@ -140,8 +141,8 @@ class WebTypeTool : AgentTool {
     override val readOnly = false
 
     override suspend fun execute(args: JsonObject): ToolResult {
-        val selector = args["selector"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
-        val text = args["text"]?.jsonPrimitive?.contentOrNull.orEmpty()
+        val selector = args["selector"]?.primOrNull()?.contentOrNull?.trim().orEmpty()
+        val text = args["text"]?.primOrNull()?.contentOrNull.orEmpty()
         if (selector.isBlank()) return ToolResult.fail("missing_param", "缺少 selector", "传输入框的 CSS 选择器。")
         return browser.type(selector, text).fold(
             onSuccess = { r ->
@@ -175,7 +176,7 @@ class WebEvalTool : AgentTool {
     override val readOnly = false
 
     override suspend fun execute(args: JsonObject): ToolResult {
-        val script = args["script"]?.jsonPrimitive?.contentOrNull.orEmpty()
+        val script = args["script"]?.primOrNull()?.contentOrNull.orEmpty()
         if (script.isBlank()) return ToolResult.fail("missing_param", "缺少 script", "传入一段返回字符串的 JS。")
         return browser.eval(script).fold(
             onSuccess = { r ->

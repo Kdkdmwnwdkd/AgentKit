@@ -1,5 +1,6 @@
 package com.example.agentkit.tools
 
+import com.example.agentkit.core.llm.primOrNull
 import com.example.agentkit.core.AgentTool
 import com.example.agentkit.core.JsonSchema
 import com.example.agentkit.core.ToolResult
@@ -44,7 +45,7 @@ class TodoWriteTool(
     override val readOnly = false
 
     override suspend fun execute(args: JsonObject): ToolResult {
-        val items = args["items"]?.jsonPrimitive?.contentOrNull ?: ""
+        val items = args["items"]?.primOrNull()?.contentOrNull ?: ""
         val convId = conversationId()
             ?: return ToolResult.fail(
                 code = "no_conversation",

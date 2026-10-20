@@ -1,5 +1,6 @@
 package com.example.agentkit.skill
 
+import com.example.agentkit.core.llm.primOrNull
 import android.content.Context
 import com.example.agentkit.core.AgentTool
 import java.io.File
@@ -161,7 +162,7 @@ fun createUseSkillTool(
             // 每次调用动态拉取技能快照，使导入/卸载/授权实时生效
             val skills = skillsProvider()
             val byName = skills.associateBy { it.name }
-            val name = args["name"]?.jsonPrimitive?.contentOrNull
+            val name = args["name"]?.primOrNull()?.contentOrNull
                 ?: return ToolResult.fail(
                     code = "missing_param",
                     message = "缺少 name",

@@ -275,7 +275,11 @@ class ConfigStore(context: Context) {
         }
         val ghOwner = backup.githubOwner
         val ghRepo = backup.githubRepo
-        val ghPat = backup.githubPat
+        // W-47：备份件自本版起不再携带 PAT（明文 token 存网盘等于送仓库权限）。
+        // 恢复策略分两路：老备份带了 PAT → 照旧覆盖；新备份 pat 为空 → **沿用本机已有 PAT**，
+        // 只更新 owner/repo/workflow。本机也没有 PAT 时整段跳过（不写半截配置）。
+        val ghPat = backup.githubPat?.takeIf { it.isNotBlank() }
+            ?: loadGithubConfig()?.pat?.takeIf { it.isNotBlank() }
         if (!ghOwner.isNullOrBlank() && !ghRepo.isNullOrBlank() && !ghPat.isNullOrBlank()) {
             saveGithubConfig(
                 com.example.agentkit.core.build.GitHubConfig(

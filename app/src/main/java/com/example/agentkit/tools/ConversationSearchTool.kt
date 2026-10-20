@@ -1,5 +1,6 @@
 package com.example.agentkit.tools
 
+import com.example.agentkit.core.llm.primOrNull
 import com.example.agentkit.core.AgentTool
 import com.example.agentkit.core.ConversationStore
 import com.example.agentkit.core.JsonSchema
@@ -42,11 +43,11 @@ class ConversationSearchTool(
     override val readOnly = true
 
     override suspend fun execute(args: JsonObject): ToolResult {
-        val raw = args["query"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+        val raw = args["query"]?.primOrNull()?.contentOrNull?.trim().orEmpty()
         if (raw.isBlank()) {
             return ToolResult.fail("missing_param", "缺少 query", "传入关键词，例如「深色模式」或「下载目录」。")
         }
-        val limit = (args["limit"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: 3).coerceIn(1, 5)
+        val limit = (args["limit"]?.primOrNull()?.contentOrNull?.toIntOrNull() ?: 3).coerceIn(1, 5)
         val keywords = raw.split(' ', '，', ',', '、').map { it.trim() }.filter { it.isNotBlank() }
         if (keywords.isEmpty()) {
             return ToolResult.fail("missing_param", "query 里没有有效关键词。", "换一个具体的词再试。")

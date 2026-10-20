@@ -1,5 +1,6 @@
 package com.example.agentkit.memory
 
+import com.example.agentkit.core.llm.primOrNull
 import com.example.agentkit.core.AgentTool
 import com.example.agentkit.core.JsonSchema
 import com.example.agentkit.core.ToolResult
@@ -44,7 +45,7 @@ class MemoryWriteTool(private val store: MemoryStore) : AgentTool {
 
     override suspend fun execute(args: JsonObject): ToolResult = withContext(Dispatchers.IO) {
         runCatching {
-            val content = args["content"]?.jsonPrimitive?.contentOrNull?.trim()
+            val content = args["content"]?.primOrNull()?.contentOrNull?.trim()
                 ?: return@withContext ToolResult.fail(
                     code = "missing_param",
                     message = "缺少 content",
@@ -57,15 +58,15 @@ class MemoryWriteTool(private val store: MemoryStore) : AgentTool {
                     hint = "请提供要记录的非空白内容（一句话说清事实或偏好）。"
                 )
             }
-            val kind = args["kind"]?.jsonPrimitive?.contentOrNull?.trim()?.takeIf { it.isNotBlank() } ?: "note"
-            val tags = args["tags"]?.jsonPrimitive?.contentOrNull
+            val kind = args["kind"]?.primOrNull()?.contentOrNull?.trim()?.takeIf { it.isNotBlank() } ?: "note"
+            val tags = args["tags"]?.primOrNull()?.contentOrNull
                 ?.split(",", "，", "、", " ")
                 ?.map { it.trim() }
                 ?.filter { it.isNotBlank() }
                 ?: emptyList()
             // salience 上限压到 7：8–10 留给系统/用户手动标记的重要记忆，
             // 否则模型（或被劫持的工具调用）能把恶意记忆置 10 使其永驻并稳定进提示词。
-            val salience = args["salience"]?.jsonPrimitive?.contentOrNull?.trim()
+            val salience = args["salience"]?.primOrNull()?.contentOrNull?.trim()
                 ?.toIntOrNull()?.coerceIn(1, 7) ?: 5
 
             val item = store.add(content, kind, tags, salience)
@@ -103,13 +104,13 @@ class MemorySearchTool(private val store: MemoryStore) : AgentTool {
 
     override suspend fun execute(args: JsonObject): ToolResult = withContext(Dispatchers.IO) {
         runCatching {
-            val query = args["query"]?.jsonPrimitive?.contentOrNull?.trim()
+            val query = args["query"]?.primOrNull()?.contentOrNull?.trim()
                 ?: return@withContext ToolResult.fail(
                     code = "missing_param",
                     message = "缺少 query",
                     hint = "memory_search 必须提供 query（检索关键词，可中英文混写）。"
                 )
-            val topK = args["topK"]?.jsonPrimitive?.contentOrNull?.trim()
+            val topK = args["topK"]?.primOrNull()?.contentOrNull?.trim()
                 ?.toIntOrNull()?.coerceIn(1, 50) ?: 10
 
             val hits = store.search(query, topK)
@@ -156,7 +157,7 @@ class MemoryListTool(private val store: MemoryStore) : AgentTool {
 
     override suspend fun execute(args: JsonObject): ToolResult = withContext(Dispatchers.IO) {
         runCatching {
-            val limit = args["limit"]?.jsonPrimitive?.contentOrNull?.trim()
+            val limit = args["limit"]?.primOrNull()?.contentOrNull?.trim()
                 ?.toIntOrNull()?.coerceIn(1, 100) ?: 20
             val items = store.list(limit)
             if (items.isEmpty()) {
@@ -199,7 +200,7 @@ class MemoryForgetTool(private val store: MemoryStore) : AgentTool {
 
     override suspend fun execute(args: JsonObject): ToolResult = withContext(Dispatchers.IO) {
         runCatching {
-            val id = args["id"]?.jsonPrimitive?.contentOrNull?.trim()
+            val id = args["id"]?.primOrNull()?.contentOrNull?.trim()
                 ?: return@withContext ToolResult.fail(
                     code = "missing_param",
                     message = "缺少 id",

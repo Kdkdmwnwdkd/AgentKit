@@ -419,7 +419,9 @@ fun SettingsScreen(
             AkSectionCard(
                 title = "备份与恢复",
                 icon = Icons.Outlined.Folder,
-                description = "导出为 ZIP 备份件（含全部会话、记忆与模型配置）；恢复会用备份内容覆盖当前数据。"
+                description = "导出为 ZIP 备份件（含全部会话、记忆与模型配置）。" +
+                    "⚠️ 文件内含模型 API Key，请勿外传；GitHub PAT 不会写入备份" +
+                    "（恢复时沿用本机已存的 PAT）。恢复会覆盖当前数据。"
             ) {
                 AkListItem(
                     icon = Icons.Outlined.Save,

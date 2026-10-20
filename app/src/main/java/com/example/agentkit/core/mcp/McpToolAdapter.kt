@@ -1,5 +1,7 @@
 package com.example.agentkit.core.mcp
 
+import com.example.agentkit.core.llm.primOrNull
+import com.example.agentkit.core.llm.objOrNull
 import com.example.agentkit.core.AgentTool
 import com.example.agentkit.core.JsonSchema
 import com.example.agentkit.core.ToolResult
@@ -104,15 +106,15 @@ fun mcpWireName(serverName: String, toolName: String): String =
 fun jsonSchemaFromMcp(input: JsonElement?): JsonSchema {
     val obj = input as? JsonObject ?: return JsonSchema()
     val required = (obj["required"] as? JsonArray)
-        ?.mapNotNull { it.jsonPrimitive.contentOrNull }
+        ?.mapNotNull { it.primOrNull()?.contentOrNull }
         ?: emptyList()
     val propsObj = obj["properties"] as? JsonObject ?: return JsonSchema(required = required)
 
     val props = LinkedHashMap<String, JsonSchema.Property>()
     propsObj.forEach { (key, value) ->
         val p = value as? JsonObject ?: return@forEach
-        val rawType = p["type"]?.jsonPrimitive?.contentOrNull ?: "string"
-        val desc = p["description"]?.jsonPrimitive?.contentOrNull.orEmpty().take(200)
+        val rawType = p["type"]?.primOrNull()?.contentOrNull ?: "string"
+        val desc = p["description"]?.primOrNull()?.contentOrNull.orEmpty().take(200)
         props[key] = JsonSchema.Property(
             type = normalizeSchemaType(rawType),
             description = desc,
@@ -132,7 +134,7 @@ internal fun normalizeSchemaType(raw: String): String = when (raw) {
 /** 纯字符串枚举才保留；混合类型或数字枚举返回 null（避免误导模型）。 */
 internal fun stringEnumOf(el: JsonElement?): List<String>? {
     val arr = el as? JsonArray ?: return null
-    val values = arr.mapNotNull { it.jsonPrimitive.contentOrNull }
+    val values = arr.mapNotNull { it.primOrNull()?.contentOrNull }
     if (values.size != arr.size) return null
     return values.takeIf { it.isNotEmpty() }
 }
@@ -145,16 +147,16 @@ internal fun stringEnumOf(el: JsonElement?): List<String>? {
  */
 fun toolResultFromMcp(el: JsonElement): ToolResult {
     val obj = el as? JsonObject
-    val isError = obj?.get("isError")?.jsonPrimitive?.booleanOrNull ?: false
+    val isError = obj?.get("isError")?.primOrNull()?.booleanOrNull ?: false
     val contentArray = obj?.get("content") as? JsonArray
 
     val text = if (contentArray != null) {
         contentArray.mapNotNull { part ->
             val o = part as? JsonObject ?: return@mapNotNull null
-            when (o["type"]?.jsonPrimitive?.contentOrNull) {
-                "text" -> o["text"]?.jsonPrimitive?.contentOrNull
+            when (o["type"]?.primOrNull()?.contentOrNull) {
+                "text" -> o["text"]?.primOrNull()?.contentOrNull
                 "image" -> "[图片内容已省略]"
-                "resource" -> o["resource"]?.jsonObject?.get("text")?.jsonPrimitive?.contentOrNull
+                "resource" -> o["resource"]?.objOrNull()?.get("text")?.primOrNull()?.contentOrNull
                     ?: "[资源内容已省略]"
                 else -> null
             }

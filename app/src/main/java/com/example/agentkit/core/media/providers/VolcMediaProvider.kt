@@ -1,5 +1,8 @@
 package com.example.agentkit.core.media.providers
 
+import com.example.agentkit.core.llm.primOrNull
+import com.example.agentkit.core.llm.arrOrNull
+import com.example.agentkit.core.llm.objOrNull
 import com.example.agentkit.core.media.MediaException
 import com.example.agentkit.core.media.MediaKind
 import com.example.agentkit.core.media.MediaProvider
@@ -57,22 +60,22 @@ class VolcMediaProvider(private val apiKey: String) : MediaProvider {
     override suspend fun poll(taskId: String): MediaTaskState = withContext(Dispatchers.IO) {
         requireKey()
         val resp = get("$TASKS_URL/$taskId")
-        val status = resp["status"]?.jsonPrimitive?.contentOrNull
+        val status = resp["status"]?.primOrNull()?.contentOrNull
         when (status) {
             "succeeded" -> {
                 val urls = mutableListOf<String>()
-                resp["content"]?.jsonArray?.forEach { el ->
-                    val o = el.jsonObject
-                    o["video_url"]?.jsonObject?.get("url")?.jsonPrimitive?.contentOrNull?.let { urls += it }
-                    o["image_url"]?.jsonObject?.get("url")?.jsonPrimitive?.contentOrNull?.let { urls += it }
-                    o["url"]?.jsonPrimitive?.contentOrNull?.let { urls += it }
+                resp["content"]?.arrOrNull()?.forEach { el ->
+                    val o = el.objOrNull() ?: return@forEach
+                    o["video_url"]?.objOrNull()?.get("url")?.primOrNull()?.contentOrNull?.let { urls += it }
+                    o["image_url"]?.objOrNull()?.get("url")?.primOrNull()?.contentOrNull?.let { urls += it }
+                    o["url"]?.primOrNull()?.contentOrNull?.let { urls += it }
                 }
                 if (urls.isEmpty()) throw MediaException("任务成功但响应无结果 URL")
                 MediaTaskState.Succeeded(urls)
             }
 
             "failed", "cancelled" -> {
-                val msg = resp["error"]?.jsonObject?.get("message")?.jsonPrimitive?.contentOrNull
+                val msg = resp["error"]?.objOrNull()?.get("message")?.primOrNull()?.contentOrNull
                     ?: "任务失败（$status）"
                 MediaTaskState.Failed(msg)
             }
@@ -90,8 +93,8 @@ class VolcMediaProvider(private val apiKey: String) : MediaProvider {
             put("response_format", "url")
         }
         val resp = post("$BASE_URL/images/generations", body)
-        val data = resp["data"]?.jsonArray ?: throw MediaException("images/generations 响应缺 data")
-        val urls = data.mapNotNull { it.jsonObject["url"]?.jsonPrimitive?.contentOrNull }
+        val data = resp["data"]?.arrOrNull() ?: throw MediaException("images/generations 响应缺 data")
+        val urls = data.mapNotNull { it.objOrNull()?.get("url")?.primOrNull()?.contentOrNull }
         if (urls.isEmpty()) throw MediaException("images/generations 未返回图片")
         return MediaTaskHandle(null, MediaTaskState.Succeeded(urls))
     }
@@ -109,7 +112,7 @@ class VolcMediaProvider(private val apiKey: String) : MediaProvider {
             })
         }
         val resp = post(TASKS_URL, body)
-        val id = resp["id"]?.jsonPrimitive?.contentOrNull
+        val id = resp["id"]?.primOrNull()?.contentOrNull
             ?: throw MediaException("提交响应缺任务 id")
         return MediaTaskHandle(id, MediaTaskState.Running(null))
     }
@@ -127,7 +130,7 @@ class VolcMediaProvider(private val apiKey: String) : MediaProvider {
         http.newCall(request).execute().use { resp ->
             val text = resp.body?.string().orEmpty()
             if (!resp.isSuccessful) throw MediaException("HTTP ${resp.code}: ${text.take(300)}")
-            return json.parseToJsonElement(text).jsonObject
+            return json.parseToJsonElement(text).objOrNull() ?: JsonObject(emptyMap())
         }
     }
 
@@ -140,7 +143,7 @@ class VolcMediaProvider(private val apiKey: String) : MediaProvider {
         http.newCall(request).execute().use { resp ->
             val text = resp.body?.string().orEmpty()
             if (!resp.isSuccessful) throw MediaException("HTTP ${resp.code}: ${text.take(300)}")
-            return json.parseToJsonElement(text).jsonObject
+            return json.parseToJsonElement(text).objOrNull() ?: JsonObject(emptyMap())
         }
     }
 

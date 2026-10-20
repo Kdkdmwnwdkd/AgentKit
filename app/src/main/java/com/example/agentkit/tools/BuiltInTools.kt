@@ -1,5 +1,6 @@
 package com.example.agentkit.tools
 
+import com.example.agentkit.core.llm.primOrNull
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.ClipData
@@ -64,18 +65,18 @@ class HttpRequestTool(
 
     override suspend fun execute(args: JsonObject): ToolResult = withContext(Dispatchers.IO) {
         runCatching {
-            val method = args["method"]?.jsonPrimitive?.contentOrNull ?: "GET"
-            val url = args["url"]?.jsonPrimitive?.contentOrNull
+            val method = args["method"]?.primOrNull()?.contentOrNull ?: "GET"
+            val url = args["url"]?.primOrNull()?.contentOrNull
                 ?: return@withContext ToolResult.fail(
                     code = "missing_param",
                     message = "缺少 url",
                     hint = "http_request 必须提供 url 参数（如 https://example.com/api），请补充后重试。"
                 )
-            val bodyText = args["body"]?.jsonPrimitive?.contentOrNull
+            val bodyText = args["body"]?.primOrNull()?.contentOrNull
 
             val builder = Request.Builder().url(url)
             (args["headers"] as? JsonObject)?.forEach { (k, v) ->
-                v.jsonPrimitive.contentOrNull?.let { builder.addHeader(k, it) }
+                v.primOrNull()?.contentOrNull?.let { builder.addHeader(k, it) }
             }
             val request = if (bodyText != null) {
                 builder.method(method, bodyText.toRequestBody("application/json".toMediaType())).build()
@@ -147,14 +148,14 @@ class ReadFileTool(workspace: File) : FileTool(workspace) {
 
     override suspend fun execute(args: JsonObject): ToolResult = withContext(Dispatchers.IO) {
         runCatching {
-            val path = args["path"]?.jsonPrimitive?.contentOrNull
+            val path = args["path"]?.primOrNull()?.contentOrNull
                 ?: return@withContext ToolResult.fail(
                     code = "missing_param",
                     message = "缺少 path",
                     hint = "read_file 必须提供 path（相对于工作区的文件路径），请补充后重试。"
                 )
-            val offset = args["offset"]?.jsonPrimitive?.contentOrNull?.toIntOrNull()?.coerceAtLeast(0) ?: 0
-            val limit = (args["limit"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: 65536)
+            val offset = args["offset"]?.primOrNull()?.contentOrNull?.toIntOrNull()?.coerceAtLeast(0) ?: 0
+            val limit = (args["limit"]?.primOrNull()?.contentOrNull?.toIntOrNull() ?: 65536)
                 .coerceAtMost(65536).coerceAtLeast(1)
 
             val file = resolve(path)
@@ -223,21 +224,21 @@ class EditFileTool(workspace: File) : FileTool(workspace) {
 
     override suspend fun execute(args: JsonObject): ToolResult = withContext(Dispatchers.IO) {
         runCatching {
-            val path = args["path"]?.jsonPrimitive?.contentOrNull
+            val path = args["path"]?.primOrNull()?.contentOrNull
                 ?: return@withContext ToolResult.fail(
                     code = "missing_param",
                     message = "缺少 path",
                     hint = "edit_file 必须提供 path（相对于工作区的文件路径），请补充后重试。"
                 )
-            val oldString = args["old_string"]?.jsonPrimitive?.contentOrNull
+            val oldString = args["old_string"]?.primOrNull()?.contentOrNull
                 ?: return@withContext ToolResult.fail(
                     code = "missing_param",
                     message = "缺少 old_string",
                     hint = "edit_file 必须提供 old_string（要被替换的原文）。" +
                         "请先 read_file 读取目标片段，再原样填入。"
                 )
-            val newString = args["new_string"]?.jsonPrimitive?.contentOrNull ?: ""
-            val replaceAll = args["replace_all"]?.jsonPrimitive?.contentOrNull == "true"
+            val newString = args["new_string"]?.primOrNull()?.contentOrNull ?: ""
+            val replaceAll = args["replace_all"]?.primOrNull()?.contentOrNull == "true"
 
             val file = resolve(path)
             if (!file.exists()) {
@@ -292,13 +293,13 @@ class WriteFileTool(workspace: File) : FileTool(workspace) {
 
     override suspend fun execute(args: JsonObject): ToolResult = withContext(Dispatchers.IO) {
         runCatching {
-            val path = args["path"]?.jsonPrimitive?.contentOrNull
+            val path = args["path"]?.primOrNull()?.contentOrNull
                 ?: return@withContext ToolResult.fail(
                     code = "missing_param",
                     message = "缺少 path",
                     hint = "write_file 必须提供 path（相对于工作区的文件路径），请补充后重试。"
                 )
-            val content = args["content"]?.jsonPrimitive?.contentOrNull ?: ""
+            val content = args["content"]?.primOrNull()?.contentOrNull ?: ""
             resolve(path).writeText(content)
             ToolResult.ok(
                 code = "write_ok",
@@ -333,9 +334,9 @@ class ClipboardTool(private val context: Context) : AgentTool {
 
     override suspend fun execute(args: JsonObject): ToolResult = withContext(Dispatchers.IO) {
         val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-        val action = args["action"]?.jsonPrimitive?.contentOrNull ?: "get"
+        val action = args["action"]?.primOrNull()?.contentOrNull ?: "get"
         if (action == "set") {
-            val text = args["text"]?.jsonPrimitive?.contentOrNull
+            val text = args["text"]?.primOrNull()?.contentOrNull
                 ?: return@withContext ToolResult.fail(
                     code = "missing_param",
                     message = "set 缺少 text",
@@ -378,8 +379,8 @@ class NotificationTool(private val context: Context) : AgentTool {
 
     override suspend fun execute(args: JsonObject): ToolResult = withContext(Dispatchers.IO) {
         runCatching {
-            val title = args["title"]?.jsonPrimitive?.contentOrNull ?: "Agent 提醒"
-            val body = args["body"]?.jsonPrimitive?.contentOrNull ?: ""
+            val title = args["title"]?.primOrNull()?.contentOrNull ?: "Agent 提醒"
+            val body = args["body"]?.primOrNull()?.contentOrNull ?: ""
             val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             val channelId = "agent_channel"
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {

@@ -1,5 +1,6 @@
 package com.example.agentkit.tools
 
+import com.example.agentkit.core.llm.primOrNull
 import com.example.agentkit.core.AgentTool
 import com.example.agentkit.core.JsonSchema
 import com.example.agentkit.core.ToolResult
@@ -63,7 +64,7 @@ class LoadSkillTool(
 
     override suspend fun execute(args: JsonObject): ToolResult = withContext(Dispatchers.IO) {
         runCatching {
-            val action = args["action"]?.jsonPrimitive?.contentOrNull?.trim()?.lowercase()
+            val action = args["action"]?.primOrNull()?.contentOrNull?.trim()?.lowercase()
                 ?: return@withContext ToolResult.fail(
                     code = "missing_param",
                     message = "缺少 action",
@@ -73,13 +74,13 @@ class LoadSkillTool(
             when (action) {
                 "list" -> list()
                 "install_url" -> installFromUrl(
-                    args["url"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                    args["url"]?.primOrNull()?.contentOrNull.orEmpty()
                 )
                 "install_base64" -> installFromBase64(
-                    args["data"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                    args["data"]?.primOrNull()?.contentOrNull.orEmpty()
                 )
                 "uninstall" -> uninstallSkill(
-                    args["id"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                    args["id"]?.primOrNull()?.contentOrNull.orEmpty()
                 )
                 else -> ToolResult.fail(
                     code = "bad_action",

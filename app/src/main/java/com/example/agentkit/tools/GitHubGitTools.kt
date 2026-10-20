@@ -1,5 +1,6 @@
 package com.example.agentkit.tools
 
+import com.example.agentkit.core.llm.primOrNull
 import android.app.Application
 import com.example.agentkit.core.AgentTool
 import com.example.agentkit.core.ConfigStore
@@ -93,7 +94,7 @@ private fun parsePaths(raw: String?): List<String>? {
 
 /** `branch` 参数：空则 main。 */
 private fun branchOf(args: JsonObject): String =
-    args["branch"]?.jsonPrimitive?.contentOrNull?.trim()?.ifEmpty { "main" } ?: "main"
+    args["branch"]?.primOrNull()?.contentOrNull?.trim()?.ifEmpty { "main" } ?: "main"
 
 /**
  * `github_status`：看工作区与远端分支的差异（只读，不产生提交）。
@@ -120,7 +121,7 @@ class GitHubStatusTool(private val app: Application) : AgentTool {
         val cfg = loadConfig(app) ?: return@withContext notConfigured()
         val branch = branchOf(args)
         val (files, skipped) = collectWorkspace(app, parsePaths(
-            args["paths"]?.jsonPrimitive?.contentOrNull
+            args["paths"]?.primOrNull()?.contentOrNull
         ))
         if (files.isEmpty()) {
             return@withContext ToolResult.fail(
@@ -182,7 +183,7 @@ class GitHubCommitTool(private val app: Application) : AgentTool {
 
     override suspend fun execute(args: JsonObject): ToolResult = withContext(Dispatchers.IO) {
         val cfg = loadConfig(app) ?: return@withContext notConfigured()
-        val message = args["message"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+        val message = args["message"]?.primOrNull()?.contentOrNull?.trim().orEmpty()
         if (message.isEmpty()) {
             return@withContext ToolResult.fail(
                 code = "missing_param",
@@ -192,7 +193,7 @@ class GitHubCommitTool(private val app: Application) : AgentTool {
         }
         val branch = branchOf(args)
         val (files, skipped) = collectWorkspace(app, parsePaths(
-            args["paths"]?.jsonPrimitive?.contentOrNull
+            args["paths"]?.primOrNull()?.contentOrNull
         ))
         if (files.isEmpty()) {
             return@withContext ToolResult.fail(
@@ -261,7 +262,7 @@ class GitHubLogTool(private val app: Application) : AgentTool {
     override suspend fun execute(args: JsonObject): ToolResult = withContext(Dispatchers.IO) {
         val cfg = loadConfig(app) ?: return@withContext notConfigured()
         val branch = branchOf(args)
-        val limit = args["limit"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: 10
+        val limit = args["limit"]?.primOrNull()?.contentOrNull?.toIntOrNull() ?: 10
         GitHubGitService(cfg).log(branch, limit).fold(
             onSuccess = { commits ->
                 if (commits.isEmpty()) {
@@ -317,7 +318,7 @@ class GitHubDiffTool(private val app: Application) : AgentTool {
 
     override suspend fun execute(args: JsonObject): ToolResult = withContext(Dispatchers.IO) {
         val cfg = loadConfig(app) ?: return@withContext notConfigured()
-        val rawPath = args["path"]?.jsonPrimitive?.contentOrNull.orEmpty()
+        val rawPath = args["path"]?.primOrNull()?.contentOrNull.orEmpty()
         val path = GitHubGitLogic.normalizePath(rawPath)
             ?: return@withContext ToolResult.fail(
                 code = "invalid_path",
@@ -325,7 +326,7 @@ class GitHubDiffTool(private val app: Application) : AgentTool {
                 hint = "给工作区内的相对路径（不允许 .. 或绝对路径）。"
             )
         val branch = branchOf(args)
-        val context = (args["context"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: 3)
+        val context = (args["context"]?.primOrNull()?.contentOrNull?.toIntOrNull() ?: 3)
             .coerceIn(0, 10)
 
         val localFile = File(WorkspaceStore.dir(app), path)
@@ -423,7 +424,7 @@ class GitHubCloneTool(private val app: Application) : AgentTool {
         val cfg = loadConfig(app) ?: return@withContext notConfigured()
         val branch = branchOf(args)
         val dirName = CloneLogic.safeTargetDir(
-            args["dir"]?.jsonPrimitive?.contentOrNull,
+            args["dir"]?.primOrNull()?.contentOrNull,
             cfg.repo
         )
         val root = WorkspaceStore.dir(app)

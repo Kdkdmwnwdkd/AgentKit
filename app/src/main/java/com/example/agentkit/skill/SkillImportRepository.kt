@@ -167,13 +167,27 @@ class ImportedSkillRepository(private val context: Context) {
         file.writeText(prettyJson.encodeToString(JsonObject.serializer(), newObj))
     }
 
-    /** 在 zip 字节流里找到首个匹配 predicate 的条目并读取其文本（不落盘）。 */
+    /**
+     * 在 zip 字节流里找到首个匹配 predicate 的条目并读取其文本（不落盘）。
+     *
+     * W-48：单条读取加 256KB 上限。`readText()` 是无上限的——一个把 `skill.json`
+     * 撑到 8MB 的包能在解压前就把内存吃掉；skill.json 正常只有几 KB，256KB 极宽松。
+     */
     private fun readZipEntry(zipBytes: ByteArray, predicate: (String) -> Boolean): String? {
         ZipInputStream(ByteArrayInputStream(zipBytes)).use { zis ->
             var entry = zis.nextEntry
             while (entry != null) {
                 if (!entry.isDirectory && predicate(entry.name)) {
-                    return zis.bufferedReader().readText()
+                    if (entry.size > MAX_META_BYTES) return null
+                    val out = java.io.ByteArrayOutputStream()
+                    val buf = ByteArray(8 * 1024)
+                    while (true) {
+                        val n = zis.read(buf)
+                        if (n <= 0) break
+                        if (out.size() + n > MAX_META_BYTES) return null
+                        out.write(buf, 0, n)
+                    }
+                    return out.toByteArray().toString(Charsets.UTF_8)
                 }
                 zis.closeEntry()
                 entry = zis.nextEntry
@@ -181,6 +195,20 @@ class ImportedSkillRepository(private val context: Context) {
         }
         return null
     }
+
+    /**
+     * 只读探测 zip 内声明的技能 id（不落盘、不安装）。
+     *
+     * W-48：市场安装前用它校验「市场条目 id == 包内 id」。没有这道校验时，一个把
+     * `skill.json` 写成别的 id 的包会**覆盖同名的已装技能**，而市场列表还以为装的是自己那条。
+     *
+     * @return 声明的 id；找不到 skill.json / 解析失败 / 超限时返回 null（调用方按失败处理）
+     */
+    fun peekSkillId(zipBytes: ByteArray): String? = runCatching {
+        readZipEntry(zipBytes) { it == "skill.json" || it.endsWith("/skill.json") }
+            ?.let { json.decodeFromString<SkillManifest>(it).id }
+            ?.takeIf { it.isNotBlank() }
+    }.getOrNull()
 
     /** 把 zip 整体解压到 destDir，带 Zip Slip 与 zip bomb 防护。 */
     private fun extractZipAll(zipBytes: ByteArray, destDir: File) {
@@ -225,6 +253,9 @@ class ImportedSkillRepository(private val context: Context) {
 
         /** zip bomb 防护：单个技能包解压后累计字节上限（8MB）。 */
         private const val MAX_ZIP_BYTES = 8L * 1024 * 1024
+
+        /** 元数据（skill.json）单条读取上限：正常几 KB，256KB 已极宽松。 */
+        private const val MAX_META_BYTES = 256 * 1024
 
         /**
          * 写回用（prettyPrint，便于人工审阅）。

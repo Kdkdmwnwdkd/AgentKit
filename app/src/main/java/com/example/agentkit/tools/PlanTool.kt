@@ -1,5 +1,6 @@
 package com.example.agentkit.tools
 
+import com.example.agentkit.core.llm.primOrNull
 import com.example.agentkit.core.AgentTool
 import com.example.agentkit.core.JsonSchema
 import com.example.agentkit.core.ToolResult
@@ -63,8 +64,8 @@ class PlanTool(
     override val readOnly = true
 
     override suspend fun execute(args: JsonObject): ToolResult {
-        val summary = args["summary"]?.jsonPrimitive?.contentOrNull.orEmpty().trim()
-        val steps = PlanLogic.parseSteps(args["steps"]?.jsonPrimitive?.contentOrNull.orEmpty())
+        val summary = args["summary"]?.primOrNull()?.contentOrNull.orEmpty().trim()
+        val steps = PlanLogic.parseSteps(args["steps"]?.primOrNull()?.contentOrNull.orEmpty())
 
         PlanLogic.validate(summary, steps)?.let {
             return ToolResult.fail(

@@ -1,5 +1,7 @@
 package com.example.agentkit.core.media.providers
 
+import com.example.agentkit.core.llm.primOrNull
+import com.example.agentkit.core.llm.objOrNull
 import com.example.agentkit.core.media.MediaException
 import com.example.agentkit.core.media.MediaKind
 import com.example.agentkit.core.media.MediaProvider
@@ -60,14 +62,14 @@ class MiniMaxMediaProvider(private val apiKey: String) : MediaProvider {
         http.newCall(request_).execute().use { resp ->
             val text = resp.body?.string().orEmpty()
             if (!resp.isSuccessful) throw MediaException("HTTP ${resp.code}: ${text.take(300)}")
-            val root = json.parseToJsonElement(text).jsonObject
-            val baseResp = root["base_resp"]?.jsonObject
-            if (baseResp != null && baseResp["status_code"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() != 0) {
+            val root = json.parseToJsonElement(text).objOrNull() ?: JsonObject(emptyMap())
+            val baseResp = root["base_resp"]?.objOrNull()
+            if (baseResp != null && baseResp["status_code"]?.primOrNull()?.contentOrNull?.toIntOrNull() != 0) {
                 throw MediaException(
-                    baseResp["status_msg"]?.jsonPrimitive?.contentOrNull ?: "提交失败"
+                    baseResp["status_msg"]?.primOrNull()?.contentOrNull ?: "提交失败"
                 )
             }
-            val taskId = root["task_id"]?.jsonPrimitive?.contentOrNull
+            val taskId = root["task_id"]?.primOrNull()?.contentOrNull
                 ?: throw MediaException("提交响应缺 task_id")
             return@withContext MediaTaskHandle(taskId, MediaTaskState.Running(null))
         }
@@ -83,16 +85,16 @@ class MiniMaxMediaProvider(private val apiKey: String) : MediaProvider {
         http.newCall(request).execute().use { resp ->
             val text = resp.body?.string().orEmpty()
             if (!resp.isSuccessful) throw MediaException("HTTP ${resp.code}: ${text.take(300)}")
-            val root = json.parseToJsonElement(text).jsonObject
-            return@withContext when (root["status"]?.jsonPrimitive?.contentOrNull) {
+            val root = json.parseToJsonElement(text).objOrNull() ?: JsonObject(emptyMap())
+            return@withContext when (root["status"]?.primOrNull()?.contentOrNull) {
                 "Success" -> {
-                    val url = root["video_url"]?.jsonPrimitive?.contentOrNull
+                    val url = root["video_url"]?.primOrNull()?.contentOrNull
                         ?: throw MediaException("任务成功但响应无 video_url")
                     MediaTaskState.Succeeded(listOf(url))
                 }
 
                 "Fail" -> {
-                    val msg = root["base_resp"]?.jsonObject?.get("status_msg")?.jsonPrimitive?.contentOrNull
+                    val msg = root["base_resp"]?.objOrNull()?.get("status_msg")?.primOrNull()?.contentOrNull
                         ?: "任务失败"
                     MediaTaskState.Failed(msg)
                 }

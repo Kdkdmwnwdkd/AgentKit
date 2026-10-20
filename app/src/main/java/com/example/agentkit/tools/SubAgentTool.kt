@@ -1,5 +1,6 @@
 package com.example.agentkit.tools
 
+import com.example.agentkit.core.llm.primOrNull
 import com.example.agentkit.core.AgentTool
 import com.example.agentkit.core.JsonSchema
 import com.example.agentkit.core.ToolResult
@@ -80,8 +81,8 @@ class SubAgentTool(private val runner: SubAgentRunner) : AgentTool {
                     message = "tasks 第 ${index + 1} 项不是对象",
                     hint = "每项必须是 {\"title\":\"…\",\"instruction\":\"…\"}。"
                 )
-            raw += (obj["title"]?.jsonPrimitive?.contentOrNull.orEmpty()) to
-                (obj["instruction"]?.jsonPrimitive?.contentOrNull.orEmpty())
+            raw += (obj["title"]?.primOrNull()?.contentOrNull.orEmpty()) to
+                (obj["instruction"]?.primOrNull()?.contentOrNull.orEmpty())
         }
 
         when (val parsed = SubAgentLogic.parseTasks(raw)) {

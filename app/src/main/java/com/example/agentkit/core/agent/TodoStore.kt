@@ -1,5 +1,6 @@
 package com.example.agentkit.core.agent
 
+import com.example.agentkit.core.llm.primOrNull
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -36,7 +37,7 @@ class TodoStore(private val file: File) {
     private fun readMap(): Map<String, String> = runCatching {
         if (!file.exists()) return emptyMap()
         val obj = json.parseToJsonElement(file.readText()) as? JsonObject ?: return emptyMap()
-        obj.mapNotNull { (k, v) -> v.jsonPrimitive.contentOrNull?.let { k to it } }.toMap()
+        obj.mapNotNull { (k, v) -> v.primOrNull()?.contentOrNull?.let { k to it } }.toMap()
     }.getOrDefault(emptyMap())
 
     companion object {

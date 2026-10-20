@@ -1,5 +1,6 @@
 package com.example.agentkit.automation
 
+import com.example.agentkit.core.llm.primOrNull
 import com.example.agentkit.automation.shizuku.ShizukuShell
 import com.example.agentkit.core.AgentLogger
 import com.example.agentkit.core.AgentTool
@@ -103,10 +104,10 @@ internal fun escapeInputText(raw: String): String {
 }
 
 private fun intArg(args: JsonObject, key: String): Int? =
-    args[key]?.jsonPrimitive?.contentOrNull?.toIntOrNull()
+    args[key]?.primOrNull()?.contentOrNull?.toIntOrNull()
 
 private fun strArg(args: JsonObject, key: String): String? =
-    args[key]?.jsonPrimitive?.contentOrNull
+    args[key]?.primOrNull()?.contentOrNull
 
 /* ------------------------------------------------------------------ */
 /* ui_tree                                                             */

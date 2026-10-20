@@ -1,5 +1,6 @@
 package com.example.agentkit.tools
 
+import com.example.agentkit.core.llm.primOrNull
 import com.example.agentkit.core.AgentTool
 import com.example.agentkit.core.JsonSchema
 import com.example.agentkit.core.ToolResult
@@ -51,7 +52,7 @@ class WebSearchTool(
 
     override suspend fun execute(args: JsonObject): ToolResult = withContext(Dispatchers.IO) {
         runCatching {
-            val query = args["query"]?.jsonPrimitive?.contentOrNull?.trim()
+            val query = args["query"]?.primOrNull()?.contentOrNull?.trim()
                 ?: return@withContext ToolResult.fail(
                     code = "missing_param",
                     message = "缺少 query",
@@ -64,7 +65,7 @@ class WebSearchTool(
                     hint = "请给出具体关键词，如「深圳天气」或「kotlin coroutines 教程」。"
                 )
             }
-            val max = (args["max_results"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: 5)
+            val max = (args["max_results"]?.primOrNull()?.contentOrNull?.toIntOrNull() ?: 5)
                 .coerceIn(1, 8)
 
             // 引擎顺序：Bing 优先（国内可达），DDG 兜底（海外/代理）

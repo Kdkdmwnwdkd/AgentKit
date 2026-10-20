@@ -1,5 +1,6 @@
 package com.example.agentkit.tools
 
+import com.example.agentkit.core.llm.primOrNull
 import com.example.agentkit.core.AgentTool
 import com.example.agentkit.core.JsonSchema
 import com.example.agentkit.core.ToolResult
@@ -45,7 +46,7 @@ class AskUserTool(
     override val readOnly = true
 
     override suspend fun execute(args: JsonObject): ToolResult {
-        val question = args["question"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+        val question = args["question"]?.primOrNull()?.contentOrNull?.trim().orEmpty()
         if (question.isBlank()) {
             return ToolResult.fail(
                 code = "missing_param",
@@ -53,7 +54,7 @@ class AskUserTool(
                 hint = "传入要问用户的问题，例如 {\"question\":\"要清理哪个目录？\",\"options\":\"Download,Temp\"}。"
             )
         }
-        val options = args["options"]?.jsonPrimitive?.contentOrNull
+        val options = args["options"]?.primOrNull()?.contentOrNull
             ?.split(',', '\n', '；', ';')
             ?.map { it.trim() }
             ?.filter { it.isNotEmpty() }

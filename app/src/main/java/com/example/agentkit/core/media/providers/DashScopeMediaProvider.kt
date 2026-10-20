@@ -1,5 +1,8 @@
 package com.example.agentkit.core.media.providers
 
+import com.example.agentkit.core.llm.primOrNull
+import com.example.agentkit.core.llm.arrOrNull
+import com.example.agentkit.core.llm.objOrNull
 import com.example.agentkit.core.AgentLogger
 import com.example.agentkit.core.media.MediaException
 import com.example.agentkit.core.media.MediaKind
@@ -69,20 +72,20 @@ class DashScopeMediaProvider(private val apiKey: String) : MediaProvider {
     override suspend fun poll(taskId: String): MediaTaskState = withContext(Dispatchers.IO) {
         requireKey()
         val resp = get("$TASK_URL/$taskId")
-        val output = resp["output"]?.jsonObject ?: throw MediaException("轮询响应缺 output 字段")
-        when (val status = output["task_status"]?.jsonPrimitive?.contentOrNull) {
+        val output = resp["output"]?.objOrNull() ?: throw MediaException("轮询响应缺 output 字段")
+        when (val status = output["task_status"]?.primOrNull()?.contentOrNull) {
             "SUCCEEDED" -> {
                 val urls = mutableListOf<String>()
-                output["results"]?.jsonArray?.forEach { el ->
-                    el.jsonObject["url"]?.jsonPrimitive?.contentOrNull?.let { urls += it }
+                output["results"]?.arrOrNull()?.forEach { el ->
+                    el.objOrNull()?.get("url")?.primOrNull()?.contentOrNull?.let { urls += it }
                 }
-                output["video_url"]?.jsonPrimitive?.contentOrNull?.let { urls += it }
+                output["video_url"]?.primOrNull()?.contentOrNull?.let { urls += it }
                 if (urls.isEmpty()) throw MediaException("任务成功但响应无结果 URL")
                 MediaTaskState.Succeeded(urls)
             }
 
             "FAILED", "CANCELED" -> {
-                val msg = output["message"]?.jsonPrimitive?.contentOrNull ?: "任务失败（$status）"
+                val msg = output["message"]?.primOrNull()?.contentOrNull ?: "任务失败（$status）"
                 MediaTaskState.Failed(msg)
             }
 
@@ -104,8 +107,8 @@ class DashScopeMediaProvider(private val apiKey: String) : MediaProvider {
         http.newCall(request).execute().use { resp ->
             val text = resp.body?.string().orEmpty()
             if (!resp.isSuccessful) throw MediaException("HTTP ${resp.code}: ${text.take(300)}")
-            val root = json.parseToJsonElement(text).jsonObject
-            return root["output"]?.jsonObject?.get("task_id")?.jsonPrimitive?.contentOrNull
+            val root = json.parseToJsonElement(text).objOrNull() ?: JsonObject(emptyMap())
+            return root["output"]?.objOrNull()?.get("task_id")?.primOrNull()?.contentOrNull
                 ?: throw MediaException("提交响应缺 task_id：${text.take(300)}")
         }
     }
@@ -119,7 +122,7 @@ class DashScopeMediaProvider(private val apiKey: String) : MediaProvider {
         http.newCall(request).execute().use { resp ->
             val text = resp.body?.string().orEmpty()
             if (!resp.isSuccessful) throw MediaException("HTTP ${resp.code}: ${text.take(300)}")
-            return json.parseToJsonElement(text).jsonObject
+            return json.parseToJsonElement(text).objOrNull() ?: JsonObject(emptyMap())
         }
     }
 

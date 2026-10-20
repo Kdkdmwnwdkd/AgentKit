@@ -1,5 +1,6 @@
 package com.example.agentkit.tools
 
+import com.example.agentkit.core.llm.primOrNull
 import com.example.agentkit.core.AgentTool
 import com.example.agentkit.core.JsonSchema
 import com.example.agentkit.core.ToolResult
@@ -49,8 +50,8 @@ class WorkflowCreateTool(
     override val readOnly = false
 
     override suspend fun execute(args: JsonObject): ToolResult {
-        val name = args["name"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
-        val prompt = args["prompt"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+        val name = args["name"]?.primOrNull()?.contentOrNull?.trim().orEmpty()
+        val prompt = args["prompt"]?.primOrNull()?.contentOrNull?.trim().orEmpty()
         if (name.isBlank() || prompt.isBlank()) {
             return ToolResult.fail(
                 "missing_param",
@@ -58,14 +59,14 @@ class WorkflowCreateTool(
                 "至少给出任务名和到点要做什么，例如 name=整理通知、prompt=整理今天的通知。"
             )
         }
-        val type = args["trigger_type"]?.jsonPrimitive?.contentOrNull ?: WorkflowTrigger.TYPE_DAILY
-        val hour = args["hour"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: 8
-        val minute = args["minute"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: 0
-        val days = args["days"]?.jsonPrimitive?.contentOrNull
+        val type = args["trigger_type"]?.primOrNull()?.contentOrNull ?: WorkflowTrigger.TYPE_DAILY
+        val hour = args["hour"]?.primOrNull()?.contentOrNull?.toIntOrNull() ?: 8
+        val minute = args["minute"]?.primOrNull()?.contentOrNull?.toIntOrNull() ?: 0
+        val days = args["days"]?.primOrNull()?.contentOrNull
             ?.split(',', '，')
             ?.mapNotNull { it.trim().toIntOrNull() }
             ?: emptyList()
-        val interval = args["interval_minutes"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: 60
+        val interval = args["interval_minutes"]?.primOrNull()?.contentOrNull?.toIntOrNull() ?: 60
 
         val trigger = WorkflowTrigger.normalized(type, hour, minute, days, interval)
         val wf = store.create(name = name, prompt = prompt, trigger = trigger)
@@ -118,7 +119,7 @@ class WorkflowDeleteTool(
     override val readOnly = false
 
     override suspend fun execute(args: JsonObject): ToolResult {
-        val id = args["id"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+        val id = args["id"]?.primOrNull()?.contentOrNull?.trim().orEmpty()
         if (id.isBlank()) return ToolResult.fail("missing_param", "缺少 id", "先用 workflow_list 查看 id。")
         val ok = store.delete(id)
         if (ok) onChanged()
@@ -147,8 +148,8 @@ class WorkflowToggleTool(
     override val readOnly = false
 
     override suspend fun execute(args: JsonObject): ToolResult {
-        val id = args["id"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
-        val enabled = args["enabled"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull() ?: true
+        val id = args["id"]?.primOrNull()?.contentOrNull?.trim().orEmpty()
+        val enabled = args["enabled"]?.primOrNull()?.contentOrNull?.toBooleanStrictOrNull() ?: true
         if (id.isBlank()) return ToolResult.fail("missing_param", "缺少 id", "先用 workflow_list 查看 id。")
         val ok = store.setEnabled(id, enabled)
         if (ok) onChanged()

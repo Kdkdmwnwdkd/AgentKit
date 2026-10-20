@@ -1,5 +1,8 @@
 package com.example.agentkit.core.build
 
+import com.example.agentkit.core.llm.primOrNull
+import com.example.agentkit.core.llm.arrOrNull
+import com.example.agentkit.core.llm.objOrNull
 import com.example.agentkit.core.AgentLogger
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -90,10 +93,10 @@ class GitHubGitService(
         runCatching {
             if (changes.isEmpty()) throw IOException("没有需要提交的变更")
             val ref = get("/repos/${cfg.fullName}/git/ref/heads/$branch")
-            val headSha = ref["object"]?.jsonObject?.get("sha")?.jsonPrimitive?.contentOrNull
+            val headSha = ref["object"]?.objOrNull()?.get("sha")?.primOrNull()?.contentOrNull
                 ?: throw IOException("读不到分支 $branch 的最新提交")
             val headCommit = get("/repos/${cfg.fullName}/git/commits/$headSha")
-            val baseTree = headCommit["tree"]?.jsonObject?.get("sha")?.jsonPrimitive?.contentOrNull
+            val baseTree = headCommit["tree"]?.objOrNull()?.get("sha")?.primOrNull()?.contentOrNull
                 ?: throw IOException("读不到最新提交的 tree")
 
             // 逐个上传 blob：只传变更的文件（sha 已在本地算过，未变的不上传）
@@ -110,7 +113,7 @@ class GitHubGitService(
                             put("content", Base64.getEncoder().encodeToString(bytes))
                             put("encoding", "base64")
                         }
-                    )["sha"]?.jsonPrimitive?.contentOrNull
+                    )["sha"]?.primOrNull()?.contentOrNull
                         ?: throw IOException("上传 ${change.path} 失败")
                     add(
                         buildJsonObject {
@@ -129,7 +132,7 @@ class GitHubGitService(
                     put("base_tree", baseTree)
                     put("tree", treeEntries)
                 }
-            )["sha"]?.jsonPrimitive?.contentOrNull
+            )["sha"]?.primOrNull()?.contentOrNull
                 ?: throw IOException("创建 tree 失败")
 
             val newCommit = post(
@@ -140,7 +143,7 @@ class GitHubGitService(
                     putJsonArray("parents") { add(headSha) }
                 }
             )
-            val newSha = newCommit["sha"]?.jsonPrimitive?.contentOrNull
+            val newSha = newCommit["sha"]?.primOrNull()?.contentOrNull
                 ?: throw IOException("创建 commit 失败")
 
             // 快进更新分支：force=false，远端在此期间有新提交会失败（不覆盖别人的改动）
@@ -170,15 +173,15 @@ class GitHubGitService(
                 )
                 arr.mapNotNull { el ->
                     val obj = el as? JsonObject ?: return@mapNotNull null
-                    val sha = obj["sha"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
-                    val commit = obj["commit"]?.jsonObject
-                    val authorObj = commit?.get("author")?.jsonObject
+                    val sha = obj["sha"]?.primOrNull()?.contentOrNull ?: return@mapNotNull null
+                    val commit = obj["commit"]?.objOrNull()
+                    val authorObj = commit?.get("author")?.objOrNull()
                     GitCommitInfo(
                         sha = sha,
-                        message = commit?.get("message")?.jsonPrimitive?.contentOrNull
+                        message = commit?.get("message")?.primOrNull()?.contentOrNull
                             .orEmpty().lineSequence().firstOrNull().orEmpty(),
-                        author = authorObj?.get("name")?.jsonPrimitive?.contentOrNull.orEmpty(),
-                        date = authorObj?.get("date")?.jsonPrimitive?.contentOrNull.orEmpty()
+                        author = authorObj?.get("name")?.primOrNull()?.contentOrNull.orEmpty(),
+                        date = authorObj?.get("date")?.primOrNull()?.contentOrNull.orEmpty()
                     )
                 }
             }.recoverCatching { e -> throw IOException(friendly(e, branch)) }
@@ -204,8 +207,8 @@ class GitHubGitService(
                     if (msg.contains("404")) return@runCatching null
                     throw e
                 }
-                val encodedContent = obj["content"]?.jsonPrimitive?.contentOrNull ?: return@runCatching null
-                if (obj["encoding"]?.jsonPrimitive?.contentOrNull != "base64") {
+                val encodedContent = obj["content"]?.primOrNull()?.contentOrNull ?: return@runCatching null
+                if (obj["encoding"]?.primOrNull()?.contentOrNull != "base64") {
                     // 超过 1MB 的文件 contents API 不返回内容
                     throw IOException("文件过大，GitHub 不返回内容（>1MB）")
                 }
@@ -273,18 +276,19 @@ class GitHubGitService(
     /** 统一取远端分支的 path → blob sha 映射（递归 tree）。 */
     private fun remoteBlobs(branch: String): Map<String, String> {
         val ref = get("/repos/${cfg.fullName}/git/ref/heads/$branch")
-        val headSha = ref["object"]?.jsonObject?.get("sha")?.jsonPrimitive?.contentOrNull
+        val headSha = ref["object"]?.objOrNull()?.get("sha")?.primOrNull()?.contentOrNull
             ?: throw IOException("读不到分支 $branch 的最新提交")
         val headCommit = get("/repos/${cfg.fullName}/git/commits/$headSha")
-        val treeSha = headCommit["tree"]?.jsonObject?.get("sha")?.jsonPrimitive?.contentOrNull
+        val treeSha = headCommit["tree"]?.objOrNull()?.get("sha")?.primOrNull()?.contentOrNull
             ?: throw IOException("读不到最新提交的 tree")
         val tree = get("/repos/${cfg.fullName}/git/trees/$treeSha?recursive=1")
         val out = HashMap<String, String>()
-        tree["tree"]?.jsonArray?.forEach { el ->
-            val obj = el.jsonObject
-            if (obj["type"]?.jsonPrimitive?.contentOrNull != "blob") return@forEach
-            val path = obj["path"]?.jsonPrimitive?.contentOrNull ?: return@forEach
-            val sha = obj["sha"]?.jsonPrimitive?.contentOrNull ?: return@forEach
+        tree["tree"]?.arrOrNull()?.forEach { el ->
+            // W-47：远端数组里若混入 null（API 变更/中转改写），硬转换会中断整次同步
+            val obj = el.objOrNull() ?: return@forEach
+            if (obj["type"]?.primOrNull()?.contentOrNull != "blob") return@forEach
+            val path = obj["path"]?.primOrNull()?.contentOrNull ?: return@forEach
+            val sha = obj["sha"]?.primOrNull()?.contentOrNull ?: return@forEach
             out[path] = sha
         }
         return out

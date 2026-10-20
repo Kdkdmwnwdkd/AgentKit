@@ -18,6 +18,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Public
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Download
@@ -58,7 +59,11 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
  * @param vm 对话 ViewModel（技能快照 / 导入状态 / 导入卸载授权动作全部走它的公开接口）。
  */
 @Composable
-fun SkillsScreen(vm: ChatViewModel) {
+fun SkillsScreen(
+    vm: ChatViewModel,
+    /** W-48：跳到插件市场；默认空实现，方便 harness/预览单独渲染技能页。 */
+    onOpenMarket: () -> Unit = {}
+) {
     val skillInfos by vm.skillInfos.collectAsStateWithLifecycle()
     val importStatus by vm.importStatus.collectAsStateWithLifecycle()
 
@@ -92,6 +97,21 @@ fun SkillsScreen(vm: ChatViewModel) {
                 ),
             verticalArrangement = Arrangement.spacedBy(AgentSpacing.space4)
         ) {
+            // —— W-48：插件市场入口（远端清单）与本机技能列表分区，避免两种操作混在一起 ——
+            AkSectionCard(
+                title = "插件市场",
+                icon = Icons.Outlined.Public,
+                description = "从公开索引浏览可安装的插件，支持版本更新与一键安装；" +
+                    "安装链路与「导入技能」完全一致（校验体积与 SHA-256，导入即降权）。"
+            ) {
+                AkPrimaryButton(
+                    text = "打开插件市场",
+                    icon = Icons.Outlined.Public,
+                    modifier = Modifier.fillMaxWidth(),
+                    onClick = onOpenMarket
+                )
+            }
+
             // —— 安全策略：先讲规则再列技能，用户才知道徽章与按钮在说什么 ——
             AkSectionCard(
                 title = "安全策略",

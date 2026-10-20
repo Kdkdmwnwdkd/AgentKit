@@ -1,5 +1,8 @@
 package com.example.agentkit.core.build
 
+import com.example.agentkit.core.llm.primOrNull
+import com.example.agentkit.core.llm.arrOrNull
+import com.example.agentkit.core.llm.objOrNull
 import android.content.Context
 import com.example.agentkit.core.AgentLogger
 import com.example.agentkit.core.workspace.WorkspaceStore
@@ -55,7 +58,7 @@ class GitHubBuildService(
     suspend fun testConnection(): Result<String> = withContext(Dispatchers.IO) {
         runCatching {
             val root = get("/user")
-            root["login"]?.jsonPrimitive?.contentOrNull ?: "ok"
+            root["login"]?.primOrNull()?.contentOrNull ?: "ok"
         }
     }
 
@@ -63,7 +66,7 @@ class GitHubBuildService(
     suspend fun headSha(): Result<String> = withContext(Dispatchers.IO) {
         runCatching {
             val root = get("/repos/${cfg.fullName}/git/ref/heads/main")
-            root["object"]?.jsonObject?.get("sha")?.jsonPrimitive?.contentOrNull
+            root["object"]?.objOrNull()?.get("sha")?.primOrNull()?.contentOrNull
                 ?: error("响应缺 object.sha")
         }
     }
@@ -86,7 +89,7 @@ class GitHubBuildService(
             }
             val head = headSha().getOrThrow()
             val commitObj = get("/repos/${cfg.fullName}/git/commits/$head")
-            val baseTree = commitObj["tree"]?.jsonObject?.get("sha")?.jsonPrimitive?.contentOrNull
+            val baseTree = commitObj["tree"]?.objOrNull()?.get("sha")?.primOrNull()?.contentOrNull
                 ?: error("HEAD commit 缺 tree")
 
             val entries = files.map { entry ->
@@ -99,7 +102,7 @@ class GitHubBuildService(
                     put("path", "agentkit-workspace/${entry.path}")
                     put("mode", "100644")
                     put("type", "blob")
-                    put("sha", blob["sha"]?.jsonPrimitive?.contentOrNull ?: error("blob 缺 sha"))
+                    put("sha", blob["sha"]?.primOrNull()?.contentOrNull ?: error("blob 缺 sha"))
                 }
             }
             val tree = post("/repos/${cfg.fullName}/git/trees", buildJsonObject {
@@ -108,7 +111,7 @@ class GitHubBuildService(
                     entries.forEach { add(it) }
                 })
             })
-            val treeSha = tree["sha"]?.jsonPrimitive?.contentOrNull ?: error("tree 缺 sha")
+            val treeSha = tree["sha"]?.primOrNull()?.contentOrNull ?: error("tree 缺 sha")
             val commit = post("/repos/${cfg.fullName}/git/commits", buildJsonObject {
                 put("message", "AgentKit 构建：工作区 ${files.size} 个文件")
                 put("tree", treeSha)
@@ -116,7 +119,7 @@ class GitHubBuildService(
                     add(kotlinx.serialization.json.JsonPrimitive(head))
                 })
             })
-            val sha = commit["sha"]?.jsonPrimitive?.contentOrNull ?: error("commit 缺 sha")
+            val sha = commit["sha"]?.primOrNull()?.contentOrNull ?: error("commit 缺 sha")
             patch("/repos/${cfg.fullName}/git/refs/heads/main", buildJsonObject { put("sha", sha) })
             AgentLogger.d(TAG, "已推送 commit ${sha.take(8)}（${files.size} 个工作区文件）")
             sha
@@ -138,10 +141,10 @@ class GitHubBuildService(
     suspend fun findRun(commitSha: String): Result<RunInfo?> = withContext(Dispatchers.IO) {
         runCatching {
             val runs = get("/repos/${cfg.fullName}/actions/runs?event=workflow_dispatch&per_page=10")
-            val arr = runs["workflow_runs"]?.jsonArray ?: error("响应缺 workflow_runs")
+            val arr = runs["workflow_runs"]?.arrOrNull() ?: error("响应缺 workflow_runs")
             val run = arr.firstOrNull {
-                it.jsonObject["head_sha"]?.jsonPrimitive?.contentOrNull == commitSha
-            }?.jsonObject
+                it.objOrNull()?.get("head_sha")?.primOrNull()?.contentOrNull == commitSha
+            }?.objOrNull()
             run?.let { parseRun(it) }
         }
     }
@@ -164,16 +167,16 @@ class GitHubBuildService(
     ): Result<File> = withContext(Dispatchers.IO) {
         runCatching {
             val rel = get("/repos/${cfg.fullName}/releases/tags/latest")
-            val assets = rel["assets"]?.jsonArray ?: error("release 缺 assets")
+            val assets = rel["assets"]?.arrOrNull() ?: error("release 缺 assets")
             val asset = assets.firstOrNull {
-                it.jsonObject["name"]?.jsonPrimitive?.contentOrNull?.endsWith(".apk") == true
-            }?.jsonObject ?: error("latest release 无 APK 资产")
-            val updatedAt = asset["updated_at"]?.jsonPrimitive?.contentOrNull
+                it.objOrNull()?.get("name")?.primOrNull()?.contentOrNull?.endsWith(".apk") == true
+            }?.objOrNull() ?: error("latest release 无 APK 资产")
+            val updatedAt = asset["updated_at"]?.primOrNull()?.contentOrNull
             if (updatedAt != null && parseEpochMs(updatedAt) < minUpdatedAt) {
                 error("latest release 陈旧（资产更新于本次构建开始前），回退 artifact")
             }
-            val url = asset["url"]?.jsonPrimitive?.contentOrNull ?: error("资产缺 url")
-            val size = asset["size"]?.jsonPrimitive?.long ?: 0L
+            val url = asset["url"]?.primOrNull()?.contentOrNull ?: error("资产缺 url")
+            val size = asset["size"]?.primOrNull()?.long ?: 0L
             downloadTo(url, into, size, onProgress)
             into
         }
@@ -186,11 +189,11 @@ class GitHubBuildService(
     suspend fun downloadArtifact(runId: Long, into: File): Result<File> = withContext(Dispatchers.IO) {
         runCatching {
             val artsRoot = get("/repos/${cfg.fullName}/actions/runs/$runId/artifacts")
-            val arts = artsRoot["artifacts"]?.jsonArray ?: error("run 缺 artifacts")
+            val arts = artsRoot["artifacts"]?.arrOrNull() ?: error("run 缺 artifacts")
             val art = arts.firstOrNull {
-                it.jsonObject["name"]?.jsonPrimitive?.contentOrNull == "app-debug"
-            }?.jsonObject ?: error("run 无 app-debug artifact")
-            val zipUrl = art["archive_download_url"]?.jsonPrimitive?.contentOrNull
+                it.objOrNull()?.get("name")?.primOrNull()?.contentOrNull == "app-debug"
+            }?.objOrNull() ?: error("run 无 app-debug artifact")
+            val zipUrl = art["archive_download_url"]?.primOrNull()?.contentOrNull
                 ?: error("artifact 缺下载地址")
             val zipFile = File(into.parentFile, "artifact.zip")
             downloadTo(zipUrl, zipFile, 0L) { }
@@ -296,15 +299,15 @@ class GitHubBuildService(
                 throw java.io.IOException("HTTP ${resp.code}: ${text.take(300)}")
             }
             if (text.isBlank()) return JsonObject(emptyMap()) // 204（dispatch 成功）
-            return json.parseToJsonElement(text).jsonObject
+            return json.parseToJsonElement(text).objOrNull() ?: JsonObject(emptyMap())
         }
     }
 
     private fun parseRun(o: JsonObject): RunInfo = RunInfo(
-        id = o["id"]?.jsonPrimitive?.long ?: error("run 缺 id"),
-        number = o["run_number"]?.jsonPrimitive?.long ?: 0L,
-        status = o["status"]?.jsonPrimitive?.contentOrNull ?: "unknown",
-        conclusion = o["conclusion"]?.jsonPrimitive?.contentOrNull
+        id = o["id"]?.primOrNull()?.long ?: error("run 缺 id"),
+        number = o["run_number"]?.primOrNull()?.long ?: 0L,
+        status = o["status"]?.primOrNull()?.contentOrNull ?: "unknown",
+        conclusion = o["conclusion"]?.primOrNull()?.contentOrNull
     )
 
     /** ISO-8601（如 2025-01-01T00:00:00Z）→ epoch ms。 */

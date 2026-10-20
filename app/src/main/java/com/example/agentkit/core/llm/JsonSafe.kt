@@ -2,6 +2,7 @@ package com.example.agentkit.core.llm
 
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 
@@ -33,4 +34,13 @@ fun JsonElement?.objOrNull(): JsonObject? = this as? JsonObject
 
 fun JsonElement?.arrOrNull(): JsonArray? = this as? JsonArray
 
-fun JsonElement?.primOrNull(): JsonPrimitive? = this as? JsonPrimitive
+/**
+ * 软转换：非 JsonPrimitive（含 JsonNull）一律 null。
+ *
+ * **W-47 补漏**：`JsonNull` 在 kotlinx 里是 `JsonPrimitive` 的子类，单用 `as? JsonPrimitive`
+ * 会把它放行——于是 `?.primOrNull()?.long` 会走到 `"null".toLong()` 抛 NumberFormatException，
+ * `.content` 还会把字符串 `"null"` 当成真实取值（例如把工具调用 id 变成 "null"）。
+ * 语义上「字段是 null」与「字段不存在」应当同解，故这里显式把 JsonNull 归为无值。
+ */
+fun JsonElement?.primOrNull(): JsonPrimitive? =
+    (this as? JsonPrimitive)?.takeIf { it !is JsonNull }

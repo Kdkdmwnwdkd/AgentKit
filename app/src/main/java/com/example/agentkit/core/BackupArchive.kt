@@ -40,6 +40,14 @@ object BackupArchive {
     /** 解压累计上限（zip 炸弹防护）。 */
     private const val MAX_TOTAL_BYTES = 64L * 1024 * 1024
 
+    /**
+     * W-47：**单条目**上限。原来只在整条 entry 读完（`readBytes()`）之后才累加总量，
+     * 一个声明的 500MB 单条目会先被完整解压进内存——总量检查再准也来不及。
+     * 取值依据：单成员最大的是 conversations.json——200 条/会话 × 多会话，含图片 data URL
+     * 时可达十几 MB。取 24MB 既覆盖真实用量，又远低于常见 256MB 堆（留足解压峰值余量）。
+     */
+    private const val MAX_ENTRY_BYTES = 24 * 1024 * 1024
+
     private val json = Json { ignoreUnknownKeys = true }
 
     /** 解包结果：成功（含 manifest 与各成员 JSON 文本；config/prompts 可为 null）或拒收原因。 */
@@ -98,7 +106,12 @@ object BackupArchive {
                 var entry = zip.nextEntry
                 while (entry != null) {
                     if (!entry.isDirectory && entry.name in ENTRY_WHITELIST) {
-                        val data = zip.readBytes()
+                        // 先看声明的 size（未声明为 -1），能提前拒掉夸张条目
+                        if (entry.size > MAX_ENTRY_BYTES) {
+                            return ReadResult.Invalid("备份成员「${entry.name}」过大")
+                        }
+                        val data = readEntryLimited(zip, MAX_ENTRY_BYTES)
+                            ?: return ReadResult.Invalid("备份成员「${entry.name}」过大")
                         total += data.size
                         if (total > MAX_TOTAL_BYTES) {
                             return ReadResult.Invalid("备份内容超出大小上限")
@@ -143,6 +156,26 @@ object BackupArchive {
             manifest, conversationsJson, memoriesJson, texts[ENTRY_CONFIG], promptsJson,
             texts[ENTRY_KEYPOOL]
         )
+    }
+
+    /**
+     * 限流读一条 entry：边读边计数，超过 [limit] 立即返回 null（并停止读取）。
+     *
+     * 不用 `readBytes()` 的理由：它无上限地读到流结束，zip 炸弹正是靠「解压后极大、
+     * 压缩后很小」绕过总量检查。这里把判断放在**读的过程中**，内存峰值不超过 limit。
+     */
+    private fun readEntryLimited(zip: ZipInputStream, limit: Int): ByteArray? {
+        val out = ByteArrayOutputStream()
+        val buf = ByteArray(16 * 1024)
+        while (true) {
+            // 读异常直接上抛：由 read() 的外层 catch 统一报「不是有效的 ZIP 备份文件」。
+            // 不能吞成「过大」——那会把「包坏了」误导成「包太大」，用户排查方向全错。
+            val n = zip.read(buf)
+            if (n <= 0) break
+            if (out.size() + n > limit) return null
+            out.write(buf, 0, n)
+        }
+        return out.toByteArray()
     }
 
     private val ENTRY_WHITELIST = setOf(

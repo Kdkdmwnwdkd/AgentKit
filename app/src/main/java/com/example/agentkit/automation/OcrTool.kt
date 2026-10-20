@@ -1,5 +1,6 @@
 package com.example.agentkit.automation
 
+import com.example.agentkit.core.llm.primOrNull
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import com.example.agentkit.core.AgentTool
@@ -57,8 +58,8 @@ class OcrTool(
     override val readOnly = true
 
     override suspend fun execute(args: JsonObject): ToolResult = withContext(Dispatchers.IO) {
-        val path = args["path"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
-        val maxChars = (args["max_chars"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: 6000)
+        val path = args["path"]?.primOrNull()?.contentOrNull?.trim().orEmpty()
+        val maxChars = (args["max_chars"]?.primOrNull()?.contentOrNull?.toIntOrNull() ?: 6000)
             .coerceIn(200, 20000)
 
         val bitmap = if (path.isEmpty()) {

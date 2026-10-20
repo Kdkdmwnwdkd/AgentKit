@@ -1,5 +1,6 @@
 package com.example.agentkit.tools
 
+import com.example.agentkit.core.llm.primOrNull
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -43,7 +44,7 @@ class AppInstallTool(
     override val needsApproval = true
 
     override suspend fun execute(args: JsonObject): ToolResult = withContext(Dispatchers.IO) {
-        val path = args["path"]?.jsonPrimitive?.contentOrNull.orEmpty()
+        val path = args["path"]?.primOrNull()?.contentOrNull.orEmpty()
         AppManageLogic.validateApkPath(path)?.let {
             return@withContext ToolResult.fail(
                 code = "bad_path", message = it,
@@ -117,7 +118,7 @@ class AppUninstallTool(
     override val needsApproval = true
 
     override suspend fun execute(args: JsonObject): ToolResult = withContext(Dispatchers.IO) {
-        val pkg = args["package"]?.jsonPrimitive?.contentOrNull.orEmpty()
+        val pkg = args["package"]?.primOrNull()?.contentOrNull.orEmpty()
         AppManageLogic.validatePackageName(pkg)?.let {
             return@withContext ToolResult.fail(
                 code = "bad_package", message = it,

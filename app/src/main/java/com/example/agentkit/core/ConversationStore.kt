@@ -1,5 +1,6 @@
 package com.example.agentkit.core
 
+import com.example.agentkit.core.llm.objOrNull
 import com.example.agentkit.ui.UiItem
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.decodeFromString
@@ -240,8 +241,9 @@ internal fun ConversationRecord.toUiItems(): List<UiItem> = buildList {
 /** 解析落盘的 toolArgs；损坏/为空时退回空 object（工具卡入参块显示空白而非崩溃）。 */
 private fun parseToolArgs(raw: String?): JsonObject {
     if (raw.isNullOrBlank()) return JsonObject(emptyMap())
-    return runCatching { Json.parseToJsonElement(raw).jsonObject }
-        .getOrElse { JsonObject(emptyMap()) }
+    // W-47：改用软转换——落盘里若出现 null/非对象（历史脏数据、手工编辑），
+    // 硬转换会抛 IllegalArgumentException，工具卡整块渲染失败；这里退化为空对象。
+    return Json.parseToJsonElement(raw).objOrNull() ?: JsonObject(emptyMap())
 }
 
 /**

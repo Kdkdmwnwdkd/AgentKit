@@ -1,5 +1,8 @@
 package com.example.agentkit.core.media.providers
 
+import com.example.agentkit.core.llm.objOrNull
+import com.example.agentkit.core.llm.primOrNull
+import com.example.agentkit.core.llm.arrOrNull
 import com.example.agentkit.core.media.MediaException
 import com.example.agentkit.core.media.MediaKind
 import com.example.agentkit.core.media.MediaProvider
@@ -69,12 +72,12 @@ class OpenAIMediaProvider(
             put("n", request.extra["n"]?.toIntOrNull() ?: 1)
         }
         val resp = post("$baseUrl/images/generations", body)
-        val data = resp["data"]?.jsonArray
+        val data = resp["data"]?.arrOrNull()
             ?: throw MediaException("images/generations 响应缺 data")
         val urls = data.mapNotNull { el ->
-            val o = el.jsonObject
-            o["url"]?.jsonPrimitive?.contentOrNull
-                ?: o["b64_json"]?.jsonPrimitive?.contentOrNull?.let { "data:image/png;base64,$it" }
+            val o = el.objOrNull() ?: return@mapNotNull null
+            o["url"]?.primOrNull()?.contentOrNull
+                ?: o["b64_json"]?.primOrNull()?.contentOrNull?.let { "data:image/png;base64,$it" }
         }
         if (urls.isEmpty()) throw MediaException("images/generations 未返回图片")
         return MediaTaskHandle(null, MediaTaskState.Succeeded(urls))
@@ -100,12 +103,12 @@ class OpenAIMediaProvider(
         http.newCall(httpReq).execute().use { resp ->
             val text = resp.body?.string().orEmpty()
             if (!resp.isSuccessful) throw MediaException("HTTP ${resp.code}: ${text.take(300)}")
-            val root = json.parseToJsonElement(text).jsonObject
-            val data = root["data"]?.jsonArray ?: throw MediaException("images/edits 响应缺 data")
+            val root = json.parseToJsonElement(text).objOrNull() ?: JsonObject(emptyMap())
+            val data = root["data"]?.arrOrNull() ?: throw MediaException("images/edits 响应缺 data")
             val urls = data.mapNotNull { el ->
-                val o = el.jsonObject
-                o["url"]?.jsonPrimitive?.contentOrNull
-                    ?: o["b64_json"]?.jsonPrimitive?.contentOrNull?.let { "data:image/png;base64,$it" }
+                val o = el.objOrNull() ?: return@mapNotNull null
+                o["url"]?.primOrNull()?.contentOrNull
+                    ?: o["b64_json"]?.primOrNull()?.contentOrNull?.let { "data:image/png;base64,$it" }
             }
             if (urls.isEmpty()) throw MediaException("images/edits 未返回图片")
             return MediaTaskHandle(null, MediaTaskState.Succeeded(urls))
@@ -140,7 +143,7 @@ class OpenAIMediaProvider(
         http.newCall(request).execute().use { resp ->
             val text = resp.body?.string().orEmpty()
             if (!resp.isSuccessful) throw MediaException("HTTP ${resp.code}: ${text.take(300)}")
-            return json.parseToJsonElement(text).jsonObject
+            return json.parseToJsonElement(text).objOrNull() ?: JsonObject(emptyMap())
         }
     }
 

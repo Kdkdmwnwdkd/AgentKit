@@ -20,8 +20,10 @@ import kotlinx.serialization.Serializable
  *    脏数据直接复活；
  *  - manifest 必存且先行校验：版本不认识/条数异常时恢复直接拒绝，
  *    避免把半成品包灌进生产数据（「给了个坏包也不能毁了好数据」）；
- *  - Key/PAT 明文进 ZIP：与 SharedPreferences 明文存储同等待遇（私有目录 + 不加密的
- *    既有取舍，见 ConfigStore 类注释）；备份件落在用户自选的 SAF 位置，风险由用户掌控。
+ *  - **W-47 起 PAT 不再进 ZIP**：备份件常被存到网盘/微信，明文 token 外流等于送仓库权限；
+ *    恢复时若备份不带 PAT，则沿用本机已存的 PAT（见 `ConfigStore.restoreFrom`）。
+ *  - 模型 Key / 媒体 Key 仍随备份走（用户恢复配置的刚需）：这是**已知取舍**，与
+ *    SharedPreferences 明文存储同等待遇；备份页应提示「此文件含密钥」。
  */
 @Serializable
 data class BackupManifest(

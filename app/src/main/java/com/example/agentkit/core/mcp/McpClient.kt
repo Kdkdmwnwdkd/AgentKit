@@ -1,5 +1,8 @@
 package com.example.agentkit.core.mcp
 
+import com.example.agentkit.core.llm.primOrNull
+import com.example.agentkit.core.llm.arrOrNull
+import com.example.agentkit.core.llm.objOrNull
 import com.example.agentkit.core.AgentLogger
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -39,11 +42,13 @@ class McpClient(
     /** initialize 握手。成功返回服务器信息。 */
     suspend fun initialize(): Result<McpServerInfo> = withContext(Dispatchers.IO) {
         runCatching {
-            val result = rpc("initialize", initializeParams()).jsonObject
-            val info = result["serverInfo"]?.jsonObject
+            // W-47：服务器返回非对象（null/数组）时按协议错误处理，不抛硬转换异常
+            val result = rpc("initialize", initializeParams()).objOrNull()
+                ?: error("MCP initialize 响应不是 JSON 对象")
+            val info = result["serverInfo"]?.objOrNull()
             McpServerInfo(
-                name = info?.get("name")?.jsonPrimitive?.contentOrNull ?: "unknown",
-                version = info?.get("version")?.jsonPrimitive?.contentOrNull ?: "?"
+                name = info?.get("name")?.primOrNull()?.contentOrNull ?: "unknown",
+                version = info?.get("version")?.primOrNull()?.contentOrNull ?: "?"
             )
         }
     }
@@ -51,13 +56,15 @@ class McpClient(
     /** tools/list：列举服务器暴露的工具。 */
     suspend fun listTools(): Result<List<McpTool>> = withContext(Dispatchers.IO) {
         runCatching {
-            val result = rpc("tools/list", buildJsonObject { }).jsonObject
-            val tools = result["tools"]?.jsonArray ?: buildJsonArray { }
-            tools.map { el ->
-                val o = el.jsonObject
+            val result = rpc("tools/list", buildJsonObject { }).objOrNull()
+                ?: error("MCP tools/list 响应不是 JSON 对象")
+            val tools = result["tools"]?.arrOrNull() ?: buildJsonArray { }
+            tools.mapNotNull { el ->
+                // W-47：tools 数组里的 null 元素直接跳过（旧代码会抛 JsonNull 异常）
+                val o = el.objOrNull() ?: return@mapNotNull null
                 McpTool(
-                    name = o["name"]?.jsonPrimitive?.contentOrNull ?: "",
-                    description = o["description"]?.jsonPrimitive?.contentOrNull ?: "",
+                    name = o["name"]?.primOrNull()?.contentOrNull ?: "",
+                    description = o["description"]?.primOrNull()?.contentOrNull ?: "",
                     inputSchema = o["inputSchema"]
                 )
             }
@@ -78,7 +85,8 @@ class McpClient(
         }
 
     private fun parseArgs(s: String): JsonObject = runCatching {
-        json.parseToJsonElement(s.trim().ifEmpty { "{}" }).jsonObject
+        // W-47：模型给的参数不是对象（null/数组/非法）时退化为空对象，让工具自己报缺参
+        json.parseToJsonElement(s.trim().ifEmpty { "{}" }).objOrNull() ?: buildJsonObject { }
     }.getOrElse { buildJsonObject { } }
 
     /** 发送单个 JSON-RPC 请求，返回 result 或抛 [McpException]。 */

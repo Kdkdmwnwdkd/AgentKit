@@ -1,5 +1,6 @@
 package com.example.agentkit.tools
 
+import com.example.agentkit.core.llm.primOrNull
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -307,10 +308,10 @@ class AppListTool(private val context: Context) : AgentTool {
 
     override suspend fun execute(args: JsonObject): ToolResult = withContext(Dispatchers.IO) {
         runCatching {
-            val query = args["query"]?.jsonPrimitive?.contentOrNull
-            val includeSystem = args["include_system"]?.jsonPrimitive?.contentOrNull
+            val query = args["query"]?.primOrNull()?.contentOrNull
+            val includeSystem = args["include_system"]?.primOrNull()?.contentOrNull
                 ?.toBooleanStrictOrNull() ?: false
-            val limit = clampAppListLimit(args["limit"]?.jsonPrimitive?.contentOrNull?.toIntOrNull())
+            val limit = clampAppListLimit(args["limit"]?.primOrNull()?.contentOrNull?.toIntOrNull())
 
             val all = loadLaunchableApps(context)
             val filtered = filterAppEntries(all, query, includeSystem)
@@ -363,13 +364,13 @@ class AppLaunchTool(private val context: Context) : AgentTool {
     override val readOnly = false
 
     override suspend fun execute(args: JsonObject): ToolResult = withContext(Dispatchers.IO) {
-        val target = args["target"]?.jsonPrimitive?.contentOrNull
+        val target = args["target"]?.primOrNull()?.contentOrNull
             ?: return@withContext ToolResult.fail(
                 code = "missing_param",
                 message = "缺少 target",
                 hint = "app_launch 必须提供 target（应用名或包名，如「快手」或 com.smile.gifmaker）。"
             )
-        val activity = args["activity"]?.jsonPrimitive?.contentOrNull
+        val activity = args["activity"]?.primOrNull()?.contentOrNull
 
         // W-7 审核 F1：不用裸 runCatching——它会连 CancellationException 一起吞进
         // getOrElse，把用户按「停止」转成 launch_error 假失败。改用取消安全包装
@@ -642,7 +643,7 @@ class AppStopTool(
     override val readOnly = false
 
     override suspend fun execute(args: JsonObject): ToolResult = withContext(Dispatchers.IO) {
-        val target = args["target"]?.jsonPrimitive?.contentOrNull
+        val target = args["target"]?.primOrNull()?.contentOrNull
             ?: return@withContext ToolResult.fail(
                 code = "missing_param",
                 message = "缺少 target",

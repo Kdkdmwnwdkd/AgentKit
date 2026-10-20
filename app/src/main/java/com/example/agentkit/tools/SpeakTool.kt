@@ -1,5 +1,6 @@
 package com.example.agentkit.tools
 
+import com.example.agentkit.core.llm.primOrNull
 import com.example.agentkit.audio.TextSpeaker
 import com.example.agentkit.core.AgentTool
 import com.example.agentkit.core.JsonSchema
@@ -34,12 +35,12 @@ class SpeakTool(private val speaker: TextSpeaker) : AgentTool {
     override val readOnly = false
 
     override suspend fun execute(args: JsonObject): ToolResult {
-        val text = args["text"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+        val text = args["text"]?.primOrNull()?.contentOrNull?.trim().orEmpty()
         if (text.isBlank()) {
             return ToolResult.fail("missing_param", "缺少 text", "传入要朗读的文本，例如 {\"text\":\"已完成 3 项清理\"}。")
         }
-        val language = args["language"]?.jsonPrimitive?.contentOrNull ?: "auto"
-        val rate = args["rate"]?.jsonPrimitive?.contentOrNull?.toFloatOrNull() ?: 1.0f
+        val language = args["language"]?.primOrNull()?.contentOrNull ?: "auto"
+        val rate = args["rate"]?.primOrNull()?.contentOrNull?.toFloatOrNull() ?: 1.0f
         return speaker.speak(text, language, rate).fold(
             onSuccess = {
                 ToolResult.ok(
