@@ -10,6 +10,7 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import com.example.agentkit.core.llm.LlmHttp
 import com.example.agentkit.core.llm.ChatStreamEvent
 import com.example.agentkit.core.llm.parseOpenAiReasoning
 import com.example.agentkit.core.llm.parseOpenAiUsage
@@ -152,7 +153,11 @@ class OpenAIClient(
     private val backupKeys: List<KeyPoolPolicy.KeySlot> = emptyList(),
     /** Key 池运行时（冷却状态 + 轮询游标）；null 表示不做切换（保持单 Key 行为）。 */
     private val keyRuntime: KeyPoolRuntime? = null,
-    private val http: OkHttpClient = OkHttpClient()
+    /**
+     * W-46：读超时 180s / 不限整通时长（默认 10s 会把「模型在思考」误判成网络故障）。
+     * 共享实例：连接池与 Dispatcher 按实例持有，三家协议没必要各开一份。
+     */
+    private val http: OkHttpClient = LlmHttp.shared
 ) : LLMClient {
 
     override val id: String = "openai"

@@ -44,7 +44,11 @@ import java.util.UUID
  */
 class GeminiClient(
     private val config: LLMConfig,
-    private val http: OkHttpClient = OkHttpClient()
+    /**
+     * W-46：读超时 180s / 不限整通时长（默认 10s 会把「模型在思考」误判成网络故障）。
+     * 共享实例：连接池与 Dispatcher 按实例持有，三家协议没必要各开一份。
+     */
+    private val http: OkHttpClient = LlmHttp.shared
 ) : LLMClient {
 
     override val id: String = "gemini"

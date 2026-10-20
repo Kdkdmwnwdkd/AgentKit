@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  网络明文策略（W-46 修复）
+
+  背景：targetSdk=34 时系统默认 cleartextTrafficPermitted=false，而本 App 的模型端点
+  由用户自己填——Ollama / LM Studio / vLLM / one-api 中转 / 局域网 MCP 服务绝大多数是
+  `http://192.168.x.x:port` 或 `http://10.x.x.x`。此前没有任何 networkSecurityConfig，
+  这些地址全部被系统在 socket 层拒绝（CLEARTEXT communication not permitted），
+  用户只看到「调用失败」，定位成本极高。
+
+  为什么是全局放开而不是按域白名单：Android 的 <domain> 只接受主机名（可 includeSubdomains），
+  **不支持 CIDR / 通配 IP**，无法表达 192.168.0.0/16 这类私网段；而端点主机本来就是
+  用户运行期填的，编译期无从枚举。故这里显式放开明文，并接受由此带来的取舍：
+    - 明文只应指向用户自己的内网服务；公网供应商一律用 https（目录里 30+ 家预设均为 https）。
+    - 若将来要收紧，可改为「仅 debug 生效」或在设置页加「允许明文 HTTP」开关，
+      再把这里的 base-config 恢复为 false。
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>
