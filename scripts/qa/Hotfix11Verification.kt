@@ -1189,8 +1189,10 @@ private fun testConversationSwitchWhileRunning() {
         assertContains("Y3", vm, "reasoningBuffer = (reasoningBuffer ?: \"\") + delta")
     }
     check("Y4 显示态守卫：_messages 追加全部带 isOwnerActive()（后台只落盘不上屏）") {
-        // ToolStarted / append() / send 的 stopItem / send 的 errItem 四处
-        assertTrue("Y4", vm.split("if (isOwnerActive()) _messages.value = _messages.value +").size - 1 >= 3)
+        // W-47 起追加统一走 appendUiItem()（读改写进 msgLock），守卫改在调用处：
+        // ToolStarted / append() / send 的 stopItem / send 的 errItem 四处。
+        assertTrue("Y4", vm.split("if (isOwnerActive()) appendUiItem(").size - 1 >= 3)
+        assertContains("Y4", vm, "private fun appendUiItem(item: UiItem)")
     }
     check("Y5 switchConversation：去掉 isRunning 硬守卫 + 切后同步草稿投影") {
         val sw = vm.substringAfter("fun switchConversation(id: String)")
@@ -1361,7 +1363,9 @@ private fun testJsonSafeAndGlobalBackground() {
     check("AB1 JsonSafe：三个 as? 软转换访问器 + 根因文档") {
         assertContains("AB1", safe, "fun JsonElement?.objOrNull(): JsonObject? = this as? JsonObject")
         assertContains("AB1", safe, "fun JsonElement?.arrOrNull(): JsonArray? = this as? JsonArray")
-        assertContains("AB1", safe, "fun JsonElement?.primOrNull(): JsonPrimitive? = this as? JsonPrimitive")
+        // W-47 补漏：JsonNull 继承 JsonPrimitive，单用 as? 会放行 → 必须显式排除
+        assertContains("AB1", safe, "fun JsonElement?.primOrNull(): JsonPrimitive?")
+        assertContains("AB1", safe, "(this as? JsonPrimitive)?.takeIf { it !is JsonNull }")
         assertContains("AB1", safe, "is not a JsonObject")
         assertContains("AB1", safe, "\"reasoning_content\": null")
     }

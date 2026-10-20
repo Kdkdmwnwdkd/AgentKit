@@ -51,6 +51,7 @@ compile_ctx() {
       "$ROOT/app/src/main/java/com/example/agentkit/core/ToolResult.kt" \
       "$ROOT/app/src/main/java/com/example/agentkit/core/ToolLimits.kt" \
       "$ROOT/app/src/main/java/com/example/agentkit/tools/CalculatorTool.kt" \
+      "$ROOT/app/src/main/java/com/example/agentkit/core/llm/JsonSafe.kt" \
       "$ROOT/scripts/qa/MiscToolsVerification.kt" 2>&1) || true
   else
     local kcp="$KOTLINC_JAR:$STDLIB"
@@ -62,6 +63,7 @@ compile_ctx() {
       "$ROOT/app/src/main/java/com/example/agentkit/core/ToolResult.kt" \
       "$ROOT/app/src/main/java/com/example/agentkit/core/ToolLimits.kt" \
       "$ROOT/app/src/main/java/com/example/agentkit/tools/CalculatorTool.kt" \
+      "$ROOT/app/src/main/java/com/example/agentkit/core/llm/JsonSafe.kt" \
       "$ROOT/scripts/qa/MiscToolsVerification.kt" 2>&1) || true
   fi
   if echo "$out" | grep -q "error:"; then

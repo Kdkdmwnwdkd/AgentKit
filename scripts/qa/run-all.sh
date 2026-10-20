@@ -61,7 +61,9 @@ for s in scripts/qa/run-*.sh; do
       echo "FAIL  $s（exit=$rc） 完整日志：$LOG_DIR/$(basename "$s" .sh).log"
       echo "$out" | tail -12
     fi
-  elif echo "$out" | grep -qE "0 failed|FAIL=0|0 失败|_OK [0-9]|全部通过"; then
+  # W-47：补 "FAIL: 0" —— retry/t01 这类 runner 的汇总是 "PASS: 9  FAIL: 0  TOTAL: 9"，
+  # 旧模式只认 "FAIL=0"，于是明明全绿的脚本被判「无通过标记」。
+  elif echo "$out" | grep -qE "0 failed|FAIL=0|FAIL: 0|0 失败|_OK [0-9]|全部通过"; then
     if is_known_broken "$s"; then
       echo "XPASS $s（已修复！请从 known-broken.txt 移除）"
     fi

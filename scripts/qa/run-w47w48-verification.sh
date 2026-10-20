@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# W-47/W-48 harness：备份安全 + JSON 软转换 + 插件市场规则（纯 JVM，不加载 Android）。
+#
+# 与其它 runner 一致的两级构件解析：优先 Gradle 缓存，缺失时回落本机 kotlinc 发行版。
+set -euo pipefail
+
+cd "$(dirname "$0")/../.."
+ROOT=$(pwd)
+OUT=/tmp/qa-verify-w47w48
+
+: "${QA_GRADLE_CACHE:=${AGENTKIT_GRADLE_CACHE:-${GRADLE_USER_HOME:-$HOME/.gradle}/caches/modules-2/files-2.1}}"
+CACHE="$QA_GRADLE_CACHE"
+KOTLINC_JAR=$(find "$CACHE/org.jetbrains.kotlin/kotlin-compiler-embeddable" -name "kotlin-compiler-embeddable-*.jar" 2>/dev/null | grep -v sources | sort -V | tail -1) || true
+STDLIB=$(find "$CACHE/org.jetbrains.kotlin/kotlin-stdlib" -name "kotlin-stdlib-1.9*.jar" 2>/dev/null | grep -v sources | sort -V | tail -1) || true
+SERIALIZATION=$(find "$CACHE/org.jetbrains.kotlinx/kotlinx-serialization-json-jvm" -name "*.jar" 2>/dev/null | grep -v sources | sort -V | tail -1) || true
+SER_CORE=$(find "$CACHE/org.jetbrains.kotlinx/kotlinx-serialization-core-jvm" -name "*.jar" 2>/dev/null | grep -v sources | sort -V | tail -1) || true
+SER_PLUGIN=$(find "$CACHE/org.jetbrains.kotlin/kotlin-serialization-compiler-plugin-embeddable" -name "*.jar" 2>/dev/null | grep -v sources | sort -V | tail -1) || true
+TROVE=$(find "$CACHE/org.jetbrains.intellij.deps/trove4j" -name "trove4j-*.jar" 2>/dev/null | sort -V | tail -1) || true
+JB_ANNOTATIONS=$(find "$CACHE/org.jetbrains/annotations" -name "annotations-*.jar" 2>/dev/null | sort -V | tail -1) || true
+
+if [ -z "${KOTLINC_JAR:-}" ] || [ -z "${STDLIB:-}" ] || [ -z "${SERIALIZATION:-}" ]; then
+  KC_HOME=${KOTLINC_HOME:-/tmp/kotlinc}
+  if [ -x "$KC_HOME/bin/kotlinc" ]; then
+    KOTLINC_BIN="$KC_HOME/bin/kotlinc"
+    STDLIB=${STDLIB:-$KC_HOME/lib/kotlin-stdlib.jar}
+    SER_PLUGIN=${SER_PLUGIN:-$KC_HOME/lib/kotlinx-serialization-compiler-plugin.jar}
+    SERIALIZATION=${SERIALIZATION:-/tmp/w7-jars/kotlinx-serialization-json-jvm-1.6.3.jar}
+    SER_CORE=${SER_CORE:-/tmp/w7-jars/kotlinx-serialization-core-jvm-1.6.3.jar}
+  fi
+fi
+
+if [ -z "${KOTLINC_BIN:-}" ] && [ -z "${KOTLINC_JAR:-}" ]; then
+  echo "FATAL: 找不到 kotlinc（Gradle 缓存与本机发行版均缺失）" >&2
+  exit 1
+fi
+for j in "$STDLIB" "$SERIALIZATION" "$SER_CORE"; do
+  [ -f "${j:-}" ] || { echo "FATAL: 缺少依赖 $j" >&2; exit 1; }
+done
+
+DEPS="$STDLIB:$SERIALIZATION:$SER_CORE"
+[ -n "${JB_ANNOTATIONS:-}" ] && [ -f "${JB_ANNOTATIONS:-}" ] && DEPS="$DEPS:$JB_ANNOTATIONS"
+
+SRC="$ROOT/app/src/main/java/com/example/agentkit"
+SRCS=(
+  "$SRC/core/BackupModels.kt"
+  "$SRC/core/BackupArchive.kt"
+  "$SRC/core/llm/JsonSafe.kt"
+  "$SRC/skill/market/MarketModels.kt"
+  "$ROOT/scripts/qa/W47W48Verification.kt"
+)
+
+rm -rf "$OUT" && mkdir -p "$OUT"
+
+echo "[1/2] compiling w47/w48 harness ..."
+if [ -n "${KOTLINC_BIN:-}" ]; then
+  "$KOTLINC_BIN" -classpath "$DEPS" -Xplugin="${SER_PLUGIN:-}" -d "$OUT" "${SRCS[@]}"
+else
+  KCP="$KOTLINC_JAR:$STDLIB"
+  [ -n "${TROVE:-}" ] && [ -f "${TROVE:-}" ] && KCP="$KCP:$TROVE"
+  [ -n "${JB_ANNOTATIONS:-}" ] && [ -f "${JB_ANNOTATIONS:-}" ] && KCP="$KCP:$JB_ANNOTATIONS"
+  java -cp "$KCP" org.jetbrains.kotlin.cli.jvm.K2JVMCompiler \
+    -no-stdlib -no-reflect -Xplugin="${SER_PLUGIN:-}" -classpath "$DEPS" -d "$OUT" "${SRCS[@]}"
+fi
+
+echo "[2/2] running ..."
+java -cp "$OUT:$DEPS" W47W48VerificationKt

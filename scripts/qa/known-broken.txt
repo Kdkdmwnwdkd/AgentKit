@@ -13,10 +13,9 @@ run-crashlog-verification.sh	CrashLogVerification.kt 调用了不存在的 read(
 
 # 以下为断言语义与现实现脱节者（2026-10-19 CI 首跑实证；W-46 已修掉其中 6 个）：
 run-fallback-verification.sh	能力链快照/选中顺序断言与现 CapabilityBridges 不一致（4 条失败：proot→user 顺序、logTrace 旁路）
-run-hotfix-verification.sh	runBlocking 内抛异常（HotfixVerification.kt:380），断言对象已改
-run-hotfix3-verification.sh	runBlocking 内抛异常（Hotfix3Verification.kt:651）
-run-localmodel-verification.sh	本地模型断言与现 GgufModelStore/LocalLlamaSetting 接口不符
 
 # W-46（2026-10-20）：以下 6 个已修复并从清单移除——它们的失败根因是断言陈旧
 # （标识符在 W-30 重构后改名）与 harness 依赖版本选错（coroutines 1.5.0），
 # 不是产品缺陷；现分别 173/173、9/9、37/37 全绿，详见 docs/W46-NOTES.md。
+# W-47（2026-10-21）：hotfix3 / hotfix / localmodel 三个 harness 已随依赖版本修正与
+# JSON 安全化通过（run-all 报 XPASS），从清单移除；剩余 4 个仍属断言语义脱节。
