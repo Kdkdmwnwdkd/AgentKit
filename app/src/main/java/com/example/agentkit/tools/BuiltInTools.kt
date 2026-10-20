@@ -48,8 +48,19 @@ class HttpRequestTool(
         JsonSchema.prop("body", "string", "请求体，通常与 POST/PUT 配合使用（可选）")
     )
 
-    /** 只读：GET 类查询无副作用；POST 等由调用方按语义自负（批量判据按 roadmap 标注为只读）。 */
-    override val readOnly = true
+    /**
+     * W-46：**不再标只读**。
+     *
+     * 原标注的理由是「GET 无副作用，POST 由调用方自负」，但 [readOnly] 不是给人看的注释，
+     * 它是 `ToolRegistry.batchHasMutation` 的唯一判据：一批里只要全是 readOnly=true 就并发执行。
+     * 而本工具支持 POST/PUT/PATCH/DELETE——模型同一批发 `[POST /order, GET /order]` 时，
+     * 两个协程会真并发跑，读到写前还是写后完全随机；同时它也是无审批的外发通道，
+     * 标成只读等于把它藏进了「安全工具」那一档。
+     *
+     * 代价：任何含 http_request 的批次改为串行。HTTP 往返本就不是本 App 的性能瓶颈，
+     * 换取「副作用顺序确定」值得。
+     */
+    override val readOnly = false
 
     override suspend fun execute(args: JsonObject): ToolResult = withContext(Dispatchers.IO) {
         runCatching {

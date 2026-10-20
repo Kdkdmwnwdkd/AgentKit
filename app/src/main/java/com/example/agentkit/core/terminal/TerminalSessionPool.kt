@@ -11,6 +11,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -304,6 +305,13 @@ class TerminalSessionPool(
                     hint = "用无 session 参数重新调用以开辟新会话。"
                 )
             }
+            if (entry.desynced) {
+                return@withLock ExecResult.failure(
+                    code = "session_desynced",
+                    message = "会话「$handle」上一条命令超时并被中断，输出边界已不可信，不能复用。",
+                    hint = "先 shell_close 该句柄，再用无 session 参数开辟新会话后重试。"
+                )
+            }
             execute(entry, command)
         }
     }
@@ -395,11 +403,21 @@ class TerminalSessionPool(
 
         val builder = StringBuilder()
         val done = CompletableDeferred<Int>()
+        // W-46：缓冲上限——截断必须在**收流过程中**做，不能等命令结束再截。
+        // 旧实现把全部输出堆进 StringBuilder 再一次性截断：`cat` 一个大文件就是几百 MB
+        // 堆内存，直接 OOM（进程被杀，日志里只留一句「运行失败」）。
+        // 保留**尾部**：哨兵在输出末尾，丢头不丢尾才能继续判完成。
+        var droppedChars = 0L
 
         val collector = scope.launch {
             runCatching {
                 entry.backend.output.collect { chunk ->
                     builder.append(chunk)
+                    if (builder.length > MAX_BUFFER_CHARS) {
+                        val cut = builder.length - MAX_BUFFER_CHARS
+                        builder.delete(0, cut)
+                        droppedChars += cut
+                    }
                     if (!done.isCompleted) {
                         val m = sentinelRegex.find(builder)
                         if (m != null) {
@@ -429,11 +447,22 @@ class TerminalSessionPool(
         collector.cancelAndJoin()
 
         if (exitCode == null) {
-            if (!entry.alive) releaseEntry(entry)
+            // W-46：超时不能只是「本次失败」——旧实现把命令丢在会话里继续跑，下一个命令
+            // 排到它后面执行，哨兵匹配到旧退出码，**静默返回错位结果**。
+            // 处置：先 Ctrl-C 尽力中断（PTY 上等于用户按停止），再标脏；300ms 后仍活着就
+            // 直接关掉后端并摘除会话——宁可让调用方重开，也不留一条状态未知的 shell。
+            runCatching { entry.backend.send("\u0003") }
+            delay(300)
+            if (!entry.alive) {
+                releaseEntry(entry)
+            } else {
+                entry.desynced = true
+            }
             return ExecResult.failure(
                 code = "timeout",
-                message = "命令在 ${commandTimeoutMs}ms 内未完成（会话「${entry.handle}」）。",
-                hint = "命令可能仍在执行或等待输入；可拆小命令重试，或结束交互式程序（如补上 -y / 非交互参数）。"
+                message = "命令在 ${commandTimeoutMs}ms 内未完成（会话「${entry.handle}」），已中断并标记该会话不可复用。",
+                hint = "把命令拆小、补非交互参数（如 -y），或改装 shell_background 跑长命令；" +
+                    "继续操作前请用 shell_close 关闭该句柄，再不带 session 重新开辟。"
             )
         }
 
@@ -442,8 +471,18 @@ class TerminalSessionPool(
         val mark = sentinelRegex.find(raw)
         val body = if (mark != null) raw.substring(0, mark.range.first) else raw
         val cleaned = cleanOutput(body, command, echoLine)
-        val truncated = truncator.truncate(cleaned)
-        return ExecResult.ok(exitCode = exitCode, output = truncated.text, truncated = truncated.truncated)
+        // 溢出说明放在最前面：模型先看到「前面被丢了」，才不会把尾部当成完整输出
+        val withNote = if (droppedChars > 0) {
+            "…（输出过长，已丢弃前面 $droppedChars 字符，以下为末尾部分）\n$cleaned"
+        } else {
+            cleaned
+        }
+        val truncated = truncator.truncate(withNote)
+        return ExecResult.ok(
+            exitCode = exitCode,
+            output = truncated.text,
+            truncated = truncated.truncated || droppedChars > 0
+        )
     }
 
     /** 释放一条会话（从两张表移除 + 标记关闭）；调用方负责关闭后端。 */
@@ -509,6 +548,16 @@ class TerminalSessionPool(
         @Volatile
         var closed: Boolean = false
 
+        /**
+         * W-46：输出边界已不可信（上一条命令超时被中断，哨兵可能永远等不到）。
+         *
+         * 为什么要单独标：超时只是「本次判定失败」，但会话里的 shell 仍可能停在半条命令上。
+         * 若下一个 run 直接复用，新命令会排在旧命令之后执行、哨兵匹配到的是旧退出码——
+         * **返回结果与命令错位，而且是静默的**。标脏后由 [run] 显式拒绝，逼调用方重开会话。
+         */
+        @Volatile
+        var desynced: Boolean = false
+
         val alive: Boolean get() = !closed && backend.isAlive
 
         fun snapshot(): SessionSnapshot =
@@ -523,6 +572,12 @@ class TerminalSessionPool(
 
         /** 单条命令默认完成等待上限（毫秒）。 */
         const val DEFAULT_COMMAND_TIMEOUT_MS: Long = 30_000L
+
+        /**
+         * 收流缓冲上限（字符）。约 256K 字符 ≈ 512KB 堆，足够容纳 24K 字符结果上限的十倍余量；
+         * 超出部分丢头部（哨兵在尾部，不影响完成判定）。
+         */
+        const val MAX_BUFFER_CHARS: Int = 256_000
 
         /** 句柄随机重试次数；超过则顺序补位。 */
         private const val HANDLE_ALLOC_RETRIES = 8
