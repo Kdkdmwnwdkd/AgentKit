@@ -79,7 +79,7 @@ class SubAgentRunner(
                     // 白名单只有十几个工具，不能被「小模型核心集」再裁掉——
                     // 子代理拿不到 read_file 就等于瞎了
                     forceFullTools = true
-                ).send(SubAgentLogic.userPrompt(task.instruction), emptyList())
+                ).send(SubAgentLogic.userPrompt(task.instruction), emptyList(), emptyList())
             }
             val texts = history.mapNotNull { (it as? AssistantMessage)?.content }
             SubAgentOutcome(

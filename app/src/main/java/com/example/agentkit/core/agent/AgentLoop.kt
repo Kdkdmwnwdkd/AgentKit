@@ -29,12 +29,17 @@ interface AgentLoop {
      * @param images 用户手动附带的图片（data URL 列表），作为本轮首条
      *   [UserMessage] 的多模态内容一起发——让「截图问模型」成为一条自然路径
      *   （视觉能力此前只在工具返回里用，输入端没有入口）。
+     * @param priorMessages 本回合之前的历史对话（W-46）。按时间正序，不含系统提示与当前输入。
+     *   由调用方从会话存储摊平而来；实现须把它插在 SystemMessage 之后、当前 UserMessage 之前，
+     *   且**返回值里不得包含**这些历史（返回值语义仍是「本回合新增的历史」，调用方据此落盘）。
+     *   空列表 = 无历史（旧行为）。上下文预算由 [ContextBudget] 统一裁剪，调用方不必预压。
      * @return 完整历史；正常结束 / 优雅收尾 / 达到 maxSteps 时返回，
      *   取消时抛 CancellationException（T05 树尾闭合后重抛）。
      */
     suspend fun send(
         userInput: String,
-        images: List<String> = emptyList()
+        images: List<String> = emptyList(),
+        priorMessages: List<ChatMessage> = emptyList()
     ): List<ChatMessage>
 
     /**

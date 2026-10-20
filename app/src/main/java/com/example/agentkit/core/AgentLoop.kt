@@ -126,7 +126,15 @@ class AgentLoop(
      */
     maxSteps: Int = 60,
     maxParallelTools: Int = 5,
-    providerRetry: Int = 2,
+    /**
+     * 供应商瞬时失败的重试次数。
+     *
+     * W-46：默认值必须与 [RealAgentLoop] 的 3 一致。此前本层写 2，而生产链路正是
+     * 「ChatViewModel 造适配层 → 透传 impl」，于是 hotfix10 设计的 429 退避序列
+     * （10s/30s/60s）第三档永远用不上，限流窗口没扛过去就整轮失败。
+     * 总请求数 = 本值 + 1。
+     */
+    providerRetry: Int = 3,
     maxHistoryMessages: Int = 40,
     /**
      * W-10 上下文预算（估算 token）：每轮请求前构建裁剪视图，超预算丢最老步。
@@ -193,12 +201,17 @@ class AgentLoop(
     /** 执行一轮对话，返回完整消息历史（语义 = [AgentLoopContract.send]，保留原名）。 */
     suspend fun run(
         userInput: String,
-        images: List<String> = emptyList()
-    ): List<ChatMessage> = impl.send(userInput, images)
+        images: List<String> = emptyList(),
+        /** W-46：本回合之前的历史（按时间正序，不含系统提示与当前输入）；返回值不含它们。 */
+        priorMessages: List<ChatMessage> = emptyList()
+    ): List<ChatMessage> = impl.send(userInput, images, priorMessages)
 
     /** 契约入口：与 [run] 等价（T01 后新代码优先用本名）。 */
-    override suspend fun send(userInput: String, images: List<String>): List<ChatMessage> =
-        impl.send(userInput, images)
+    override suspend fun send(
+        userInput: String,
+        images: List<String>,
+        priorMessages: List<ChatMessage>
+    ): List<ChatMessage> = impl.send(userInput, images, priorMessages)
 
     /** 契约入口：优雅停止通道（转调 impl，不杀协程）。 */
     override fun stop() = impl.stop()
@@ -213,7 +226,7 @@ class AgentLoop(
 
     /** 便捷封装：只返回最终文本回答（保留原 API）。 */
     suspend fun runAgent(userInput: String): String =
-        impl.send(userInput)
+        impl.send(userInput, emptyList(), emptyList())
             .filterIsInstance<AssistantMessage>()
             .lastOrNull()
             ?.content

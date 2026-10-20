@@ -223,9 +223,10 @@ class RealAgentLoop(
      */
     override suspend fun send(
         userInput: String,
-        images: List<String>
+        images: List<String>,
+        priorMessages: List<ChatMessage>
     ): List<ChatMessage> {
-        AgentLogger.i("AgentLoop", "开始运行，输入：${userInput.take(120)}")
+        AgentLogger.i("AgentLoop", "开始运行，输入：${userInput.take(120)}（历史 ${priorMessages.size} 条）")
         // Round1 QA Minor 修复：stop 标志回合作用域化——入口先重置（上一回合的
         // 停止请求绝不被本轮继承），再标记在飞；finally 保证异常路径也清零。
         stopRequested.set(false)
@@ -234,16 +235,29 @@ class RealAgentLoop(
         failureGuard.resetForTurn()
         turnActive.set(true)
         try {
-            return runTurn(userInput, images)
+            return runTurn(userInput, images, priorMessages)
         } finally {
             turnActive.set(false)
         }
     }
 
+    /**
+     * 便捷重载（无历史 / 无图）：契约方法不能用默认参数实现（Kotlin 覆盖不允许重复默认值），
+     * 而 harness 与子代理大量直接对具体类型调 `send("hi")`，故保留这两个入口。
+     * 生产链路一律用三参数版本显式传历史，避免「以为带了历史其实没带」。
+     */
+    suspend fun send(userInput: String): List<ChatMessage> =
+        send(userInput, emptyList(), emptyList())
+
+    /** 便捷重载（无历史，带图）。 */
+    suspend fun send(userInput: String, images: List<String>): List<ChatMessage> =
+        send(userInput, images, emptyList())
+
     /** [send] 的回合体（抽出的目的是让 stop 标志的重置/在飞标记包住整个回合，含异常路径）。 */
     private suspend fun runTurn(
         userInput: String,
-        images: List<String> = emptyList()
+        images: List<String> = emptyList(),
+        priorMessages: List<ChatMessage> = emptyList()
     ): List<ChatMessage> {
         val loopStart = System.currentTimeMillis()
         // Phase 2 DoD④：按当前 provider 计算本回合的「工具暴露面」——provider = local-llama
@@ -254,11 +268,18 @@ class RealAgentLoop(
         // 回合级工具视图：未裁剪时为原 registry（零开销、行为不变）；裁剪时仅含暴露工具——
         // 被裁工具即便被本地模型瞎编调用，也在此视图中「查无此工具」，走 T02 未知工具路径。
         val turnRegistry = scopedRegistry(exposure)
-        val messages = mutableListOf<ChatMessage>(
-            SystemMessage(buildSystemPrompt(exposure.tools)),
-            // 功能四（P0-2）：用户手动附带的图片随首条用户消息一起发
-            UserMessage(userInput, images)
-        )
+        // W-46：历史对话插在系统提示之后、当前输入之前——多点追问（「它」「继续」「第二个方案」）
+        // 才有所指。priorMessages 只用于**构造请求**，返回值不含它们（调用方按返回值落盘，
+        // 若把历史一并返回会被重复写入会话）。裁剪统一交给 buildRequestMessages → ContextBudget。
+        val messages = mutableListOf<ChatMessage>()
+        messages.add(SystemMessage(buildSystemPrompt(exposure.tools)))
+        messages.addAll(priorMessages)
+        // 功能四（P0-2）：用户手动附带的图片随首条用户消息一起发
+        messages.add(UserMessage(userInput, images))
+        // 对外返回值 = 系统提示 + 本回合新增部分，**不含历史**（历史只用于构造请求）。
+        // 保留 SystemMessage 是契约：调用方与 harness 一直把 history[0] 当系统提示读；
+        // 而历史若一并返回，ChatViewModel 的落盘循环会把上一轮的问答再写一遍（重复）。
+        fun turnResult(): List<ChatMessage> = messages.drop(priorMessages.size)
         checkpoint?.invoke(messages)
 
         repeat(maxSteps) {
@@ -291,7 +312,7 @@ class RealAgentLoop(
                     "运行结束：${System.currentTimeMillis() - loopStart}ms，消息数=${messages.size}"
                 )
                 hooks.beforeStop()
-                return messages
+                return turnResult()
             }
 
             // T01 三段式之执行 + commit：本批工具执行（T03 并发判据在 executor/loop 协作下生效）
@@ -324,7 +345,7 @@ class RealAgentLoop(
                 AgentLogger.i("AgentLoop", "shouldContinue 返回 false 或收到 stop() 请求，中途停止")
                 hooks.beforeStop()
                 messages.add(AssistantMessage("⏹ 已根据请求停止。"))
-                return messages
+                return turnResult()
             }
         }
 
@@ -340,7 +361,7 @@ class RealAgentLoop(
             "AgentLoop",
             "运行结束：${System.currentTimeMillis() - loopStart}ms，消息数=${messages.size}"
         )
-        return messages
+        return turnResult()
     }
 
     /**

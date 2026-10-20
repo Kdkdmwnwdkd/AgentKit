@@ -1097,6 +1097,16 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
      * 仍跟 active 走，靠 [isOwnerActive] 条件投影。用户切走 → 旧会话后台继续
      * 出字（只落盘不上屏）；切回 → [syncDraftDisplay] 恢复实时草稿，无缝续看。
      */
+    /**
+     * 在途运行的归属会话（hotfix30 owner 捕获）。
+     *
+     * W-46：**必须 @Volatile**——写点是主线程（send/regenerate 入口、finally 清零），
+     * 读点却在工具回调/落盘协程（[handleAgentEvent]、[appendToStore]）这些 IO 线程上。
+     * 少了它，后台线程可能读到旧值（stale null），`runOwnerConvId ?: active` 就会把
+     * 后台结果写进**当前**会话——正是 owner 捕获机制要消灭的「写串」。
+     * 同文件 [screenshotApprovedThisTurn] 已按此模式标注，此处补齐。
+     */
+    @Volatile
     private var runOwnerConvId: String? = null
 
     /**
@@ -1332,7 +1342,11 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         AgentLogger.i("Chat", "重新生成：第 ${turnIndex + 1} 轮")
         runJob = viewModelScope.launch {
             try {
-                val outcome = runCatching { loop.run(userText) }
+                // W-46：重新生成也要带历史，但要**排除最后一轮**——那正是要重做的一轮，
+                // 把它自己的旧答案当历史会诱导模型复读原答案
+                val outcome = runCatching {
+                    loop.run(userText, emptyList(), buildPriorMessages(owner, excludeLastTurn = true))
+                }
                 // 流式草稿使命结束：最终回答以整条变体落库，先清草稿避免与整条同时显示
                 // hotfix30：清内存缓冲，显示态经 syncDraftDisplay 投影
                 draftBuffer = null
@@ -2125,6 +2139,14 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     private companion object {
         const val MAX_EDGE = 1024
 
+        /**
+         * W-46：喂给模型的历史最多回看多少轮。
+         *
+         * 只是**构造阶段的粗暴上限**，真正的体积控制交给 `ContextBudget`（按 token 预算整段丢）。
+         * 20 轮 ≈ 40 条消息，覆盖住常见追问场景，又不会让摊平本身变慢。
+         */
+        const val PRIOR_TURNS_MAX = 20
+
         /** W-8 P1-C：截图工具名——本回合批准过一次后后续截图免弹窗（见 [requestApproval]）。 */
         const val SCREENSHOT_TOOL = "ui_screenshot"
 
@@ -2308,6 +2330,43 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         .replace("&apos;", "'")
         .replace("&amp;", "&")
 
+    /**
+     * W-46：把已发生的轮次摊平成「本回合之前的历史」，交给 AgentLoop 一起发。
+     *
+     * 为什么必须补这一块：loop 每回合只造「系统提示 + 当前输入」两条消息，会话历史虽然
+     * 完整落盘，却从未进入请求——模型在多点追问里没有任何指代对象（「它」「继续」
+     * 「第二个方案」一律失忆）。这里按轮次取 `user.content` + **当前选中变体**的
+     * assistant 正文，按时间正序交给 loop，体积由 `ContextBudget` 按 token 预算裁剪。
+     *
+     * 只取正文、**不带工具 trace**：把历史 `tool` 消息塞回去必须与对应
+     * `assistant.tool_calls` 严格配对，跨回合重建极易让严格供应商直接 400；而工具过程
+     * 属于上一回合的执行细节，对「刚才说的那件事」的指代没有帮助。
+     *
+     * @param convId 目标会话（null / 不存在 → 空历史，等价旧行为）
+     * @param excludeLastTurn 重新生成时用：最后一轮正要重做，不能把它自己的旧答案当历史
+     */
+    private fun buildPriorMessages(
+        convId: String?,
+        excludeLastTurn: Boolean = false
+    ): List<ChatMessage> {
+        val rec = convId?.let { runCatching { conversationStore.load(it) }.getOrNull() }
+            ?: return emptyList()
+        val turns = if (excludeLastTurn) rec.turns.dropLast(1) else rec.turns
+        return buildList {
+            turns.takeLast(PRIOR_TURNS_MAX).forEach { turn ->
+                val question = turn.user.content.trim()
+                if (question.isBlank()) return@forEach
+                add(UserMessage(question))
+                // 变体列表为空（异常数据）或游标越界时安静跳过，绝不让历史构造把本轮搞崩
+                val variant = turn.variants.getOrNull(
+                    turn.selectedIndex.coerceIn(0, (turn.variants.size - 1).coerceAtLeast(0))
+                )
+                val answer = variant?.content?.trim().orEmpty()
+                if (answer.isNotBlank()) add(AssistantMessage(answer))
+            }
+        }
+    }
+
     fun send() {
         val text = input.value.trim()
         if (text.isBlank() || isRunning.value) return
@@ -2326,6 +2385,9 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         // 流式草稿）按它落盘，用户切走再切回不写串；finally 清
         val owner = _activeConversationId.value
         runOwnerConvId = owner
+        // W-46：先把历史摊平（此时当前这句还没落库，天然不含本轮）——loop 每回合只造
+        // 「系统提示 + 当前输入」，不带历史就会出现「它 / 继续 / 第二个方案」全失忆
+        val priorMessages = buildPriorMessages(owner)
         _generatingConvId.value = owner
         draftBuffer = null
         reasoningBuffer = null
@@ -2374,7 +2436,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
                 // W-26：首轮对话后用「任务模型」异步生成标题（不阻塞、失败静默）
                 maybeGenerateTitle(_activeConversationId.value, text)
                 // 先拿到 Result，再在同一个挂起体里做后续 IO：Result.onSuccess 的 lambda 不是 suspend
-                val outcome = runCatching { loop.run(fullInput, images) }
+                val outcome = runCatching { loop.run(fullInput, images, priorMessages) }
                 // 流式草稿使命结束：最终回答以整条消息落库（防草稿与整条同时显示）。
                 // hotfix30：清内存缓冲；显示态经 syncDraftDisplay 投影（owner!=active 时本就是 null）
                 draftBuffer = null
