@@ -762,7 +762,9 @@ private suspend fun testT01FailureGuard() {
 private suspend fun testT01MaxStepsDefault() {
     println("\n== T01 H2 回归：适配层 AgentLoop 默认 maxSteps=40（hotfix5 漏改点）==")
 
-    check("不传 maxSteps：恒工具调用打满默认 40 步后收尾（防退化回 16）") {
+    // W-46：默认步数已从 40 上调到 60（适配层与 RealAgentLoop 同步），本断言随之更新；
+    // 它防的仍是「默认值被悄悄改回 16」这一类退化，口径以当前真源为准。
+    check("不传 maxSteps：恒工具调用打满默认 60 步后收尾（防退化回 16）") {
         val tool = object : AgentTool {
             override val name = "noop"
             override val description = ""
@@ -776,7 +778,7 @@ private suspend fun testT01MaxStepsDefault() {
         val loop = AgentLoop(llmProvider = { fake }, registry = reg, providerRetry = 0)
         val history = loop.run("x")
         val toolMsgs = history.filterIsInstance<ToolMessage>().size
-        assertEquals("default maxSteps tool executions", 40, toolMsgs)
+        assertEquals("default maxSteps tool executions", 60, toolMsgs)
     }
 
     check("显式传 maxSteps=5 仍以传入值为准（默认值不劫持显式传参）") {
@@ -871,7 +873,8 @@ private suspend fun testT01Update() {
         val loop = RealAgentLoop(llmProvider = { fake }, registry = reg, maxSteps = 16, providerRetry = 0)
         loop.update(maxSteps = 1)
         val history = loop.send("x")
-        assertContains("max steps warning", (history.last() as AssistantMessage).content, "已达到最大步数（1）")
+        // 文案随产品调整（「已用满 N 步」比「已达到最大步数」更贴近用户理解），断言同步
+        assertContains("max steps warning", (history.last() as AssistantMessage).content, "本次任务已用满 1 步")
     }
 
     check("update(registry)：新表对执行 / 系统提示拼接即时生效") {

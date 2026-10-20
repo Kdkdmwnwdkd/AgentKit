@@ -183,7 +183,8 @@ private fun testImageAttachment() {
         val body = vm.substringAfter("fun send()")
         assertContains("I5", body, "val images = _pendingImages.value")
         assertContains("I5", body, "_pendingImages.value = emptyList()")
-        assertContains("I5", body, "loop.run(fullInput, images)")
+        // W-46 起 send 把历史摊平后作为第三参传入（多轮对话），断言随之更新
+        assertContains("I5", body, "loop.run(fullInput, images, priorMessages)")
     }
     check("I6 多模态请求侧原本就支持（本次不是新造轮子）") {
         assertContains("I6", llm, "put(\"type\", \"image_url\")")
@@ -282,7 +283,9 @@ private fun testMessageMoreActions() {
     check("L1 操作行有「⋯」更多入口（助手/用户两行都有）") {
         assertContains("L1", chat, "showMore = showMore")
         assertContains("L1", chat, "text = \"⋯\"")
-        assertContains("L1", chat, "onMore = { menuTarget = item.text to item.turnIndex }")
+        // 重构后 onMore 不再直接塞 Pair，改构造 MenuTarget（含 turnIndex/消息来源）
+        assertContains("L1", chat, "onMore = {")
+        assertContains("L1", chat, "menuTarget = MenuTarget(")
     }
     check("L2 分享走系统分享面板（ACTION_SEND + createChooser，零额外权限）") {
         // hotfix22 起分享实现收敛到 ShareActions.kt，ChatScreen 只留委托（Q6 再验共用）
@@ -543,7 +546,9 @@ private fun testTokenUsage() {
     check("P12 VM：regenerate 新变体带用量 + append 支持 usage 参数") {
         assertContains("P12", vm, "private fun append(msg: ChatMessage, usage: TokenUsage? = null)")
         // hotfix26 起 append 透传 reasoning（P1-9）
-        assertContains("P12", vm, "is AssistantMessage -> UiItem.Assistant(msg.content, usage = usage, reasoning = msg.reasoning)")
+        // append 的助手分支改为多行命名参数（timeMs 加入后），断言改用稳定片段
+        assertContains("P12", vm, "is AssistantMessage -> UiItem.Assistant(")
+        assertContains("P12", vm, "usage = usage,")
         val regen = vm.substringAfter("fun regenerate()")
         assertContains("P12", regen, "usage = TokenUsage.sum(")
     }
@@ -917,7 +922,8 @@ private fun testReasoningFold() {
         assertContains("U9", vm, "private val _reasoningDraft = MutableStateFlow<String?>(null)")
         assertContains("U9", vm, "val reasoningDraft: StateFlow<String?> = _reasoningDraft.asStateFlow()")
         // append 落库路径透传 reasoning（send/regenerate 的历史消息也能折叠展示）
-        assertContains("U9", vm, "is AssistantMessage -> UiItem.Assistant(msg.content, usage = usage, reasoning = msg.reasoning)")
+        // 同上：多行构造后按片段断言（reasoning 仍在、usage 仍在）
+        assertContains("U9", vm, "reasoning = msg.reasoning")
         // 流结束/失败等复位点清 reasoning 草稿（hotfix30 起：清的是 reasoningBuffer，
         // 显示态经 syncDraftDisplay 投影，不能留着上一条的思考）
         assertTrue("U9", vm.split("reasoningBuffer = null").size - 1 >= 4)

@@ -38,7 +38,11 @@ KC_HOME=${KOTLINC_HOME:-/tmp/kotlinc}
 qa_find_jar() {
     local dir="$1" pattern="$2"
     [ -d "$dir" ] || return 0
-    find "$dir" -type f -name "$pattern" 2>/dev/null | grep -v -- '-sources' | sort | head -1
+    # W-46：按**版本序**取最新（sort -V），不能用字典序 head -1。
+    # 缓存里同时存在 1.5.0 与 1.8.1 时，字典序会把 1.5.0 排在前面，harness 于是用旧
+    # coroutines 编译/运行——`CoroutineDispatcher.limitedParallelism` 在 1.6 才引入，
+    # 结果整片报 NoSuchMethodError、看起来像产品回归（本次实测 9/9 全红，实际一行代码没坏）。
+    find "$dir" -type f -name "$pattern" 2>/dev/null | grep -v -- '-sources' | sort -V | tail -1
 }
 
 # qa_require_project <仓库根>：确认关键源目录存在（脚本从任意 cwd 调用都不会跑错地方）
