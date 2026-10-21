@@ -59,6 +59,8 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.Bookmark
@@ -119,6 +121,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
@@ -1429,8 +1432,18 @@ private fun ReaskDialog(
 }
 
 /**
- * 空态引导（§6.9 + UX v1 §3.4「空对话」）：图标 + 标题 + 描述 + 主按钮 +
- * 三行起飞前检查清单 + 三条示例建议卡。无 hero 大卡——空态是「暂时没有内容」。
+ * 空态（v5 重做）。
+ *
+ * 只回答三个问题：你是谁、能做什么、第一句说什么。
+ *
+ * 与旧版的差别是**删减**，不是美化：
+ * - 删掉常驻的三行「起飞前检查」（模型配置 / 无障碍 / 权限就绪）。它不管你配没配都列出来，
+ *   等于把内部状态机摊在首页：用户打开 App 看到的是"设备自检报告"，不是对话入口。
+ *   真正只缺一项时它也不指向那一项，反而让人以为有三件事要做。
+ * - 「去配置模型」改为**只在模型确实没配时出现**。配好了还挂着一个"去配置"，
+ *   用户会怀疑自己哪里没弄完。
+ * - 无障碍与存储权限不再在空态出现：纯对话用不到它们，等真要操作手机时再提示。
+ * - 去掉 56dp 圆形盾牌图标 + 「你好，我是…」这套模板空态，直接用文字。
  */
 @Composable
 private fun EmptyGuide(
@@ -1442,152 +1455,146 @@ private fun EmptyGuide(
     onOpenPermissions: () -> Unit,
     onPick: (String) -> Unit
 ) {
+    // 只用来决定底部那行「检查设置」要不要出现，不再逐条列出
+    val needSetup = !modelReady || !serviceConnected || pendingGrants > 0
     Column(
         modifier = modifier
             .verticalScroll(rememberScrollState())
-            .padding(horizontal = AgentSpacing.space6, vertical = AgentSpacing.space5),
+            .padding(
+                start = AgentSpacing.space6,
+                end = AgentSpacing.space6,
+                top = 72.dp,
+                bottom = AgentSpacing.space8
+            ),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Surface(
-            shape = CircleShape,
-            color = LocalAkColors.surface1,
-            modifier = Modifier.size(56.dp)
-        ) {
-            Box(contentAlignment = Alignment.Center) {
-                Icon(
-                    imageVector = Icons.Outlined.Shield,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(28.dp)
-                )
-            }
-        }
-        Spacer(Modifier.height(AgentSpacing.space4))
         Text(
             text = "你好，我是 AgentKit",
-            style = MaterialTheme.typography.titleLarge,
+            style = MaterialTheme.typography.titleLarge.copy(
+                fontSize = 23.sp,
+                lineHeight = 31.sp,
+                fontWeight = FontWeight.SemiBold
+            ),
             color = MaterialTheme.colorScheme.onSurface,
             textAlign = TextAlign.Center
         )
-        Spacer(Modifier.height(AgentSpacing.space2))
+        Spacer(Modifier.height(AgentSpacing.space3))
         Text(
-            text = "我可以看懂你的屏幕、读取通知，并替你完成手机上的操作。" +
-                "先完成「起飞前检查」，再发出第一条指令。",
-            style = MaterialTheme.typography.bodySmall,
+            text = "能看屏幕、读通知，也能替你点。直接说要做什么就行。",
+            style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.Center,
-            modifier = Modifier.width(280.dp)
-        )
-        Spacer(Modifier.height(AgentSpacing.space6))
-        AkPrimaryButton(text = "去配置模型", onClick = onOpenModel)
-
-        Spacer(Modifier.height(AgentSpacing.space6))
-        PreflightRow(
-            label = "模型配置",
-            ready = modelReady,
-            readyText = "已配置",
-            pendingText = "未配置，去填写 API Key",
-            onClick = onOpenModel
-        )
-        PreflightRow(
-            label = "无障碍服务",
-            ready = serviceConnected,
-            readyText = "已连接",
-            pendingText = "未连接，去开启",
-            onClick = onOpenPermissions
-        )
-        PreflightRow(
-            label = "权限就绪",
-            ready = pendingGrants == 0,
-            readyText = "已就绪",
-            pendingText = "${pendingGrants} 项待授权",
-            onClick = onOpenPermissions
+            modifier = Modifier.width(300.dp)
         )
 
-        Spacer(Modifier.height(AgentSpacing.space6))
+        // 唯一的阻塞项：没模型就没法对话，给一行入口，不做按钮阵列
+        if (!modelReady) {
+            Spacer(Modifier.height(AgentSpacing.space5))
+            AkPressSurface(
+                onClick = onOpenModel,
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Row(
+                    modifier = Modifier.padding(
+                        horizontal = AgentSpacing.space3,
+                        vertical = AgentSpacing.space2
+                    ),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "还没有配置模型",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.width(AgentSpacing.space2))
+                    Text(
+                        text = "去配置",
+                        style = MaterialTheme.typography.bodyMedium.copy(
+                            fontWeight = FontWeight.SemiBold
+                        ),
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Icon(
+                        imageVector = Icons.Outlined.ChevronRight,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(16.dp)
+                    )
+                }
+            }
+        }
+
+        Spacer(Modifier.height(AgentSpacing.space8))
         Text(
-            text = "试试这样问我",
+            text = "试试这样问",
             style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
+            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f)
         )
-        Spacer(Modifier.height(AgentSpacing.space2))
-        SuggestionCard("看看现在屏幕上是什么", Icons.Outlined.PhoneAndroid, onPick)
-        SuggestionCard("打开设置并点击 WLAN", Icons.Outlined.TouchApp, onPick)
-        SuggestionCard("刚才有没有新消息", Icons.Outlined.Notifications, onPick)
-    }
-}
+        Spacer(Modifier.height(AgentSpacing.space1))
+        SuggestionRow("看看现在屏幕上是什么", Icons.Outlined.PhoneAndroid, onPick)
+        SuggestionRow("打开设置并点击 WLAN", Icons.Outlined.TouchApp, onPick)
+        SuggestionRow("刚才有没有新消息", Icons.Outlined.Notifications, onPick)
 
-/** 起飞前检查单行：6dp 状态点 + 中文标签 + 就绪文字（双编码，UX v1 §5.3）；整行可点直达。 */
-@Composable
-private fun PreflightRow(
-    label: String,
-    ready: Boolean,
-    readyText: String,
-    pendingText: String,
-    onClick: () -> Unit
-) {
-    val ak = LocalAkColors
-    AkPressSurface(
-        onClick = onClick,
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = AgentSpacing.space1),
-        shape = RoundedCornerShape(14.dp)
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(
-                    horizontal = AgentSpacing.space4,
-                    vertical = AgentSpacing.space3
-                ),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            AkStatusDot(if (ready) ak.success else MaterialTheme.colorScheme.error, 6.dp)
-            Spacer(Modifier.width(AgentSpacing.space3))
-            Text(
-                text = label,
-                style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.onSurface,
-                modifier = Modifier.weight(1f)
-            )
-            Text(
-                text = if (ready) readyText else pendingText,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
+        if (needSetup) {
+            Spacer(Modifier.height(AgentSpacing.space8))
+            AkPressSurface(
+                onClick = onOpenPermissions,
+                shape = RoundedCornerShape(10.dp)
+            ) {
+                Row(
+                    modifier = Modifier.padding(
+                        horizontal = AgentSpacing.space3,
+                        vertical = AgentSpacing.space2
+                    ),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.Settings,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                        modifier = Modifier.size(14.dp)
+                    )
+                    Spacer(Modifier.width(AgentSpacing.space2))
+                    Text(
+                        text = "首次使用？检查设置",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f)
+                    )
+                }
+            }
         }
     }
 }
 
-/** 示例建议卡：白卡 radius 14dp padding 14dp，13sp on-surface-var（§6.9）；点击填入输入框。 */
+/**
+ * 示例建议行（v5）。
+ *
+ * 原实现是白卡 + 20dp 图标 + 14dp 内边距，三张摆下来像三个功能入口——
+ * 它们只是"让你知道能说什么"的引子，不该有卡片的分量。改为整行按压、无背景。
+ */
 @Composable
-private fun SuggestionCard(text: String, icon: ImageVector, onPick: (String) -> Unit) {
+private fun SuggestionRow(text: String, icon: ImageVector, onPick: (String) -> Unit) {
     AkPressSurface(
         onClick = { onPick(text) },
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = AgentSpacing.space1),
-        shape = RoundedCornerShape(14.dp)
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(12.dp)
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(AgentSpacing.space4),
+                .padding(horizontal = AgentSpacing.space3, vertical = AgentSpacing.space2),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Icon(
                 imageVector = icon,
                 contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(20.dp)
+                tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.65f),
+                modifier = Modifier.size(16.dp)
             )
             Spacer(Modifier.width(AgentSpacing.space3))
             Text(
                 text = text,
-                style = MaterialTheme.typography.bodySmall,
+                style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
