@@ -407,7 +407,18 @@ fun ChatScreen(
                             else -> 0L
                         }
                         val timeLabel = ChatTime.format(ts, System.currentTimeMillis())
-                        if (timeLabel.isNotEmpty()) {
+                        // v4：时间戳按**间隔**显示——距上一条不足 5 分钟就不画。
+                        // 原来每条消息都带一个「16:11」，一段 20 条的对话就有 20 个时间，
+                        // 读起来像运行日志而不是对话；时间只在「隔了一会儿再说」时才有信息量。
+                        // 首条必显示（prevTs 为 0），保证每屏开头都有时间锚点。
+                        val prevTs = when (prev) {
+                            is UiItem.User -> prev.timeMs
+                            is UiItem.Assistant -> prev.timeMs
+                            else -> 0L
+                        }
+                        val showTime = timeLabel.isNotEmpty() &&
+                            (prevTs <= 0L || ts - prevTs >= TIME_GAP_MS)
+                        if (showTime) {
                             Text(
                                 text = timeLabel,
                                 style = MaterialTheme.typography.labelSmall,
@@ -2364,13 +2375,15 @@ private fun ToolCard(item: UiItem.Tool) {
     )
     Surface(
         color = MaterialTheme.colorScheme.surface,
-        shape = RoundedCornerShape(20.dp),
+        // v4：20 → 14。工具卡常连排 5~10 张，20 的圆角会让整列看起来像一排药丸；
+        // 14 与列表行图标的 12 同族，一屏 8 张也不抢戏。
+        shape = RoundedCornerShape(14.dp),
         modifier = Modifier.fillMaxWidth()
     ) {
         Column(
             Modifier
                 .padding(horizontal = AgentSpacing.space4)
-                .padding(bottom = AgentSpacing.space3)
+                .padding(bottom = AgentSpacing.space2)
                 .animateContentSize(
                     animationSpec = tween(durationMillis = 250, easing = AkMotionEasing)
                 )
@@ -2862,3 +2875,7 @@ private fun AskUserCard(
         }
     }
 }
+
+
+/** 相邻两条消息间隔超过这个值才重画时间戳（v4）。 */
+private const val TIME_GAP_MS = 5 * 60 * 1000L

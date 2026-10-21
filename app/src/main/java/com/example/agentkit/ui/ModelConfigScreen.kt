@@ -672,11 +672,11 @@ private fun ModelTab(
     val needsKey = ProviderCatalog.requiresApiKey(providerId)
     val canTest = isLocal || (baseUrl.isNotBlank() && (!needsKey || apiKey.isNotBlank()))
 
-    AkSectionCard(
+    AkGroup(
         title = "模型接入",
-        description = "内置 30+ 家供应商预设（DeepSeek / Kimi / 智谱 / 通义 / 豆包 / Claude / " +
-            "Gemini / OpenRouter / Ollama…），点「全部供应商」按组选；协议只分 OpenAI 兼容 / " +
-            "Claude / Gemini 三类，其余自建或未收录端点选「OpenAI 兼容」直接填。",
+        description = "内置 30+ 家供应商预设（DeepSeek / Kimi / 智谱 / 通义 / 豆包 / Claude / Gemini / " +
+            "OpenRouter / Ollama…）。点「全部供应商」按组选；自建端点选「OpenAI 兼容」直接填。",
+        paddedContent = true
     ) {
         Text(
             text = "供应商",
@@ -943,9 +943,9 @@ private fun ProviderPickerSection(
     onSelect: (String) -> Unit,
     onCreate: () -> Unit
 ) {
-    AkSectionCard(
+    AkGroup(
         title = "提供商",
-        description = "共 ${profiles.size} 个配置 · 点选即时生效，无需先保存"
+        description = "共 ${profiles.size} 个配置 · 点选即时生效"
     ) {
         Column(verticalArrangement = Arrangement.spacedBy(AgentSpacing.space1)) {
             profiles.forEach { profile ->
@@ -1440,10 +1440,10 @@ private fun LocalModelsTab(vm: ChatViewModel) {
     // W-44：下载 ≠ 使用。真机反馈「下好了但不知道咋用」——选了本地模型文件，
     // 但「当前模型」仍是云端供应商，对话照样走云。这里把状态和下一步摆在最上面。
     if (!onLocalProvider) {
-        AkSectionCard(
+        AkGroup(
             title = "本地模型还没生效",
-            description = "只有把「当前模型」切到「本地模型（内置）」，对话才会走本地推理；" +
-                "现在这条对话走的是云端。"
+            description = "只有把「当前模型」切到「本地模型（内置）」，对话才会走本地推理",
+            paddedContent = true
         ) {
             Text(
                 text = "当前供应商：" + config.providerId.ifBlank { "未配置" },
@@ -1476,10 +1476,10 @@ private fun LocalModelsTab(vm: ChatViewModel) {
 
     // —— 运行状态 ————————————————————————————————————————————
     val nativeOk = remember { com.example.agentkit.core.llm.local.LlamaJni.ensureLoaded() }
-    AkSectionCard(
+    AkGroup(
         title = "运行状态",
-        description = "本地推理由 llama.cpp（b4600，MIT）驱动，模型常驻内存随用随聊；" +
-            "仅支持 arm64 真机，模拟器暂不可用。"
+        description = "由 llama.cpp（b4600，MIT）驱动，模型常驻内存随用随聊；仅支持 arm64 真机",
+        paddedContent = true
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             AkStatusDot(
@@ -1515,9 +1515,10 @@ private fun LocalModelsTab(vm: ChatViewModel) {
     }
 
     // —— 已下载模型 ——————————————————————————————————————————
-    AkSectionCard(
+    AkGroup(
         title = "已下载模型",
-        description = "点选即设为当前模型，下次对话生效。删除会同时清理文件。"
+        description = "点选即设为当前模型，下次对话生效；删除会同时清理文件",
+        paddedContent = true
     ) {
         // 已有模型文件的用户不必再走「模型目录」重下一遍（几 GB 的流量）
         AkOutlinedButton(
@@ -1575,10 +1576,10 @@ private fun LocalModelsTab(vm: ChatViewModel) {
     }
 
     // —— 模型目录 ————————————————————————————————————————————
-    AkSectionCard(
+    AkGroup(
         title = "模型目录",
-        description = "Q4_K_M 量化（体积/质量黄金分割点），均来自 HuggingFace 公开仓库。" +
-            "下载支持断点续传，中途退出下次继续。"
+        description = "Q4_K_M 量化，均来自 HuggingFace 公开仓库；下载支持断点续传",
+        paddedContent = true
     ) {
         catalog.forEach { entry ->
             val isDownloaded = models.any { it.fileName == entry.fileName }
@@ -1648,10 +1649,10 @@ private fun LocalModelsTab(vm: ChatViewModel) {
     }
 
     // —— 推理参数 ————————————————————————————————————————————
-    AkSectionCard(
+    AkGroup(
         title = "推理参数",
-        description = "上下文越大越吃内存（4K 约额外 0.5GB 级）；线程数超过大核数收益递减。" +
-            "改动保存后下次加载生效。"
+        description = "上下文越大越吃内存（4K 约额外 0.5GB）；线程数超过大核数收益递减，保存后下次加载生效",
+        paddedContent = true
     ) {
         LocalParamField(
             label = "上下文长度（token）",
@@ -1969,10 +1970,10 @@ private fun copyToClipboard(ctx: Context, result: TestResult) {
  */
 @Composable
 private fun PromptTab(config: com.example.agentkit.skill.ModelConfig) {
-    AkSectionCard(
+    AkGroup(
         title = "系统提示词",
-        description = "每轮对话发往模型前，AgentKit 按下面的顺序拼装系统提示，随对话实时生效。",
-        icon = Icons.Outlined.Visibility
+        description = "每轮对话发往模型前按下面的顺序拼装，随对话实时生效",
+        paddedContent = true
     ) {
         PromptBlock(
             index = "1",
@@ -1992,9 +1993,10 @@ private fun PromptTab(config: com.example.agentkit.skill.ModelConfig) {
             body = "最近 12 条长期记忆、上限 1200 字，每轮注入；写满后由新记忆顶替最早的一条。"
         )
     }
-    AkSectionCard(
+    AkGroup(
         title = "当前生效配置",
-        description = "以上提示词由下面的端点与模型执行。"
+        description = "以上提示词由下面的端点与模型执行",
+        paddedContent = true
     ) {
         Text(
             text = "端点：${config.baseUrl}",

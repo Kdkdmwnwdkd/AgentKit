@@ -468,24 +468,44 @@ fun AkSectionCard(
 ) {
     Surface(
         modifier = modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(20.dp),
+        // v4：20 → 16。与 AkGroup 的 16 对齐，卡片之间不再有"圆角大小不一"的错位感。
+        shape = RoundedCornerShape(16.dp),
         color = MaterialTheme.colorScheme.surface
     ) {
-        Column(Modifier.padding(AgentSpacing.space5)) {
+        Column(Modifier.padding(AgentSpacing.space4)) {
+            // v4：标题图标从 40dp 圆角底座改为 18dp 纯图标，标题 18sp → 16sp SemiBold。
+            //
+            // 原实现给每张卡都套一个 40dp 浅色方块 + 18sp 标题——这是「AI 生成的后台界面」
+            // 最典型的组合：每一组内容都顶着一个色块。卡内标题属于二级层级，不该和
+            // 页面标题（顶栏 20sp）抢同一条视觉线，16sp/600 足够区分，同时把
+            // 「这一组是什么」的信息交还给文字本身。
             if (icon != null) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    AkIconBase(icon = icon)
-                    Spacer(Modifier.width(AgentSpacing.space3))
+                    Icon(
+                        imageVector = icon,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(Modifier.width(AgentSpacing.space2))
                     Text(
                         text = title,
-                        style = MaterialTheme.typography.titleLarge,
+                        style = MaterialTheme.typography.titleLarge.copy(
+                            fontSize = 16.sp,
+                            lineHeight = 22.sp,
+                            fontWeight = FontWeight.SemiBold
+                        ),
                         color = MaterialTheme.colorScheme.onSurface
                     )
                 }
             } else {
                 Text(
                     text = title,
-                    style = MaterialTheme.typography.titleLarge,
+                    style = MaterialTheme.typography.titleLarge.copy(
+                        fontSize = 16.sp,
+                        lineHeight = 22.sp,
+                        fontWeight = FontWeight.SemiBold
+                    ),
                     color = MaterialTheme.colorScheme.onSurface
                 )
             }
@@ -507,9 +527,91 @@ fun AkSectionCard(
  * 列表项（§6.1 RikkaHub 两行结构）：40dp 圆角图标底座 + 主文案 16sp/24 w500 +
  * 描述 13sp/20（1 行 ellipsis）+ 右侧控件。两行 ≥72dp、单行 ≥56dp，按压 surface-2 + scale 0.97。
  */
+/**
+ * 设置分组（v4 骨架重排，2026-10-21 第二批）。
+ *
+ * 与 [AkSectionCard] 的差别不是样式微调，是**结构变化**：
+ * 1. **标题移到卡外**：12sp 灰色小字 + 可选 14dp 图标；原来是卡内 40dp 图标底座 + 18sp 标题；
+ * 2. **卡片不再有内边距**：卡片只负责底色与圆角，行自带 16dp 水平 padding；
+ * 3. **描述降级**：11.5sp 小字放在标题下，最多两行；原来和标题同处卡内、与内容抢重量。
+ *
+ * 为什么值得改：原结构每组卡内固定吃掉「40dp 底座 + 28dp 标题 + 20dp 描述 + 12dp 间距」
+ * ≈ 100dp，设置页 9 组就是 900dp——用户要滑三屏才能看完设置。工具型界面的分组标题是
+ * **路标**，不是内容；路标不该和内容一样重。
+ *
+ * 内容约定：直接放 [AkListItem]（自带水平内边距）；若放按钮/滑块等自定义控件，
+ * 调用方自行包一层 `padding(horizontal = AgentSpacing.space4)`。
+ */
+@Composable
+fun AkGroup(
+    title: String,
+    modifier: Modifier = Modifier,
+    description: String? = null,
+    /**
+     * 卡片内是否兜底给 16dp 内边距。
+     *
+     * - `false`（默认）：**纯列表组**。内容直接是 [AkListItem]，它自带 16dp 水平边距，
+     *   卡片再加一层就会变成 32dp，与分组标题错开。
+     * - `true`：**表单组**。内容是输入框、按钮、滑块、自绘行，它们不带边距，
+     *   必须由卡片兜。
+     */
+    paddedContent: Boolean = false,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    // 组标题不带图标：它必须与行内文字左对齐（都在 16dp），
+    // 带图标会把标题推到 36dp，与下方文字错开，反而更乱。
+    val edge = AgentSpacing.space4
+    Column(modifier.fillMaxWidth()) {
+        Text(
+            text = title,
+            style = MaterialTheme.typography.labelMedium.copy(
+                fontSize = 12.sp,
+                lineHeight = 16.sp,
+                fontWeight = FontWeight.SemiBold,
+                letterSpacing = 0.4.sp
+            ),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(
+                start = edge,
+                end = edge,
+                bottom = if (description.isNullOrBlank()) 10.dp else 5.dp
+            )
+        )
+        if (!description.isNullOrBlank()) {
+            Text(
+                text = description,
+                style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.5.sp, lineHeight = 17.sp),
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.82f),
+                modifier = Modifier.padding(start = edge, end = edge, bottom = 10.dp)
+            )
+        }
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(16.dp),
+            color = MaterialTheme.colorScheme.surface
+        ) {
+            Column(
+                if (paddedContent) Modifier.padding(AgentSpacing.space4)
+                else Modifier.padding(vertical = 4.dp)
+            ) {
+                content()
+            }
+        }
+    }
+}
+
 @Composable
 fun AkListItem(
-    icon: ImageVector,
+    /**
+     * 行首图标；传 **null 表示这一行不需要图标**（v4 起支持）。
+     *
+     * 设置页的行几乎都传了与所属分组重复的图标（「提醒」组 → 铃铛行 → 还是铃铛），
+     * 纯冗余：用户按文字找入口，不按图标。去掉后文字左移 32dp，一屏多容纳信息。
+     *
+     * 保持「无默认值」是有意的：现有 200+ 调用点全部显式传图标，加默认值会让
+     * `AkListItem(Icons.X, "标题")` 这类位置参数调用直接编译失败。
+     */
+    icon: ImageVector?,
     title: String,
     modifier: Modifier = Modifier,
     description: String? = null,
@@ -526,17 +628,19 @@ fun AkListItem(
             modifier = Modifier.padding(horizontal = AgentSpacing.space4),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // 排版 v4：列表行不再套 40dp tinted 图标底座。
-            // 每行一个圆角色块是「生成式后台」最典型的 tell（图标盒重复一整列），
-            // 改成 20dp 线性图标直接贴在行首，文字左移 20dp，整页少一层装饰。
-            Icon(
-                imageVector = icon,
-                contentDescription = null,
-                tint = if (selected) MaterialTheme.colorScheme.primary
-                else MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(20.dp)
-            )
-            Spacer(Modifier.width(AgentSpacing.space3))
+            // 排版 v4：列表行不再套 40dp tinted 图标底座（图标盒重复一整列是
+            // 「生成式后台」最典型的 tell）。第二批起支持 icon = null：设置页那些
+            // 与分组标题重复的行图标整体去掉，文字直接对齐到 16dp 边距。
+            if (icon != null) {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = null,
+                    tint = if (selected) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(20.dp)
+                )
+                Spacer(Modifier.width(AgentSpacing.space3))
+            }
             Column(Modifier.weight(1f)) {
                 Text(
                     text = title,
