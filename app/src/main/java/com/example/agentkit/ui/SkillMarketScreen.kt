@@ -1,6 +1,11 @@
 package com.example.agentkit.ui
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Icon
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Column
@@ -57,6 +62,8 @@ fun SkillMarketScreen(vm: ChatViewModel) {
     val status by vm.marketStatus.collectAsStateWithLifecycle()
 
     var sourceInput by rememberSaveable { mutableStateOf("") }
+    // 市场源默认收起：首屏先给"能装什么"，配置放进去才展开（低频操作不占首屏）
+    var sourcesOpen by rememberSaveable { mutableStateOf(false) }
     // 卸载必须二次确认：它删的是磁盘目录 + 授权状态，误点一次就得重新装、重新授权
     var confirmUninstall by remember { mutableStateOf<MarketUiItem?>(null) }
 
@@ -83,72 +90,117 @@ fun SkillMarketScreen(vm: ChatViewModel) {
                 ),
             verticalArrangement = Arrangement.spacedBy(AgentSpacing.space4)
         ) {
-            // —— 市场源：先讲清楚「这是什么」，再给输入框 ——
-            AkSectionCard(
-                title = "市场源",
-                icon = Icons.Outlined.Public,
-                description = "市场源是一个公开的索引 JSON 地址，里面列出插件名、版本与下载地址。" +
-                    "添加后即可浏览、安装与更新；插件包会先校验体积与 SHA-256，再交给与「导入技能」" +
-                    "完全相同的安装链路（Zip Slip 防护、id 白名单、导入即降权）。"
+            // —— 市场源：收起成一行摘要，把首屏让给插件列表 ——
+            // 工具型界面的首屏应先回答「能装什么」，而不是「配置在哪」；源管理是低频操作。
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(20.dp),
+                color = MaterialTheme.colorScheme.surface
             ) {
-                AkTextField(
-                    value = sourceInput,
-                    onValueChange = { sourceInput = it },
-                    label = "索引地址",
-                    placeholder = "https://example.com/agentkit-market.json",
-                    machine = true
-                )
-                Spacer(Modifier.height(AgentSpacing.space3))
-                Row(
-                    Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(AgentSpacing.space3)
+                Column(
+                    Modifier.padding(
+                        horizontal = AgentSpacing.space4,
+                        vertical = AgentSpacing.space2
+                    )
                 ) {
-                    AkPrimaryButton(
-                        text = "添加并刷新",
-                        icon = Icons.Outlined.Download,
-                        modifier = Modifier.weight(1f),
-                        enabled = sourceInput.isNotBlank() && !loading,
-                        onClick = {
-                            // 只在添加成功时清空：失败还清空的话，用户得把长地址重新打一遍
-                            if (vm.addMarketSource(sourceInput.trim())) sourceInput = ""
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.Public,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(Modifier.width(AgentSpacing.space3))
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                text = "市场源",
+                                style = MaterialTheme.typography.titleMedium,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                text = if (sources.isEmpty()) "尚未添加，点「管理」填一个索引地址"
+                                else "${sources.size} 个索引 · 点「管理」增删",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
                         }
-                    )
-                    AkOutlinedButton(
-                        text = "刷新",
-                        icon = Icons.Outlined.Refresh,
-                        modifier = Modifier.weight(1f),
-                        enabled = !loading && sources.isNotEmpty(),
-                        onClick = { vm.refreshMarket() }
-                    )
-                }
-                if (sources.isEmpty()) {
-                    Spacer(Modifier.height(AgentSpacing.space3))
-                    Text(
-                        text = "尚未添加市场源。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                } else {
-                    sources.forEach { src ->
+                        AkTextButton(
+                            text = if (sourcesOpen) "收起" else "管理",
+                            onClick = { sourcesOpen = !sourcesOpen }
+                        )
+                    }
+
+                    if (sourcesOpen) {
+                        Spacer(Modifier.height(AgentSpacing.space3))
+                        Text(
+                            text = "索引是一个公开 JSON 地址，列出插件名、版本与下载地址。" +
+                                "安装前会校验体积与 SHA-256，并复用「导入技能」的同一套安全链路。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(Modifier.height(AgentSpacing.space3))
+                        AkTextField(
+                            value = sourceInput,
+                            onValueChange = { sourceInput = it },
+                            label = "索引地址",
+                            placeholder = "https://example.com/agentkit-market.json",
+                            machine = true
+                        )
                         Spacer(Modifier.height(AgentSpacing.space3))
                         Row(
                             Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(AgentSpacing.space2)
+                            horizontalArrangement = Arrangement.spacedBy(AgentSpacing.space3)
                         ) {
-                            Text(
-                                text = src.url,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            AkPrimaryButton(
+                                text = "添加并刷新",
+                                icon = Icons.Outlined.Download,
                                 modifier = Modifier.weight(1f),
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
+                                enabled = sourceInput.isNotBlank() && !loading,
+                                onClick = {
+                                    if (vm.addMarketSource(sourceInput.trim())) sourceInput = ""
+                                }
                             )
-                            AkTextButton(
-                                text = "移除",
-                                icon = Icons.Outlined.Delete,
-                                onClick = { vm.removeMarketSource(src.url) }
+                            AkOutlinedButton(
+                                text = "刷新",
+                                icon = Icons.Outlined.Refresh,
+                                modifier = Modifier.weight(1f),
+                                enabled = !loading && sources.isNotEmpty(),
+                                onClick = { vm.refreshMarket() }
                             )
+                        }
+                        if (sources.isEmpty()) {
+                            Spacer(Modifier.height(AgentSpacing.space3))
+                            Text(
+                                text = "尚未添加市场源。",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        } else {
+                            sources.forEach { src ->
+                                Spacer(Modifier.height(AgentSpacing.space2))
+                                Row(
+                                    Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(AgentSpacing.space2)
+                                ) {
+                                    Text(
+                                        text = src.url,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.weight(1f),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    AkTextButton(
+                                        text = "移除",
+                                        icon = Icons.Outlined.Delete,
+                                        onClick = { vm.removeMarketSource(src.url) }
+                                    )
+                                }
+                            }
                         }
                     }
                 }

@@ -97,17 +97,16 @@ fun SkillsScreen(
                 ),
             verticalArrangement = Arrangement.spacedBy(AgentSpacing.space4)
         ) {
-            // —— W-48：插件市场入口（远端清单）与本机技能列表分区，避免两种操作混在一起 ——
-            AkSectionCard(
-                title = "插件市场",
-                icon = Icons.Outlined.Public,
-                description = "从公开索引浏览可安装的插件，支持版本更新与一键安装；" +
-                    "安装链路与「导入技能」完全一致（校验体积与 SHA-256，导入即降权）。"
+            // —— W-48：插件市场入口。v4 收成一行：入口是「去别处」，不该占首屏一张卡 ——
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(20.dp),
+                color = MaterialTheme.colorScheme.surface
             ) {
-                AkPrimaryButton(
-                    text = "打开插件市场",
+                AkListItem(
                     icon = Icons.Outlined.Public,
-                    modifier = Modifier.fillMaxWidth(),
+                    title = "插件市场",
+                    description = "浏览可安装的插件，支持版本更新；安装链路与本页一致",
                     onClick = onOpenMarket
                 )
             }

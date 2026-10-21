@@ -70,6 +70,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.example.agentkit.core.AgentLogger
@@ -163,7 +164,9 @@ fun AkTopBar(
         }
         Text(
             text = title,
-            style = MaterialTheme.typography.titleLarge,
+            // v4：顶栏标题 20sp（原 titleLarge 18sp）。手机端标题 20-24px 才立得住，
+            // 18sp 与列表主文案 16sp 只差 2sp，视觉上标题不成为标题。
+            style = MaterialTheme.typography.titleLarge.copy(fontSize = 20.sp, lineHeight = 28.sp),
             color = MaterialTheme.colorScheme.onSurface,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
@@ -517,13 +520,22 @@ fun AkListItem(
 ) {
     val rowModifier = modifier
         .fillMaxWidth()
-        .heightIn(min = if (description != null) 72.dp else 56.dp)
+        .heightIn(min = if (description != null) 64.dp else 56.dp)
     val body: @Composable () -> Unit = {
         Row(
             modifier = Modifier.padding(horizontal = AgentSpacing.space4),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            AkIconBase(icon = icon, selected = selected)
+            // 排版 v4：列表行不再套 40dp tinted 图标底座。
+            // 每行一个圆角色块是「生成式后台」最典型的 tell（图标盒重复一整列），
+            // 改成 20dp 线性图标直接贴在行首，文字左移 20dp，整页少一层装饰。
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = if (selected) MaterialTheme.colorScheme.primary
+                else MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(20.dp)
+            )
             Spacer(Modifier.width(AgentSpacing.space3))
             Column(Modifier.weight(1f)) {
                 Text(
