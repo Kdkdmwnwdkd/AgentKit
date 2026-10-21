@@ -15,6 +15,23 @@
         "测试"
       ],
       "permissions": []
+    },
+    {
+      "id": "visual-review",
+      "name": "视觉评审",
+      "version": "1.0.0",
+      "description": "对界面截图、海报或 App 页面做五维评审（结构 / 层级 / 留白 / 色彩 / 一致性），输出按优先级排序的修改建议。",
+      "author": "agentkit",
+      "downloadUrl": "visual-review-1.0.0.zip",
+      "sha256": "a5cebd7d40bc55755a2bc9c46da6284d34e15afe99ddedee94fd2fc806917bd1",
+      "sizeBytes": 3315,
+      "tags": [
+        "设计",
+        "效率"
+      ],
+      "permissions": [
+        "screen_capture"
+      ]
     }
   ]
 }
