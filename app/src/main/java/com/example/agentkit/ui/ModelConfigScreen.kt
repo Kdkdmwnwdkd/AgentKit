@@ -168,25 +168,11 @@ fun ModelConfigScreen(vm: ChatViewModel, onBack: () -> Unit) {
         ) {
             when (tab) {
                 0 -> {
-                    // 功能四（P0-3）：提供商列表 = 「换模型」的一级入口
-                    ProviderPickerSection(
-                        profiles = profiles,
-                        activeId = activeProfileId,
-                        onSelect = { id ->
-                            vm.switchProfile(id)
-                            val name = profiles.firstOrNull { it.id == id }?.name ?: "该配置"
-                            Toast.makeText(ctx, "已切换到「$name」", Toast.LENGTH_SHORT).show()
-                        },
-                        onCreate = {
-                            vm.addProfile(null)
-                            // hotfix36：新建后引导下一步（不再默默继承上一家供应商）
-                            Toast.makeText(
-                                ctx,
-                                "已新建配置：请先选供应商、填 API Key，再点保存",
-                                Toast.LENGTH_SHORT
-                            ).show()
-                        }
-                    )
+                    // v4（真机反馈「两套触碰系统，上面也有下面也是，留一套就行」）：
+                    // 这里原本还有一份 ProviderPickerSection——它和顶部 ProfileSwitcher 的
+                    // chips 列的是同一批档案（同样的名字、同样带对勾），只是形态不同。
+                    // 保留顶部 chips（更紧凑、随时可见、带「＋」），删掉这份列表。
+                    // 切换配置的入口因此只有一个，不会再出现「两处数量还不同步」的怪状。
                     ModelTab(
                         vm = vm,
                         baseUrl = baseUrl,
@@ -919,64 +905,6 @@ private fun ModelTab(
             onConfirm = { vm.deleteProfile(id); showDelete = false },
             onDismiss = { showDelete = false }
         )
-    }
-}
-
-/**
- * 功能四（P0-3）：提供商列表——「换模型」的一级入口。
- *
- * 对标 Coomi `ProvidersView.vue` / RikkaHub `SettingPage`：把「有哪些提供商 +
- * 当前用哪个 + 点一下就换」放在同一层，而不是让用户先认出顶部那排横向
- * 芯片条、再横向找被挤出去的那个。
- *
- * 每行：图标底座 + 配置名 +「模型名 · 域名」；当前生效项 selected（primary
- * 图标底座 + primary 标题 + 右侧对勾）。点选即 [ChatViewModel.switchProfile]
- * 生效——VM 同步 _config 并落盘，下一轮请求即走新配置，无需先点保存。
- *
- * 布局用 Column 而非 LazyColumn：档案数量级是个位数，纵向滚动交给宿主
- * Column（本页已有 verticalScroll），避免嵌套滚动。
- */
-@Composable
-private fun ProviderPickerSection(
-    profiles: List<ModelProfile>,
-    activeId: String,
-    onSelect: (String) -> Unit,
-    onCreate: () -> Unit
-) {
-    AkGroup(
-        title = "提供商",
-        description = "共 ${profiles.size} 个配置 · 点选即时生效"
-    ) {
-        Column(verticalArrangement = Arrangement.spacedBy(AgentSpacing.space1)) {
-            profiles.forEach { profile ->
-                val isActive = profile.id == activeId
-                val host = hostOf(profile.config.baseUrl)
-                val modelText = profile.config.model.ifBlank { "未设置模型名" }
-                AkListItem(
-                    icon = Icons.Outlined.AutoAwesome,
-                    title = profile.name,
-                    description = if (host.isBlank()) modelText else "$modelText · $host",
-                    selected = isActive,
-                    onClick = { onSelect(profile.id) },
-                    trailing = if (isActive) {
-                        {
-                            Icon(
-                                imageVector = Icons.Outlined.Check,
-                                contentDescription = "当前生效",
-                                tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(20.dp)
-                            )
-                        }
-                    } else null
-                )
-            }
-            Spacer(Modifier.height(AgentSpacing.space2))
-            AkTextButton(
-                text = "＋ 新建提供商",
-                onClick = onCreate,
-                modifier = Modifier.fillMaxWidth()
-            )
-        }
     }
 }
 

@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AgentKit 使用说明</title>
+<style>
+  :root{--paper:#EDE3DC;--bg:#F8EFE9;--card:#fff;--ink:#2E2620;--ink2:#6B5B4E;--ink3:#756450;
+    --teal:#0E5D6B;--tealWeak:rgba(14,93,107,.08);--line:rgba(46,38,32,.10)}
+  *{box-sizing:border-box;-webkit-font-smoothing:antialiased}
+  body{margin:0;padding:28px 20px 80px;background:var(--paper);color:var(--ink);
+    font-family:"PingFang SC","Noto Sans SC","Microsoft YaHei",system-ui,sans-serif;
+    font-size:15px;line-height:1.8}
+  .wrap{max-width:680px;margin:0 auto;background:var(--card);border-radius:20px;padding:28px 24px 34px}
+  .top{display:flex;align-items:center;gap:10px;margin-bottom:18px;padding-bottom:16px;
+    border-bottom:1px solid var(--line)}
+  .top a{color:var(--teal);text-decoration:none;font-size:13px;font-weight:600}
+  h1{font-size:25px;line-height:1.32;margin:0 0 6px;font-weight:600;letter-spacing:-.01em}
+  h2{font-size:18px;margin:30px 0 10px;font-weight:600;padding-top:6px}
+  h3{font-size:15.5px;margin:20px 0 8px;font-weight:600;color:var(--ink)}
+  p{margin:9px 0}
+  ul,ol{margin:9px 0;padding-left:22px}
+  li{margin:4px 0}
+  code{font-family:ui-monospace,Menlo,monospace;font-size:13px;background:#F4E9E2;
+    padding:1.5px 5px;border-radius:5px}
+  pre{background:#F4E9E2;padding:13px 15px;border-radius:12px;overflow-x:auto;margin:11px 0}
+  pre code{background:none;padding:0;font-size:12.5px;line-height:1.75}
+  blockquote{margin:12px 0;padding:9px 14px;border-left:3px solid rgba(14,93,107,.3);
+    background:var(--tealWeak);border-radius:0 10px 10px 0;color:var(--ink2);font-size:13.5px}
+  blockquote p{margin:0}
+  table{width:100%;border-collapse:collapse;margin:13px 0;font-size:13px}
+  th{background:#F4E9E2;text-align:left;padding:9px 11px;font-weight:600;font-size:12px;
+    color:var(--ink2);border-bottom:1px solid var(--line)}
+  td{padding:9px 11px;border-bottom:1px solid var(--line);vertical-align:top;line-height:1.65}
+  tr:last-child td{border-bottom:none}
+  hr{border:none;border-top:1px solid var(--line);margin:26px 0}
+  strong{font-weight:600}
+  em{font-style:normal;color:var(--ink3);font-size:13px}
+  a{color:var(--teal)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top"><a href="index.html">← 返回</a></div>
+<h1>AgentKit 使用说明</h1>
+<blockquote>
+<p>写给第一次用的人。按顺序做，五分鐘能用起来。</p>
+</blockquote>
+<hr />
+<h2>一、装好之后，先配模型</h2>
+<p>AgentKit 自己不会思考，它要接一个大模型（相当于给 App 装一个"脑子"）。没配之前，发什么都得不到回答。</p>
+<p><strong>入口：</strong> 左上角 ☰ → 模型配置</p>
+<h3>三个步骤</h3>
+<p><strong>1. 选供应商</strong></p>
+<p>页面上方有一排配置名（<code>新建配置</code> <code>＋</code>）。点 <code>＋</code> 新建一个，然后在下面「模型接入 → 供应商」里挑一家：</p>
+<table>
+<thead>
+<tr>
+<th>你想要</th>
+<th>选哪个</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>便宜、中文好</td>
+<td>DeepSeek</td>
+<td>按量计费，几块钱能用很久</td>
+</tr>
+<tr>
+<td>长文本、稳定</td>
+<td>Kimi / 通义 / 智谱 / 豆包</td>
+<td>国内直连，不用梯子</td>
+</tr>
+<tr>
+<td>效果最好</td>
+<td>Claude / Gemini</td>
+<td>需要对应的 Key，部分需外网</td>
+</tr>
+<tr>
+<td>自己有服务器</td>
+<td>OpenAI 兼容</td>
+<td>填你自己的地址，Ollama / LM Studio / one-api 都选这个</td>
+</tr>
+</tbody>
+</table>
+<p><strong>2. 填 API Key</strong></p>
+<p>到供应商的控制台（比如 DeepSeek 的 <code>platform.deepseek.com</code>）生成一把 Key，复制粘贴进「API Key」输入框。</p>
+<blockquote>
+<p>Key 只存在你手机本地，不会上传到任何地方。</p>
+</blockquote>
+<p><strong>3. 点「测试连接」</strong></p>
+<p>显示成功就配好了。回到对话页，直接在输入框输入你要它做的事。</p>
+<h3>想让它看图？</h3>
+<p>选支持视觉的模型（GPT-4o、Claude、Gemini、GLM-4V 这类）。纯文本模型发图片它也看不懂。</p>
+<hr />
+<h2>二、能做什么</h2>
+<p>配好模型后，它就是普通的 AI 对话——但比网页版多了两件别人没有的事：</p>
+<p><strong>① 它能看见你的屏幕</strong></p>
+<p>说「看看现在屏幕上是什么」，它会截一张图自己看。</p>
+<p><strong>② 它能替你点</strong></p>
+<p>说「打开设置，把 WLAN 关掉」「在微信里找到张三，发一句我到了」，它会真的去点。</p>
+<blockquote>
+<p>这两件事需要先开<strong>无障碍服务</strong>：☰ → 权限中心 → 无障碍 → 打开 AgentKit。<br />
+不开也能用，只是退化成普通对话。</p>
+</blockquote>
+<hr />
+<h2>三、日常用法</h2>
+<h3>说话不用讲格式</h3>
+<p>直接说人话：</p>
+<pre><code>把刚才那段代码改成 Kotlin
+</code></pre>
+<pre><code>帮我看看这个报错是什么意思
+</code></pre>
+<pre><code>明天下午三点提醒我开会
+</code></pre>
+<h3>长任务会先给计划</h3>
+<p>默认「先计划后执行」：三步以上的事，它会先列一个计划让你确认，你点了才动手。想让它直接干，去设置里切成「自动执行」。</p>
+<h3>处理文件</h3>
+<ul>
+<li>点输入框左边的 <code>＋</code> 可以发图片、发文件</li>
+<li>说「读一下这个文件」它会自己打开</li>
+<li>它有一个工作区目录，可以读写文件、跑命令</li>
+</ul>
+<h3>定时任务</h3>
+<p>说「每天早上八点帮我总结一次科技新闻」，它会建一个定时任务。在抽屉里能找到。</p>
+<hr />
+<h2>四、扩展：技能与插件</h2>
+<p><strong>技能</strong>是给 Agent 的"说明书"——装上之后，它就知道某种任务该怎么做。</p>
+<p><strong>入口：</strong> ☰ → 技能中心</p>
+<ul>
+<li><strong>内置技能</strong>：装好就有（天气、网页抓取、终端等）</li>
+<li><strong>导入技能</strong>：点「导入」，选一个 zip 包</li>
+<li><strong>插件市场</strong>：技能中心 → 插件市场 → 填索引地址，浏览并一键安装</li>
+</ul>
+<p>市场索引地址（可填这个试用）：</p>
+<pre><code>https://kdkdmwnwdkd.github.io/AgentKit/market-demo/index.json
+</code></pre>
+<blockquote>
+<p>导入的技能默认降权：不能执行脚本，只能用低危工具。要让它跑脚本，得在技能中心手动授权。</p>
+</blockquote>
+<hr />
+<h2>五、数据与备份</h2>
+<p><strong>入口：</strong> ☰ → 设置 → 备份与恢复</p>
+<ul>
+<li>导出会生成一个 ZIP，含全部会话、记忆、模型配置</li>
+<li>⚠️ 里面含模型 API Key，<strong>别传给别人</strong></li>
+<li>GitHub PAT 不会写入备份（恢复时沿用本机已存的）</li>
+</ul>
+<p>换手机就靠这个文件。</p>
+<hr />
+<h2>六、常见问题</h2>
+<p><strong>Q：一直转圈不出字？</strong><br />
+先看模型是不是配好了（对话页顶部有当前模型名）。再看 Key 有没有余额。用「测试连接」单独测一次最快。</p>
+<p><strong>Q：连不上自己的 Ollama / 局域网服务？</strong><br />
+地址要填完整：<code>http://192.168.1.10:11434/v1</code>（注意结尾的 <code>/v1</code>）。手机和电脑要在同一个 Wi-Fi。API Key 那一栏随便填一个非空的值（比如 <code>ollama</code>），不能留空。</p>
+<p><strong>Q：它说没有权限？</strong><br />
+- 操作屏幕 → 需要无障碍服务<br />
+- 读通知 → 需要通知使用权<br />
+- 装应用 → 需要「安装未知应用」权限</p>
+<p>都在 ☰ → 权限中心 里，会显示哪些还没开。</p>
+<p><strong>Q：点了没反应 / 卡住？</strong><br />
+对话页有停止按钮。终端命令有自己的超时（默认 30 秒），超时会自动中断并提示。</p>
+<p><strong>Q：耗电吗？</strong><br />
+纯对话不额外耗电。跑本地模型（llama.cpp）会明显发热，那是手机在跑推理，正常。</p>
+<hr />
+<h2>七、它不会做的事</h2>
+<ul>
+<li>不会把你的 API Key 传到除你配置的模型服务之外的地方</li>
+<li>不会在你没授权的情况下操作屏幕</li>
+<li>不会自动删除你的文件（破坏性操作会先问你）</li>
+</ul>
+<hr />
+<p><em>版本 1.3xx · 最后更新 2026-10-21</em></p>
+</div>
+</body>
+</html>

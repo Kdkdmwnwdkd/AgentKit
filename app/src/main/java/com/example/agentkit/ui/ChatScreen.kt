@@ -205,6 +205,21 @@ fun ChatScreen(
     val modelReady =
         config.baseUrl.isNotBlank() && config.apiKey.isNotBlank() && config.model.isNotBlank()
 
+    // v6：首次启动只弹一次引导。关掉即落盘，之后从对话页不再出现；
+    // 模型配好后 modelReady 为真，也不会再弹（所以不需要额外的"已完成"标记）。
+    val onboardingCtx = LocalContext.current
+    var showOnboarding by remember { mutableStateOf(false) }
+    LaunchedEffect(modelReady) {
+        if (modelReady) return@LaunchedEffect
+        val sp = onboardingCtx.getSharedPreferences(ONBOARDING_PREFS, Context.MODE_PRIVATE)
+        if (!sp.getBoolean(ONBOARDING_KEY, false)) showOnboarding = true
+    }
+    val dismissOnboarding: () -> Unit = {
+        showOnboarding = false
+        onboardingCtx.getSharedPreferences(ONBOARDING_PREFS, Context.MODE_PRIVATE)
+            .edit().putBoolean(ONBOARDING_KEY, true).apply()
+    }
+
     // 新消息入场后贴底滚动（无 spring 无位移，只做位置归位）；
     // 流式草稿出现/消失也算一次「新项」，一并归位到尾部。
     //
@@ -332,6 +347,15 @@ fun ChatScreen(
     // 全局统一（真机反馈「不只是要聊天的地方变，其他地方也要变」）
     Box(Modifier.fillMaxSize()) {
         Column(Modifier.fillMaxSize()) {
+        // v6：首次启动引导（Dialog 不占布局空间，放这里只是为了拿到上文的 state）
+        OnboardingDialog(
+            visible = showOnboarding,
+            onGoConfig = {
+                dismissOnboarding()
+                onOpenModel()
+            },
+            onDismiss = dismissOnboarding
+        )
         PageTopBar(
             // 功能三：标题 = 当前会话名（找不到摘要时回落「对话」——冷启动首帧也可能为空）
             title = conversations.firstOrNull { it.id == activeConversationId }?.title
@@ -362,13 +386,7 @@ fun ChatScreen(
             EmptyGuide(
                 modifier = Modifier
                     .weight(1f)
-                    .fillMaxWidth(),
-                modelReady = modelReady,
-                serviceConnected = serviceConnected,
-                pendingGrants = pendingGrants,
-                onOpenModel = onOpenModel,
-                onOpenPermissions = onOpenPermissions,
-                onPick = { vm.input.value = it }
+                    .fillMaxWidth()
             )
         } else {
             // W-33 顺手：包一层 Box，给「回到底部」按钮留悬浮位
@@ -577,7 +595,16 @@ fun ChatScreen(
             images = pendingImages,
             files = pendingFiles,
             onTextChange = { vm.input.value = it },
-            onSend = { vm.send() },
+            onSend = {
+                // v6：模型没配就把请求打到空地址上，用户只会看到一句「调用失败」。
+                // 这里直接说明原因并送他到配置页——比让他自己猜快得多。
+                if (modelReady) {
+                    vm.send()
+                } else {
+                    Toast.makeText(ctx, "先配一个模型才能对话", Toast.LENGTH_SHORT).show()
+                    onOpenModel()
+                }
+            },
             onStop = { vm.stop() },
             onPickAttach = { showAttachMenu = true },
             onOpenPrompts = { showPromptPicker = true },
@@ -1432,181 +1459,154 @@ private fun ReaskDialog(
 }
 
 /**
- * 空态（v5 重做）。
+ * 首次启动引导（v6）。
  *
- * 只回答三个问题：你是谁、能做什么、第一句说什么。
+ * 真机反馈：「还不如说直接跳出个弹窗教你怎么弄，写份使用说明」。
  *
- * 与旧版的差别是**删减**，不是美化：
- * - 删掉常驻的三行「起飞前检查」（模型配置 / 无障碍 / 权限就绪）。它不管你配没配都列出来，
- *   等于把内部状态机摊在首页：用户打开 App 看到的是"设备自检报告"，不是对话入口。
- *   真正只缺一项时它也不指向那一项，反而让人以为有三件事要做。
- * - 「去配置模型」改为**只在模型确实没配时出现**。配好了还挂着一个"去配置"，
- *   用户会怀疑自己哪里没弄完。
- * - 无障碍与存储权限不再在空态出现：纯对话用不到它们，等真要操作手机时再提示。
- * - 去掉 56dp 圆形盾牌图标 + 「你好，我是…」这套模板空态，直接用文字。
+ * 一次性、可跳过。只在「模型未配置」且用户没关过它时出现——配好模型后自然不再弹，
+ * 所以不需要额外的"完成"判定。关掉即写 seen，之后从对话页再也见不到它。
+ *
+ * 只讲三件事：选供应商、填 Key、测试连接。其余能力（无障碍、通知）放在末尾一句
+ * 灰字里带过，不占步骤——第一次用的人只需要先能对话。
  */
 @Composable
-private fun EmptyGuide(
-    modifier: Modifier = Modifier,
-    modelReady: Boolean,
-    serviceConnected: Boolean,
-    pendingGrants: Int,
-    onOpenModel: () -> Unit,
-    onOpenPermissions: () -> Unit,
-    onPick: (String) -> Unit
+private fun OnboardingDialog(
+    visible: Boolean,
+    onGoConfig: () -> Unit,
+    onDismiss: () -> Unit
 ) {
-    // 只用来决定底部那行「检查设置」要不要出现，不再逐条列出
-    val needSetup = !modelReady || !serviceConnected || pendingGrants > 0
-    Column(
-        modifier = modifier
-            .verticalScroll(rememberScrollState())
-            .padding(
-                start = AgentSpacing.space6,
-                end = AgentSpacing.space6,
-                top = 72.dp,
-                bottom = AgentSpacing.space8
-            ),
-        horizontalAlignment = Alignment.CenterHorizontally
+    if (!visible) return
+    val spec = AkMotionDialog
+    val scale by animateFloatAsState(1f, animationSpec = spec)
+    val alpha by animateFloatAsState(1f, animationSpec = spec)
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
     ) {
-        Text(
-            text = "你好，我是 AgentKit",
-            style = MaterialTheme.typography.titleLarge.copy(
-                fontSize = 23.sp,
-                lineHeight = 31.sp,
-                fontWeight = FontWeight.SemiBold
-            ),
-            color = MaterialTheme.colorScheme.onSurface,
-            textAlign = TextAlign.Center
-        )
-        Spacer(Modifier.height(AgentSpacing.space3))
-        Text(
-            text = "能看屏幕、读通知，也能替你点。直接说要做什么就行。",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            textAlign = TextAlign.Center,
-            modifier = Modifier.width(300.dp)
-        )
-
-        // 唯一的阻塞项：没模型就没法对话，给一行入口，不做按钮阵列
-        if (!modelReady) {
-            Spacer(Modifier.height(AgentSpacing.space5))
-            AkPressSurface(
-                onClick = onOpenModel,
-                shape = RoundedCornerShape(12.dp)
+        Box(
+            Modifier
+                .fillMaxSize()
+                .padding(horizontal = 24.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Surface(
+                shape = RoundedCornerShape(20.dp),
+                color = MaterialTheme.colorScheme.surface,
+                modifier = Modifier
+                    .widthIn(max = 348.dp)
+                    .scale(scale)
+                    .alpha(alpha)
             ) {
-                Row(
-                    modifier = Modifier.padding(
-                        horizontal = AgentSpacing.space3,
-                        vertical = AgentSpacing.space2
-                    ),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
+                Column(Modifier.padding(22.dp)) {
                     Text(
-                        text = "还没有配置模型",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Spacer(Modifier.width(AgentSpacing.space2))
-                    Text(
-                        text = "去配置",
-                        style = MaterialTheme.typography.bodyMedium.copy(
+                        text = "三步开始",
+                        style = MaterialTheme.typography.titleLarge.copy(
+                            fontSize = 20.sp,
                             fontWeight = FontWeight.SemiBold
                         ),
-                        color = MaterialTheme.colorScheme.primary
+                        color = MaterialTheme.colorScheme.onSurface
                     )
-                    Icon(
-                        imageVector = Icons.Outlined.ChevronRight,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(16.dp)
+                    Spacer(Modifier.height(AgentSpacing.space1))
+                    Text(
+                        text = "AgentKit 要接一个大模型才能思考。配好就能用。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                }
-            }
-        }
+                    Spacer(Modifier.height(AgentSpacing.space5))
 
-        Spacer(Modifier.height(AgentSpacing.space8))
-        // 建议区整体收成 280dp 一列并对齐左侧：外层 Column 是居中的，
-        // 若标题居中而行左对齐，两段会错开——这里给整块一个固定宽度统一左对齐。
-        Column(
-            modifier = Modifier.width(280.dp),
-            horizontalAlignment = Alignment.Start
-        ) {
-            Text(
-                text = "试试这样问",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),
-                modifier = Modifier.padding(start = AgentSpacing.space3)
-            )
-            Spacer(Modifier.height(AgentSpacing.space1))
-            SuggestionRow("看看现在屏幕上是什么", Icons.Outlined.PhoneAndroid, onPick)
-            SuggestionRow("打开设置并点击 WLAN", Icons.Outlined.TouchApp, onPick)
-            SuggestionRow("刚才有没有新消息", Icons.Outlined.Notifications, onPick)
+                    OnboardingStep(
+                        index = "1",
+                        title = "选供应商",
+                        body = "DeepSeek / Kimi / 智谱 / 通义 / 豆包都行。自建服务选「OpenAI 兼容」，填它的地址。"
+                    )
+                    Spacer(Modifier.height(AgentSpacing.space4))
+                    OnboardingStep(
+                        index = "2",
+                        title = "填 API Key",
+                        body = "到供应商的控制台生成一把，粘贴进「API Key」输入框。"
+                    )
+                    Spacer(Modifier.height(AgentSpacing.space4))
+                    OnboardingStep(
+                        index = "3",
+                        title = "点「测试连接」",
+                        body = "显示成功后回到对话，直接在输入框说要做什么。"
+                    )
 
-            if (needSetup) {
-                Spacer(Modifier.height(AgentSpacing.space6))
-                AkPressSurface(
-                    onClick = onOpenPermissions,
-                    shape = RoundedCornerShape(10.dp)
-                ) {
-                    Row(
-                        modifier = Modifier.padding(
-                            horizontal = AgentSpacing.space3,
-                            vertical = AgentSpacing.space2
-                        ),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(
-                            imageVector = Icons.Outlined.Settings,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-                            modifier = Modifier.size(14.dp)
-                        )
-                        Spacer(Modifier.width(AgentSpacing.space2))
-                        Text(
-                            text = "首次使用？检查设置",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f)
-                        )
-                    }
+                    Spacer(Modifier.height(AgentSpacing.space4))
+                    Text(
+                        text = "想让它替你操作屏幕？之后到「权限中心」开启无障碍服务即可。",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f)
+                    )
+
+                    Spacer(Modifier.height(AgentSpacing.space5))
+                    AkPrimaryButton(
+                        text = "去配置模型",
+                        modifier = Modifier.fillMaxWidth(),
+                        onClick = onGoConfig
+                    )
+                    Spacer(Modifier.height(AgentSpacing.space2))
+                    AkTextButton(
+                        text = "先自己看看",
+                        modifier = Modifier.fillMaxWidth(),
+                        onClick = onDismiss
+                    )
                 }
             }
         }
     }
 }
 
-/**
- * 示例建议行（v5）。
- *
- * 原实现是白卡 + 20dp 图标 + 14dp 内边距，三张摆下来像三个功能入口——
- * 它们只是"让你知道能说什么"的引子，不该有卡片的分量。改为整行按压、无背景。
- */
+/** 引导步骤：左侧序号圆点 + 标题 + 说明。 */
 @Composable
-private fun SuggestionRow(text: String, icon: ImageVector, onPick: (String) -> Unit) {
-    AkPressSurface(
-        onClick = { onPick(text) },
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(12.dp)
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = AgentSpacing.space3, vertical = AgentSpacing.space2),
-            verticalAlignment = Alignment.CenterVertically
+private fun OnboardingStep(index: String, title: String, body: String) {
+    Row(Modifier.fillMaxWidth()) {
+        Surface(
+            shape = CircleShape,
+            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.10f),
+            modifier = Modifier.size(22.dp)
         ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.65f),
-                modifier = Modifier.size(16.dp)
-            )
-            Spacer(Modifier.width(AgentSpacing.space3))
+            Box(contentAlignment = Alignment.Center) {
+                Text(
+                    text = index,
+                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
+        }
+        Spacer(Modifier.width(AgentSpacing.space3))
+        Column(Modifier.weight(1f)) {
             Text(
-                text = text,
-                style = MaterialTheme.typography.bodyMedium,
+                text = title,
+                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Spacer(Modifier.height(2.dp))
+            Text(
+                text = body,
+                style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
     }
+}
+
+/**
+ * 空态（v6）。
+ *
+ * 真机反馈原话：「主页进来那里就不要有任何东西了呀」「还不如说直接跳出个弹窗
+ * 教你怎么弄，写份使用说明」。
+ *
+ * 所以这里**什么都不放**：一句问候、一张清单、三个建议，全都是"没内容时填充版面"
+ * 的产物。用户第一次打开需要的不是这些，而是一次说清楚「先配模型」的引导——
+ * 那件事交给 [OnboardingDialog]，一次性、可跳过、不再占据对话页。
+ *
+ * 保留这个函数而不是直接删调用点：留下一个明确的落点，将来若要放"会话为空时的
+ * 微提示"，改这里一处即可，不用翻调用链。
+ */
+@Composable
+private fun EmptyGuide(modifier: Modifier = Modifier) {
+    Box(modifier.fillMaxSize())
 }
 
 /**
@@ -2891,6 +2891,10 @@ private fun AskUserCard(
     }
 }
 
+
+/** 首次启动引导的落盘位置（v6）：关掉一次就不再弹，不需要"已配置"再判一次。 */
+private const val ONBOARDING_PREFS = "agentkit.onboarding"
+private const val ONBOARDING_KEY = "seen"
 
 /** 相邻两条消息间隔超过这个值才重画时间戳（v4）。 */
 private const val TIME_GAP_MS = 5 * 60 * 1000L

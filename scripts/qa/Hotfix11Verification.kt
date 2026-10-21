@@ -197,29 +197,43 @@ private fun testImageAttachment() {
  * 点一下即切换生效；AgentKit 此前只有一行横向芯片条（多档案被挤出屏幕）。
  */
 private fun testProviderListEntry() {
-    println("— J 区：提供商列表一级入口（功能四 P0-3） —")
+    println("— J 区：切换配置的唯一入口（v4 去重后重写） —")
     val cfg = readSource("ui/ModelConfigScreen.kt")
+    // 真机反馈：「模型有两套触碰系统，上面也有，下面那个也是，留一套就行了」。
+    // 原 J1~J5 断言的是 ProviderPickerSection（页面中部那份档案列表）——
+    // 它和顶部 ProfileSwitcher 的 chips 列的是同一批档案，v4 已删除。
+    // 断言随之改为「验证它确实不在了，且唯一入口仍完整」，防止将来被加回来。
+    val cfgCode = cfg.lines().filter {
+        val t = it.trim()
+        !t.startsWith("//") && !t.startsWith("*") && !t.startsWith("/*")
+    }
 
-    check("J1 模型配置页顶部有 ProviderPickerSection 区块") {
-        assertContains("J1", cfg, "ProviderPickerSection(")
+    check("J1 重复的档案列表已删除，切配置只剩顶部 chips 一个入口") {
+        assertTrue(
+            "J1 ProviderPickerSection 又被加回来了",
+            cfgCode.none { "ProviderPickerSection(" in it }
+        )
+        assertContains("J1", cfg, "ProfileSwitcher(")
     }
-    check("J2 列表列出全部档案，当前项 selected 高亮 + 对勾") {
+    check("J2 chips 列出全部档案，可选中并可新建") {
         assertContains("J2", cfg, "profiles.forEach { profile ->")
-        assertContains("J2", cfg, "selected = isActive")
-        assertContains("J2", cfg, "Icons.Outlined.Check")
+        assertContains("J2", cfg, "AkChip(")
+        assertContains("J2", cfg, "AddProfileChip(onClick = onAdd)")
     }
-    check("J3 行显示「模型名 · 域名」，未设置时给可读兜底") {
-        assertContains("J3", cfg, "未设置模型名")
-        assertContains("J3", cfg, "hostOf(profile.config.baseUrl)")
+    check("J3 端点与模型信息仍可查（信息没丢，只是不重复两遍）") {
+        // 列表里的「模型名 · 域名」随列表一起删了，但同一条信息在
+        // 「当前生效配置」里仍完整展示（端点 + 模型），并不需要每行再列一次。
+        assertContains("J3", cfg, "端点：")
+        assertContains("J3", cfg, "当前生效配置")
     }
-    check("J4 点选即 switchProfile 生效 + Toast 反馈") {
-        val body = cfg.substringAfter("ProviderPickerSection(")
-        assertContains("J4", body, "vm.switchProfile(id)")
-        assertContains("J4", body, "Toast.makeText")
+    check("J4 点选 chip 即 switchProfile 生效") {
+        val body = cfg.substringAfter("ProfileSwitcher(")
+        assertContains("J4", body, "vm.switchProfile(it)")
     }
-    check("J5 新建提供商入口（VM 自动命名兜底）") {
-        assertContains("J5", cfg, "＋ 新建提供商")
-        assertContains("J5", cfg, "vm.addProfile(null)")
+    check("J5 新建走对话框（不再经过已删除的列表入口）") {
+        assertContains("J5", cfg, "onAdd = { showAdd = true }")
+        assertContains("J5", cfg, "AddProfileDialog(")
+        assertContains("J5", cfg, "新建模型配置")
     }
 }
 
@@ -1554,8 +1568,16 @@ private fun testProfileProviderDefault() {
         assertContains("AE1", fn, "自动变成那个 deepseek 了")
         assertContains("AE1", vm, "import com.example.agentkit.core.llm.ProviderCatalog")
     }
-    check("AE2 新建后引导下一步（Toast 明确「选供应商 → 填 Key → 保存」）") {
-        assertContains("AE2", modelScreen, "已新建配置：请先选供应商、填 API Key，再点保存")
+    check("AE2 新建后引导下一步（v4 起改由对话框承载，不再靠 Toast）") {
+        // 原实现：addProfile 后弹 Toast「请先选供应商、填 API Key、再点保存」。
+        // v4 删掉重复列表后，新建统一走 AddProfileDialog——对话框本身就是引导，
+        // 再补一条 Toast 属于重复提示。断言改为验证对话框存在且标题明确。
+        assertTrue(
+            "AE2 又出现了重复的 Toast 引导",
+            "已新建配置：请先选供应商、填 API Key，再点保存" !in modelScreen
+        )
+        assertContains("AE2", modelScreen, "private fun AddProfileDialog")
+        assertContains("AE2", modelScreen, "新建模型配置")
     }
     check("AE3 降级留痕：三家通道把「未按 SSE 返回」写进日志") {
         assertContains("AE3", llm, "供应商未按 SSE 返回（stream:true 被忽略），已降级为整段响应输出")
