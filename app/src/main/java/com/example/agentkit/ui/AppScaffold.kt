@@ -621,51 +621,49 @@ private fun ScreenHost(
 
     CompositionLocalProvider(LocalGuideAnchors provides anchors) {
         Box(Modifier.fillMaxSize()) {
-            Box(Modifier.fillMaxSize()) {
-                when (dest) {
-        AppDest.CHAT -> ChatScreen(
-            vm = vm,
-            onOpenModel = { onNavigate(AppDest.MODEL) },
-            onOpenGuide = { onNavigate(AppDest.PERMISSION_GUIDE) },
-            onManagePrompts = { onNavigate(AppDest.PROMPTS) }
-        )
-        // 功能一：模型页不再硬跳对话页——从哪来往哪回（抽屉来的回抽屉关闭态，空态直达的回对话页）
-        AppDest.MODEL -> ModelConfigScreen(vm) { onBack() }
-        AppDest.CONSOLE -> ConsoleScreen(vm, unreadErrors, onNavigate)
-        AppDest.TERMINAL -> TerminalScreen()
-        AppDest.CONTAINER -> ContainerScreen()
-        AppDest.EDITOR -> EditorScreen()
-        AppDest.MCP -> McpScreen()
-        AppDest.MEDIA -> MediaScreen()
-        AppDest.BUILD -> BuildScreen()
-        AppDest.PERMISSIONS -> PermissionsScreen(
-            vm,
-            onStartGuide = { onNavigate(AppDest.PERMISSION_GUIDE) }
-        )
-        AppDest.PERMISSION_GUIDE -> PermissionGuideScreen(
-            vm,
-            onDone = {
-                // 引导走完回对话：用户手上真正要做的事是「说一句话试试」，不是看权限表
-                onNavigate(AppDest.CHAT)
-            }
-        )
-        AppDest.SKILLS -> SkillsScreen(vm, onOpenMarket = { onNavigate(AppDest.MARKET) })
-        AppDest.MARKET -> SkillMarketScreen(vm)
-        AppDest.WORKFLOW -> WorkflowScreen(vm)
-        AppDest.LOGS -> LogsScreen(vm)
-        AppDest.MEMORY -> MemoryScreen(vm)
-        AppDest.PROMPTS -> PromptLibraryScreen(vm)
-        AppDest.BOOKMARKS -> BookmarkScreen(vm)
-        AppDest.SETTINGS -> SettingsScreen(
-            vm,
-            themeMode,
-            onThemeModeChange,
-            dynamicColor,
-            onDynamicColorChange,
-            onNavigate
-        )
+            when (dest) {
+                AppDest.CHAT -> ChatScreen(
+                    vm = vm,
+                    onOpenModel = { onNavigate(AppDest.MODEL) },
+                    onOpenGuide = { onNavigate(AppDest.PERMISSION_GUIDE) },
+                    onManagePrompts = { onNavigate(AppDest.PROMPTS) }
+                )
+                // 功能一：模型页不再硬跳对话页——从哪来往哪回（抽屉来的回抽屉关闭态，空态直达的回对话页）
+                AppDest.MODEL -> ModelConfigScreen(vm) { onBack() }
+                AppDest.CONSOLE -> ConsoleScreen(vm, unreadErrors, onNavigate)
+                AppDest.TERMINAL -> TerminalScreen()
+                AppDest.CONTAINER -> ContainerScreen()
+                AppDest.EDITOR -> EditorScreen()
+                AppDest.MCP -> McpScreen()
+                AppDest.MEDIA -> MediaScreen()
+                AppDest.BUILD -> BuildScreen()
+                AppDest.PERMISSIONS -> PermissionsScreen(
+                    vm,
+                    onStartGuide = { onNavigate(AppDest.PERMISSION_GUIDE) }
+                )
+                AppDest.PERMISSION_GUIDE -> PermissionGuideScreen(
+                    vm,
+                    onDone = {
+                        // 引导走完回对话：用户手上真正要做的事是「说一句话试试」，不是看权限表
+                        onNavigate(AppDest.CHAT)
+                    }
+                )
+                AppDest.SKILLS -> SkillsScreen(vm, onOpenMarket = { onNavigate(AppDest.MARKET) })
+                AppDest.MARKET -> SkillMarketScreen(vm)
+                AppDest.WORKFLOW -> WorkflowScreen(vm)
+                AppDest.LOGS -> LogsScreen(vm)
+                AppDest.MEMORY -> MemoryScreen(vm)
+                AppDest.PROMPTS -> PromptLibraryScreen(vm)
+                AppDest.BOOKMARKS -> BookmarkScreen(vm)
+                AppDest.SETTINGS -> SettingsScreen(
+                    vm,
+                    themeMode,
+                    onThemeModeChange,
+                    dynamicColor,
+                    onDynamicColorChange,
+                    onNavigate
+                )
                 AppDest.ABOUT -> AboutScreen()
-                }
             }
             if (showSpotlight) {
                 SpotlightGuide(

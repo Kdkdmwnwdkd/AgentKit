@@ -206,7 +206,9 @@ private fun GuideHeader(items: List<GuideItem>) {
     Column(Modifier.fillMaxWidth()) {
         Row(verticalAlignment = Alignment.Bottom) {
             Text(
-                text = if (blocked) "还差 $ready / $total 项" else "$ready / $total 项已就绪",
+                // 说「已就绪 N / M」而不是「还差 N 项」：后者用就绪数当缺口数，
+                // 3/5 会写成「还差 3 项」，正好把意思说反。
+                text = "已就绪 $ready / $total 项",
                 style = MaterialTheme.typography.titleLarge.copy(
                     fontSize = 22.sp,
                     fontWeight = FontWeight.SemiBold
@@ -214,7 +216,8 @@ private fun GuideHeader(items: List<GuideItem>) {
                 color = MaterialTheme.colorScheme.onSurface
             )
             Spacer(Modifier.weight(1f))
-            if (!blocked) {
+            // 徽章只在真的 5/5 时出现：blocked 只看硬门槛，4/5（可选项没开）不该说「全部就绪」
+            if (ready == total) {
                 AkBadge(
                     text = "全部就绪",
                     container = ak.successContainer,
