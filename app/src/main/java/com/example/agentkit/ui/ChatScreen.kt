@@ -1525,41 +1525,49 @@ private fun EmptyGuide(
         }
 
         Spacer(Modifier.height(AgentSpacing.space8))
-        Text(
-            text = "试试这样问",
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f)
-        )
-        Spacer(Modifier.height(AgentSpacing.space1))
-        SuggestionRow("看看现在屏幕上是什么", Icons.Outlined.PhoneAndroid, onPick)
-        SuggestionRow("打开设置并点击 WLAN", Icons.Outlined.TouchApp, onPick)
-        SuggestionRow("刚才有没有新消息", Icons.Outlined.Notifications, onPick)
+        // 建议区整体收成 280dp 一列并对齐左侧：外层 Column 是居中的，
+        // 若标题居中而行左对齐，两段会错开——这里给整块一个固定宽度统一左对齐。
+        Column(
+            modifier = Modifier.width(280.dp),
+            horizontalAlignment = Alignment.Start
+        ) {
+            Text(
+                text = "试试这样问",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),
+                modifier = Modifier.padding(start = AgentSpacing.space3)
+            )
+            Spacer(Modifier.height(AgentSpacing.space1))
+            SuggestionRow("看看现在屏幕上是什么", Icons.Outlined.PhoneAndroid, onPick)
+            SuggestionRow("打开设置并点击 WLAN", Icons.Outlined.TouchApp, onPick)
+            SuggestionRow("刚才有没有新消息", Icons.Outlined.Notifications, onPick)
 
-        if (needSetup) {
-            Spacer(Modifier.height(AgentSpacing.space8))
-            AkPressSurface(
-                onClick = onOpenPermissions,
-                shape = RoundedCornerShape(10.dp)
-            ) {
-                Row(
-                    modifier = Modifier.padding(
-                        horizontal = AgentSpacing.space3,
-                        vertical = AgentSpacing.space2
-                    ),
-                    verticalAlignment = Alignment.CenterVertically
+            if (needSetup) {
+                Spacer(Modifier.height(AgentSpacing.space6))
+                AkPressSurface(
+                    onClick = onOpenPermissions,
+                    shape = RoundedCornerShape(10.dp)
                 ) {
-                    Icon(
-                        imageVector = Icons.Outlined.Settings,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-                        modifier = Modifier.size(14.dp)
-                    )
-                    Spacer(Modifier.width(AgentSpacing.space2))
-                    Text(
-                        text = "首次使用？检查设置",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f)
-                    )
+                    Row(
+                        modifier = Modifier.padding(
+                            horizontal = AgentSpacing.space3,
+                            vertical = AgentSpacing.space2
+                        ),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.Settings,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                            modifier = Modifier.size(14.dp)
+                        )
+                        Spacer(Modifier.width(AgentSpacing.space2))
+                        Text(
+                            text = "首次使用？检查设置",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f)
+                        )
+                    }
                 }
             }
         }
