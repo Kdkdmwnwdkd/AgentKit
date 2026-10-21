@@ -1,0 +1,20 @@
+{
+  "schema": 1,
+  "name": "AgentKit 测试市场（坏 id）",
+  "plugins": [
+    {
+      "id": "market-demo-fake",
+      "name": "市场演示技能（坏 id）",
+      "version": "1.0.0",
+      "description": "用于验证插件市场的安装 / 卸载 / 授权流程：被调用时返回一句固定问候。",
+      "author": "agentkit",
+      "downloadUrl": "demo-skill-1.0.0.zip",
+      "sha256": "e42b6179785bb2f74807e1604fd4e6697c9931fa04a32a0a5c1fa2edd05ccb8b",
+      "sizeBytes": 738,
+      "tags": [
+        "测试"
+      ],
+      "permissions": []
+    }
+  ]
+}
