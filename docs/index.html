@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AgentKit · 文档入口</title>
+<style>
+  :root{
+    --paper:#EDE3DC; --bg:#F8EFE9; --card:#FFFFFF; --sunken:#F4E9E2;
+    --ink:#2E2620; --ink2:#6B5B4E; --ink3:#756450;
+    --teal:#0E5D6B; --tealWeak:rgba(14,93,107,.08);
+    --line:rgba(46,38,32,.09);
+  }
+  *{box-sizing:border-box; -webkit-font-smoothing:antialiased}
+  body{margin:0; padding:40px 22px 80px; background:var(--paper); color:var(--ink);
+    font-family:"PingFang SC","Noto Sans SC","Microsoft YaHei",system-ui,sans-serif;
+    font-size:15px; line-height:1.7}
+  .wrap{max-width:640px; margin:0 auto}
+  .badge{display:inline-block; padding:5px 12px; border-radius:999px;
+    background:var(--tealWeak); color:var(--teal); font-size:12px; font-weight:600; letter-spacing:.03em}
+  h1{font-size:26px; line-height:1.3; font-weight:600; margin:14px 0 8px; letter-spacing:-.01em}
+  .sub{margin:0 0 30px; color:var(--ink2); font-size:13.5px}
+  .sec{font-size:12px; font-weight:600; letter-spacing:.06em; color:var(--ink3); margin:26px 0 10px}
+  a.card{display:block; text-decoration:none; color:inherit; background:var(--card);
+    border-radius:16px; padding:16px 18px; margin-bottom:10px;
+    transition:transform .12s ease}
+  a.card:active{transform:scale(.985)}
+  a.card .t{font-size:15.5px; font-weight:600; line-height:1.4}
+  a.card .d{font-size:12.5px; color:var(--ink3); margin-top:3px; line-height:1.6}
+  a.card .hi{display:inline-block; margin-left:6px; font-size:10.5px; font-weight:700;
+    color:#fff; background:var(--teal); border-radius:5px; padding:1px 6px; vertical-align:2px}
+  .foot{margin-top:34px; font-size:12px; color:var(--ink3); line-height:1.8;
+    border-top:1px solid rgba(46,38,32,.14); padding-top:16px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="badge">AgentKit · 文档</div>
+  <h1>界面改造与工程记录</h1>
+  <p class="sub">按「先看效果、再看依据、最后看改动」排。点任意一张卡片进入。</p>
+
+  <div class="sec">先看这个</div>
+  <a class="card" href="ui/v4-report.html">
+    <div class="t">UI v4 可视化报告<span class="hi">图文</span></div>
+    <div class="d">改前 / 改后界面对比、真实参数、代码 diff、规则依据、未做项</div>
+  </a>
+
+  <div class="sec">这批改了什么</div>
+  <a class="card" href="https://github.com/Kdkdmwnwdkd/AgentKit/blob/main/docs/UI-v4-第二批-骨架重排-2026-10-21.md">
+    <div class="t">第二批 · 分组骨架重排</div>
+    <div class="d">设置页 3.5 屏压到 2 屏；AkGroup 结构、行图标去掉、时间戳降噪</div>
+  </a>
+  <a class="card" href="https://github.com/Kdkdmwnwdkd/AgentKit/blob/main/docs/UI-v4-排版改造-2026-10-21.md">
+    <div class="t">第一批 · 去图标盒</div>
+    <div class="d">列表行图标 40dp → 20dp、标题 20sp、市场页首屏重排</div>
+  </a>
+
+  <div class="sec">工程记录</div>
+  <a class="card" href="https://github.com/Kdkdmwnwdkd/AgentKit/blob/main/docs/W47-W48-NOTES.md">
+    <div class="t">W-47 / W-48 · 安全一致性与插件市场</div>
+    <div class="d">备份 PAT、解包限流、JSON 安全化、市场六道边界 + 三轮审查记录</div>
+  </a>
+  <a class="card" href="https://github.com/Kdkdmwnwdkd/AgentKit/blob/main/docs/W46-NOTES.md">
+    <div class="t">W-46 · 多轮对话与网络层</div>
+    <div class="d">历史注入、明文 HTTP 放行、读超时 180s、终端标脏</div>
+  </a>
+  <a class="card" href="https://github.com/Kdkdmwnwdkd/AgentKit/blob/main/docs/真机验收-2026-10-21.md">
+    <div class="t">真机验收记录</div>
+    <div class="d">哪些测过、哪些没测、三个疑点的结论（如实标注）</div>
+  </a>
+
+  <div class="sec">测试用</div>
+  <a class="card" href="market-demo/index.json">
+    <div class="t">测试市场索引</div>
+    <div class="d">market-demo / visual-review 两个可装包（在 App 里填这个地址）</div>
+  </a>
+
+  <div class="foot">
+    AgentKit · Android 本地 AI Agent<br>
+    仓库 github.com/Kdkdmwnwdkd/AgentKit · 本页由 docs/ 目录驱动
+  </div>
+</div>
+</body>
+</html>
