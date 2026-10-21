@@ -183,6 +183,13 @@ fun main() {
         assertTrue("未处理 RETRY", src.contains("RecoveryAction.RETRY ->"))
     }
 
+    check("没有控制台地址时不渲染「去拿 Key」按钮（不让按钮空转）") {
+        val src = read("app/src/main/java/com/example/agentkit/ui/ModelConfigScreen.kt")
+        assertTrue("onGetKey 应为可空回调", src.contains("onGetKey: (() -> Unit)? = null"))
+        assertTrue("渲染前未判空", src.contains("if (onGetKey != null)"))
+        assertTrue("未按地址是否为空决定回调", src.contains("if (consoleUrl.isNotBlank())"))
+    }
+
     check("模型页：测试成功可一键保存并回对话") {
         val src = read("app/src/main/java/com/example/agentkit/ui/ModelConfigScreen.kt")
         assertTrue("缺少成功收尾按钮", src.contains("保存并回到对话"))

@@ -423,6 +423,10 @@ fun SettingsScreen(
                     title = "重看上手引导",
                     description = "回到对话页，重新指出输入框、发送键与抽屉的位置",
                     onClick = {
+                        // 两件事一起做：清聚光灯标记 + 标记权限引导已看过。
+                        // 只清前者的话，没用过权限引导的用户点「重看」会什么都不发生——
+                        // 聚光灯的触发条件里有「权限引导已走过」，用户主动要求重看时不该被它挡住。
+                        markGuideSkipped(ctx)
                         resetSpotlight(ctx)
                         onNavigate(AppDest.CHAT)
                     }

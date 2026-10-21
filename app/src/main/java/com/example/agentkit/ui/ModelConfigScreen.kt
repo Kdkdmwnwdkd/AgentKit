@@ -817,14 +817,16 @@ private fun ModelTab(
         )
     }
     testResult?.let { result ->
+        // 自定义端点（未收录 id）没有控制台：不渲染「去拿 Key」按钮，
+        // 否则用户点下去什么都不会发生——宁可少一个按钮，也不给一个空转的按钮。
+        val consoleUrl = ProviderCatalog.consoleUrlOf(providerId)
         TestResultCard(
             result = result,
             onCopy = { copyToClipboard(ctx, result) },
             // P1：失败不再只给一句建议，按钮直接指向下一步
-            onGetKey = {
-                val url = ProviderCatalog.consoleUrlOf(providerId)
-                if (url.isNotBlank()) openExternal(ctx, url)
-            },
+            onGetKey = if (consoleUrl.isNotBlank()) {
+                { openExternal(ctx, consoleUrl) }
+            } else null,
             onPickModel = { showModelPicker = true },
             onRetry = { vm.testConnection(baseUrl, apiKey, model, providerId) },
             // P1.3：测试通过就地收尾——保存（改过才需要）并回对话，不用自己找返回路
@@ -1735,7 +1737,9 @@ private fun KeyConsoleLink(providerId: String, url: String) {
         verticalAlignment = Alignment.CenterVertically
     ) {
         Text(
-            text = "去 ${ProviderCatalog.labelOf(providerId)} 获取 API Key",
+            // 「OpenAI 兼容」是通用风格名，拼成「去 OpenAI 兼容 获取 API Key」读不通；
+            // 这个 id 的默认端点就是 OpenAI 官方，所以对这种情况说「OpenAI 官方」。
+            text = "去 ${consoleLabel(providerId)} 获取 API Key",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.primary
         )
@@ -1748,6 +1752,11 @@ private fun KeyConsoleLink(providerId: String, url: String) {
         )
     }
 }
+
+/** 控制台入口里的供应方称呼：通用风格名换成具体平台名。 */
+private fun consoleLabel(providerId: String): String =
+    if (providerId == ProviderCatalog.STYLE_OPENAI) "OpenAI 官方"
+    else ProviderCatalog.labelOf(providerId)
 
 /** 打开外部链接：失败静默（没有浏览器 / ROM 限制时用户自己搜也一样）。 */
 private fun openExternal(ctx: Context, url: String) {
@@ -1884,7 +1893,7 @@ private fun TestConnectionButton(
 private fun TestResultCard(
     result: TestResult,
     onCopy: () -> Unit,
-    onGetKey: () -> Unit = {},
+    onGetKey: (() -> Unit)? = null,
     onPickModel: () -> Unit = {},
     onRetry: () -> Unit = {},
     /** 成功时的收尾动作（保存并回对话）；null = 不显示该按钮。 */
@@ -1953,10 +1962,12 @@ private fun TestResultCard(
             val action = result.action
             if (!result.ok) {
                 when (action) {
-                    RecoveryAction.GET_KEY -> AkTextButton(
-                        text = "去获取 / 更换 Key",
-                        onClick = onGetKey
-                    )
+                    RecoveryAction.GET_KEY -> if (onGetKey != null) {
+                        AkTextButton(
+                            text = "去获取 / 更换 Key",
+                            onClick = onGetKey
+                        )
+                    }
                     RecoveryAction.PICK_MODEL -> AkTextButton(
                         text = "选择可用模型",
                         onClick = onPickModel

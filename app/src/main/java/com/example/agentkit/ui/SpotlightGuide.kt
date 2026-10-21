@@ -1,6 +1,7 @@
 package com.example.agentkit.ui
 
 import android.content.Context
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -8,6 +9,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -20,12 +22,14 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -94,6 +98,16 @@ class GuideAnchorRegistry {
     }
 
     fun rectOf(anchor: GuideAnchor): Rect? = rects[anchor]
+
+    /**
+     * 组件离开组合时清掉它的矩形。
+     *
+     * 不清的后果：切页 / 旋转 / 宽屏隐藏汉堡之后，注册表里留着上一次的位置，
+     * 覆盖层第一帧会照着旧坐标开洞——真机上表现为「洞开在空白处」。
+     */
+    fun forget(anchor: GuideAnchor) {
+        rects.remove(anchor)
+    }
 }
 
 /** 当前组合树里的锚点注册表；为 null 时 [guideAnchor] 不做事。 */
@@ -108,6 +122,10 @@ val LocalGuideAnchors = compositionLocalOf<GuideAnchorRegistry?> { null }
  */
 fun Modifier.guideAnchor(anchor: GuideAnchor): Modifier = composed {
     val registry = LocalGuideAnchors.current ?: return@composed this
+    // 离开组合即注销：锚点只在「它真的在屏幕上」时有效
+    DisposableEffect(registry, anchor) {
+        onDispose { registry.forget(anchor) }
+    }
     onGloballyPositioned { registry.report(anchor, it.boundsInRoot()) }
 }
 
@@ -158,8 +176,15 @@ fun SpotlightGuide(
         LaunchedEffect(Unit) { onFinish() }
         return
     }
-    var index by remember { mutableIntStateOf(0) }
+    // rememberSaveable：旋转 / 分屏后不该从第一步重来。
+    // 这里必须用 mutableStateOf 而不是 mutableIntStateOf——后者的类型不被
+    // rememberSaveable 的 autoSaver 接受，进程恢复时会抛 "cannot be saved"。
+    var index by rememberSaveable { mutableStateOf(0) }
     val step = steps.getOrNull(index)
+    // 覆盖层自身的原点（相对 root）。boundsInRoot 给的是 root 坐标，而 Canvas 画的是本地坐标，
+    // 两者差一个「内容区偏移」（窄屏 = 状态栏高度，宽屏 = 顶部 + 水平居中留白）。
+    // 不减这一下，洞会整体上移 / 左移——这是靠读代码能算出来的错位，不是玄学。
+    var originInRoot by remember { mutableStateOf(Offset.Zero) }
 
     // 锚点还没测量到（页面刚组合 / 该锚点在当前形态下不存在，如宽屏无汉堡）：
     // 等一帧再判，仍没有就跳过这一步。不能死等——否则宽屏用户会卡在第二步。
@@ -184,9 +209,12 @@ fun SpotlightGuide(
     // 颜色必须在 @Composable 上下文里读出来：Canvas 的 DrawScope 不是组合上下文
     val ringColor = MaterialTheme.colorScheme.primary
 
+    BackHandler { onFinish() }
+
     BoxWithConstraints(
         Modifier
             .fillMaxSize()
+            .onGloballyPositioned { originInRoot = it.positionInRoot() }
             // 点任意处推进：遮罩本来就是模态的，点哪儿都该是「下一步」，而不是穿透到底层
             .clickable(
                 interactionSource = remember { MutableInteractionSource() },
@@ -198,11 +226,13 @@ fun SpotlightGuide(
         Canvas(Modifier.fillMaxSize()) {
             val pad = 6.dp.toPx()
             val radius = 20.dp.toPx()
+            val dx = originInRoot.x
+            val dy = originInRoot.y
             val hole = Rect(
-                left = (rect.left - pad).coerceAtLeast(0f),
-                top = (rect.top - pad).coerceAtLeast(0f),
-                right = (rect.right + pad).coerceAtMost(size.width),
-                bottom = (rect.bottom + pad).coerceAtMost(size.height)
+                left = (rect.left - dx - pad).coerceAtLeast(0f),
+                top = (rect.top - dy - pad).coerceAtLeast(0f),
+                right = (rect.right - dx + pad).coerceAtMost(size.width),
+                bottom = (rect.bottom - dy + pad).coerceAtMost(size.height)
             )
             // EvenOdd：外框减去内洞，一次填充完成「压暗但目标透亮」
             val path = Path().apply {
@@ -221,11 +251,13 @@ fun SpotlightGuide(
         }
 
         // 卡片放在洞的另一侧：洞在上半屏就贴底，反之贴顶。不测量卡片高度，避免抖动。
-        val holeInTopHalf = rect.center.y < screenHeight / 2f
+        // 用局部坐标比较（rect 是 root 坐标），否则状态栏偏移会让判断偏向一侧。
+        val holeInTopHalf = (rect.center.y - originInRoot.y) < screenHeight / 2f
         Column(
             Modifier
                 .fillMaxSize()
                 .padding(horizontal = 24.dp, vertical = 32.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = if (holeInTopHalf) Arrangement.Bottom else Arrangement.Top
         ) {
             GuideCard(

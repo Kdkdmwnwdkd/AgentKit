@@ -60,7 +60,7 @@ import rikka.shizuku.Shizuku
  * ## 交互约定
  * - 每一项的按钮文案按「缺什么给什么」：去开启 / 去设置 / 一键安装 / 打开 Shizuku / 去授权。
  * - 从系统页返回时（ON_RESUME）自动复检，用户不必手动刷新。
- * - 可跳过：跳过后落 `permission_guide_skipped`，下次不再自动进入，但入口一直保留。
+ * - 可跳过：跳过后落 `agentkit_permission_guide.guide_seen`，下次不再自动进入，但入口一直保留。
  *
  * @param onDone 完成 / 跳过后的去向（回对话页）
  */
@@ -99,32 +99,38 @@ fun PermissionGuideScreen(vm: ChatViewModel, onDone: () -> Unit) {
         }
         val binderReceived = Shizuku.OnBinderReceivedListener { vm.refreshShizukuStatus() }
         val binderDead = Shizuku.OnBinderDeadListener { vm.refreshShizukuStatus() }
-        val ok = runCatching {
+        // 逐个注册、逐个注销：三个 add 里只要有第二个抛异常，旧写法会把第一个当成
+        // 「全都没注册」而跳过注销——监听器就永久留在 Shizuku 的静态列表里。
+        val addedPermission = runCatching {
             Shizuku.addRequestPermissionResultListener(permissionListener)
+        }.isSuccess
+        val addedReceived = runCatching {
             Shizuku.addBinderReceivedListener(binderReceived)
+        }.isSuccess
+        val addedDead = runCatching {
             Shizuku.addBinderDeadListener(binderDead)
-            true
-        }.getOrDefault(false)
+        }.isSuccess
         onDispose {
-            if (ok) runCatching {
+            if (addedPermission) runCatching {
                 Shizuku.removeRequestPermissionResultListener(permissionListener)
-                Shizuku.removeBinderReceivedListener(binderReceived)
-                Shizuku.removeBinderDeadListener(binderDead)
             }
+            if (addedReceived) runCatching { Shizuku.removeBinderReceivedListener(binderReceived) }
+            if (addedDead) runCatching { Shizuku.removeBinderDeadListener(binderDead) }
         }
     }
 
     val onOpen: (GuideKey) -> Unit = { key ->
         when (key) {
             GuideKey.ACCESSIBILITY -> vm.openAccessibilitySettings(ctx)
-            GuideKey.NOTIFICATION -> ctx.startActivity(
-                Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            )
-            GuideKey.USAGE -> ctx.startActivity(
-                Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            )
+            // 少数 ROM 没有这两个 Settings Action：裸 startActivity 会抛
+            // ActivityNotFoundException 直接把 App 崩掉。失败时给一句「去哪儿手动开」，
+            // 比崩溃或静默都好。
+            GuideKey.NOTIFICATION -> if (!safeStart(ctx, Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) {
+                toast(ctx, "本机没有这个设置页，请到「设置 → 通知 → 通知使用权」手动开启")
+            }
+            GuideKey.USAGE -> if (!safeStart(ctx, Settings.ACTION_USAGE_ACCESS_SETTINGS)) {
+                toast(ctx, "本机没有这个设置页，请到「设置 → 应用 → 特殊权限 → 使用情况访问」手动开启")
+            }
             GuideKey.BATTERY -> vm.openBatteryOptimizationSettings(ctx)
             GuideKey.SHIZUKU -> vm.handleShizukuAction(ctx)
         }
@@ -193,6 +199,16 @@ fun PermissionGuideScreen(vm: ChatViewModel, onDone: () -> Unit) {
             }
         }
     }
+}
+
+/** 打开系统设置页；没有对应 Activity 时返回 false（不抛异常）。 */
+private fun safeStart(ctx: android.content.Context, action: String): Boolean =
+    runCatching {
+        ctx.startActivity(Intent(action).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+    }.isSuccess
+
+private fun toast(ctx: android.content.Context, text: String) {
+    android.widget.Toast.makeText(ctx, text, android.widget.Toast.LENGTH_LONG).show()
 }
 
 /** 头部：进度 + 一句「现在能做什么」。 */

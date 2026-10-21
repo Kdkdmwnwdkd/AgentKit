@@ -231,7 +231,10 @@ fun main() {
         val src = read("app/src/main/java/com/example/agentkit/ui/AppScaffold.kt")
         assertTrue("缺少 guideSeen 条件", src.contains("guideSeen(ctx) && !spotlightSeen(ctx)"))
         assertTrue("缺少模型就绪判定", src.contains("val modelReady = config.baseUrl.isNotBlank()"))
-        assertTrue("只在对话页触发", src.contains("if (dest != AppDest.CHAT) return@LaunchedEffect"))
+        assertTrue(
+            "只在对话页触发，且离开时收起覆盖层",
+            src.contains("if (dest != AppDest.CHAT) {") && src.contains("showSpotlight = false")
+        )
     }
 
     check("聚光灯结束落盘 + 设置页可重看（跳过 ≠ 永远错过）") {
@@ -240,6 +243,26 @@ fun main() {
         assertTrue("结束时未落盘", app.contains("markSpotlightSeen(ctx)"))
         assertTrue("设置页缺少重看入口", settings.contains("重看上手引导"))
         assertTrue("设置页未重置标记", settings.contains("resetSpotlight(ctx)"))
+    }
+
+    check("洞的坐标换算到覆盖层本地坐标系（否则整体偏移一个状态栏高度）") {
+        val src = read("app/src/main/java/com/example/agentkit/ui/SpotlightGuide.kt")
+        assertTrue("未记录覆盖层原点", src.contains("positionInRoot()"))
+        assertTrue("未从 root 坐标减去原点", src.contains("rect.left - dx"))
+    }
+
+    check("锚点离开组合即注销（否则切页后留着旧矩形，洞开在空白处）") {
+        val src = read("app/src/main/java/com/example/agentkit/ui/SpotlightGuide.kt")
+        assertTrue("未实现 forget", src.contains("fun forget(anchor: GuideAnchor)"))
+        assertTrue("未在 onDispose 注销", src.contains("onDispose { registry.forget(anchor) }"))
+    }
+
+    check("首启引导点「去开启」不落「已看过」（回来还要继续讲配模型）") {
+        val src = read("app/src/main/java/com/example/agentkit/ui/ChatScreen.kt")
+        val start = src.indexOf("onOpenGuide = {")
+        assertTrue("找不到 onOpenGuide 调用点", start > 0)
+        val block = src.substring(start, minOf(start + 260, src.length))
+        assertTrue("该分支不应调用 dismissOnboarding：$block", !block.contains("dismissOnboarding()"))
     }
 
     check("遮罩用 EvenOdd 开洞（目标必须透亮，不能被压暗）") {

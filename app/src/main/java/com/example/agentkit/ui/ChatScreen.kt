@@ -349,8 +349,9 @@ fun ChatScreen(
                 onOpenModel()
             },
             onOpenGuide = {
-                // 先落「已看过」再跳：从引导页返回时不该再弹同一个引导
-                dismissOnboarding()
+                // 不要落「已看过」：用户去看权限时模型可能还没配。这里只跳转，
+                // 回到对话页时 ChatScreen 重新组合、标记仍为 false → 引导会再出现，
+                // 继续把「先配模型」这件事说完。落标记反而会让人落在空白对话页。
                 onOpenGuide()
             },
             onDismiss = dismissOnboarding

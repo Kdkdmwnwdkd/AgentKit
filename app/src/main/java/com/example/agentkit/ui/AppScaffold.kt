@@ -613,7 +613,11 @@ private fun ScreenHost(
     var showSpotlight by remember { mutableStateOf(false) }
     val config by vm.config.collectAsStateWithLifecycle()
     LaunchedEffect(dest) {
-        if (dest != AppDest.CHAT) return@LaunchedEffect
+        // 离开对话页必须收起：覆盖层是页面内的，不跟着路由走。只在进对话页时重新判断。
+        if (dest != AppDest.CHAT) {
+            showSpotlight = false
+            return@LaunchedEffect
+        }
         val modelReady = config.baseUrl.isNotBlank() &&
             config.apiKey.isNotBlank() && config.model.isNotBlank()
         if (modelReady && guideSeen(ctx) && !spotlightSeen(ctx)) showSpotlight = true
