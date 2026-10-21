@@ -131,6 +131,8 @@ enum class AppDest(
     MEDIA("media", "创作", "创作工坊", Icons.Outlined.Palette),
     BUILD("build", "构建", "构建", Icons.Outlined.Build),
     PERMISSIONS("permissions", "权限中心", "权限中心", Icons.Outlined.Shield),
+    /** P0（2026-10-21）：权限引导页——第一次上手时逐项走一遍，与权限中心（排查页）分工不同。 */
+    PERMISSION_GUIDE("permission-guide", "权限引导", "权限引导", Icons.Outlined.Shield),
     SKILLS("skills", "技能中心", "技能中心", Icons.Outlined.Extension),
     /** W-48：插件市场（远端可装清单；与技能中心分工见 SkillMarketScreen 注释）。 */
     MARKET("market", "插件市场", "插件市场", Icons.Outlined.Public),
@@ -251,6 +253,22 @@ fun AppScaffold(
     // 功能五（P1-4a）：会话导出走系统分享面板，需要 Context 发起 Intent
     val ctx = LocalContext.current
 
+    // P0（2026-10-21）：模型配好后的首次进入，自动带一次权限引导。
+    // 「跳过 / 完成」会落 guide_seen，所以只可能打扰一次；之后入口留在权限中心，不再自动弹。
+    val config by vm.config.collectAsStateWithLifecycle()
+    var autoGuideChecked by remember { mutableStateOf(false) }
+    LaunchedEffect(config.baseUrl, config.apiKey, config.model) {
+        if (autoGuideChecked) return@LaunchedEffect
+        val modelReady = config.baseUrl.isNotBlank() &&
+            config.apiKey.isNotBlank() && config.model.isNotBlank()
+        if (!modelReady || route != AppDest.CHAT.route || guideSeen(ctx)) return@LaunchedEffect
+        autoGuideChecked = true
+        // 走正常的压栈路径：引导页按返回能回到对话，不会把用户困住
+        if (backStack.size >= BACK_STACK_MAX) backStack = backStack.drop(1)
+        backStack = backStack + dest
+        route = AppDest.PERMISSION_GUIDE.route
+    }
+
     // 未读 ERROR：进入日志页即标记已读（读后归零即隐藏，§6.5.2）
     var logsSeenCount by rememberSaveable { mutableStateOf(0) }
     val unreadErrors = remember(logs, logsSeenCount) {
@@ -260,7 +278,7 @@ fun AppScaffold(
     // 进入对应页面时刷新数据：权限/日志/记忆都是「打开就要看到最新」的排查型页面
     LaunchedEffect(dest) {
         when (dest) {
-            AppDest.CONSOLE, AppDest.PERMISSIONS -> vm.refreshGrants()
+            AppDest.CONSOLE, AppDest.PERMISSIONS, AppDest.PERMISSION_GUIDE -> vm.refreshGrants()
             AppDest.LOGS -> {
                 vm.refreshLogs()
                 logsSeenCount = vm.logs.value.size
@@ -588,11 +606,27 @@ private fun ScreenHost(
     onBack: () -> Unit,
     unreadErrors: Int
 ) {
-    when (dest) {
+    // P2（2026-10-21）：聚光灯引导——锚点由页面组件上报，覆盖层画在页面之上。
+    // 触发条件三连：模型已就绪（能对话）→ 权限引导已走过（不是第一次打开）→ 自己没被跳过一次。
+    val ctx = LocalContext.current
+    val anchors = remember { GuideAnchorRegistry() }
+    var showSpotlight by remember { mutableStateOf(false) }
+    val config by vm.config.collectAsStateWithLifecycle()
+    LaunchedEffect(dest) {
+        if (dest != AppDest.CHAT) return@LaunchedEffect
+        val modelReady = config.baseUrl.isNotBlank() &&
+            config.apiKey.isNotBlank() && config.model.isNotBlank()
+        if (modelReady && guideSeen(ctx) && !spotlightSeen(ctx)) showSpotlight = true
+    }
+
+    CompositionLocalProvider(LocalGuideAnchors provides anchors) {
+        Box(Modifier.fillMaxSize()) {
+            Box(Modifier.fillMaxSize()) {
+                when (dest) {
         AppDest.CHAT -> ChatScreen(
             vm = vm,
             onOpenModel = { onNavigate(AppDest.MODEL) },
-            onOpenPermissions = { onNavigate(AppDest.PERMISSIONS) },
+            onOpenGuide = { onNavigate(AppDest.PERMISSION_GUIDE) },
             onManagePrompts = { onNavigate(AppDest.PROMPTS) }
         )
         // 功能一：模型页不再硬跳对话页——从哪来往哪回（抽屉来的回抽屉关闭态，空态直达的回对话页）
@@ -604,7 +638,17 @@ private fun ScreenHost(
         AppDest.MCP -> McpScreen()
         AppDest.MEDIA -> MediaScreen()
         AppDest.BUILD -> BuildScreen()
-        AppDest.PERMISSIONS -> PermissionsScreen(vm)
+        AppDest.PERMISSIONS -> PermissionsScreen(
+            vm,
+            onStartGuide = { onNavigate(AppDest.PERMISSION_GUIDE) }
+        )
+        AppDest.PERMISSION_GUIDE -> PermissionGuideScreen(
+            vm,
+            onDone = {
+                // 引导走完回对话：用户手上真正要做的事是「说一句话试试」，不是看权限表
+                onNavigate(AppDest.CHAT)
+            }
+        )
         AppDest.SKILLS -> SkillsScreen(vm, onOpenMarket = { onNavigate(AppDest.MARKET) })
         AppDest.MARKET -> SkillMarketScreen(vm)
         AppDest.WORKFLOW -> WorkflowScreen(vm)
@@ -620,7 +664,19 @@ private fun ScreenHost(
             onDynamicColorChange,
             onNavigate
         )
-        AppDest.ABOUT -> AboutScreen()
+                AppDest.ABOUT -> AboutScreen()
+                }
+            }
+            if (showSpotlight) {
+                SpotlightGuide(
+                    registry = anchors,
+                    onFinish = {
+                        markSpotlightSeen(ctx)
+                        showSpotlight = false
+                    }
+                )
+            }
+        }
     }
 }
 

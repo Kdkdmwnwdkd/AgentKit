@@ -411,6 +411,31 @@ fun SettingsScreen(
                 )
             }
 
+            // —— 引导（P2，2026-10-21）：把「第一次怎么用」变成可重放的入口 ——
+            // 引导只自动出现一次（权限引导 + 聚光灯各一个标记），跳过的人事后得能找回来，
+            // 否则「跳过」等于「永远错过」。
+            AkGroup(
+                title = "引导",
+                description = "第一次怎么用、每项权限能多做什么，随时可重看"
+            ) {
+                AkListItem(
+                    icon = null,
+                    title = "重看上手引导",
+                    description = "回到对话页，重新指出输入框、发送键与抽屉的位置",
+                    onClick = {
+                        resetSpotlight(ctx)
+                        onNavigate(AppDest.CHAT)
+                    }
+                )
+                AkDivider(Modifier.padding(start = AgentSpacing.space4))
+                AkListItem(
+                    icon = null,
+                    title = "权限引导",
+                    description = "五项设备能力逐项开启，说明「开了能做什么、不开会缺什么」",
+                    onClick = { onNavigate(AppDest.PERMISSION_GUIDE) }
+                )
+            }
+
             // —— 备份与恢复：全局数据（会话 + 记忆 + 模型配置）打包到用户自选位置 ——
             AkGroup(
                 title = "备份与恢复",

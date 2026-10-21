@@ -3,6 +3,8 @@ package com.example.agentkit.ui
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.Intent
+import android.net.Uri
 import android.widget.Toast
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateFloatAsState
@@ -47,6 +49,7 @@ import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.ExpandLess
 import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.Memory
+import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.StarBorder
 import androidx.compose.material.icons.outlined.Visibility
@@ -89,6 +92,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.lazy.LazyRow
 import com.example.agentkit.core.llm.LlmProvider
 import com.example.agentkit.core.llm.ProviderCatalog
+import com.example.agentkit.core.llm.RecoveryAction
 import com.example.agentkit.core.llm.ProviderGroup
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.agentkit.core.ConfigSanitizer
@@ -132,7 +136,6 @@ fun ModelConfigScreen(vm: ChatViewModel, onBack: () -> Unit) {
     // 功能二：新建档案对话框开关（用户录屏反馈「点＋新增没有任何 visible 反馈」——
     // 旧行为直接静默建副本，新 chip 还被横向滚动条挤到屏外；参照 App 改为先弹命名框）
     var showAdd by rememberSaveable { mutableStateOf(false) }
-    val ctx = LocalContext.current
 
     val dirty = baseUrl != config.baseUrl || apiKey != config.apiKey ||
         model != config.model || providerId != config.providerId ||
@@ -707,6 +710,15 @@ private fun ModelTab(
                     }
                 )
                 KeySelfCheck(apiKey)
+                // P1（2026-10-21）：Key 为空时给一条直达入口。真机上最常卡的一步
+                // 不是「填错」，而是「不知道去哪弄」——把控制台地址做成一次点击。
+                // 未收录的自定义端点 / 本地部署没有控制台，consoleUrlOf 返回空串，不渲染。
+                if (apiKey.isBlank()) {
+                    val consoleUrl = ProviderCatalog.consoleUrlOf(providerId)
+                    if (consoleUrl.isNotBlank()) {
+                        KeyConsoleLink(providerId = providerId, url = consoleUrl)
+                    }
+                }
             } else {
                 Text(
                     text = "本地服务不需要 API Key（Ollama / LM Studio / vLLM 直接连本机端口）。" +
@@ -805,7 +817,19 @@ private fun ModelTab(
         )
     }
     testResult?.let { result ->
-        TestResultCard(result = result, onCopy = { copyToClipboard(ctx, result) })
+        TestResultCard(
+            result = result,
+            onCopy = { copyToClipboard(ctx, result) },
+            // P1：失败不再只给一句建议，按钮直接指向下一步
+            onGetKey = {
+                val url = ProviderCatalog.consoleUrlOf(providerId)
+                if (url.isNotBlank()) openExternal(ctx, url)
+            },
+            onPickModel = { showModelPicker = true },
+            onRetry = { vm.testConnection(baseUrl, apiKey, model, providerId) },
+            // P1.3：测试通过就地收尾——保存（改过才需要）并回对话，不用自己找返回路
+            onUseAndReturn = { if (dirty) onSave() else onCancel() }
+        )
     }
 
     // W-29：余额查询（只有部分服务商提供接口：DeepSeek / Kimi / 硅基流动 / OpenRouter）
@@ -1693,6 +1717,48 @@ private fun LocalParamField(
 }
 
 /**
+ * 「去某某获取 API Key」入口（P1，2026-10-21）。
+ *
+ * 只做一件事：用系统浏览器打开 [url]。外链失败（没有浏览器 / ROM 限制）时静默——
+ * 用户仍可自己搜索，弹一个他解决不了的错误框只会更糟。文案用供应商显示名，
+ * 与上方选择器完全一致，避免「DeepSeek 控制台」和「深度求索」两套叫法。
+ */
+@Composable
+private fun KeyConsoleLink(providerId: String, url: String) {
+    val ctx = LocalContext.current
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .clickable { openExternal(ctx, url) }
+            .padding(vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = "去 ${ProviderCatalog.labelOf(providerId)} 获取 API Key",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.primary
+        )
+        Spacer(Modifier.width(4.dp))
+        Icon(
+            imageVector = Icons.AutoMirrored.Outlined.OpenInNew,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.size(14.dp)
+        )
+    }
+}
+
+/** 打开外部链接：失败静默（没有浏览器 / ROM 限制时用户自己搜也一样）。 */
+private fun openExternal(ctx: Context, url: String) {
+    runCatching {
+        ctx.startActivity(
+            Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        )
+    }
+}
+
+/**
  * API Key 实时自检行（§6.8）：每次输入实时刷新。
  *
  * 正常：6dp success 点 +「长度 56 · sk-a…7F3A · 校验通过」12sp（指纹 machineSmall）；
@@ -1815,7 +1881,15 @@ private fun TestConnectionButton(
 
 /** 「测试连接」结果卡（§6.8）：端点 / 指纹 / 响应预览 machineSmall，右下「复制」。 */
 @Composable
-private fun TestResultCard(result: TestResult, onCopy: () -> Unit) {
+private fun TestResultCard(
+    result: TestResult,
+    onCopy: () -> Unit,
+    onGetKey: () -> Unit = {},
+    onPickModel: () -> Unit = {},
+    onRetry: () -> Unit = {},
+    /** 成功时的收尾动作（保存并回对话）；null = 不显示该按钮。 */
+    onUseAndReturn: (() -> Unit)? = null
+) {
     Surface(
         color = MaterialTheme.colorScheme.surface,
         shape = RoundedCornerShape(20.dp),
@@ -1872,6 +1946,29 @@ private fun TestResultCard(result: TestResult, onCopy: () -> Unit) {
                         )
                     }
                 }
+            }
+            // —— P1：把「建议」升级成「下一步」 ——
+            // 诊断只给一句话，用户仍要自己找路；这里按归因直接给唯一正确的动作，
+            // 避免 429 被当成 Key 错、404 被当成网络问题这类反复试错。
+            val action = result.action
+            if (!result.ok) {
+                when (action) {
+                    RecoveryAction.GET_KEY -> AkTextButton(
+                        text = "去获取 / 更换 Key",
+                        onClick = onGetKey
+                    )
+                    RecoveryAction.PICK_MODEL -> AkTextButton(
+                        text = "选择可用模型",
+                        onClick = onPickModel
+                    )
+                    RecoveryAction.RETRY -> AkTextButton(
+                        text = "重试",
+                        onClick = onRetry
+                    )
+                    RecoveryAction.NONE -> Unit
+                }
+            } else if (onUseAndReturn != null) {
+                AkTextButton(text = "保存并回到对话", onClick = onUseAndReturn)
             }
         }
     }

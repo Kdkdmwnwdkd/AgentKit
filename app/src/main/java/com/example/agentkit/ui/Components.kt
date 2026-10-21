@@ -159,7 +159,9 @@ fun AkTopBar(
                 icon = Icons.Outlined.Menu,
                 description = "打开导航抽屉",
                 onClick = onOpenDrawer,
-                modifier = if (hamburgerFocus != null) Modifier.focusRequester(hamburgerFocus) else Modifier
+                // P2：聚光灯引导的「抽屉」锚点（无 Provider 时是空操作，不影响其他页面）
+                modifier = (if (hamburgerFocus != null) Modifier.focusRequester(hamburgerFocus) else Modifier)
+                    .guideAnchor(GuideAnchor.DRAWER)
             )
         }
         Text(

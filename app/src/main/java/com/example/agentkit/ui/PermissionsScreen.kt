@@ -48,9 +48,15 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
  *
  * 一级页面：顶栏走 [PageTopBar]（标题「权限中心」+ 右上「刷新」）。
  * 待授权项数与抽屉红点、控制台三宫格共用 [pendingGrantCount]——同一状态源必须同一计数。
+ *
+ * P0（2026-10-21）：顶部新增「权限引导」入口。本页是**排查页**（我现在有什么），
+ * 引导页是**上手页**（还差什么、点了能多做什么）。两条路径不重复：出问题来本页，
+ * 第一次配置走引导。
+ *
+ * @param onStartGuide 进入权限引导页
  */
 @Composable
-fun PermissionsScreen(vm: ChatViewModel) {
+fun PermissionsScreen(vm: ChatViewModel, onStartGuide: () -> Unit = {}) {
     val connected by vm.serviceConnected.collectAsStateWithLifecycle()
     val notificationGranted by vm.notificationGranted.collectAsStateWithLifecycle()
     val usageGranted by vm.usageGranted.collectAsStateWithLifecycle()
@@ -183,6 +189,17 @@ fun PermissionsScreen(vm: ChatViewModel) {
                 ),
             verticalArrangement = Arrangement.spacedBy(AgentSpacing.space4)
         ) {
+            // —— 引导入口（P0，2026-10-21）：本页是排查页，第一次上手走引导页 ——
+            // 不因为「全部已授权」就隐藏：换机、重装、系统升级掉权限后还要能从这里再走一遍。
+            AkSectionCard(
+                title = "权限引导",
+                icon = Icons.Outlined.Shield,
+                description = "逐项走一遍五项能力：每项都说明「开启后能多做什么 / 不开会缺什么」，" +
+                    "点按钮跳到系统设置，回来自动复检。"
+            ) {
+                AkOutlinedButton(text = "开始引导", onClick = onStartGuide)
+            }
+
             // —— 就绪度总览：与抽屉头部同一实现、同一措辞（§6.5.2）——
             AkSectionCard(title = "权限就绪度", icon = Icons.Outlined.Shield) {
                 AkReadyTextRow(

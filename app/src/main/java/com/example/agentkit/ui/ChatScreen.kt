@@ -145,7 +145,7 @@ import kotlinx.coroutines.withContext
  * 当前会话名（首条消息自动命名 / 抽屉长按可重命名），右上「＋」新建会话并切过去。
  *
  * @param onOpenModel 空态「去配置模型」→ 模型页。
- * @param onOpenPermissions 空态检查清单 / 抽屉就绪文字 → 权限中心。
+ * @param onOpenGuide 首启引导里的「去开启」→ 权限引导页（P0，2026-10-21）。
  */
 /**
  * W-30：消息操作弹窗的目标。
@@ -165,7 +165,7 @@ private data class MenuTarget(
 fun ChatScreen(
     vm: ChatViewModel,
     onOpenModel: () -> Unit,
-    onOpenPermissions: () -> Unit,
+    onOpenGuide: () -> Unit,
     onManagePrompts: () -> Unit
 ) {
     val messages by vm.messages.collectAsStateWithLifecycle()
@@ -183,9 +183,6 @@ fun ChatScreen(
     val prompts by vm.prompts.collectAsStateWithLifecycle()
     var showPromptPicker by remember { mutableStateOf(false) }
     val pendingApproval by vm.pendingApproval.collectAsStateWithLifecycle()
-    val serviceConnected by vm.serviceConnected.collectAsStateWithLifecycle()
-    val notificationGranted by vm.notificationGranted.collectAsStateWithLifecycle()
-    val usageGranted by vm.usageGranted.collectAsStateWithLifecycle()
     val config by vm.config.collectAsStateWithLifecycle()
     // 功能四（模型快速切换，录屏反馈「保存了好多个模型，要换的时候不给换，
     // 都不知道现在用哪个」）：对话页常驻当前模型指示条 + 一键切换弹窗，
@@ -199,9 +196,6 @@ fun ChatScreen(
     val sessionUsage by vm.sessionUsage.collectAsStateWithLifecycle()
     val listState = rememberLazyListState()
 
-    val pendingGrants = pendingGrantCount(
-        serviceConnected, notificationGranted, usageGranted
-    )
     val modelReady =
         config.baseUrl.isNotBlank() && config.apiKey.isNotBlank() && config.model.isNotBlank()
 
@@ -353,6 +347,11 @@ fun ChatScreen(
             onGoConfig = {
                 dismissOnboarding()
                 onOpenModel()
+            },
+            onOpenGuide = {
+                // 先落「已看过」再跳：从引导页返回时不该再弹同一个引导
+                dismissOnboarding()
+                onOpenGuide()
             },
             onDismiss = dismissOnboarding
         )
@@ -1473,6 +1472,7 @@ private fun ReaskDialog(
 private fun OnboardingDialog(
     visible: Boolean,
     onGoConfig: () -> Unit,
+    onOpenGuide: () -> Unit,
     onDismiss: () -> Unit
 ) {
     if (!visible) return
@@ -1533,11 +1533,17 @@ private fun OnboardingDialog(
                     )
 
                     Spacer(Modifier.height(AgentSpacing.space4))
-                    Text(
-                        text = "想让它替你操作屏幕？之后到「权限中心」开启无障碍服务即可。",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f)
-                    )
+                    // P0：把「操作手机」从一句灰字升级成一条可选岔路——
+                    // 想用的人一步到位，只想聊天的人不被拦（引导页本身也可跳过）。
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = "想让它替你操作屏幕？",
+                            modifier = Modifier.weight(1f),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        AkTextButton(text = "去开启", onClick = onOpenGuide)
+                    }
 
                     Spacer(Modifier.height(AgentSpacing.space5))
                     AkPrimaryButton(
@@ -1634,7 +1640,11 @@ private fun ChatInputBar(
     // 否则用户切到空闲会话发现发不了消息，会以为输入坏了
     runningNotice: String? = null
 ) {
-    Surface(color = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f)) {
+    Surface(
+        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f),
+        // P2：聚光灯引导的「输入栏」锚点（无 Provider 时是空操作）
+        modifier = Modifier.guideAnchor(GuideAnchor.INPUT_BAR)
+    ) {
         Column(
             Modifier
                 .fillMaxWidth()
@@ -2048,6 +2058,8 @@ private fun ChatSendButton(enabled: Boolean, onClick: () -> Unit) {
             .size(AgentDimens.touchTarget)
             .scale(scale)
             .clip(CircleShape)
+            // P2：聚光灯引导的「发送」锚点
+            .guideAnchor(GuideAnchor.SEND_BUTTON)
             .clickable(
                 interactionSource = interaction,
                 indication = null,

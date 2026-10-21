@@ -6,6 +6,7 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
+import android.os.PowerManager
 import android.util.Base64
 import java.io.ByteArrayOutputStream
 import java.util.zip.ZipInputStream
@@ -43,6 +44,11 @@ import com.example.agentkit.core.ConversationRecord
 import com.example.agentkit.core.DraftStore
 import com.example.agentkit.core.PromptDeleteResult
 import com.example.agentkit.core.llm.ProviderCatalog
+import com.example.agentkit.core.llm.FailureKind
+import com.example.agentkit.core.llm.Diagnosis
+import com.example.agentkit.core.llm.RecoveryAction
+import com.example.agentkit.core.llm.diagnoseException
+import com.example.agentkit.core.llm.diagnoseHttpFailure
 import com.example.agentkit.core.PromptItem
 import com.example.agentkit.core.PromptStore
 import com.example.agentkit.core.PromptUpsertResult
@@ -329,7 +335,11 @@ data class TestResult(
     /** 响应体前 200 字（已脱敏）；异常时为异常文案。 */
     val bodyPreview: String,
     /** 针对状态码的修复建议（失败时有值）。 */
-    val suggestion: String = ""
+    val suggestion: String = "",
+    /** 失败归因（P1，2026-10-21）：UI 据此决定给哪个补救按钮，不再只给一句建议。 */
+    val kind: FailureKind = FailureKind.NONE,
+    /** 可直接执行的补救动作（去拿 Key / 拉模型列表 / 重试）。 */
+    val action: RecoveryAction = RecoveryAction.NONE
 )
 
 /**
@@ -394,6 +404,15 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     /** 使用情况访问权限是否已授予（供感知层卡片展示）。 */
     private val _usageGranted = MutableStateFlow(false)
     val usageGranted: StateFlow<Boolean> = _usageGranted.asStateFlow()
+
+    /**
+     * 是否已在电池优化白名单（P0 权限引导，2026-10-21）。
+     *
+     * 只影响「长任务会不会被系统掐断」，不影响任何工具能不能用——所以它不在
+     * [pendingGrantCount] 的计数里，只有引导页单独展示。
+     */
+    private val _batteryUnrestricted = MutableStateFlow(false)
+    val batteryUnrestricted: StateFlow<Boolean> = _batteryUnrestricted.asStateFlow()
 
     /**
      * 调试通道（Shizuku）状态（W-13 B 方案）：未运行 / 未授权 / 就绪。
@@ -984,6 +1003,29 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         ctx.startActivity(intent)
     }
 
+    /**
+     * 权限引导页：申请电池优化白名单（P0，2026-10-21）。
+     *
+     * 优先弹系统「是否允许后台运行」对话框（`ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`，
+     * 清单里已声明该权限）；部分 ROM 没有这个 Activity，退到电池优化列表页让用户自己找本 App。
+     * 两条路都失败时静默返回——引导页的「回来自动复检」会把结果如实显示出来，不编造成功。
+     */
+    fun openBatteryOptimizationSettings(ctx: Context) {
+        val direct = Intent(
+            Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+            Uri.parse("package:${app.packageName}")
+        ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        val launched = runCatching { ctx.startActivity(direct) }.isSuccess
+        if (!launched) {
+            runCatching {
+                ctx.startActivity(
+                    Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                )
+            }
+        }
+    }
+
     /** 刷新权限授予状态（进入自动化页时调用，反映用户在系统设置里的变更）。 */
     fun refreshGrants() {
         // 通知监听权限：检查 enabled_notification_listeners 设置里是否包含本服务组件（免依赖、全版本可用）
@@ -1001,6 +1043,11 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
                 android.os.Process.myUid(),
                 app.packageName
             ) == AppOpsManager.MODE_ALLOWED
+        } catch (_: Throwable) { false }
+        // 电池优化白名单（P0 引导）：只影响长任务存活，不阻塞任何工具
+        _batteryUnrestricted.value = try {
+            val pm = app.getSystemService(Context.POWER_SERVICE) as PowerManager
+            pm.isIgnoringBatteryOptimizations(app.packageName)
         } catch (_: Throwable) { false }
         // 调试通道（Shizuku）：用户可能刚在 Shizuku 里授权/撤权，或刚从商店装完回来
         _shizukuStatus.value = ShizukuShell.status()
@@ -1946,11 +1993,17 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
                     val t = outcome.exceptionOrNull()!!
                     // 异常文案离开日志系统前先脱敏（防御：异常里可能夹带 url 中的 key 片段）
                     val msg = (t.message?.let { AgentLogger.sanitize(it) } ?: "未知错误").take(200)
-                    val localTip = if (providerId == "local-llama") {
-                        "本地推理失败：确认模型文件已下载完整、设备为 arm64；" +
-                            "加载日志可在「日志」页查看（标签 llama-jni）"
+                    // P1：本地模型加载失败不是网络问题，单独归因（沿用原有排查提示）
+                    val isLocalModel = providerId == "local-llama"
+                    val diagnosis = if (isLocalModel) {
+                        Diagnosis(
+                            FailureKind.MODEL,
+                            "本地推理失败：确认模型文件已下载完整、设备为 arm64；" +
+                                "加载日志可在「日志」页查看（标签 llama-jni）",
+                            RecoveryAction.NONE
+                        )
                     } else {
-                        "无法连接：请检查网络、Base URL 是否可达（错误类型：${t::class.java.simpleName}）"
+                        diagnoseException(t)
                     }
                     TestResult(
                         ok = false,
@@ -1958,7 +2011,9 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
                         endpoint = endpoint,
                         fingerprint = finger,
                         bodyPreview = msg,
-                        suggestion = localTip
+                        suggestion = diagnosis.suggestion,
+                        kind = diagnosis.kind,
+                        action = diagnosis.action
                     )
                 }
 
@@ -1973,20 +2028,18 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
                             bodyPreview = ping.bodyPreview
                         )
                     } else {
-                        // 失败分支给出针对性建议，让用户不必再猜是 Key 问题还是端点问题
-                        val suggestion = when (ping.code) {
-                            401, 403 -> "Key 无效/无权限：确认未夹带空格或零宽字符，且 Key 仍有额度与调用权限"
-                            429 -> "请求过快（429）：稍后再试"
-                            in 400..499 -> "客户端错误（${ping.code}）：检查模型名 / Base URL 是否正确"
-                            else -> "服务端错误（${ping.code}）：稍后重试"
-                        }
+                        // P1：按「谁的问题 + 下一步点哪」归因（401/402→Key，429→限流，
+                        // 404/400(model)→模型名，4xx→端点，5xx→服务端），不再一律「客户端错误」。
+                        val diagnosis = diagnoseHttpFailure(ping.code, ping.bodyPreview)
                         TestResult(
                             ok = false,
                             code = ping.code,
                             endpoint = endpoint,
                             fingerprint = finger,
                             bodyPreview = ping.bodyPreview,
-                            suggestion = suggestion
+                            suggestion = diagnosis.suggestion,
+                            kind = diagnosis.kind,
+                            action = diagnosis.action
                         )
                     }
                 }

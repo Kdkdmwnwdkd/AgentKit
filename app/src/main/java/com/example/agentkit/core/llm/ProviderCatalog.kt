@@ -344,4 +344,55 @@ object ProviderCatalog {
     /** 是否本地部署（不需要 Key）。 */
     fun isLocal(id: String): Boolean = byId(id)?.group == ProviderGroup.LOCAL
         || id == STYLE_LOCAL_LLAMA
+
+    /**
+     * id → 「去这里创建 API Key」的控制台地址（P1，2026-10-21）。
+     *
+     * 真机反馈里最常见的一句是「Key 去哪弄」——用户卡在第一步，而这一步和产品能力无关。
+     * 这里把地址做成数据，模型页在 Key 为空时直接给一条可点的入口，省掉一次跳出搜索。
+     *
+     * 约定：
+     *  - 本地部署（Ollama / LM Studio / vLLM / 内置 llama.cpp）**没有控制台**，返回空串；
+     *  - 未收录的自定义 id 返回空串，UI 据此不渲染入口（宁可不显示，也不给错链接）；
+     *  - 只放「创建 Key」的直达页，不放首页——首页还要用户自己找三层菜单。
+     */
+    private val CONSOLE_URLS: Map<String, String> = mapOf(
+        // 常用
+        "openai" to "https://platform.openai.com/api-keys",
+        "deepseek" to "https://platform.deepseek.com/api_keys",
+        "moonshot" to "https://platform.moonshot.cn/console/api-keys",
+        "zhipu" to "https://bigmodel.cn/usercenter/apikeys",
+        "qwen" to "https://bailian.console.aliyun.com/?apiKey=1",
+        "claude" to "https://console.anthropic.com/settings/keys",
+        "gemini" to "https://aistudio.google.com/app/apikey",
+        // 国内
+        "doubao" to "https://console.volcengine.com/ark/region:ark+cn-beijing/apiKey",
+        "ernie" to "https://console.bce.baidu.com/qianfan/ais/console/applicationConsole/application",
+        "hunyuan" to "https://console.cloud.tencent.com/hunyuan/api-key",
+        "spark" to "https://console.xfyun.cn/app/myapp",
+        "minimax" to "https://platform.minimaxi.com/user-center/basic-information/interface-key",
+        "stepfun" to "https://platform.stepfun.com/interface-key",
+        "baichuan" to "https://platform.baichuan-ai.com/console/apikey",
+        "yi" to "https://platform.lingyiwanwu.com/apikeys",
+        "sensetime" to "https://platform.sensenova.cn/",
+        // 海外
+        "xai" to "https://console.x.ai/",
+        "mistral" to "https://console.mistral.ai/api-keys/",
+        "perplexity" to "https://www.perplexity.ai/settings/api",
+        "groq" to "https://console.groq.com/keys",
+        "together" to "https://api.together.ai/settings/api-keys",
+        "fireworks" to "https://fireworks.ai/account/api-keys",
+        "deepinfra" to "https://deepinfra.com/dash/api_keys",
+        "cerebras" to "https://cloud.cerebras.ai/",
+        "github-models" to "https://github.com/settings/tokens",
+        // 聚合
+        "openrouter" to "https://openrouter.ai/settings/keys",
+        "siliconflow" to "https://cloud.siliconflow.cn/account/ak",
+        "modelscope" to "https://modelscope.cn/my/myaccesstoken",
+        "volcengine-ark" to "https://console.volcengine.com/ark/region:ark+cn-beijing/apiKey",
+        "dashscope" to "https://bailian.console.aliyun.com/?apiKey=1"
+    )
+
+    /** id → Key 创建页；无控制台（本地部署）或未收录时返回空串。 */
+    fun consoleUrlOf(id: String): String = CONSOLE_URLS[id].orEmpty()
 }
