@@ -24,6 +24,41 @@
 import com.example.agentkit.core.CrashLogger
 import java.io.File
 
+/* ------------------------------ 仓库根定位（源码扫描用） ------------------------------ */
+
+/**
+ * 仓库根：从当前工作目录向上找含 `app/src/main/java` 的目录。
+ *
+ * 不能写死路径（W-39 的教训），也不能只依赖 CWD——本 harness 既可能被 `run-all.sh`
+ * 从仓库根调起，也可能被单独执行（此时 CWD 未必是仓库根）。
+ */
+private val REPO_ROOT: File = run {
+    var d: File? = File("").absoluteFile
+    while (d != null) {
+        if (File(d, "app/src/main/java").isDirectory) break
+        d = d.parentFile
+    }
+    d ?: File("").absoluteFile
+}
+
+/** 业务源码根包目录（`read()` 的相对路径基准）。 */
+private val SRC_ROOT: File = File(REPO_ROOT, "app/src/main/java/com/example/agentkit")
+
+/** AndroidManifest 绝对路径。 */
+private val MANIFEST: File = File(REPO_ROOT, "app/src/main/AndroidManifest.xml")
+
+/**
+ * 读业务源码文件（相对包根目录）。
+ *
+ * 找不到文件时**抛异常**而不是返回空串——空串会让 `assertContains` 报出
+ * 「报告缺少 xxx」这种误导性信息，而真实原因是「文件路径写错了」。
+ */
+private fun read(rel: String): String {
+    val f = File(SRC_ROOT, rel)
+    if (!f.exists()) throw AssertionError("缺少源码文件：${f.path}")
+    return f.readText()
+}
+
 /* ------------------------------ 迷你断言框架 ------------------------------ */
 
 private var passed = 0

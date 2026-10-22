@@ -262,7 +262,7 @@ private suspend fun testT04FailureGuard() {
  *  1. 瞬时故障三不（不计数/不清除/不拦截）——isTransientFailureCode 判据；
  *  2. 回合作用域 resetForTurn——send() 入口清空，回合内打转防护不变。
  */
-private fun testW8GuardTurnScope() {
+private suspend fun testW8GuardTurnScope() {
     println("\n== W-8 熔断回合作用域 + 瞬时故障豁免（真机日志 23:58 ui_tree 被挡死根因）==")
     val guard = FailureGuard()
 

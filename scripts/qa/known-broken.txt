@@ -6,18 +6,29 @@
 #
 # 格式：<脚本名>	<原因>
 # 移除条件：修好后删除对应行；若它开始通过，run-all 会打印 XPASS 提醒。
-
-run-t01-probe2.sh	T01AdversarialProbe2.kt 调 client.streamText() 的签名与现版不一致（OkHttpClient vs KeySlot 列表）
-run-verification.sh	T02T06Verification.kt 在非挂起上下文调用 suspend check()
-run-crashlog-verification.sh	CrashLogVerification.kt 调用了不存在的 read() 辅助函数
+#
+# 当前状态：**清单已清空**（0 条）。下面只保留历史修法记录，供后人追溯。
 
 # W-46（2026-10-20）：以下 6 个已修复并从清单移除——它们的失败根因是断言陈旧
 # （标识符在 W-30 重构后改名）与 harness 依赖版本选错（coroutines 1.5.0），
 # 不是产品缺陷；现分别 173/173、9/9、37/37 全绿，详见 docs/W46-NOTES.md。
 # W-47（2026-10-21）：hotfix3 / hotfix / localmodel 三个 harness 已随依赖版本修正与
 # JSON 安全化通过（run-all 报 XPASS），从清单移除。
-# B 批（2026-10-22）：fallback 最后一个也修好并移出——断言仍按「proot → user 两级」
-# 期望，但实现早已（W-13 起）在链首插入 Shizuku 调试通道的**诊断条目**（3 个候选）。
+# B 批（2026-10-22）：fallback 修好并移出——断言仍按「proot → user 两级」期望，
+# 但实现早已（W-13 起）在链首插入 Shizuku 调试通道的**诊断条目**（3 个候选）。
 # 这是断言陈旧而非产品缺陷：诊断条目不可用时只作诊断呈现，不影响 proot → user 降级链
 # （见 CapabilityBridges.shellCapabilitySnapshot 的 KDoc）。断言已对齐当前语义，
 # 现 16/16 全绿。
+# B 批收尾（2026-10-22）：最后 3 条也全部修好并移出，**清单归零**——
+#   run-t01-probe2.sh：W-21 给 OpenAIClient 加了 backupKeys 参数后，构造函数的
+#     第 2 位从 http 变成 List<KeySlot>，harness 仍按老位置传 OkHttpClient。
+#     修法：4 处构造改用**命名参数** `http = fakeHttp(...)`（不靠位置传参，
+#     以后再加参数也不会再错位）。现 7/7 全绿。
+#   run-verification.sh：testW8GuardTurnScope() 是非 suspend 函数，内部却调 suspend 的
+#     check()，编译直接报错。修法：函数改为 `suspend fun`（调用点在 runBlocking 内，
+#     无需改）。现 37/37 全绿。
+#   run-crashlog-verification.sh：源码扫描段用到的 read() 辅助函数与 MANIFEST 常量
+#     在历史重构中丢失（源文件本身都还在）。修法：补回这两个辅助，并把仓库根定位
+#     改成「从 CWD 向上找含 app/src/main/java 的目录」，不依赖调用时的 CWD。
+#     现 31/31 全绿（原 47 条里的 16 条 D 段断言随 W-12 删除屏幕捕捉一并移除，
+#     属预期减量，不是漏测）。
