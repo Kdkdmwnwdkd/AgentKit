@@ -193,8 +193,26 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="latest"
+          TITLE="AgentKit latest (run ${{ github.run_number }})"
+          NOTES="commit ${{ github.sha }}"
+          # 先保证 release 存在（tag 已存在时 create 会失败，忽略即可）。
           gh release create "$TAG" app/build/outputs/apk/debug/*.apk \
             --repo "${{ github.repository }}" \
-            --title "AgentKit latest (run ${{ github.run_number }})" \
-            --notes "commit ${{ github.sha }}" || \
-          gh release upload "$TAG" app/build/outputs/apk/debug/*.apk --repo "${{ github.repository }}" --clobber
+            --title "$TITLE" \
+            --notes "$NOTES" || true
+          # 再覆盖上传 APK。
+          #
+          # 为什么要显式 upload --clobber 而不是只靠 create：
+          # tag 已存在时 create 直接失败，APK 根本没换——旧包会被当成新包发出去，
+          # 用户装到的是上一版的代码，还以为是最新的。
+          gh release upload "$TAG" app/build/outputs/apk/debug/*.apk \
+            --repo "${{ github.repository }}" --clobber
+          # 最后把标题/说明也刷成当前这次的 run 号与 commit。
+          #
+          # 为什么要多这一步：原来只写「create || upload」，create 失败时走 upload 分支，
+          # 而 upload **不会改 title**——于是 release 标题会永远停在首次创建时那个 run 号
+          #（实测停在 "run 321"，而包其实已经是 run 334 的），看标题判断版本会判错。
+          gh release edit "$TAG" \
+            --repo "${{ github.repository }}" \
+            --title "$TITLE" \
+            --notes "$NOTES"
