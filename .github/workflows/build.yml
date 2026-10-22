@@ -60,17 +60,34 @@ jobs:
         run: ./scripts/fetch-llama.sh git
 
       - name: Fetch Shizuku APK (内置一键安装用，构建时拉取，不进仓库)
-        # 不阻断构建：GitHub API 对共享 runner IP 常返 403（限流）。
+        # 不阻断构建：共享 runner IP 匿名调用 GitHub API 极易 429/403（限流）。
         # 拿不到就跳过内置包——应用会退到官方发布页，功能不缺失，只是少一步便利。
+        #
+        # 2026-10-22 修：匿名调 API 被限流 → 包内没有 assets/shizuku.apk →
+        # apk 反验判 FAIL → QA 门禁把整次构建打红（fbd4c0d / 6196648 两连红）。
+        # 两处一起改：① 带 token 调 API（配额从 60/h 提到 5000/h）；
+        #              ② 下载没成功时导出标记，让反验把这一项判为 SKIP 而不是 FAIL
+        #                 （「CI 没拉到」和「代码把资产弄丢了」是两件事，不能同一个判定）。
         continue-on-error: true
         run: |
           mkdir -p app/src/main/assets
-          URL=$(curl -sSL --max-time 60 https://api.github.com/repos/RikkaApps/Shizuku/releases/latest 2>/dev/null | python3 -c "import json,sys;d=json.load(sys.stdin);a=[x for x in d.get('assets',[]) if x['name'].endswith('.apk')];print(a[0]['browser_download_url'] if a else '')" 2>/dev/null || true)
+          URL=$(curl -sSL --max-time 60 \
+                  -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+                  -H "Accept: application/vnd.github+json" \
+                  https://api.github.com/repos/RikkaApps/Shizuku/releases/latest 2>/dev/null \
+                | python3 -c "import json,sys;d=json.load(sys.stdin);a=[x for x in d.get('assets',[]) if x['name'].endswith('.apk')];print(a[0]['browser_download_url'] if a else '')" 2>/dev/null || true)
           if [ -n "$URL" ]; then
             echo "downloading $URL"
-            curl -fL --max-time 180 "$URL" -o app/src/main/assets/shizuku.apk && ls -lh app/src/main/assets/shizuku.apk || echo "WARN: 下载失败，跳过"
+            if ! curl -fL --max-time 180 "$URL" -o app/src/main/assets/shizuku.apk; then
+              rm -f app/src/main/assets/shizuku.apk
+              echo "WARN: 下载失败，跳过内置安装包"
+            fi
           else
             echo "WARN: 未找到 Shizuku APK（API 限流或发布变更），跳过内置安装包（应用会退到官方发布页）"
+          fi
+          # 给下游反验一个明确信号：没拉到 ≠ 代码有问题
+          if [ ! -s app/src/main/assets/shizuku.apk ]; then
+            echo "AGENTKIT_SHIZUKU_ASSET=absent" >> "$GITHUB_ENV"
           fi
 
       - name: Make gradlew executable
@@ -136,6 +153,9 @@ jobs:
       - name: QA harness (report only)
         if: ${{ vars.QA_HARNESS != 'off' }}
         continue-on-error: true
+        # 注意：不要在这里显式写 env.AGENTKIT_SHIZUKU_ASSET。
+        # 写入 $GITHUB_ENV 的变量会自动进入后续步骤的环境；用表达式覆盖反而可能在
+        # 求值阶段取到空串，把运行时值抹掉，SKIP 逻辑就失效了。
         run: |
           set +e
           bash scripts/qa/run-all.sh app/build/outputs/apk/debug/app-debug.apk 2>&1 | tee /tmp/qa.log
