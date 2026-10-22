@@ -31,6 +31,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -69,6 +70,13 @@ fun ContainerScreen() {
     var selected by remember { mutableStateOf<RootfsManager.Distro?>(null) }
     /** B 批：运行时安装后的刷新计数——探测结果按 (id, tick) 重算。 */
     var toolchainTick by remember { mutableStateOf(0) }
+    /**
+     * C 批：用户为每种语言填写的目标版本号。
+     *
+     * key 用 "<distroId>:<langId>"，因为不同发行版的可用版本不一样，
+     * 分开记才不会串。
+     */
+    val versionInputs = remember { mutableStateMapOf<String, String>() }
 
     val prootReady = remember { ProotRunner.isAvailable(context) }
 
@@ -212,6 +220,99 @@ fun ContainerScreen() {
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
+                                }
+
+                                // C 批：按语言单独指定版本安装。
+                                //
+                                // 「一键装齐」装的是各语言的**当前默认版**——但用户真正要的
+                                // 往往是特定版本（项目 lockfile 卡在 node 18、代码用了
+                                // python 3.11 的新语法）。所以这里逐语言给出版本输入框：
+                                // 留空 = 用默认版；填了 = 装指定版本。
+                                if (detection.pkgManager != null && missing.isNotEmpty()) {
+                                    Spacer(Modifier.height(AgentSpacing.space3))
+                                    Text(
+                                        text = "指定版本安装",
+                                        style = MaterialTheme.typography.titleSmall,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                    Text(
+                                        text = "留空则安装默认版本；填入版本号则装对应版本。",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                    Spacer(Modifier.height(AgentSpacing.space2))
+                                    missing.forEach { lang ->
+                                        val vKey = "$id:${lang.id}"
+                                        val vInput = versionInputs[vKey].orEmpty()
+                                        Column(Modifier.fillMaxWidth()) {
+                                            AkTextField(
+                                                value = vInput,
+                                                onValueChange = { versionInputs[vKey] = it },
+                                                label = "${lang.displayName} 版本",
+                                                placeholder = "默认",
+                                                machine = true
+                                            )
+                                            val spec = if (vInput.isBlank()) null
+                                            else ToolchainInstaller.resolveVersion(lang, vInput)
+                                            // 版本号非法时**明确报错**，不静默回落成默认版——
+                                            // 用户要 node 18 却悄悄装了 node 20，比报错更糟。
+                                            if (vInput.isNotBlank() && spec == null) {
+                                                Spacer(Modifier.height(AgentSpacing.space1))
+                                                Text(
+                                                    text = "版本号非法：只接受数字与点（如 18 / 3.11）",
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    color = MaterialTheme.colorScheme.error
+                                                )
+                                            } else {
+                                                val cmd = ToolchainInstaller.installCommand(
+                                                    lang, detection.pkgManager, spec
+                                                )
+                                                if (cmd != null) {
+                                                    Spacer(Modifier.height(AgentSpacing.space1))
+                                                    AkTextButton(
+                                                        text = "安装 ${lang.displayName}" +
+                                                            (spec?.let { " ${it.version}" } ?: ""),
+                                                        onClick = {
+                                                            // cmd 已被外层 if (cmd != null) 收窄为非空，
+                                                            // 这里不再重复判 null（编译器会报恒真警告）。
+                                                            scope.launch(Dispatchers.IO) {
+                                                                val res = runInstallInContainer(context, id, cmd)
+                                                                withContext(Dispatchers.Main) {
+                                                                    toolchainTick++
+                                                                    Toast.makeText(
+                                                                        context,
+                                                                        if (res.ok) {
+                                                                            "安装完成：${lang.displayName}" +
+                                                                                (spec?.let { " ${it.version}" } ?: "")
+                                                                        } else {
+                                                                            "安装失败（exit ${res.exitCode}）：${res.output.take(80)}"
+                                                                        },
+                                                                        Toast.LENGTH_LONG
+                                                                    ).show()
+                                                                }
+                                                            }
+                                                        }
+                                                    )
+                                                    Spacer(Modifier.height(AgentSpacing.space1))
+                                                    Text(
+                                                        text = "将执行：$cmd",
+                                                        style = MaterialTheme.typography.bodySmall,
+                                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                    )
+                                                    // 版本说明：Debian 官方源没有 node 18 这类分版本包，
+                                                    // 用户得知道「可能装不上、或者装到的是默认版」。
+                                                    spec?.note?.takeIf { it.isNotBlank() }?.let { note ->
+                                                        Text(
+                                                            text = note,
+                                                            style = MaterialTheme.typography.bodySmall,
+                                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                            Spacer(Modifier.height(AgentSpacing.space3))
+                                        }
+                                    }
                                 }
                                 Spacer(Modifier.height(AgentSpacing.space3))
                             }

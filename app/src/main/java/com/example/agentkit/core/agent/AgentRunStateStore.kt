@@ -122,4 +122,64 @@ class AgentRunStateStore(private val file: File) {
             append("。对话上下文仍在，可以直接说「继续」。")
         }
     }
+
+    /**
+     * 推进运行态：记一步工具完成（C 批）。
+     *
+     * B 批的 `stepIndex` / `doneTools` 只在初始化时被赋值，之后再没动过——
+     * 于是中断提示永远显示「第 0 步」、完成过的工具永远为空，恢复信息形同虚设。
+     * 这里把「进行到第几步、做过哪些工具」真正记下来。
+     *
+     * 只在状态为 running 时推进（已 done/interrupted 的不再记）。
+     *
+     * @param toolName 本次完成的工具名
+     * @return 更新后的状态；无 running 状态返回 null
+     */
+    fun advance(toolName: String): AgentRunState? {
+        val state = load() ?: return null
+        if (state.status != AgentRunState.STATUS_RUNNING) return null
+        val updated = state.copy(
+            stepIndex = state.stepIndex + 1,
+            doneTools = state.doneTools + toolName,
+            updatedAt = System.currentTimeMillis()
+        )
+        save(updated)
+        return updated
+    }
+
+    /**
+     * 生成「续跑」提示：把中断的任务重新描述一遍，供下一轮作为上下文拼进去（C 批）。
+     *
+     * 与 [reconcile] 的 `note` 区别：
+     * - `note` 是**给人看**的一句话（「上次被中断了，说继续」）；
+     * - 本方法返回的是**给模型看**的结构化摘要（做了什么、做到哪、接着做什么）。
+     *
+     * @return 续跑上下文文本；无可续跑状态返回 null
+     */
+    fun buildResumeContext(): String? {
+        val state = load() ?: return null
+        if (state.status != AgentRunState.STATUS_INTERRUPTED) return null
+        if (state.prompt.isBlank()) return null
+        return buildString {
+            appendLine("【上次任务被系统中断，以下是进度摘要】")
+            appendLine("原始请求：${state.prompt.take(200)}")
+            appendLine("已完成步骤数：${state.stepIndex}")
+            if (state.doneTools.isNotEmpty()) {
+                appendLine("已完成的工具调用：${state.doneTools.joinToString(" → ")}")
+            }
+            append("请从中断处继续，不要重复已完成的工作；如已完成全部要求，直接给出最终结论。")
+        }
+    }
+
+    /**
+     * 标记为「已续跑」：中断状态被消费掉，不应再次提示。
+     *
+     * @return 成功返回 true
+     */
+    fun markResumed(): Boolean = runCatching {
+        val state = load() ?: return false
+        if (state.status != AgentRunState.STATUS_INTERRUPTED) return false
+        save(state.copy(status = AgentRunState.STATUS_RUNNING, note = "", updatedAt = System.currentTimeMillis()))
+        true
+    }.getOrDefault(false)
 }

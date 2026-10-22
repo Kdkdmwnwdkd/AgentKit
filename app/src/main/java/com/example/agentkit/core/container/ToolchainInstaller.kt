@@ -88,6 +88,78 @@ object ToolchainInstaller {
     )
 
     /**
+     * 版本约束（C 批）。
+     *
+     * 用户要装运行时时，常常不是「随便给我个 node」——而是「我要 node 18」
+     *（因为某个项目 lockfile 卡在 18）或「python 要 3.11」（依赖某些新语法）。
+     *
+     * 不同发行版、不同版本的**包名不一样**，这是这里要解决的核心问题：
+     * - Alpine 的 node 版本是分包的：`nodejs`（当前版）/ `nodejs18` / `nodejs20`；
+     * - Debian 的 node 版本在第三方源（NodeSource），官方源只有 `nodejs`；
+     * - Java 的版本包名直接带号：`openjdk17` / `openjdk21` / `default-jdk`。
+     *
+     * 所以约束要**按包管理器分别解析**，不能一套包名走天下。
+     */
+    data class VersionSpec(
+        /** 版本号，如 "18" / "3.11" / "17"。 */
+        val version: String,
+        /** 该语言在 Alpine 下对应的包名。 */
+        val apkPackages: List<String>,
+        /** 该语言在 Debian 下对应的包名。 */
+        val aptPackages: List<String>,
+        /** 解析说明（供 UI 展示「你要的版本装不上，退而求其次装了哪个」）。 */
+        val note: String = ""
+    )
+
+    /**
+     * 解析版本约束（C 批）。
+     *
+     * @param lang 目标语言
+     * @param version 用户指定的版本号；空串表示不指定
+     * @return 解析结果；版本号非法（如含字母、空格）返回 null
+     */
+    fun resolveVersion(lang: Lang, version: String): VersionSpec? {
+        val v = version.trim()
+        if (v.isEmpty()) return null
+        // 只接受数字与点（如 18 / 3.11）——版本号会拼进 shell 命令，
+        // 必须严格白名单，不能让 `18; rm -rf /` 这类东西混进来。
+        if (!v.matches(Regex("^[0-9]+(\\.[0-9]+)*$"))) return null
+
+        return when (lang) {
+            Lang.NODE -> {
+                // Alpine：nodejs18 / nodejs20 这类分版本包；Debian 官方源只有 nodejs
+                val major = v.substringBefore('.')
+                VersionSpec(
+                    version = v,
+                    apkPackages = listOf("nodejs$major", "npm"),
+                    aptPackages = listOf("nodejs", "npm"),
+                    note = "Debian 官方源只提供默认版本 nodejs；如需 node $major 请在容器内配置 NodeSource。"
+                )
+            }
+            Lang.PYTHON -> {
+                // Alpine 的 python3 是主版本线；Debian 用完整版本号做包名
+                val major = v.substringBefore('.')
+                VersionSpec(
+                    version = v,
+                    apkPackages = listOf("python$major", "py$major-pip"),
+                    aptPackages = listOf("python$v", "python$v-pip"),
+                    note = "若仓库没有 python $v 的包，安装会失败，可改用默认版本。"
+                )
+            }
+            Lang.JAVA -> {
+                // Java 的版本直接编码在包名里（openjdk17 / openjdk21）
+                val major = v.substringBefore('.')
+                VersionSpec(
+                    version = v,
+                    apkPackages = listOf("openjdk$major", "openjdk$major-jdk"),
+                    aptPackages = listOf("openjdk-$major-jdk"),
+                    note = "Debian 下需 openjdk-$major-jdk 包；仓库缺失时请换用 default-jdk。"
+                )
+            }
+        }
+    }
+
+    /**
      * 探测 rootfs 里已有的运行时与包管理器。
      *
      * @param rootfs 已解压的 rootfs 目录
@@ -124,12 +196,17 @@ object ToolchainInstaller {
      * ## 为什么 Debian 必须先 update
      * Debian 系不 update 直接 install 会用陈旧索引报「包不可用」。
      *
+     * @param spec 可选的版本约束（C 批）；非 null 时用它的包名覆盖默认包名
      * @return 安装命令；包管理器不支持或该语言无对应包时返回 null
      */
-    fun installCommand(lang: Lang, pkgManager: PkgManager): String? {
+    fun installCommand(
+        lang: Lang,
+        pkgManager: PkgManager,
+        spec: VersionSpec? = null
+    ): String? {
         val packages = when (pkgManager) {
-            PkgManager.APK -> lang.apkPackages
-            PkgManager.APT -> lang.aptPackages
+            PkgManager.APK -> spec?.apkPackages ?: lang.apkPackages
+            PkgManager.APT -> spec?.aptPackages ?: lang.aptPackages
         }
         if (packages.isEmpty()) return null
         return when (pkgManager) {

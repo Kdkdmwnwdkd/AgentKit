@@ -52,6 +52,11 @@ class ContainerToolchainTool(
             "string",
             "只装指定语言：node / python / java。留空则装齐所有缺失的",
             enum = listOf("node", "python", "java")
+        ),
+        JsonSchema.prop(
+            "version",
+            "string",
+            "指定版本号，如 18（node）/ 3.11（python）/ 17（java）。留空则装仓库默认版本"
         )
     )
 
@@ -66,6 +71,8 @@ class ContainerToolchainTool(
         // 模型下发 `"action": null` 时硬转换会抛 IllegalArgumentException，整轮回答直接崩。
         val action = args["action"]?.primOrNull()?.contentOrNull?.trim()?.lowercase() ?: "status"
         val language = args["language"]?.primOrNull()?.contentOrNull?.trim()?.lowercase()
+        // C 批：版本约束（如 node 18 / python 3.11）。留空 = 装仓库默认版本。
+        val version = args["version"]?.primOrNull()?.contentOrNull?.trim()
 
         // 选一个已解压的发行版：优先第一个
         val distro = RootfsManager.listAvailable(context)
@@ -81,7 +88,7 @@ class ContainerToolchainTool(
 
         when (action) {
             "status" -> statusResult(distro.id, detection)
-            "install" -> installResult(distro.id, detection, language)
+            "install" -> installResult(distro.id, detection, language, version)
             else -> ToolResult.fail(
                 code = "bad_action",
                 message = "未知 action：$action",
@@ -111,7 +118,8 @@ class ContainerToolchainTool(
     private fun installResult(
         distroId: String,
         detection: ToolchainInstaller.Detection,
-        language: String?
+        language: String?,
+        version: String?
     ): ToolResult {
         val pkg = detection.pkgManager ?: return ToolResult.fail(
             code = "no_pkg_manager",
@@ -136,7 +144,30 @@ class ContainerToolchainTool(
                 data = "已安装：${detection.installed.joinToString("、") { it.displayName }}"
             )
         }
+
+        // C 批：版本约束解析。版本号非法要明确报错，不能静默当成「装默认版」——
+        // 用户要 node 18 却装了 node 20，比报错更糟。
+        val spec = if (!version.isNullOrBlank()) {
+            val lang = target.firstOrNull()
+                ?: return ToolResult.fail(
+                    code = "bad_version",
+                    message = "指定版本时必须同时指定 language。",
+                    hint = "version 需要配合 language 使用（如 language=node, version=18）。"
+                )
+            val parsed = ToolchainInstaller.resolveVersion(lang, version)
+                ?: return ToolResult.fail(
+                    code = "bad_version",
+                    message = "版本号格式非法：$version",
+                    hint = "版本号只能由数字和点组成，如 18 / 3.11 / 17。"
+                )
+            parsed
+        } else {
+            null
+        }
+
         val command = when {
+            // 指定了版本 → 只能装单个语言（多语言 + 多版本无法用一条命令表达）
+            spec != null -> ToolchainInstaller.installCommand(target.first(), pkg, spec)
             language.isNullOrBlank() -> ToolchainInstaller.installMissingCommand(detection)
             else -> ToolchainInstaller.installCommand(target.first(), pkg)
         } ?: return ToolResult.fail(
@@ -156,8 +187,10 @@ class ContainerToolchainTool(
         val after = ToolchainInstaller.detect(RootfsManager.rootfsDir(context, distroId))
         return ToolResult.ok(
             code = "install_ok",
-            message = "已安装：${target.joinToString("、") { it.displayName }}",
+            message = "已安装：${target.joinToString("、") { it.displayName }}" +
+                (spec?.let { "（目标版本 ${it.version}）" } ?: ""),
             data = "现在容器里有：${after.installed.joinToString("、") { it.displayName }}\n" +
+                (spec?.note?.let { "说明：$it\n" } ?: "") +
                 "输出：${result.output.take(300)}"
         )
     }
