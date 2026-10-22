@@ -125,6 +125,9 @@ class ShellRunTool(
     /** 写操作：shell 命令可能改变设备状态，保守走串行批次。 */
     override val readOnly = false
 
+    /** A 批：shell 是最危险的工具之一，执行前必须过人工审批（会话内可按「shell 命令」整组放行）。 */
+    override val needsApproval = true
+
     override suspend fun execute(args: JsonObject): ToolResult {
         val command = args["command"]?.primOrNull()?.contentOrNull
             ?: return ToolResult.fail(

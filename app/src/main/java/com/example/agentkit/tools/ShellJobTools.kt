@@ -48,6 +48,9 @@ class ShellBackgroundTool(
 
     override val readOnly = false
 
+    /** A 批：后台命令与前台 shell 同级，执行前需确认。 */
+    override val needsApproval = true
+
     override suspend fun execute(args: JsonObject): ToolResult = withContext(Dispatchers.IO) {
         val command = args["command"]?.primOrNull()?.contentOrNull.orEmpty()
         if (JobLogic.normalizeCommand(command) == null) {

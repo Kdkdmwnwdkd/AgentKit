@@ -116,13 +116,25 @@ class SkillRuntimeBridge(
 
     /** 调用已注册工具。脚本中：agent.tool('http_request', {...}) */
     fun tool(name: String, args: Any?): String {
-        // 第一道：manifest 白名单（skill 自证）
-        if (skill.tools.isNotEmpty() && name !in skill.tools) {
-            return "⛔ 技能「${skill.name}」无权使用工具 $name（白名单：${skill.tools.joinToString()}）"
+        // 第一道：manifest 白名单（fail-closed；空表 = 不允许任何工具，要全量必须显式 "*"）
+        if (!isToolAllowedByWhitelist(skill.tools, name)) {
+            return "⛔ 技能「${skill.name}」无权使用工具 $name（白名单：" +
+                (skill.tools.joinToString().ifBlank { "空" }) + "）"
         }
         // 第二道：全局能力门（应用内置真相源，防「自证白名单」越权拿高危权限）
         checkCapabilityGate(name, skill.trust)?.let { return it }
         val obj = toJsonObject(args) ?: return "⛔ 参数无法解析为对象：$args"
+        // 第三道：需要人工确认的工具，脚本**不得代调用**。
+        //
+        // 不做「脚本内弹审批」的原因：JS 求值在非挂起的 Rhino 线程里，审批是 suspend 的；
+        // runBlocking 会卡住这条线程，且 SCRIPT_TIMEOUT 的取消无法中断它——用户不点弹窗
+        // 就会永久占住一个线程。这里直接拒绝，让模型回到主对话里走正常审批链路，
+        // 是当前架构下唯一不会引入死锁的 fail-closed 做法。
+        val target = registry.get(name)
+        if (target?.needsApproval == true) {
+            return "⛔ 工具 $name 需要用户逐次确认，脚本不能代为调用。" +
+                "请在主对话中直接调用该工具（Agent 会弹出确认框）。"
+        }
         val call = ToolCall("skill:${skill.id}:$name", name, obj)
         return runBlocking { registry.execute(call).content }
     }

@@ -181,6 +181,9 @@ class GitHubCommitTool(private val app: Application) : AgentTool {
     /** 写操作：必须串行。 */
     override val readOnly = false
 
+    /** A 批：推仓库是不可逆外部副作用，执行前必须确认（会话内可按「GitHub 提交」整组放行）。 */
+    override val needsApproval = true
+
     override suspend fun execute(args: JsonObject): ToolResult = withContext(Dispatchers.IO) {
         val cfg = loadConfig(app) ?: return@withContext notConfigured()
         val message = args["message"]?.primOrNull()?.contentOrNull?.trim().orEmpty()

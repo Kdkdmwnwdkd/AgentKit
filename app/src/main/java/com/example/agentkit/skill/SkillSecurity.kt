@@ -39,11 +39,17 @@ object CapabilityRegistry {
         "ui_screenshot" to Capability.DANGEROUS,
         "device_notifications" to Capability.DANGEROUS,
         "device_foreground_app" to Capability.DANGEROUS,
-        // —— 敏感：网络 / 通知 / 剪贴板 / 写文件 ——
-        "http_request" to Capability.PRIVILEGED,
-        "clipboard" to Capability.PRIVILEGED,
-        "send_notification" to Capability.PRIVILEGED,
-        "write_file" to Capability.PRIVILEGED,
+        // —— 危险：命令 / 安装 / 仓库写 ——
+        "shell_run" to Capability.DANGEROUS,
+        "shell_background" to Capability.DANGEROUS,
+        "app_install" to Capability.DANGEROUS,
+        "app_uninstall" to Capability.DANGEROUS,
+        "app_stop" to Capability.DANGEROUS,
+        "github_commit" to Capability.DANGEROUS,
+        // —— 危险：浏览器写操作（可提交表单 / 执行页面脚本）——
+        "web_click" to Capability.DANGEROUS,
+        "web_type" to Capability.DANGEROUS,
+        "web_eval" to Capability.DANGEROUS,
         // —— L9 记忆库：写/删是 DANGEROUS ——
         // memory_write / memory_forget 会永久改变长期人格状态（即使技能被卸载，写入的记忆仍残留，
         // 等价于「持久投毒」）。imported 的能力上限恰好是 PRIVILEGED，若此处定 PRIVILEGED，
@@ -53,12 +59,51 @@ object CapabilityRegistry {
         "memory_forget" to Capability.DANGEROUS,
         "memory_search" to Capability.SAFE,
         "memory_list" to Capability.SAFE,
-        // —— 安全：只读沙箱文件 ——
+        // —— 敏感：网络 / 通知 / 剪贴板 / 写文件 / 应用启动 ——
+        "http_request" to Capability.PRIVILEGED,
+        "clipboard" to Capability.PRIVILEGED,
+        "send_notification" to Capability.PRIVILEGED,
+        "write_file" to Capability.PRIVILEGED,
+        "edit_file" to Capability.PRIVILEGED,
+        "app_launch" to Capability.PRIVILEGED,
+        "github_clone" to Capability.PRIVILEGED,
+        "ocr_image" to Capability.PRIVILEGED,
+        "speak" to Capability.PRIVILEGED,
+        "todo_write" to Capability.PRIVILEGED,
+        "use_skill" to Capability.PRIVILEGED,
+        "spawn_agents" to Capability.PRIVILEGED,
+        "shell_close" to Capability.PRIVILEGED,
+        "web_open" to Capability.PRIVILEGED,
+        "web_search" to Capability.PRIVILEGED,
+        "web_snapshot" to Capability.PRIVILEGED,
+        "workflow_create" to Capability.PRIVILEGED,
+        "workflow_delete" to Capability.PRIVILEGED,
+        "workflow_toggle" to Capability.PRIVILEGED,
+        // —— 安全：只读 / 本地纯计算 / 咨询 ——
         "read_file" to Capability.SAFE,
+        "app_list" to Capability.SAFE,
+        "ask_user" to Capability.SAFE,
+        "calculator" to Capability.SAFE,
+        "conversation_search" to Capability.SAFE,
+        "github_status" to Capability.SAFE,
+        "github_log" to Capability.SAFE,
+        "github_diff" to Capability.SAFE,
+        "load_skill" to Capability.SAFE,
+        "plan_propose" to Capability.SAFE,
+        "shell_jobs" to Capability.SAFE,
+        "todo_read" to Capability.SAFE,
+        "workflow_list" to Capability.SAFE,
     )
 
-    /** 查某工具的能力分级；未知工具按 SAFE 处理（fail-safe，避免误拦内置能力演进）。 */
-    fun cap(toolName: String): Capability = table[toolName] ?: Capability.SAFE
+    /**
+     * 查某工具的能力分级。
+     *
+     * **未知工具按 DANGEROUS 处理**：这是安全侧默认（fail-closed）。
+     * 旧实现按 SAFE 处理，等于「新工具只要忘了登记就自动放行」——`shell_run` /
+     * `edit_file` / `github_commit` 都曾因此被 imported 技能当成安全工具。
+     * 新增工具必须显式登记到 [table]，harness 会扫描全部工具名守住这条。
+     */
+    fun cap(toolName: String): Capability = table[toolName] ?: Capability.DANGEROUS
 
     /** 返回全部已知危险工具名（供 UI / 审计展示）。 */
     fun dangerousTools(): List<String> = table.filterValues { it == Capability.DANGEROUS }.keys.toList()
@@ -106,3 +151,14 @@ fun checkCapabilityGate(toolName: String, trust: String?): String? {
     }
     return null
 }
+
+/**
+ * 技能 manifest 的工具白名单判定（A 批新增，fail-closed）。
+ *
+ * 旧实现是 `if (skill.tools.isNotEmpty() && name !in skill.tools) 拒绝`——
+ * 白名单为空等于「不限制」，一个不写 tools 的恶意包反而能调用全部工具。
+ * 现在空表只允许「不调用任何工具」（提示词形态仍可正常工作）；
+ * 需要全量的技能必须显式写 `["*"]`，并在安装/授权时单独提示。
+ */
+fun isToolAllowedByWhitelist(declared: List<String>, toolName: String): Boolean =
+    declared.contains("*") || toolName in declared
