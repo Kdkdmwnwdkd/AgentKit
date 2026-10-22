@@ -125,9 +125,12 @@ jobs:
 
       # QA harness：把仓库里全部断言跑一遍（纯 JVM + APK 静态反验）。
       #
-      # 为什么是「只报告」而不是硬门禁：这批断言是历史批次陆续写的，第一次进 CI 可能
-      # 因环境差异（JDK/缓存/路径）报红。先用一批观察，稳定后把 continue-on-error 删掉
-      # 就是硬门禁——**不要直接改死**，否则一次误报就把所有人堵在门口。
+      # 这一步本身保持「只报告」（continue-on-error）：断言是历史批次陆续写的，
+      # 可能因环境差异（JDK/缓存/路径）报红，先出一份完整日志供排查。
+      #
+      # **真正的门禁在下一条 step（QA gate）**：它读同一份日志，只卡三件确定的事
+      # （known-broken 清单非空 / 汇总 FAIL>0 / 出现 XPASS），
+      # 不会因「某个 harness 因环境不具备而 SKIP」误伤。
       #
       # 回滚开关：仓库变量 QA_HARNESS=off 即可整步跳过，无需改代码。
       - name: QA harness (report only)
@@ -136,13 +139,28 @@ jobs:
         run: |
           set +e
           bash scripts/qa/run-all.sh app/build/outputs/apk/debug/app-debug.apk 2>&1 | tee /tmp/qa.log
-          echo "runner exit=$?" >> /tmp/qa.log
+          # tee 会吞掉左边的退出码，必须取 PIPESTATUS[0]，
+          # 否则 run-all.sh 明明 FAIL=1，CI 看到的仍是 0。
+          echo "runner exit=${PIPESTATUS[0]}" >> /tmp/qa.log
+
+      # QA 硬门禁：防止失效项悄悄沉淀。
+      #
+      # 为什么必须有这道门：run-all.sh 把 known-broken.txt 里的 harness 归为 XFAIL，
+      # **不阻塞构建**。这个设计本身对，但副作用是——一个新引入的失效 harness
+      # 只要往清单里加一行，就能长期挂在 CI 上不被人发现。
+      # 这道门禁把「沉淀」变成当场报红。
+      #
+      # 逃生阀：仓库变量 QA_GATE=warn 时只告警不失败（紧急止血用，默认硬失败）。
+      - name: QA gate
+        if: ${{ vars.QA_HARNESS != 'off' }}
+        run: |
+          bash scripts/qa/gate.sh /tmp/qa.log
 
       - name: QA harness summary
         if: always()
         run: |
           {
-            echo "### QA harness（report only，不阻塞构建）"
+            echo "### QA harness（report only）+ QA gate（硬门禁）"
             echo ""
             echo '```'
             tail -80 /tmp/qa.log 2>/dev/null || echo "(无日志：该步被 QA_HARNESS=off 跳过，或脚本缺失)"

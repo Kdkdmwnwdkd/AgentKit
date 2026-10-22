@@ -419,6 +419,31 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         _interruptedNotice.value = null
     }
 
+    /**
+     * 推进运行态：记一步工具完成（C 批）。
+     *
+     * 单独抽出来是为了让「工具事件处理」保持纯展示逻辑，落盘细节集中在一处。
+     */
+    private fun advanceRunState(toolName: String) {
+        runCatching { agentRunStateStore.advance(toolName) }
+    }
+
+    /**
+     * 用户这句话是否在要求「继续上次被中断的任务」（C 批）。
+     *
+     * 只认**很短**的续跑指令（继续 / 接着 / 接着做 / 继续做 / resume / continue），
+     * 避免把「继续帮我写个函数」这种普通请求误判成续跑——那会把无关的
+     * 上次任务摘要塞进新一轮上下文，反而干扰模型。
+     */
+    private fun isResumeIntent(text: String): Boolean {
+        val t = text.trim().removeSuffix("。").removeSuffix(".").removeSuffix("！").removeSuffix("!").trim()
+        if (t.isEmpty() || t.length > 12) return false
+        return t in setOf(
+            "继续", "接着", "接着做", "继续做", "继续吧", "接着吧",
+            "继续刚才的", "继续刚才那个", "resume", "continue"
+        )
+    }
+
     /** 自动化总开关持久化。 */
     private val automationPrefs = AutomationPrefs(app)
 
@@ -1859,6 +1884,10 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
                     // 功能三：终态落盘（store 按 call.id 覆盖执行中占位）
                     appendToStore(done)
                 }
+                // C2：推进运行态——记下「进行到第几步 + 做过哪些工具」。
+                // B 批只把 stepIndex 初始化成 0 就再没动过，导致中断提示永远显示
+                // 「第 0 步」、doneTools 永远为空——恢复信息形同虚设。这里补上。
+                advanceRunState(ev.message.name)
                 // idx < 0（理论上不该发生）：终态由 send() 的 history 兜底补上
             }
 
@@ -2563,7 +2592,33 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
             mentionBlock.takeIf { it.isNotBlank() },
             fileBlock.takeIf { it.isNotBlank() }
         ).joinToString("\n\n")
-        val fullInput = if (prefix.isBlank()) text else "$prefix\n\n用户当前请求：$text"
+
+        // C 批：续跑。用户说「继续」且上次任务处于 interrupted 时，把进度摘要
+        // 拼进本轮上下文，让模型知道「上次做到哪、已经做过什么」，从断点接着做
+        // 而不是从头再来或直接说完成。
+        //
+        // 必须在下面 save() 覆盖运行态**之前**取——save 会把状态改写成本轮的新任务。
+        val resumeContext = if (isResumeIntent(text)) {
+            agentRunStateStore.buildResumeContext()
+        } else {
+            null
+        }
+        val fullInput = buildString {
+            if (prefix.isNotBlank()) {
+                append(prefix)
+                append("\n\n")
+            }
+            if (resumeContext != null) {
+                append(resumeContext)
+                append("\n\n")
+            }
+            if (prefix.isBlank() && resumeContext == null) {
+                append(text)
+            } else {
+                append("用户当前请求：")
+                append(text)
+            }
+        }
 
         // W-16：从用户这句话里抽取「明确值得长期记住」的内容（异步、失败不影响本轮）
         autoCaptureMemory(text)
@@ -2575,14 +2630,18 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
                 // 前台服务把进程提到前台，避免切后台被系统回收；
                 // 运行态让进程真被杀时，下次启动知道「上次到哪一步」。
                 AgentRunService.start(app, text.take(40))
+                // C 批：续跑时保留上次的 prompt 与已完成步数——
+                // 否则运行态会被「继续」两个字覆盖，再中断一次就彻底丢了上下文。
+                val priorState = if (resumeContext != null) agentRunStateStore.load() else null
                 agentRunStateStore.save(
                     AgentRunState(
                         sessionId = owner,
-                        prompt = text,
-                        stepIndex = 0,
+                        prompt = priorState?.prompt?.takeIf { it.isNotBlank() } ?: text,
+                        stepIndex = priorState?.stepIndex ?: 0,
                         status = AgentRunState.STATUS_RUNNING,
-                        startedAt = System.currentTimeMillis(),
-                        updatedAt = System.currentTimeMillis()
+                        startedAt = priorState?.startedAt?.takeIf { it > 0 } ?: System.currentTimeMillis(),
+                        updatedAt = System.currentTimeMillis(),
+                        doneTools = priorState?.doneTools ?: emptyList()
                     )
                 )
                 // W-19：MCP 工具启动后异步注册；首条消息最多等 8 秒，避免模型看不到 MCP 工具。

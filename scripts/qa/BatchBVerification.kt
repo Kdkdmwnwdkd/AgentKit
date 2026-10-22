@@ -404,6 +404,286 @@ fun main() {
         assertTrue("容器页应调用执行器", "ContainerCommandRunner" in screen)
     }
 
+    /* ------------------------- C1 备份分组与批量回滚 ------------------------- */
+
+    check("C1-1 同一文件的多次改动聚成一组，组内按时间倒序") {
+        tmpDir { dir ->
+            val ws = File(dir, "ws").apply { mkdirs() }
+            val store = FileBackupStore(File(dir, "bak"), ws)
+            val a = File(ws, "a.txt")
+            val b = File(ws, "b.txt")
+            a.writeText("a0"); b.writeText("b0")
+            val a1 = store.backupBeforeWrite("a.txt")
+            Thread.sleep(5)
+            a.writeText("a1")
+            val a2 = store.backupBeforeWrite("a.txt")
+            Thread.sleep(5)
+            b.writeText("b1")
+            store.backupBeforeWrite("b.txt")
+            Thread.sleep(5)
+            a.writeText("a2")
+            val a3 = store.backupBeforeWrite("a.txt")
+
+            val groups = store.grouped()
+            assertEquals("应有 2 组", 2, groups.size)
+            val ga = groups.first { it.relPath == "a.txt" }
+            val gb = groups.first { it.relPath == "b.txt" }
+            assertEquals("a.txt 组内应有 3 条", 3, ga.changeCount)
+            assertEquals("b.txt 组内应有 1 条", 1, gb.changeCount)
+            assertEquals("组内最新在前", a3, ga.backups.first().id)
+            assertEquals("组内次新在中间", a2, ga.backups[1].id)
+            assertEquals("组内最旧在最后", a1, ga.backups[2].id)
+        }
+    }
+
+    check("C1-2 批量回滚某文件必须退到最初状态（倒序恢复才退得干净）") {
+        tmpDir { dir ->
+            val ws = File(dir, "ws").apply { mkdirs() }
+            val store = FileBackupStore(File(dir, "bak"), ws)
+            val f = File(ws, "x.txt")
+            f.writeText("v0")
+            store.backupBeforeWrite("x.txt")   // 备份 v0
+            f.writeText("v1")
+            store.backupBeforeWrite("x.txt")   // 备份 v1
+            f.writeText("v2")
+            store.backupBeforeWrite("x.txt")   // 备份 v2
+            f.writeText("v3")
+            assertEquals("当前应为 v3", "v3", f.readText())
+
+            val n = store.restoreFile("x.txt")
+            assertEquals("应恢复 3 条", 3, n)
+            // 正序恢复会停在 v2（退不干净），倒序恢复才回到 v0
+            assertEquals("批量回滚后应退到最初的 v0", "v0", f.readText())
+        }
+    }
+
+    check("C1-3 批量回滚后不再改动过的文件不受影响") {
+        tmpDir { dir ->
+            val ws = File(dir, "ws").apply { mkdirs() }
+            val store = FileBackupStore(File(dir, "bak"), ws)
+            val a = File(ws, "a.txt")
+            val b = File(ws, "b.txt")
+            a.writeText("a0"); b.writeText("b0")
+            store.backupBeforeWrite("a.txt")
+            a.writeText("a1")
+            store.backupBeforeWrite("b.txt")
+            b.writeText("b1")
+
+            assertEquals("只回滚 a.txt 应恢复 1 条", 1, store.restoreFile("a.txt"))
+            assertEquals("a.txt 应退到 a0", "a0", a.readText())
+            assertEquals("b.txt 不应被影响", "b1", b.readText())
+        }
+    }
+
+    check("C1-4 restoreAll 一次性退回所有文件") {
+        tmpDir { dir ->
+            val ws = File(dir, "ws").apply { mkdirs() }
+            val store = FileBackupStore(File(dir, "bak"), ws)
+            val a = File(ws, "a.txt")
+            val b = File(ws, "b.txt")
+            a.writeText("a0"); b.writeText("b0")
+            store.backupBeforeWrite("a.txt")
+            a.writeText("a1")
+            store.backupBeforeWrite("b.txt")
+            b.writeText("b1")
+
+            assertEquals("应恢复 2 条", 2, store.restoreAll())
+            assertEquals("a.txt 应退到 a0", "a0", a.readText())
+            assertEquals("b.txt 应退到 b0", "b0", b.readText())
+        }
+    }
+
+    check("C1-5 无备份时批量回滚返回 0 而非报错") {
+        tmpDir { dir ->
+            val ws = File(dir, "ws").apply { mkdirs() }
+            val store = FileBackupStore(File(dir, "bak"), ws)
+            assertEquals("空仓应返回 0", 0, store.restoreFile("nope.txt"))
+            assertEquals("空仓全量应返回 0", 0, store.restoreAll())
+            assertEquals("空仓分组应为空", 0, store.grouped().size)
+        }
+    }
+
+    check("C1-6 编辑器界面提供分组展示与批量回滚入口") {
+        val screen = read("app/src/main/java/com/example/agentkit/ui/EditorScreen.kt")
+        assertTrue("应使用 grouped() 分组展示", "grouped()" in screen)
+        assertTrue("应提供 restoreFile 批量回滚", "restoreFile(" in screen)
+        assertTrue("应提供 restoreAll 全量回滚", "restoreAll(" in screen)
+    }
+
+    /* ------------------------- C2 续跑与运行态推进 ------------------------- */
+
+    check("C2-1 advance 真实推进步数与工具列表") {
+        tmpDir { dir ->
+            val store = AgentRunStateStore(File(dir, "run.json"))
+            store.save(
+                AgentRunState(
+                    sessionId = "s1",
+                    prompt = "改一下 README",
+                    status = AgentRunState.STATUS_RUNNING
+                )
+            )
+            store.advance("read_file")
+            store.advance("write_file")
+            val s = store.load()
+            assertTrue("应能读到状态", s != null)
+            assertEquals("步数应为 2", 2, s!!.stepIndex)
+            assertEquals("工具列表应为 2 项", 2, s.doneTools.size)
+            assertEquals("工具名应记录", "write_file", s.doneTools[1])
+        }
+    }
+
+    check("C2-2 非 running 状态不推进（done/interrupted 保持原样）") {
+        tmpDir { dir ->
+            val store = AgentRunStateStore(File(dir, "run.json"))
+            store.save(
+                AgentRunState(
+                    sessionId = "s1",
+                    prompt = "x",
+                    stepIndex = 5,
+                    status = AgentRunState.STATUS_DONE
+                )
+            )
+            assertTrue("done 状态不应推进", store.advance("read_file") == null)
+            assertEquals("步数应不变", 5, store.load()!!.stepIndex)
+        }
+    }
+
+    check("C2-3 reconcile 后状态为 interrupted 且提示含步数与工具") {
+        tmpDir { dir ->
+            val store = AgentRunStateStore(File(dir, "run.json"))
+            store.save(
+                AgentRunState(
+                    sessionId = "s1",
+                    prompt = "重构这个模块",
+                    stepIndex = 3,
+                    status = AgentRunState.STATUS_RUNNING,
+                    doneTools = listOf("read_file", "grep", "write_file")
+                )
+            )
+            val rec = store.reconcile()
+            assertTrue("对账应返回中断状态", rec != null)
+            assertEquals("状态应为 interrupted", AgentRunState.STATUS_INTERRUPTED, rec!!.status)
+            assertTrue("提示应含步数", rec.note.contains("第 3 步"))
+            assertTrue("提示应含工具名", rec.note.contains("write_file"))
+            assertTrue("提示应提到可以说继续", rec.note.contains("继续"))
+        }
+    }
+
+    check("C2-4 buildResumeContext 给出模型可用的进度摘要") {
+        tmpDir { dir ->
+            val store = AgentRunStateStore(File(dir, "run.json"))
+            store.save(
+                AgentRunState(
+                    sessionId = "s1",
+                    prompt = "把测试补齐",
+                    stepIndex = 2,
+                    status = AgentRunState.STATUS_RUNNING,
+                    doneTools = listOf("read_file", "write_file")
+                )
+            )
+            store.reconcile()
+            val ctx = store.buildResumeContext()
+            assertTrue("应能生成续跑上下文", ctx != null)
+            assertTrue("应含原始请求", ctx!!.contains("把测试补齐"))
+            assertTrue("应含已完成步数", ctx.contains("2"))
+            assertTrue("应含工具链", ctx.contains("read_file → write_file"))
+            assertTrue("应要求不要重复劳动", ctx.contains("不要重复"))
+        }
+    }
+
+    check("C2-5 非 interrupted 状态不生成续跑上下文") {
+        tmpDir { dir ->
+            val store = AgentRunStateStore(File(dir, "run.json"))
+            store.save(
+                AgentRunState(
+                    sessionId = "s1",
+                    prompt = "x",
+                    status = AgentRunState.STATUS_RUNNING
+                )
+            )
+            assertTrue("running 不应生成续跑上下文", store.buildResumeContext() == null)
+        }
+    }
+
+    check("C2-6 markResumed 消费掉中断状态") {
+        tmpDir { dir ->
+            val store = AgentRunStateStore(File(dir, "run.json"))
+            store.save(
+                AgentRunState(
+                    sessionId = "s1",
+                    prompt = "x",
+                    status = AgentRunState.STATUS_RUNNING
+                )
+            )
+            store.reconcile()
+            assertTrue("应能标记续跑", store.markResumed())
+            assertEquals("状态应变回 running", AgentRunState.STATUS_RUNNING, store.load()!!.status)
+            assertTrue("续跑后不再生成上下文", store.buildResumeContext() == null)
+            assertTrue("重复标记应失败", !store.markResumed())
+        }
+    }
+
+    check("C2-7 ChatViewModel 接入续跑：识别意图 + 拼上下文 + 保留上次进度") {
+        val vm = read("app/src/main/java/com/example/agentkit/ui/ChatViewModel.kt")
+        assertTrue("应识别续跑意图", "isResumeIntent" in vm)
+        assertTrue("应生成续跑上下文", "buildResumeContext" in vm)
+        assertTrue("应在工具完成时推进运行态", "advanceRunState" in vm)
+        assertTrue("续跑时应保留上次 prompt", "priorState" in vm)
+        assertTrue("工具完成事件应推进步数", "advanceRunState(ev.message.name)" in vm)
+    }
+
+    /* ------------------------- C3 指定版本号安装 ------------------------- */
+
+    check("C3-1 node 指定版本映射到 Alpine 分版本包") {
+        val spec = ToolchainInstaller.resolveVersion(ToolchainInstaller.Lang.NODE, "18")
+        assertTrue("应能解析", spec != null)
+        assertTrue("Alpine 包名应含 nodejs18", spec!!.apkPackages.contains("nodejs18"))
+        assertEquals("版本应记录", "18", spec.version)
+    }
+
+    check("C3-2 python 指定版本映射到对应包") {
+        val spec = ToolchainInstaller.resolveVersion(ToolchainInstaller.Lang.PYTHON, "3.11")
+        assertTrue("应能解析", spec != null)
+        assertTrue("Alpine 包名应含 python3", spec!!.apkPackages.contains("python3"))
+        assertTrue("Debian 包名应含 python3.11", spec.aptPackages.contains("python3.11"))
+    }
+
+    check("C3-3 java 指定版本映射到 openjdk-N") {
+        val spec = ToolchainInstaller.resolveVersion(ToolchainInstaller.Lang.JAVA, "17")
+        assertTrue("应能解析", spec != null)
+        assertTrue("Alpine 包名应含 openjdk17", spec!!.apkPackages.contains("openjdk17"))
+        assertTrue("Debian 包名应含 openjdk-17-jdk", spec.aptPackages.contains("openjdk-17-jdk"))
+    }
+
+    check("C3-4 非法版本号被拒（含字母/符号/空）") {
+        assertTrue("带字母应拒", ToolchainInstaller.resolveVersion(ToolchainInstaller.Lang.NODE, "18; rm -rf /") == null)
+        assertTrue("带空格应拒", ToolchainInstaller.resolveVersion(ToolchainInstaller.Lang.NODE, "1 8") == null)
+        assertTrue("空串应拒", ToolchainInstaller.resolveVersion(ToolchainInstaller.Lang.NODE, "") == null)
+        assertTrue("纯符号应拒", ToolchainInstaller.resolveVersion(ToolchainInstaller.Lang.NODE, "..") == null)
+    }
+
+    check("C3-5 指定版本时安装命令用版本包名") {
+        val spec = ToolchainInstaller.resolveVersion(ToolchainInstaller.Lang.NODE, "18")!!
+        val apk = ToolchainInstaller.installCommand(ToolchainInstaller.Lang.NODE, ToolchainInstaller.PkgManager.APK, spec)
+        assertTrue("apk 命令应含 nodejs18", apk!!.contains("nodejs18"))
+        val apt = ToolchainInstaller.installCommand(ToolchainInstaller.Lang.NODE, ToolchainInstaller.PkgManager.APT, spec)
+        assertTrue("apt 命令应先 update", apt!!.startsWith("apt-get update"))
+    }
+
+    check("C3-6 不指定版本时行为与原来一致（默认包名）") {
+        val apk = ToolchainInstaller.installCommand(ToolchainInstaller.Lang.NODE, ToolchainInstaller.PkgManager.APK)
+        assertTrue("应含默认 nodejs", apk!!.contains("nodejs"))
+        assertTrue("不应含版本后缀", !apk.contains("nodejs18"))
+    }
+
+    check("C3-7 工具暴露 version 参数且非法版本明确报错") {
+        val tool = read("app/src/main/java/com/example/agentkit/tools/ContainerToolchainTool.kt")
+        assertTrue("参数表应含 version", "\"version\"" in tool)
+        assertTrue("应调用 resolveVersion", "resolveVersion" in tool)
+        assertTrue("非法版本应有专门错误码", "bad_version" in tool)
+        assertTrue("应仍用软转换读取 version", "primOrNull" in tool)
+    }
+
     println("\n== 结果：$pass 通过 / $fail 失败 ==")
     if (fail > 0) kotlin.system.exitProcess(1)
 }

@@ -72,14 +72,14 @@ fun EditorScreen() {
     var tree by remember { mutableStateOf(WorkspaceStore.listTree(context)) }
     var collapsed by remember { mutableStateOf(setOf<String>()) }
     var checkpoints by remember { mutableStateOf(CheckpointStore.list(context)) }
-    var backups by remember { mutableStateOf(FileBackupStoreFactory.default(context).list()) }
+    var backupGroups by remember { mutableStateOf(FileBackupStoreFactory.default(context).grouped()) }
     var newName by remember { mutableStateOf("") }
     var cpLabel by remember { mutableStateOf("") }
 
     fun refresh() {
         tree = WorkspaceStore.listTree(context)
         checkpoints = CheckpointStore.list(context)
-        backups = FileBackupStoreFactory.default(context).list()
+        backupGroups = FileBackupStoreFactory.default(context).grouped()
     }
 
     Column(Modifier.fillMaxSize()) {
@@ -234,50 +234,105 @@ fun EditorScreen() {
 
                 // B 批：Agent 写路径的自动备份。Agent 每次 write_file / edit_file
                 // 之前都会自动留一份旧内容，这里列出这些落点，可一键回滚到上一步。
+                //
+                // C 批：按**文件分组**展示（同一文件被改了几次一目了然），
+                // 并提供「回滚本文件」（退回到该文件被首次改动前）与「全部回滚」。
                 AkSectionCard(
                     title = "自动备份",
                     icon = Icons.Outlined.History,
-                    description = "Agent 每次写入文件前自动留下的旧版本，可逐条回滚（新建的文件回滚即删除）。"
+                    description = "Agent 每次写入文件前自动留下的旧版本。按文件分组，可单文件回滚或一次性全部回滚（新建的文件回滚即删除）。"
                 ) {
-                    if (backups.isEmpty()) {
+                    if (backupGroups.isEmpty()) {
                         Text(
                             "暂无自动备份。Agent 修改工作区文件后会在这里出现。",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     } else {
-                        backups.take(30).forEach { b ->
-                            Row(
-                                Modifier.fillMaxWidth(),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Column(Modifier.weight(1f)) {
-                                    Text(
-                                        b.relPath,
-                                        style = MaterialTheme.typography.titleSmall,
-                                        color = MaterialTheme.colorScheme.onSurface
-                                    )
-                                    Text(
-                                        buildString {
-                                            append(CheckpointStore.formatTime(b.timeMs))
-                                            append(" · ")
-                                            append(if (b.existedBefore) "旧内容 ${b.sizeBytes}B" else "新建文件（回滚将删除）")
-                                        },
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
-                                AkTextButton(text = "回滚", onClick = {
-                                    val ok = FileBackupStoreFactory.default(context).restore(b.id)
-                                    if (ok) {
-                                        refresh()
-                                        Toast.makeText(context, "已回滚 ${b.relPath}", Toast.LENGTH_SHORT).show()
-                                    } else {
-                                        Toast.makeText(context, "回滚失败", Toast.LENGTH_SHORT).show()
+                        // 顶部：一次性全部回滚
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                "共 ${backupGroups.size} 个文件、${backupGroups.sumOf { it.changeCount }} 次改动",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.weight(1f)
+                            )
+                            AkTextButton(text = "全部回滚", onClick = {
+                                val store = FileBackupStoreFactory.default(context)
+                                val n = store.restoreAll()
+                                refresh()
+                                Toast.makeText(context, "已回滚 $n 处改动", Toast.LENGTH_SHORT).show()
+                            })
+                        }
+                        Spacer(Modifier.height(AgentSpacing.space3))
+
+                        backupGroups.forEach { g ->
+                            Column(Modifier.fillMaxWidth()) {
+                                Row(
+                                    Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(Modifier.weight(1f)) {
+                                        Text(
+                                            g.relPath,
+                                            style = MaterialTheme.typography.titleSmall,
+                                            color = MaterialTheme.colorScheme.onSurface
+                                        )
+                                        Text(
+                                            buildString {
+                                                append(CheckpointStore.formatTime(g.latestTimeMs))
+                                                append(" · ")
+                                                append("被改动 ${g.changeCount} 次")
+                                                append(" · ")
+                                                append(if (g.backups.last().existedBefore) "可退回最初内容" else "原本不存在（回滚将删除）")
+                                            },
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
                                     }
-                                })
+                                    AkTextButton(text = "回滚本文件", onClick = {
+                                        val store = FileBackupStoreFactory.default(context)
+                                        val n = store.restoreFile(g.relPath)
+                                        refresh()
+                                        Toast.makeText(
+                                            context,
+                                            if (n > 0) "已回滚 ${g.relPath}（$n 处）" else "回滚失败",
+                                            Toast.LENGTH_SHORT
+                                        ).show()
+                                    })
+                                }
+                                // 该文件的历史落点（倒序 = 最近在前），可单条回滚
+                                g.backups.forEach { b ->
+                                    Row(
+                                        Modifier.fillMaxWidth(),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(
+                                            buildString {
+                                                append(CheckpointStore.formatTime(b.timeMs))
+                                                append(" · ")
+                                                append(if (b.existedBefore) "旧内容 ${b.sizeBytes}B" else "新建文件（回滚将删除）")
+                                            },
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                        AkTextButton(text = "回滚", onClick = {
+                                            val ok = FileBackupStoreFactory.default(context).restore(b.id)
+                                            if (ok) {
+                                                refresh()
+                                                Toast.makeText(context, "已回滚 ${b.relPath}", Toast.LENGTH_SHORT).show()
+                                            } else {
+                                                Toast.makeText(context, "回滚失败", Toast.LENGTH_SHORT).show()
+                                            }
+                                        })
+                                    }
+                                }
                             }
-                            Spacer(Modifier.height(AgentSpacing.space2))
+                            Spacer(Modifier.height(AgentSpacing.space3))
                         }
                     }
                 }

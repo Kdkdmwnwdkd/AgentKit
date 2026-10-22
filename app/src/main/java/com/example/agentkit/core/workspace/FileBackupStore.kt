@@ -33,15 +33,23 @@ class FileBackupStore(
     private val onError: (String) -> Unit = {}
 ) {
 
-    /** 一次备份的元信息。 */
+    /**
+     * 一次备份的元信息。
+     *
+     * @param seq 同毫秒内的递增序号，用于在时间戳相同的备份之间**稳定**排序。
+     *   没有它，[list] 对同毫秒备份的先后顺序就是不确定的，而 [restoreFile]
+     *   恰恰依赖严格的「从新到旧」顺序（见该函数的说明）。
+     */
     data class Backup(
         val id: String,
         val relPath: String,
         val timeMs: Long,
         val existedBefore: Boolean,
-        val sizeBytes: Long
+        val sizeBytes: Long,
+        val seq: Int = 0
     )
 
+    /** 进程内序号状态：[nextSeq] 的落点。见 companion object 中的全局计数。 */
     init {
         runCatching { root.mkdirs() }
     }
@@ -62,7 +70,16 @@ class FileBackupStore(
         if (!target.canonicalPath.startsWith(workspace.canonicalPath + File.separator)) return null
 
         val ts = System.currentTimeMillis()
-        val id = "${ts}_${safeRel.replace(Regex("[^A-Za-z0-9._-]"), "_").take(60)}"
+        // id 必须**唯一**。
+        //
+        // 早期实现只用「时间戳 + 相对路径」，但同一毫秒内对同一文件的连续写入
+        // （Agent 批量改文件时很常见）会算出**完全相同的 id**——后一条备份的 meta
+        // 直接覆盖前一条，旧内容副本也被写进同一个目录，于是「改了三次只剩一条备份」，
+        // 批量回滚退不干净、而且是静默的（少了一条备份，但界面看不出异常）。
+        //
+        // 加一个单调递增的序号兜底：同一毫秒内的多次备份也不会撞。
+        val seq = nextSeq(ts)
+        val id = "${ts}_${seq}_${safeRel.replace(Regex("[^A-Za-z0-9._-]"), "_").take(60)}"
         val existed = target.isFile
         val size = if (existed) target.length() else 0L
 
@@ -79,6 +96,7 @@ class FileBackupStore(
             buildString {
                 appendLine("relPath=$safeRel")
                 appendLine("timeMs=$ts")
+                appendLine("seq=$seq")
                 appendLine("existedBefore=$existed")
                 appendLine("sizeBytes=$size")
             }
@@ -130,16 +148,97 @@ class FileBackupStore(
                     relPath = props["relPath"] ?: "",
                     timeMs = props["timeMs"]?.toLongOrNull() ?: 0L,
                     existedBefore = props["existedBefore"]?.toBooleanStrictOrNull() ?: false,
-                    sizeBytes = props["sizeBytes"]?.toLongOrNull() ?: 0L
+                    sizeBytes = props["sizeBytes"]?.toLongOrNull() ?: 0L,
+                    seq = props["seq"]?.toIntOrNull() ?: 0
                 )
             }.getOrNull()
         }.filter { it.relPath.isNotEmpty() }
-            .sortedByDescending { it.timeMs }
+            // 复合排序：先时间倒序，时间相同再按 seq 倒序。
+            //
+            // 只按 timeMs 排是不够的——同一毫秒内的多条备份（Agent 连续改同一个文件
+            // 很常见）时间戳完全相同，而 Kotlin 的 sortedBy 是**稳定**排序，
+            // 相同 key 会保留 listFiles() 的原始顺序，而那个顺序是文件系统决定的、
+            // 完全不确定的。于是同毫秒备份的「谁更新」就随机了，而 [restoreFile]
+            // 要求严格倒序恢复，顺序一乱就会退不干净。
+            .sortedWith(compareByDescending<Backup> { it.timeMs }.thenByDescending { it.seq })
     }
 
     /** 某文件的最近一条备份（回滚「上一步」用）。 */
     fun latestFor(relPath: String): Backup? =
         list().firstOrNull { it.relPath == relPath }
+
+    /**
+     * 同一文件的多个备份归为一组（C 批）。
+     *
+     * Agent 改一个文件常常连改好几轮，备份就是好几条。用户视角关心的是
+     * 「这个文件被我改了几次、能一次性退回去吗」，而不是一长串平铺的条目。
+     *
+     * 组内按时间**倒序**（最近的在最前），与 [list] 的全局顺序一致。
+     */
+    data class FileGroup(
+        val relPath: String,
+        /** 该文件的全部备份，按时间倒序。 */
+        val backups: List<Backup>
+    ) {
+        /** 最近一次改动的时间。 */
+        val latestTimeMs: Long get() = backups.firstOrNull()?.timeMs ?: 0L
+
+        /** 最近一次改动的序号（与 [latestTimeMs] 一起用于组的稳定排序）。 */
+        val latestSeq: Int get() = backups.firstOrNull()?.seq ?: 0
+
+        /** 改动次数（= 备份条数）。 */
+        val changeCount: Int get() = backups.size
+    }
+
+    /**
+     * 按文件分组列出备份，组间按最近改动时间倒序。
+     *
+     * 纯函数性质：同一 relPath 的所有备份必然聚到同一组。
+     */
+    fun grouped(): List<FileGroup> {
+        val byPath = list()
+            .groupBy { it.relPath }
+            // 组内沿用 list() 已经排好的顺序（时间倒序 + seq 倒序）。
+            // groupBy 保序，所以这里无需再排一次——再排反而可能丢掉 seq 的次序。
+        return byPath.entries
+            .map { (path, bs) -> FileGroup(path, bs) }
+            .sortedWith(compareByDescending<FileGroup> { it.latestTimeMs }.thenByDescending { it.latestSeq })
+    }
+
+    /**
+     * 批量回滚某文件的**全部**备份，把该文件退回到 Agent 第一次动它之前的状态。
+     *
+     * 关键：**必须按时间倒序逐条 restore**。
+     *
+     * 设文件原内容为 C0，Agent 依次写了 C1、C2、C3，对应备份 b1(before=C0)、
+     * b2(before=C1)、b3(before=C2)。若正序恢复（b1→b2→b3），最终落盘的是 C2，
+     * **退不干净**；倒序恢复（b3→b2→b1）最终落盘 C0，才真正「退到没动过」。
+     *
+     * @return 实际恢复的条数；0 表示该文件没有可回滚的备份
+     */
+    fun restoreFile(relPath: String): Int {
+        val targets = list().filter { it.relPath == relPath }
+        if (targets.isEmpty()) return 0
+        // list() 已按时间倒序，天然满足「从新到旧」逐条恢复
+        var n = 0
+        targets.forEach { b ->
+            if (restore(b.id)) n++
+        }
+        return n
+    }
+
+    /**
+     * 批量回滚**所有**文件的全部备份（一次性把工作区退回到 Agent 动手之前）。
+     *
+     * 每个文件内部各自倒序恢复；文件之间互不影响（不同 relPath）。
+     *
+     * @return 实际恢复的条数
+     */
+    fun restoreAll(): Int {
+        var n = 0
+        grouped().forEach { g -> n += restoreFile(g.relPath) }
+        return n
+    }
 
     /** 删除一条备份。 */
     fun delete(id: String): Boolean = runCatching {
@@ -159,7 +258,8 @@ class FileBackupStore(
         return removed
     }
 
-    /** 相对路径安全化：拒绝绝对路径与 .. 穿越，返回 null 表示非法。 */
+    /**
+     * 相对路径安全化：拒绝绝对路径与 .. 穿越，返回 null 表示非法。 */
     private fun sanitizeRel(rel: String): String? {
         val t = rel.trim().replace('\\', '/')
         if (t.isEmpty()) return null
@@ -169,8 +269,45 @@ class FileBackupStore(
         return t
     }
 
+    /**
+     * 生成同一毫秒内的单调递增序号。
+     *
+     * 备份 id 里必须带一个不会重复的序号，否则同一毫秒内对同一文件的连续写入
+     * 会算出完全相同的 id——后一条备份的 meta 直接覆盖前一条，旧内容副本也被写进
+     * 同一个目录，于是「改了三次只剩一条备份」，批量回滚退不干净，**而且是静默的**
+     * （界面上只是少了一条备份，看不出任何异常）。
+     *
+     * 规则：
+     * - 时间戳前进 → 序号重置为 1（新的一毫秒从 1 开始）；
+     * - 时间戳不变 → 序号 +1；
+     * - 时间戳**倒退**（系统时钟被调整）→ 序号继续 +1，绝不复用。
+     *
+     * 第三条很关键：只按「相等就加一」判断，一旦时钟回拨就可能算出和历史重复的组合。
+     */
+    private fun nextSeq(ts: Long): Int = synchronized(SEQ_LOCK) {
+        if (ts > lastSeqTs) {
+            lastSeqTs = ts
+            lastSeqValue = 1
+        } else {
+            lastSeqValue += 1
+        }
+        lastSeqValue
+    }
+
     companion object {
         /** 默认目录名（备份仓落位）。 */
         const val DIR_NAME = "file_backups"
+
+        /**
+         * 全局序号状态。
+         *
+         * 放在 companion 里而不是实例字段里：备份目录可能被**多个 FileBackupStore
+         * 实例**指向同一片磁盘（工厂缓存、界面重建、测试里另起实例都会发生），
+         * 若每个实例各持一份计数器，两个实例在同一毫秒内各算一次 seq=1，
+         * 照样会撞出相同的 id。放到全局就彻底堵死这条路。
+         */
+        private val SEQ_LOCK = Any()
+        private var lastSeqTs = 0L
+        private var lastSeqValue = 0
     }
 }
