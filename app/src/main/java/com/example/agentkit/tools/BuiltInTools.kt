@@ -114,6 +114,18 @@ abstract class FileTool(protected val workspace: File) : AgentTool {
 }
 
 /**
+ * 写前自动备份钩子（B 批）。
+ *
+ * 抽成接口而不是直接依赖 [com.example.agentkit.core.workspace.FileBackupStore]，
+ * 是为了让工具层保持零 Android 依赖（core/tools 的工具都可在 JVM harness 里裸测），
+ * 同时让「要不要备份」成为注入决策而非硬编码。
+ */
+fun interface WriteBackupHook {
+    /** 写入 [relPath] 之前调用；返回备份 id（失败可为 null）。 */
+    fun backupBeforeWrite(relPath: String): String?
+}
+
+/**
  * 原子写（W-20）：先写同目录临时文件再 rename，避免写一半崩溃把原文件写坏。
  * rename 失败（个别文件系统限制）时退回直接覆写。
  */
@@ -206,7 +218,10 @@ class ReadFileTool(workspace: File) : FileTool(workspace) {
  * 决策逻辑全部委托纯函数 [EditFileLogic.plan]（与 QA harness 共用一份真源），
  * 本类只负责 IO 与参数解析：唯一性/出现次数/行号的判定都在纯函数里可测。
  */
-class EditFileTool(workspace: File) : FileTool(workspace) {
+class EditFileTool(
+    workspace: File,
+    private val backupHook: WriteBackupHook? = null
+) : FileTool(workspace) {
     override val name = "edit_file"
     override val description =
         "对工作区内文件做精确字符串替换（局部修改，不整文件覆写）。" +
@@ -265,6 +280,8 @@ class EditFileTool(workspace: File) : FileTool(workspace) {
                     code = plan.code, message = plan.message, hint = plan.hint
                 )
                 is EditPlan.Replace -> {
+                    // B 批：改文件前自动备份旧内容，出问题可一键回滚到上一步。
+                    backupHook?.backupBeforeWrite(path)
                     file.atomicWriteText(plan.replaced)
                     ToolResult.ok(
                         code = "edit_ok",
@@ -284,7 +301,10 @@ class EditFileTool(workspace: File) : FileTool(workspace) {
     }
 }
 
-class WriteFileTool(workspace: File) : FileTool(workspace) {
+class WriteFileTool(
+    workspace: File,
+    private val backupHook: WriteBackupHook? = null
+) : FileTool(workspace) {
     override val name = "write_file"
     override val description = "将文本写入工作区内的文件（覆盖写入）。"
     override val parameters = JsonSchema.objectSchema(
@@ -307,6 +327,8 @@ class WriteFileTool(workspace: File) : FileTool(workspace) {
                     hint = "write_file 必须提供 path（相对于工作区的文件路径），请补充后重试。"
                 )
             val content = args["content"]?.primOrNull()?.contentOrNull ?: ""
+            // B 批：覆盖写之前先备份旧内容（新文件则记录「此前不存在」），可一键回滚。
+            backupHook?.backupBeforeWrite(path)
             resolve(path).writeText(content)
             ToolResult.ok(
                 code = "write_ok",

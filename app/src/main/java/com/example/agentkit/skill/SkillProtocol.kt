@@ -36,8 +36,20 @@ data class SkillManifest(
     val file_types: List<String> = emptyList(),
     val tool_requirements: List<String> = emptyList(),
     val risks: List<String> = emptyList(),
-    /** 信任等级：packaged（打包可信，全开）/ imported（导入，禁脚本）/ remote（远程，仅安全能力）。默认 packaged。 */
-    val trust: String = "packaged"
+    /**
+     * 信任等级：packaged（打包可信，全开）/ imported（导入，禁脚本）/ remote（远程，仅安全能力）。
+     *
+     * **B 批：默认值从 "packaged" 改为 ""（来源未知）。**
+     *
+     * 旧默认值是 "packaged"，意味着「manifest 没写 trust 字段」= 最高信任。
+     * 而 [policyFor] 现在对未知/缺省 trust 一律按最严处理（fail-closed），
+     * 两者必须一致，否则默认值会把「未声明」悄悄变成「已审计」。
+     *
+     * 内置（assets）技能由 [SkillLoader] 显式标为 packaged——它们确实随 APK 打包、
+     * 经开发者审计。导入技能由 [com.example.agentkit.skill.SkillImportRepository]
+     * 依据本地授权记录写 packaged/imported，不采信 zip 自带声明。
+     */
+    val trust: String = ""
 )
 
 /**
@@ -207,7 +219,10 @@ object SkillLoader {
             for (id in roots) {
                 val text = context.assets.open("skills/$id/skill.json")
                     .bufferedReader().use { it.readText() }
-                out += json.decodeFromString<SkillManifest>(text)
+                // B 批：内置技能显式标为 packaged。
+                // 它们随 APK 打包、经开发者审计，是「可信」这一判断的真正依据——
+                // 而不是 manifest 里恰好没写 trust 字段。
+                out += json.decodeFromString<SkillManifest>(text).copy(trust = "packaged")
             }
         }
         return out

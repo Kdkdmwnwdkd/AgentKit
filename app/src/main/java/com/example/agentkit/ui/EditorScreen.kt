@@ -27,6 +27,7 @@ import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.FolderOpen
+import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.Save
 import androidx.compose.material.icons.outlined.Storage
 import androidx.compose.material3.Icon
@@ -51,6 +52,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.agentkit.core.workspace.CheckpointStore
+import com.example.agentkit.core.workspace.FileBackupStore
+import com.example.agentkit.core.workspace.FileBackupStoreFactory
 import com.example.agentkit.core.workspace.WorkspaceStore
 
 /**
@@ -69,12 +72,14 @@ fun EditorScreen() {
     var tree by remember { mutableStateOf(WorkspaceStore.listTree(context)) }
     var collapsed by remember { mutableStateOf(setOf<String>()) }
     var checkpoints by remember { mutableStateOf(CheckpointStore.list(context)) }
+    var backups by remember { mutableStateOf(FileBackupStoreFactory.default(context).list()) }
     var newName by remember { mutableStateOf("") }
     var cpLabel by remember { mutableStateOf("") }
 
     fun refresh() {
         tree = WorkspaceStore.listTree(context)
         checkpoints = CheckpointStore.list(context)
+        backups = FileBackupStoreFactory.default(context).list()
     }
 
     Column(Modifier.fillMaxSize()) {
@@ -219,6 +224,58 @@ fun EditorScreen() {
                                         }
                                         .padding(6.dp)
                                 )
+                            }
+                            Spacer(Modifier.height(AgentSpacing.space2))
+                        }
+                    }
+                }
+
+                Spacer(Modifier.height(AgentSpacing.space4))
+
+                // B 批：Agent 写路径的自动备份。Agent 每次 write_file / edit_file
+                // 之前都会自动留一份旧内容，这里列出这些落点，可一键回滚到上一步。
+                AkSectionCard(
+                    title = "自动备份",
+                    icon = Icons.Outlined.History,
+                    description = "Agent 每次写入文件前自动留下的旧版本，可逐条回滚（新建的文件回滚即删除）。"
+                ) {
+                    if (backups.isEmpty()) {
+                        Text(
+                            "暂无自动备份。Agent 修改工作区文件后会在这里出现。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    } else {
+                        backups.take(30).forEach { b ->
+                            Row(
+                                Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(Modifier.weight(1f)) {
+                                    Text(
+                                        b.relPath,
+                                        style = MaterialTheme.typography.titleSmall,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                    Text(
+                                        buildString {
+                                            append(CheckpointStore.formatTime(b.timeMs))
+                                            append(" · ")
+                                            append(if (b.existedBefore) "旧内容 ${b.sizeBytes}B" else "新建文件（回滚将删除）")
+                                        },
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                AkTextButton(text = "回滚", onClick = {
+                                    val ok = FileBackupStoreFactory.default(context).restore(b.id)
+                                    if (ok) {
+                                        refresh()
+                                        Toast.makeText(context, "已回滚 ${b.relPath}", Toast.LENGTH_SHORT).show()
+                                    } else {
+                                        Toast.makeText(context, "回滚失败", Toast.LENGTH_SHORT).show()
+                                    }
+                                })
                             }
                             Spacer(Modifier.height(AgentSpacing.space2))
                         }

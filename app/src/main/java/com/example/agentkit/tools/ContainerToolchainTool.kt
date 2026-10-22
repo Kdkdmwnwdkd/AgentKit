@@ -1,0 +1,164 @@
+package com.example.agentkit.tools
+
+import android.content.Context
+import com.example.agentkit.core.AgentTool
+import com.example.agentkit.core.JsonSchema
+import com.example.agentkit.core.ToolResult
+import com.example.agentkit.core.container.ContainerCommandRunner
+import com.example.agentkit.core.container.RootfsManager
+import com.example.agentkit.core.container.ToolchainInstaller
+import com.example.agentkit.core.llm.primOrNull
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.contentOrNull
+
+/**
+ * 容器运行时管理（B 批）：让 Agent 自己能把容器变成能跑代码的环境。
+ *
+ * 两个动作：
+ * - `action=status`（默认）：报告容器里已有哪些语言运行时、缺什么、包管理器是什么；
+ * - `action=install`：安装缺失的运行时（node / python / java，可指定 language 装单个）。
+ *
+ * ## 为什么需要这个工具
+ * 容器默认只有 busybox。用户提「在容器里跑一下这个 Python 脚本」时，
+ * Agent 会发现没有 python3 —— 但它没法自己装，只能回来问用户。
+ * 有了这个工具，Agent 能自己探测、自己装、自己验证，装完直接干活。
+ *
+ * ## 安全性
+ * 安装动作会**下载并写入容器文件系统**（几百 MB），因此：
+ * - `needsApproval = true`：必须经用户确认（会话内可按「设备输出」组整组放行——
+ *   它与 shell 同属「在设备上执行外部代码」的语义）；
+ * - 能力级标为 DANGEROUS（见 [com.example.agentkit.skill.SkillSecurity]）：
+ *   第三方技能不得代为安装运行时。
+ *
+ * 探测动作只读，标为 SAFE。
+ */
+class ContainerToolchainTool(
+    private val context: Context
+) : AgentTool {
+
+    override val name = "container_toolchain"
+
+    override val description =
+        "管理容器里的语言运行时。action=status 报告容器已装哪些运行时（node/python/java）以及缺什么；" +
+            "action=install 安装缺失的运行时（language 可指定 node/python/java，不填则全装）。" +
+            "容器默认只有 busybox，跑 Python/Node/Java 前需要先装。"
+
+    override val parameters = JsonSchema.objectSchema(
+        JsonSchema.prop("action", "string", "status（查看，默认）或 install（安装）"),
+        JsonSchema.prop(
+            "language",
+            "string",
+            "只装指定语言：node / python / java。留空则装齐所有缺失的",
+            enum = listOf("node", "python", "java")
+        )
+    )
+
+    /** 探测只读；安装是写操作，必须串行。 */
+    override val readOnly = false
+
+    /** 安装动作要下载并写入容器，需人工确认。 */
+    override val needsApproval = true
+
+    override suspend fun execute(args: JsonObject): ToolResult = withContext(Dispatchers.IO) {
+        // 用 JsonSafe 的软转换（primOrNull）而非 kotlinx 的硬转换：
+        // 模型下发 `"action": null` 时硬转换会抛 IllegalArgumentException，整轮回答直接崩。
+        val action = args["action"]?.primOrNull()?.contentOrNull?.trim()?.lowercase() ?: "status"
+        val language = args["language"]?.primOrNull()?.contentOrNull?.trim()?.lowercase()
+
+        // 选一个已解压的发行版：优先第一个
+        val distro = RootfsManager.listAvailable(context)
+            .firstOrNull { RootfsManager.isExtracted(context, it.id) }
+            ?: return@withContext ToolResult.fail(
+                code = "no_container",
+                message = "没有可用的容器（尚无已解压的 rootfs）。",
+                hint = "先到「容器」页解压一个发行版，再调用本工具。"
+            )
+
+        val rootfs = RootfsManager.rootfsDir(context, distro.id)
+        val detection = ToolchainInstaller.detect(rootfs)
+
+        when (action) {
+            "status" -> statusResult(distro.id, detection)
+            "install" -> installResult(distro.id, detection, language)
+            else -> ToolResult.fail(
+                code = "bad_action",
+                message = "未知 action：$action",
+                hint = "action 只能是 status 或 install。"
+            )
+        }
+    }
+
+    /** 报告现状。 */
+    private fun statusResult(distroId: String, detection: ToolchainInstaller.Detection): ToolResult {
+        val installed = detection.installed.joinToString("、") { it.displayName }
+        val missing = ToolchainInstaller.Lang.entries.filter { it !in detection.installed }
+            .joinToString("、") { it.displayName }
+        val text = buildString {
+            appendLine("容器：$distroId")
+            appendLine("包管理器：${detection.pkgManager?.displayName ?: "无（${detection.reason ?: "未知"}）"}")
+            appendLine("已安装：${installed.ifBlank { "无" }}")
+            appendLine("缺失：${missing.ifBlank { "无"}}")
+            if (missing.isNotBlank() && detection.pkgManager != null) {
+                appendLine("安装命令：${ToolchainInstaller.installMissingCommand(detection)}")
+            }
+        }
+        return ToolResult.ok(code = "toolchain_status", message = "已获取容器运行时状态", data = text.trim())
+    }
+
+    /** 执行安装。 */
+    private fun installResult(
+        distroId: String,
+        detection: ToolchainInstaller.Detection,
+        language: String?
+    ): ToolResult {
+        val pkg = detection.pkgManager ?: return ToolResult.fail(
+            code = "no_pkg_manager",
+            message = "该容器没有可用的包管理器，无法自动安装运行时。",
+            hint = detection.reason ?: "请在容器内手动安装，或换一个带 apk/apt 的 rootfs。"
+        )
+        val target = if (language.isNullOrBlank()) {
+            ToolchainInstaller.Lang.entries.filter { it !in detection.installed }
+        } else {
+            val lang = ToolchainInstaller.Lang.byId(language)
+                ?: return ToolResult.fail(
+                    code = "bad_language",
+                    message = "未知语言：$language",
+                    hint = "language 只能是 node / python / java。"
+                )
+            if (lang in detection.installed) emptyList() else listOf(lang)
+        }
+        if (target.isEmpty()) {
+            return ToolResult.ok(
+                code = "already_installed",
+                message = "目标运行时已全部安装，无需操作。",
+                data = "已安装：${detection.installed.joinToString("、") { it.displayName }}"
+            )
+        }
+        val command = when {
+            language.isNullOrBlank() -> ToolchainInstaller.installMissingCommand(detection)
+            else -> ToolchainInstaller.installCommand(target.first(), pkg)
+        } ?: return ToolResult.fail(
+            code = "no_command",
+            message = "无法为 ${target.joinToString { it.displayName }} 生成安装命令。",
+            hint = "该语言在当前包管理器下没有对应包。"
+        )
+
+        val result = ContainerCommandRunner.run(context, distroId, command)
+        if (!result.ok) {
+            return ToolResult.fail(
+                code = "install_failed",
+                message = "安装失败（exit ${result.exitCode}）。",
+                hint = "容器内输出：${result.output.take(300)}\n可手动进容器执行：$command"
+            )
+        }
+        val after = ToolchainInstaller.detect(RootfsManager.rootfsDir(context, distroId))
+        return ToolResult.ok(
+            code = "install_ok",
+            message = "已安装：${target.joinToString("、") { it.displayName }}",
+            data = "现在容器里有：${after.installed.joinToString("、") { it.displayName }}\n" +
+                "输出：${result.output.take(300)}"
+        )
+    }
+}
