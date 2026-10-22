@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -73,7 +74,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.SpanStyle
@@ -166,6 +170,7 @@ fun ModelConfigScreen(vm: ChatViewModel, onBack: () -> Unit) {
             Modifier
                 .fillMaxWidth()
                 .verticalScroll(rememberScrollState())
+                .navigationBarsPadding()
                 .padding(
                     start = AgentSpacing.space5,
                     end = AgentSpacing.space5,
@@ -323,17 +328,22 @@ private fun ModelPageTabs(selected: Int, onSelect: (Int) -> Unit) {
                     style = MaterialTheme.typography.labelLarge,
                     fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Medium,
                     color = if (isSelected) MaterialTheme.colorScheme.primary
-                    else MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Spacer(Modifier.height(6.dp))
-                // 列宽自然 wrapContentWidth（= 最宽子项，即文字宽），下划线随之等宽。
-                // 注意：不要用 Modifier.width(IntrinsicSize.Min)——在 Row 的普通测量路径下
-                // 宽度会塌缩到单字宽，中文逐字换行表现为竖排（真机实测，2026-10-13）。
-                Box(
-                    Modifier
-                        .fillMaxWidth()
-                        .height(2.dp)
-                        .background(lineColor)
+                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                    // 下划线直接画在文字自己的宽度上。
+                    //
+                    // 旧写法是「Column 里放一个 fillMaxWidth 的 Box」：Row 测量时把剩余宽度
+                    // 全给了第一个 Tab 的 Box，第一个 Tab 撑满整行，后两个被挤出屏幕——
+                    // 真机（720x1280 @320dpi）实测只剩「模型」，本地模型/提示词两个 Tab 完全不可见。
+                    // 用 drawWithContent 按 Text 自身 size 画线，宽度天然等于文字宽，也不会因
+                    // IntrinsicSize 把中文压成竖排（2026-10-13 踩过的坑）。
+                    modifier = Modifier.drawWithContent {
+                        drawContent()
+                        drawRect(
+                            color = lineColor,
+                            topLeft = Offset(0f, size.height + 6.dp.toPx()),
+                            size = Size(size.width, 2.dp.toPx())
+                        )
+                    }
                 )
             }
             if (index < tabs.lastIndex) Spacer(Modifier.width(AgentSpacing.space2))

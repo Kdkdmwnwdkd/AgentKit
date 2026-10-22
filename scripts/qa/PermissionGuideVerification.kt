@@ -265,6 +265,40 @@ fun main() {
         assertTrue("该分支不应调用 dismissOnboarding：$block", !block.contains("dismissOnboarding()"))
     }
 
+    // —— 2026-10-22 模拟器实测后补的回归断言（四个真机可见的 UI 缺陷）——
+
+    check("长页面避让系统导航栏（否则最后一个按钮看得见、点不动）") {
+        listOf(
+            "ui/PermissionGuideScreen.kt",
+            "ui/PermissionsScreen.kt",
+            "ui/SettingsScreen.kt",
+            "ui/ModelConfigScreen.kt"
+        ).forEach { rel ->
+            val src = read("app/src/main/java/com/example/agentkit/$rel")
+            assertTrue("$rel 缺少 navigationBarsPadding", src.contains("navigationBarsPadding()"))
+        }
+    }
+
+    check("首启弹窗小屏可滚动且按钮固定底部（720x1280 实测「先自己看看」被裁掉）") {
+        val src = read("app/src/main/java/com/example/agentkit/ui/ChatScreen.kt")
+        assertTrue("内容区未限制高度", src.contains("heightIn(max = 520.dp)"))
+        assertTrue("上半区未可滚动", src.contains("weight(1f, fill = false).verticalScroll"))
+    }
+
+    check("模型页三个 Tab 都在（下划线按文字宽度画，不能用 fillMaxWidth）") {
+        val src = read("app/src/main/java/com/example/agentkit/ui/ModelConfigScreen.kt")
+        assertTrue("未按文字宽度画下划线", src.contains("drawWithContent"))
+        assertTrue("下拉线仍用 fillMaxWidth 会挤掉后两个 Tab", !src.contains("Box(\n                    Modifier\n                        .fillMaxWidth()\n                        .height(2.dp)"))
+    }
+
+    check("自动进权限引导的 effect 以 route 为 key（否则保存后回对话页不触发）") {
+        val src = read("app/src/main/java/com/example/agentkit/ui/AppScaffold.kt")
+        assertTrue(
+            "LaunchedEffect 未包含 route",
+            src.contains("LaunchedEffect(route, config.baseUrl, config.apiKey, config.model)")
+        )
+    }
+
     check("遮罩用 EvenOdd 开洞（目标必须透亮，不能被压暗）") {
         val src = read("app/src/main/java/com/example/agentkit/ui/SpotlightGuide.kt")
         assertTrue("未使用 PathFillType.EvenOdd", src.contains("PathFillType.EvenOdd"))

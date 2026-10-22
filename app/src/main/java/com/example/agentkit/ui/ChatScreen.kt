@@ -887,7 +887,8 @@ private fun ModelSwitchDialog(
         Box(
             Modifier
                 .fillMaxSize()
-                .padding(horizontal = 24.dp),
+                // 上下各留 24dp：小屏（360x640dp）上内容比屏幕高，必须给滚动留边界
+                .padding(horizontal = 24.dp, vertical = 24.dp),
             contentAlignment = Alignment.Center
         ) {
             Surface(
@@ -1531,7 +1532,15 @@ private fun OnboardingDialog(
                     .scale(scale)
                     .alpha(alpha)
             ) {
-                Column(Modifier.padding(22.dp)) {
+                Column(
+                    Modifier
+                        .padding(22.dp)
+                        // 上限 520dp：真机（720x1280 @320dpi）可用高度只有 ~592dp，
+                        // 不封顶时三步正文会把两个按钮推出屏幕（「先自己看看」直接看不见）。
+                        // 封顶后：上半区滚动，底部按钮永远贴在卡片底、永远可点。
+                        .heightIn(max = 520.dp)
+                ) {
+                  Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState())) {
                     Text(
                         text = "三步开始",
                         style = MaterialTheme.typography.titleLarge.copy(
@@ -1579,6 +1588,7 @@ private fun OnboardingDialog(
                         AkTextButton(text = "去开启", onClick = onOpenGuide)
                     }
 
+                  }
                     Spacer(Modifier.height(AgentSpacing.space5))
                     AkPrimaryButton(
                         text = "去配置模型",

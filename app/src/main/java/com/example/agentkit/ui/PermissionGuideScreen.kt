@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
@@ -155,6 +156,9 @@ fun PermissionGuideScreen(vm: ChatViewModel, onDone: () -> Unit) {
             Modifier
                 .fillMaxWidth()
                 .verticalScroll(rememberScrollState())
+                // 系统导航栏避让：不补这一条，页面最后一个按钮会落在导航栏区域，
+                // 真机（720x1280 三键导航）实测「开始使用」看得见、点不动。
+                .navigationBarsPadding()
                 .padding(
                     start = AgentSpacing.space5,
                     end = AgentSpacing.space5,

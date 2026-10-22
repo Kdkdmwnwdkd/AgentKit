@@ -26,6 +26,11 @@ android {
         }
     }
 
+    // 仅本地 UI 验证用：`-PnoNative=true` 跳过 llama.cpp/终端 JNI 的 NDK 编译。
+    // 产出的 APK 没有 .so，本地推理与内置终端不可用（两处都是懒加载 + try/catch 降级），
+    // 其余界面/流程与正式包一致——用来在 x86_64 模拟器上跑 UI 验证，CI 与正式包不受影响。
+    val skipNative = (project.findProperty("noNative") as String?)?.toBoolean() == true
+
     defaultConfig {
         applicationId = "com.example.agentkit"
         minSdk = 26
@@ -37,8 +42,10 @@ android {
         versionCode = ciVersionCode.coerceAtLeast(LOCAL_FALLBACK_VERSION_CODE)
         versionName = "1.$ciVersionCode"
         // 本地 llama.cpp 推理只编 arm64-v8a：先覆盖全部真机，模拟器 x86_64 后续再补
-        ndk {
-            abiFilters += "arm64-v8a"
+        if (!skipNative) {
+            ndk {
+                abiFilters += "arm64-v8a"
+            }
         }
     }
 
@@ -57,10 +64,12 @@ android {
     composeOptions { kotlinCompilerExtensionVersion = "1.5.15" }
 
     // 本地 llama.cpp 推理：只出 arm64-v8a（市面手机全覆盖，先做扎实再扩 x86_64 模拟器）
-    externalNativeBuild {
-        cmake {
-            path = file("src/main/cpp/CMakeLists.txt")
-            version = "3.22.1"
+    if (!skipNative) {
+        externalNativeBuild {
+            cmake {
+                path = file("src/main/cpp/CMakeLists.txt")
+                version = "3.22.1"
+            }
         }
     }
 
