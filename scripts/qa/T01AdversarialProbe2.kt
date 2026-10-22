@@ -335,7 +335,7 @@ private suspend fun testR7SseMidStreamCancel() = runBlocking {
         val closeLatches = mutableListOf<CountDownLatch>()
         val client = OpenAIClient(
             testConfig(),
-            fakeHttp(
+            http = fakeHttp(
                 ScriptedSseInterceptor(
                     scripts = listOf(listOf(sseContent("你"), sseContent("好"))),
                     closeLatches = closeLatches,
@@ -381,7 +381,7 @@ private suspend fun testR7SseMidStreamCancel() = runBlocking {
         val closeLatches = mutableListOf<CountDownLatch>()
         val client = OpenAIClient(
             testConfig(),
-            fakeHttp(
+            http = fakeHttp(
                 ScriptedSseInterceptor(
                     scripts = listOf(listOf(sseContent("你"), sseContent("好"))),
                     closeLatches = closeLatches,
@@ -424,7 +424,7 @@ private suspend fun testR7SseMidStreamCancel() = runBlocking {
         val stopGate = CountDownLatch(1) // 仅兜底：断言失败时强制 EOF，防 producer 永转悬挂
         val client = OpenAIClient(
             testConfig(),
-            fakeHttp(
+            http = fakeHttp(
                 ScriptedSseInterceptor(
                     scripts = listOf(List(64) { sseContent("段$it") }),
                     closeLatches = closeLatches,
@@ -484,7 +484,7 @@ private suspend fun testR8LoopCancelMidSse() = runBlocking {
         val closeLatches = mutableListOf<CountDownLatch>()
         val client = OpenAIClient(
             testConfig(),
-            fakeHttp(
+            http = fakeHttp(
                 ScriptedSseInterceptor(
                     scripts = listOf(
                         listOf(sseContent("让我先查"), sseToolCallFirstShard(), sseToolCallSecondShard(), SSE_DONE),
