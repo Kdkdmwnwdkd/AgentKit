@@ -559,6 +559,11 @@ fun ChatScreen(
         // Phase 2 DoD③：断网/失败自动恢复横幅——重试中显示「正在恢复（n/N）· 原因」，
         // 恢复成功 / 最终失败 / 取消时置 null 即消失（最终失败仍走既有错误气泡，不重复提示）
         retryState?.let { RetryBanner(it) }
+        // B 批：上次 Agent 长任务被系统中断时的恢复提示。
+        // 用户切后台/被回收后回来，能看到「上次做到哪、可以直接说继续」，而不是一片空白。
+        vm.interruptedNotice.collectAsStateWithLifecycle().value?.let { notice ->
+            InterruptedBanner(notice) { vm.dismissInterruptedNotice() }
+        }
         // W-14：模型用 ask_user 提问时，输入栏上方出现选择卡片（回答后自动消失）
         vm.askUserPending.collectAsStateWithLifecycle().value?.let { q ->
             AskUserCard(question = q, onAnswer = { vm.answerAskUser(q.id, it) })
@@ -1110,6 +1115,34 @@ private fun RetryBanner(state: RetryState) {
             maxLines = 1,
             overflow = TextOverflow.Ellipsis
         )
+    }
+}
+
+/**
+ * B 批：上次长任务被中断的提示横幅。
+ *
+ * 用 tertiaryContainer 而非 error——这不是错误，是「上次的活没干完，你可以继续」。
+ * 右侧「知道了」用于用户明确表示不需要提醒时的关闭。
+ */
+@Composable
+private fun InterruptedBanner(note: String, onDismiss: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.tertiaryContainer)
+            .padding(horizontal = AgentSpacing.space4, vertical = AgentSpacing.space2),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = note,
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onTertiaryContainer,
+            modifier = Modifier.weight(1f),
+            maxLines = 3,
+            overflow = TextOverflow.Ellipsis
+        )
+        Spacer(Modifier.width(AgentSpacing.space2))
+        AkTextButton(text = "知道了", onClick = onDismiss)
     }
 }
 

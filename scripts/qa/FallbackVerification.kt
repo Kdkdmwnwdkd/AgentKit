@@ -229,15 +229,22 @@ private fun testUnavailableAndEmpty() {
 private fun testFactoryLinkage() {
     println("\n== 与 T07 工厂联动：proot 不可用 → 回落本机 user ==")
 
-    check("shellCapabilitySnapshot 顺序 = proot → user，且可用性来自工厂 probe") {
+    check("shellCapabilitySnapshot 顺序 = shizuku(诊断) → proot → user，且可用性来自工厂 probe") {
         val factory = fakeFactory(prootAvailable = false, userAvailable = true)
         val snapshot = factory.shellCapabilitySnapshot()
-        assertEquals("2 candidates", 2, snapshot.size)
-        assertEquals("1st=proot", TerminalBackend.KEY_PROOT, snapshot[0].backendId)
-        assertTrue("proot unavailable", !snapshot[0].available)
-        assertTrue("proot has reason", !snapshot[0].reason.isNullOrBlank())
-        assertEquals("2nd=user", TerminalBackend.KEY_USER, snapshot[1].backendId)
-        assertTrue("user available", snapshot[1].available)
+        // 3 个候选：首项是 shizuku 调试通道的「诊断条目」。
+        // 它排在最前是因为 uid 2000 能做的活最多，但**不可用时只作诊断呈现**，
+        // 不影响 proot → user 的降级链（见 CapabilityBridges.shellCapabilitySnapshot 的 KDoc）。
+        // 注意：本断言原先写的是 2 candidates / 1st=proot，是 Shizuku 诊断条目加入前的旧期望，
+        // 一直报红——现已对齐当前实现语义。
+        assertEquals("3 candidates", 3, snapshot.size)
+        assertEquals("1st=shizuku(diagnostic)", TerminalBackend.KEY_SHIZUKU, snapshot[0].backendId)
+        assertTrue("shizuku unavailable", !snapshot[0].available)
+        assertEquals("2nd=proot", TerminalBackend.KEY_PROOT, snapshot[1].backendId)
+        assertTrue("proot unavailable", !snapshot[1].available)
+        assertTrue("proot has reason", !snapshot[1].reason.isNullOrBlank())
+        assertEquals("3rd=user", TerminalBackend.KEY_USER, snapshot[2].backendId)
+        assertTrue("user available", snapshot[2].available)
     }
 
     check("proot 不可用 → 能力链选中 user（与工厂 getHighestAvailable 一致）") {
@@ -246,7 +253,8 @@ private fun testFactoryLinkage() {
         assertTrue("Selected", r is CapabilityResolution.Selected)
         r as CapabilityResolution.Selected
         assertEquals("chain selects user", TerminalBackend.KEY_USER, r.backend.backendId)
-        assertEquals("trace size", 2, r.trace.size)
+        // 轨迹含诊断条目：shizuku → proot → user，共 3 条
+        assertEquals("trace size", 3, r.trace.size)
         // 复用既有断言思路：工厂自身的降级结果也回落到 user
         assertEquals("factory highest=user", TerminalBackend.KEY_USER, factory.getHighestAvailable()?.backendKey)
     }
@@ -256,7 +264,8 @@ private fun testFactoryLinkage() {
         val r = resolveCapability(CapabilityRequest(Capability.RUN_SHELL, factory.shellCapabilitySnapshot()))
         r as CapabilityResolution.Selected
         assertEquals("chain selects proot", TerminalBackend.KEY_PROOT, r.backend.backendId)
-        assertEquals("trace size", 1, r.trace.size)
+        // 轨迹含诊断条目：shizuku → proot，共 2 条
+        assertEquals("trace size", 2, r.trace.size)
         assertEquals("factory highest=proot", TerminalBackend.KEY_PROOT, factory.getHighestAvailable()?.backendKey)
     }
 

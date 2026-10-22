@@ -42,6 +42,8 @@ object CapabilityRegistry {
         // —— 危险：命令 / 安装 / 仓库写 ——
         "shell_run" to Capability.DANGEROUS,
         "shell_background" to Capability.DANGEROUS,
+        // B 批：容器运行时安装——会下载并写入容器文件系统，语义等同「在设备上装东西」
+        "container_toolchain" to Capability.DANGEROUS,
         "app_install" to Capability.DANGEROUS,
         "app_uninstall" to Capability.DANGEROUS,
         "app_stop" to Capability.DANGEROUS,
@@ -128,14 +130,45 @@ data class SkillPolicy(
 )
 
 /**
- * 由 skill 的 trust 字段解析执行策略（fail-safe：未知/缺省一律当 PACKAGED 可信）。
- * 这是「契约化只读」的落地：第三方 skill 即便声明了 ui_tap，只要 trust 不是 packaged，
- * 就会被 maxCapability 这道门拦在 SAFE/PRIVILEGED 之内。
+ * 由 skill 的 trust 字段解析执行策略。
+ *
+ * **B 批：未知/缺省 trust 一律按最严处理（fail-closed）。**
+ *
+ * 旧实现是 `else -> packaged`——只有精确命中 "remote"/"imported" 才收紧，
+ * 任何其它字符串（含拼错的 "Packaged"、含空格的 " packaged"、manifest 里
+ * 手写的 "trusted"）都落进 else，拿到**最高信任**：允许执行脚本 +
+ * DANGEROUS 级工具全部放行。这与 A 批能力表 fail-closed 的原则直接矛盾——
+ * 攻击者只要让 trust 字段「不是那两个精确值」，就自动拿到最宽权限。
+ *
+ * 现在改为**显式白名单**：只有精确的 "packaged" 才给最高信任；
+ * "imported"/"remote" 按来源收紧；其余（含 null、空串、未知值）按
+ * [TrustLevel.REMOTE] 处理——最严的一档。
+ *
+ * 大小写与首尾空格**归一化后再比对**（`trim().lowercase()`）：trust 是
+ * manifest 里的自由文本，"Packaged" / "PACKAGED" 表达的显然是同一个意图，
+ * 不该因为大小写不同就被降级——那会逼着 skill 作者写出精确小写，
+ * 也让「未知值从严」这条规则被大小写噪声淹没。
+ *
+ * 为什么 null 也要收紧：`SkillManifest.trust` 的默认值是 ""，
+ * 但 manifest 是可被构造/反序列化的对象，缺省值不能当作「已审计」的证据。
+ * 真正的 packaged 技能由 [com.example.agentkit.skill.SkillImportRepository]
+ * 依据**本地授权记录**写入（id 在 authorizedIds 里才写 packaged），
+ * 以及 assets 内置技能在 [com.example.agentkit.skill.SkillLoader] 显式标注。
  */
-fun policyFor(trust: String?): SkillPolicy = when ((trust ?: "packaged").lowercase()) {
-    "remote" -> SkillPolicy(allowScript = false, maxCapability = Capability.SAFE)
+fun policyFor(trust: String?): SkillPolicy = when (trust?.trim()?.lowercase()) {
+    "packaged" -> SkillPolicy(allowScript = true, maxCapability = Capability.DANGEROUS)
     "imported" -> SkillPolicy(allowScript = false, maxCapability = Capability.PRIVILEGED)
-    else -> SkillPolicy(allowScript = true, maxCapability = Capability.DANGEROUS) // packaged
+    "remote" -> SkillPolicy(allowScript = false, maxCapability = Capability.SAFE)
+    // 未知 / 缺省 / 空串：最严一档（与 remote 同级），并显式标注为未知
+    else -> SkillPolicy(allowScript = false, maxCapability = Capability.SAFE)
+}
+
+/** 供 UI / 日志展示的信任等级标签：未知值不再伪装成 packaged。 */
+fun trustLabel(trust: String?): String = when (trust?.trim()?.lowercase()) {
+    "packaged" -> "打包可信"
+    "imported" -> "本地导入"
+    "remote" -> "远程来源"
+    else -> "来源未知（按最严策略处理）"
 }
 
 /**
@@ -146,7 +179,7 @@ fun checkCapabilityGate(toolName: String, trust: String?): String? {
     val policy = policyFor(trust)
     val cap = CapabilityRegistry.cap(toolName)
     if (cap.ordinal > policy.maxCapability.ordinal) {
-        return "⛔ 能力越权：技能来源「${trust ?: "packaged"}」最多允许 ${policy.maxCapability.name} 级工具，" +
+        return "⛔ 能力越权：技能来源「${trustLabel(trust)}」最多允许 ${policy.maxCapability.name} 级工具，" +
             "无权调用 $toolName（${cap.name}）。"
     }
     return null

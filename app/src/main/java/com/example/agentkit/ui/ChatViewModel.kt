@@ -94,6 +94,7 @@ import com.example.agentkit.skill.SkillManifest
 import com.example.agentkit.skill.createUseSkillTool
 import com.example.agentkit.tools.AppInstallTool
 import com.example.agentkit.tools.AppUninstallTool
+import com.example.agentkit.tools.ContainerToolchainTool
 import com.example.agentkit.core.job.JobNotifier
 import com.example.agentkit.core.job.JobRunner
 import com.example.agentkit.core.job.JobStore
@@ -137,6 +138,9 @@ import com.example.agentkit.core.capability.resolveCapability
 import com.example.agentkit.automation.shizuku.ShizukuInstaller
 import com.example.agentkit.automation.shizuku.ShizukuShell
 import com.example.agentkit.core.agent.AskUserBroker
+import com.example.agentkit.core.agent.AgentRunService
+import com.example.agentkit.core.agent.AgentRunState
+import com.example.agentkit.core.agent.AgentRunStateStore
 import com.example.agentkit.core.agent.ApprovalGrouping
 import com.example.agentkit.core.agent.PlanBroker
 import com.example.agentkit.tools.SubAgentTool
@@ -144,6 +148,8 @@ import com.example.agentkit.core.agent.SubAgentRunner
 import com.example.agentkit.core.agent.TitleLogic
 import com.example.agentkit.core.text.MentionLogic
 import com.example.agentkit.core.text.TranslateLogic
+import com.example.agentkit.core.workspace.FileBackupStore
+import com.example.agentkit.core.workspace.FileBackupStoreFactory
 import com.example.agentkit.core.workspace.WorkspacePaths
 import com.example.agentkit.core.workspace.WorkspaceStore
 import com.example.agentkit.core.agent.TodoStore
@@ -155,6 +161,7 @@ import com.example.agentkit.tools.PlanTool
 import com.example.agentkit.tools.CalculatorTool
 import com.example.agentkit.tools.ConversationSearchTool
 import com.example.agentkit.tools.EditFileTool
+import com.example.agentkit.tools.WriteBackupHook
 import com.example.agentkit.tools.SpeakTool
 import com.example.agentkit.tools.WorkflowCreateTool
 import com.example.agentkit.tools.WorkflowDeleteTool
@@ -386,6 +393,31 @@ private const val PROJECT_RULES_LIMIT = 4_000
 class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
 
     private val workspace = File(app.filesDir, "agent_workspace")
+
+    /**
+     * B 批：Agent 写文件的自动备份仓。
+     *
+     * 每次 write_file / edit_file 之前自动留一份旧内容，用户可在编辑器里一键回滚到上一步。
+     * 与 [com.example.agentkit.core.workspace.CheckpointStore]（整目录手动快照）互补：
+     * 那是人工拍点，这个是自动逐次留底。
+     */
+    private val fileBackupStore = FileBackupStoreFactory.default(app)
+
+    /**
+     * B 批：Agent 长任务的运行态存储（用于进程被杀后的恢复提示）。
+     */
+    private val agentRunStateStore = AgentRunStateStore(File(app.filesDir, "agent_run_state.json"))
+
+    /**
+     * B 批：上次任务被系统中断时的提示语（启动时对账得到，非 null 则展示一次）。
+     */
+    private val _interruptedNotice = MutableStateFlow<String?>(null)
+    val interruptedNotice: StateFlow<String?> = _interruptedNotice.asStateFlow()
+
+    /** 用户点「知道了」后关闭恢复提示。 */
+    fun dismissInterruptedNotice() {
+        _interruptedNotice.value = null
+    }
 
     /** 自动化总开关持久化。 */
     private val automationPrefs = AutomationPrefs(app)
@@ -805,9 +837,9 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     private val registry = ToolRegistry().apply {
         register(HttpRequestTool())
         register(ReadFileTool(workspace))
-        register(WriteFileTool(workspace))
+        register(WriteFileTool(workspace, WriteBackupHook { fileBackupStore.backupBeforeWrite(it) }))
         // W-20：精确编辑（局部替换，不整文件覆写）+ 网页搜索（实时信息入口）
-        register(EditFileTool(workspace))
+        register(EditFileTool(workspace, WriteBackupHook { fileBackupStore.backupBeforeWrite(it) }))
         register(WebSearchTool())
         register(ClipboardTool(app))
         register(NotificationTool(app))
@@ -908,6 +940,8 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         // W-33：后台命令——长命令不再阻塞整轮，跑完发通知
         register(ShellBackgroundTool(app, jobRunner))
         register(ShellJobsTool(jobStore, jobRunner))
+        // B 批：容器运行时管理——让 Agent 自己把容器变成能跑 node/python/java 的环境
+        register(ContainerToolchainTool(app))
     }
 
     /** JS 执行引擎（Rhino，纯 Java 无需 NDK）；初始化失败则降级为仅 prompt 形态。 */
@@ -927,6 +961,11 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         AgentLogger.init(logDir)
         // W-33：上次进程被杀时残留的 running 任务标为「结果未知」，不假装还在跑
         runCatching { jobStore.reconcile(System.currentTimeMillis()) }
+        // B 批：Agent 长任务运行态对账——残留 running 说明上次进程被系统回收了，
+        // 标为 interrupted 并生成一句恢复提示（用户回来能知道上次做到哪）。
+        runCatching {
+            agentRunStateStore.reconcile()?.let { _interruptedNotice.value = it.note }
+        }
         if (skillsSnapshot.isNotEmpty()) {
             // use_skill 工具的 systemPrompt 会被 AgentLoop 自动拼进系统提示（利用工具自带提示特性）
             // 用 skillsProvider 动态感知导入/卸载/授权的技能变化
@@ -2532,6 +2571,20 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         // T05：句柄置入 runJob，供 stop() 取消；finally 保证 isRunning/日志必收
         runJob = viewModelScope.launch {
             try {
+                // B 批：长任务保活 + 运行态落盘。
+                // 前台服务把进程提到前台，避免切后台被系统回收；
+                // 运行态让进程真被杀时，下次启动知道「上次到哪一步」。
+                AgentRunService.start(app, text.take(40))
+                agentRunStateStore.save(
+                    AgentRunState(
+                        sessionId = owner,
+                        prompt = text,
+                        stepIndex = 0,
+                        status = AgentRunState.STATUS_RUNNING,
+                        startedAt = System.currentTimeMillis(),
+                        updatedAt = System.currentTimeMillis()
+                    )
+                )
                 // W-19：MCP 工具启动后异步注册；首条消息最多等 8 秒，避免模型看不到 MCP 工具。
                 if (!mcpReady.isCompleted) {
                     withTimeoutOrNull(8_000) { mcpReady.await() }
@@ -2626,6 +2679,18 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
             } finally {
                 // finally 保证取消路径（withContext 直接抛 CancellationException）也能复位
                 runJob = null
+                // B 批：任务结束（无论成功/失败/取消）都停掉前台服务并把运行态标记为 done。
+                // 若是取消（用户主动停），同样算「正常结束」——下次不该提示「被系统中断」。
+                AgentRunService.stop(app)
+                runCatching {
+                    agentRunStateStore.save(
+                        agentRunStateStore.load()?.copy(
+                            status = AgentRunState.STATUS_DONE,
+                            updatedAt = System.currentTimeMillis(),
+                            note = ""
+                        ) ?: return@runCatching
+                    )
+                }
                 // hotfix30：清 owner/生成中标识/草稿缓冲（regenerate 同套保险）；
                 // 用户此刻若正停在 owner 会话，reloadActiveMessages 会重建含最终回答的完整列表
                 runOwnerConvId = null

@@ -108,6 +108,15 @@
             </intent-filter>
         </service>
 
+        <!-- B 批：Agent 长任务前台服务。
+             长任务（多步 LLM + 工具调用）期间把进程提到前台，避免被系统回收。
+             dataSync 类型对应 FOREGROUND_SERVICE_DATA_SYNC 权限（Manifest 已声明）。
+             exported=false：只由本 App 内部启动。 -->
+        <service
+            android:name=".core.agent.AgentRunService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+
         <!-- W-13：Shizuku 提供者（权限/服务发现） -->
         <provider
             android:name="rikka.shizuku.ShizukuProvider"

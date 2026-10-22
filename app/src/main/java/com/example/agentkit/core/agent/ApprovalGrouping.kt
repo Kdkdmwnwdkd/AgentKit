@@ -34,6 +34,8 @@ object ApprovalGrouping {
         "github_commit" -> GROUP_GIT_WRITE
         "speak", "send_notification" -> GROUP_DEVICE_OUTPUT
         "shell_run", "shell_background" -> GROUP_SHELL
+        // B 批：容器运行时安装——同为「在设备上执行外部代码 / 下载写入」语义
+        "container_toolchain" -> GROUP_SHELL
         else -> toolName
     }
 

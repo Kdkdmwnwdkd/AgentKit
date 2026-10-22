@@ -20,6 +20,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
+import androidx.compose.material.icons.outlined.DeveloperMode
 import androidx.compose.material.icons.outlined.ViewInAr
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -40,9 +41,11 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.example.agentkit.core.AgentLogger
+import com.example.agentkit.core.container.ContainerCommandRunner
 import com.example.agentkit.core.container.ContainerSession
 import com.example.agentkit.core.container.ProotRunner
 import com.example.agentkit.core.container.RootfsManager
+import com.example.agentkit.core.container.ToolchainInstaller
 import com.example.agentkit.terminal.TerminalSession
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -64,6 +67,8 @@ fun ContainerScreen() {
     var extracted by remember { mutableStateOf<Set<String>>(emptySet()) }
     var busy by remember { mutableStateOf<String?>(null) }
     var selected by remember { mutableStateOf<RootfsManager.Distro?>(null) }
+    /** B 批：运行时安装后的刷新计数——探测结果按 (id, tick) 重算。 */
+    var toolchainTick by remember { mutableStateOf(0) }
 
     val prootReady = remember { ProotRunner.isAvailable(context) }
 
@@ -134,6 +139,85 @@ fun ContainerScreen() {
                         Spacer(Modifier.height(AgentSpacing.space3))
                     }
                 }
+
+                Spacer(Modifier.height(AgentSpacing.space4))
+
+                // B 批：容器运行时一键安装。
+                // 容器默认只有 busybox 一套基础工具，node/python/java 都没有——
+                // 这里按发行版探测现状，缺什么给一条可执行命令，点一下就在容器里装好。
+                AkSectionCard(
+                    title = "语言运行时",
+                    icon = Icons.Outlined.DeveloperMode,
+                    description = "容器默认不带开发语言运行时。检测缺失后一键安装（node / python / java）。"
+                ) {
+                    if (extracted.isEmpty()) {
+                        Text(
+                            "请先解压一个发行版。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    } else {
+                        extracted.forEach { id ->
+                            val detection = remember(id, toolchainTick) {
+                                ToolchainInstaller.detect(RootfsManager.rootfsDir(context, id))
+                            }
+                            val missing = ToolchainInstaller.Lang.entries.filter { it !in detection.installed }
+                            Column(Modifier.fillMaxWidth()) {
+                                Text(
+                                    id,
+                                    style = MaterialTheme.typography.titleSmall,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                Spacer(Modifier.height(AgentSpacing.space1))
+                                Text(
+                                    text = when {
+                                        detection.pkgManager == null ->
+                                            detection.reason ?: "该 rootfs 无包管理器，无法自动安装"
+                                        detection.installed.isEmpty() -> "未检测到任何语言运行时"
+                                        else -> "已安装：" + detection.installed.joinToString("、") { it.displayName }
+                                    },
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                if (detection.pkgManager != null && missing.isNotEmpty()) {
+                                    // 命令先算出来，UI 与执行共用同一份——避免文案与实际执行不一致
+                                    val installCmd = ToolchainInstaller.installMissingCommand(detection)
+                                    Spacer(Modifier.height(AgentSpacing.space2))
+                                    AkTextButton(
+                                        text = "安装 ${missing.joinToString("、") { it.displayName }}",
+                                        onClick = {
+                                            val cmd = installCmd
+                                            if (cmd == null) {
+                                                Toast.makeText(context, "无法生成安装命令", Toast.LENGTH_SHORT).show()
+                                                return@AkTextButton
+                                            }
+                                            // 装完刷新探测结果（列表项用 remember(id, toolchainTick) 重算）
+                                            scope.launch(Dispatchers.IO) {
+                                                val res = runInstallInContainer(context, id, cmd)
+                                                withContext(Dispatchers.Main) {
+                                                    toolchainTick++
+                                                    Toast.makeText(
+                                                        context,
+                                                        if (res.ok) "安装完成：${missing.joinToString("、") { it.displayName }}"
+                                                        else "安装失败（exit ${res.exitCode}）：${res.output.take(80)}",
+                                                        Toast.LENGTH_LONG
+                                                    ).show()
+                                                }
+                                            }
+                                        }
+                                    )
+                                    Spacer(Modifier.height(AgentSpacing.space1))
+                                    Text(
+                                        text = "将在容器内执行：${installCmd ?: "（无法生成命令）"}",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                Spacer(Modifier.height(AgentSpacing.space3))
+                            }
+                        }
+                    }
+                }
             }
         } else {
             val distro = selected!!
@@ -152,6 +236,20 @@ fun ContainerScreen() {
             )
         }
     }
+}
+
+/**
+ * B 批：在容器里执行一条安装命令（同步等退出码）。
+ *
+ * 走 [ContainerCommandRunner] 的独立进程通道而非 pty 会话——pty 拿不到退出码，
+ * 而「装成功没有」只能靠退出码判断。
+ */
+private suspend fun runInstallInContainer(
+    context: Context,
+    distroId: String,
+    command: String
+): ContainerCommandRunner.Result = withContext(Dispatchers.IO) {
+    ContainerCommandRunner.run(context, distroId, command)
 }
 
 /** 发行版卡片：图标底座 + 名称 + 状态（已就绪 / 解压中 / 点击解压）+ 整卡点击。 */
