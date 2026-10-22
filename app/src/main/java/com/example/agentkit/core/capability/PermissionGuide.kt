@@ -125,8 +125,8 @@ fun buildGuideItems(snapshot: GuideSnapshot): List<GuideItem> = listOf(
         key = GuideKey.BATTERY,
         granted = snapshot.batteryUnrestricted,
         required = false,
-        works = "长任务（连续工具调用、定时任务）在息屏或切走后不会被系统掐断。",
-        missing = "息屏或切到后台后，长任务可能被系统杀掉。",
+        works = "降低息屏或切到后台后被系统限制的概率（极长任务仍建议保持前台）。",
+        missing = "息屏或切到后台后，长任务更容易被系统限制。",
         actionLabel = "去设置"
     ),
     GuideItem(

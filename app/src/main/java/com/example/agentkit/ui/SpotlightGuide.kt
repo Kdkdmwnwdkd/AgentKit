@@ -228,26 +228,32 @@ fun SpotlightGuide(
             val radius = 20.dp.toPx()
             val dx = originInRoot.x
             val dy = originInRoot.y
+            // A 批：两端都夹到屏幕内，避免锚点整体移出屏幕时算出 right < left 的负尺寸 Rect。
             val hole = Rect(
-                left = (rect.left - dx - pad).coerceAtLeast(0f),
-                top = (rect.top - dy - pad).coerceAtLeast(0f),
-                right = (rect.right - dx + pad).coerceAtMost(size.width),
-                bottom = (rect.bottom - dy + pad).coerceAtMost(size.height)
+                left = (rect.left - dx - pad).coerceIn(0f, size.width),
+                top = (rect.top - dy - pad).coerceIn(0f, size.height),
+                right = (rect.right - dx + pad).coerceIn(0f, size.width),
+                bottom = (rect.bottom - dy + pad).coerceIn(0f, size.height)
             )
-            // EvenOdd：外框减去内洞，一次填充完成「压暗但目标透亮」
-            val path = Path().apply {
-                addRect(Rect(0f, 0f, size.width, size.height))
-                addRoundRect(RoundRect(hole, CornerRadius(radius)))
-                fillType = PathFillType.EvenOdd
+            if (hole.width <= 0f || hole.height <= 0f) {
+                // 目标不在可视区：整屏压暗即可，不画洞、不画描边（画了也是错位）
+                drawRect(scrim)
+            } else {
+                // EvenOdd：外框减去内洞，一次填充完成「压暗但目标透亮」
+                val path = Path().apply {
+                    addRect(Rect(0f, 0f, size.width, size.height))
+                    addRoundRect(RoundRect(hole, CornerRadius(radius)))
+                    fillType = PathFillType.EvenOdd
+                }
+                drawPath(path, scrim)
+                drawRoundRect(
+                    color = ringColor,
+                    topLeft = Offset(hole.left, hole.top),
+                    size = androidx.compose.ui.geometry.Size(hole.width, hole.height),
+                    cornerRadius = CornerRadius(radius),
+                    style = Stroke(width = 2.dp.toPx())
+                )
             }
-            drawPath(path, scrim)
-            drawRoundRect(
-                color = ringColor,
-                topLeft = Offset(hole.left, hole.top),
-                size = androidx.compose.ui.geometry.Size(hole.width, hole.height),
-                cornerRadius = CornerRadius(radius),
-                style = Stroke(width = 2.dp.toPx())
-            )
         }
 
         // 卡片放在洞的另一侧：洞在上半屏就贴底，反之贴顶。不测量卡片高度，避免抖动。

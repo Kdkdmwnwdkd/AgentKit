@@ -1163,6 +1163,14 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     private val _testResult = MutableStateFlow<TestResult?>(null)
     val testResult: StateFlow<TestResult?> = _testResult.asStateFlow()
 
+    /**
+     * A 批：输入变化时清空上一次测试结果。
+     * 否则「测通旧配置 → 改 Base URL → 卡片仍绿色 → 保存并回对话」会把没测过的配置落盘。
+     */
+    fun clearTestResult() {
+        _testResult.value = null
+    }
+
     /** 是否正在测试连接：UI 用它给按钮显示加载态，避免重复点击。 */
     private val _testing = MutableStateFlow(false)
     val testing: StateFlow<Boolean> = _testing.asStateFlow()

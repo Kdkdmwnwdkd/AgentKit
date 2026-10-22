@@ -257,7 +257,7 @@ fun AppScaffold(
     // 「跳过 / 完成」会落 guide_seen，所以只可能打扰一次；之后入口留在权限中心，不再自动弹。
     val config by vm.config.collectAsStateWithLifecycle()
     var autoGuideChecked by remember { mutableStateOf(false) }
-    LaunchedEffect(config.baseUrl, config.apiKey, config.model) {
+    LaunchedEffect(route, config.baseUrl, config.apiKey, config.model) {
         if (autoGuideChecked) return@LaunchedEffect
         val modelReady = config.baseUrl.isNotBlank() &&
             config.apiKey.isNotBlank() && config.model.isNotBlank()

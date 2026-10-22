@@ -107,7 +107,8 @@ abstract class FileTool(protected val workspace: File) : AgentTool {
 
     protected fun resolve(rel: String): File {
         val f = File(workspace, rel)
-        require(f.canonicalPath.startsWith(workspace.canonicalPath)) { "非法路径：$rel" }
+        // 末尾必须带分隔符：只比前缀会把 /…/agent_workspace_evil 当成工作区内路径
+        require(f.canonicalPath.startsWith(workspace.canonicalPath + File.separator)) { "非法路径：$rel" }
         return f
     }
 }
@@ -222,6 +223,9 @@ class EditFileTool(workspace: File) : FileTool(workspace) {
     /** 写操作：修改文件内容，必须串行执行。 */
     override val readOnly = false
 
+    /** A 批：改文件前必须确认（会话内可按「工作区文件写入」整组放行）。 */
+    override val needsApproval = true
+
     override suspend fun execute(args: JsonObject): ToolResult = withContext(Dispatchers.IO) {
         runCatching {
             val path = args["path"]?.primOrNull()?.contentOrNull
@@ -290,6 +294,9 @@ class WriteFileTool(workspace: File) : FileTool(workspace) {
 
     /** 写操作：覆盖文件内容，必须串行执行。 */
     override val readOnly = false
+
+    /** A 批：写文件前必须确认（与 edit_file 同组）。 */
+    override val needsApproval = true
 
     override suspend fun execute(args: JsonObject): ToolResult = withContext(Dispatchers.IO) {
         runCatching {

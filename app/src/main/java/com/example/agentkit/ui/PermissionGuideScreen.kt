@@ -1,6 +1,7 @@
 package com.example.agentkit.ui
 
 import android.content.Intent
+import androidx.activity.compose.BackHandler
 import android.provider.Settings
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -81,6 +82,13 @@ fun PermissionGuideScreen(vm: ChatViewModel, onDone: () -> Unit) {
         shizuku = shizukuUiState.toStage()
     )
     val items = buildGuideItems(snapshot)
+
+    // A 批：按系统返回也算「已看过」。否则用户退出后 guide_seen 仍为 false，
+    // 下次冷启动会被自动引导再拦一次（跳过 ≠ 永远错过，但也不该反复打扰）。
+    BackHandler {
+        markGuideSkipped(ctx)
+        onDone()
+    }
 
     // 从系统设置页返回即复检：用户刚在设置里开了某项，回到本页必须立刻反映
     val lifecycleOwner = LocalLifecycleOwner.current

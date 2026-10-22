@@ -229,16 +229,32 @@ class ImportedSkillRepository(private val context: Context) {
                     if (entry.name.contains("..")) {
                         throw SecurityException("检测到 Zip Slip 路径穿越：${entry.name}")
                     }
+                    // 1.5) 声明体积预拒：能提前挡掉夸张条目（声明值不可信，后面仍会边读边计数）
+                    if (entry.size > MAX_ZIP_BYTES) {
+                        throw SecurityException("解压条目过大（声明 ${entry.size} 字节），疑似 zip bomb")
+                    }
                     val outFile = File(destDir, entry.name)
                     // 2) canonicalPath 必须落在目标目录之下（防 ../ 越界写）
                     if (!outFile.canonicalPath.startsWith(canonicalDest)) {
                         throw SecurityException("检测到 Zip Slip 越界写入：${entry.name}")
                     }
                     outFile.parentFile?.mkdirs()
-                    // copyTo 返回实际拷贝字节数，累加用于 zip bomb 检测
-                    totalBytes += outFile.outputStream().use { os -> zis.copyTo(os) }
-                    if (totalBytes > MAX_ZIP_BYTES) {
-                        throw SecurityException("解压后体积超过上限 ${MAX_ZIP_BYTES / 1024 / 1024}MB，疑似 zip bomb")
+                    // 3) A 批：**边写边计数**，超限立即中止。
+                    // 旧实现先 copyTo 写完再累加判断——一个 2GB 的单条目会先把磁盘写满，
+                    // 检查再准也来不及（与 W-47 备份解包的修复保持同构）。
+                    outFile.outputStream().use { os ->
+                        val buf = ByteArray(16 * 1024)
+                        while (true) {
+                            val n = zis.read(buf)
+                            if (n <= 0) break
+                            totalBytes += n
+                            if (totalBytes > MAX_ZIP_BYTES) {
+                                throw SecurityException(
+                                    "解压后体积超过上限 ${MAX_ZIP_BYTES / 1024 / 1024}MB，疑似 zip bomb"
+                                )
+                            }
+                            os.write(buf, 0, n)
+                        }
                     }
                 }
                 zis.closeEntry()

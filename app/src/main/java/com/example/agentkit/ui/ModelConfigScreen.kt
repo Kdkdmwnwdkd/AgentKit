@@ -128,6 +128,11 @@ fun ModelConfigScreen(vm: ChatViewModel, onBack: () -> Unit) {
     }
     var bodyText by remember(config) { mutableStateOf(config.customBody) }
     var showAdvanced by rememberSaveable { mutableStateOf(false) }
+
+    // A 批：只要输入变了，上一次「测试连接成功」就失效——不能让用户保存一个没测过的配置。
+    LaunchedEffect(baseUrl, apiKey, model, providerId) {
+        vm.clearTestResult()
+    }
     // W-29：余额查询状态
     val scope = rememberCoroutineScope()
     var balanceLoading by remember { mutableStateOf(false) }

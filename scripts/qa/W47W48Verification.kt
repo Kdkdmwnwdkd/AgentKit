@@ -260,6 +260,46 @@ fun main() {
         assertTrue("技能页缺入口", "onOpenMarket" in read("app/src/main/java/com/example/agentkit/ui/SkillsScreen.kt"))
     }
 
+    /* --------------------- A 批：信任层（能力表 / 白名单 / 审批） --------------------- */
+
+    val security = read("app/src/main/java/com/example/agentkit/skill/SkillSecurity.kt")
+    val executor = read("app/src/main/java/com/example/agentkit/skill/SkillExecutor.kt")
+
+    check("S6 能力表 fail-closed：默认 DANGEROUS，且全仓工具 100% 登记") {
+        // 旧实现是 `?: Capability.SAFE`，新工具忘登记就自动放行。
+        assertTrue("cap() 默认不是 DANGEROUS", "?: Capability.DANGEROUS" in security)
+        assertTrue("仍在默认 SAFE", "?: Capability.SAFE" !in security)
+
+        val nameRe = Regex("override val name = \"([a-z0-9_]+)\"")
+        val names = LinkedHashSet<String>()
+        File("app/src/main/java").walkTopDown()
+            .filter { it.isFile && it.name.endsWith(".kt") }
+            .forEach { f ->
+                nameRe.findAll(f.readText()).forEach { m -> names += m.groupValues[1] }
+            }
+        assertTrue("没有扫到任何工具名（扫描逻辑坏了）", names.size >= 50)
+        val missing = names.filter { "\"$it\" to Capability" !in security }
+        assertTrue("未登记能力级的工具：${missing.joinToString()}", missing.isEmpty())
+    }
+
+    check("S7 技能白名单 fail-closed：空表不再等于全放行") {
+        assertTrue("仍在用 isNotEmpty 旧判定", "tools.isNotEmpty() && name !in skill.tools" !in executor)
+        assertTrue("未使用统一判定", "isToolAllowedByWhitelist(skill.tools" in executor)
+        assertTrue("未阻断需审批工具", "needsApproval == true" in executor)
+    }
+
+    check("S8 高危工具必须挂人工审批（shell / 写文件 / 推仓库）") {
+        val approvalSources = listOf(
+            "app/src/main/java/com/example/agentkit/tools/ShellTool.kt",
+            "app/src/main/java/com/example/agentkit/tools/ShellJobTools.kt",
+            "app/src/main/java/com/example/agentkit/tools/BuiltInTools.kt",
+            "app/src/main/java/com/example/agentkit/tools/GitHubGitTools.kt"
+        )
+        approvalSources.forEach { path ->
+            assertTrue("$path 缺 needsApproval = true", "needsApproval = true" in read(path))
+        }
+    }
+
     println("\n== 结果：$pass 通过 / $fail 失败 ==")
     if (fail > 0) kotlin.system.exitProcess(1)
 }
