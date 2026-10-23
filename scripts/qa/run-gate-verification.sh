@@ -109,6 +109,40 @@ else
   bad "真实清单文件存在" "scripts/qa/known-broken.txt 不存在"
 fi
 
+# ---------------------------------------------------------------- 场景 8
+# 门禁 4：runner 数 > 日志里实际跑过的行数 → 说明有 runner 没被 run-all 收录。
+# 构造方法：日志只写 1 行 PASS，但仓库里有几十个 run-*.sh，必然对不上。
+echo "== 场景 8：runner 数多于日志行数 → 应失败（有 runner 没跑到） =="
+LOG8="$WORK/qa8.log"
+{
+  echo "PASS  scripts/qa/run-fake-one.sh"
+  echo "==== 汇总：PASS=1 SKIP=0 XFAIL=0 FAIL=0"
+} > "$LOG8"
+set +e
+OUT8=$(bash "$ROOT/scripts/qa/gate.sh" "$LOG8" 2>&1)
+RC8=$?
+set -e
+if [ "$RC8" -ne 0 ]; then ok "退出码非 0"; else bad "退出码非 0" "实际 $RC8"; fi
+if printf '%s' "$OUT8" | grep -q "只跑了"; then ok "输出说明有 runner 没跑到"
+else bad "输出说明有 runner 没跑到" "$(printf '%s' "$OUT8" | tail -3)"; fi
+
+# ---------------------------------------------------------------- 场景 9
+# 门禁 4 的正向：真实仓库 + 真实日志必须通过（防止门禁 4 自己误伤正常构建）
+echo "== 场景 9：真实日志应通过门禁 4 =="
+LOG9="$WORK/qa9.log"
+{
+  for s in $(ls "$ROOT"/scripts/qa/run-*.sh | grep -v 'run-all\.sh$'); do
+    echo "PASS  ${s#"$ROOT"/}"
+  done
+  echo "==== 汇总：PASS=$(ls "$ROOT"/scripts/qa/run-*.sh | grep -vc 'run-all\.sh$') SKIP=0 XFAIL=0 FAIL=0"
+} > "$LOG9"
+set +e
+OUT9=$(bash "$ROOT/scripts/qa/gate.sh" "$LOG9" 2>&1)
+RC9=$?
+set -e
+if [ "$RC9" -eq 0 ]; then ok "全跑时门禁放行"
+else bad "全跑时门禁放行" "$(printf '%s' "$OUT9" | grep 'GATE FAIL' | head -2)"; fi
+
 echo
 echo "=== 汇总: $pass passed, $fail failed ==="
 [ "$fail" -eq 0 ] || exit 1

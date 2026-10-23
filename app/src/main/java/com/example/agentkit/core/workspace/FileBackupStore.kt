@@ -30,7 +30,17 @@ class FileBackupStore(
     private val root: File,
     private val workspace: File,
     /** 错误回调（默认吞掉——备份是兜底，失败不该影响写入）。 */
-    private val onError: (String) -> Unit = {}
+    private val onError: (String) -> Unit = {},
+    /**
+     * 保留条数上限：超出后自动清理最旧的。
+     *
+     * 为什么做成构造参数：原来是 `prune(keep = 50)` 的默认值，但**全仓库没有任何地方调用它**
+     * ——备份从写入那天起就没被清理过，一直无限增长。用户如果频繁让 Agent 改文件，
+     * 备份目录能涨到几百 MB 且全是垃圾。
+     *
+     * 现在由 [FileBackupStoreFactory] 从设置读（默认 50），并在写入路径上定期触发。
+     */
+    private val keep: Int = DEFAULT_KEEP
 ) {
 
     /**
@@ -50,6 +60,10 @@ class FileBackupStore(
     )
 
     /** 进程内序号状态：[nextSeq] 的落点。见 companion object 中的全局计数。 */
+
+    /** 距上次清理已写入的次数（见 [backupBeforeWrite] 末尾的定期清理）。 */
+    private var writesSincePrune = 0
+
     init {
         runCatching { root.mkdirs() }
     }
@@ -103,6 +117,17 @@ class FileBackupStore(
         )
         id
     }.onFailure { onError("备份失败（不阻断写入）：${it.message}") }.getOrNull()
+        .also {
+            // 定期清理：每 [PRUNE_EVERY] 次写入扫一次目录。
+            //
+            // 不每次 prune 的原因：prune 要 listFiles 遍历 + 读每个 .meta，单次几十条还行，
+            // 但 Agent 连续改文件时一秒能写十几次，每次都扫就是白白拖慢写入路径。
+            // 每 20 次清理一次，最坏情况多留 19 条，完全可以接受。
+            if (it != null && ++writesSincePrune >= PRUNE_EVERY) {
+                writesSincePrune = 0
+                runCatching { prune(keep) }
+            }
+        }
 
     /**
      * 回滚一次备份：把该备份记录的旧内容写回工作区。
@@ -247,8 +272,14 @@ class FileBackupStore(
         true
     }.getOrDefault(false)
 
-    /** 清理超出上限的旧备份（保留最近 [keep] 条）。 */
-    fun prune(keep: Int = 50): Int {
+    /**
+     * 清理超出上限的旧备份（保留最近 [keep] 条）。
+     *
+     * @param keep ≤ 0 表示**不清理**（用户明确要全留）。这里必须显式挡住，
+     *   否则 `all.size <= 0` 恒不成立，会把所有备份删光——一个参数写错就清空全部历史。
+     */
+    fun prune(keep: Int = DEFAULT_KEEP): Int {
+        if (keep <= 0) return 0
         val all = list()
         if (all.size <= keep) return 0
         var removed = 0
@@ -297,6 +328,12 @@ class FileBackupStore(
     companion object {
         /** 默认目录名（备份仓落位）。 */
         const val DIR_NAME = "file_backups"
+
+        /** 默认保留条数。 */
+        const val DEFAULT_KEEP = 50
+
+        /** 每写多少次触发一次清理（见 [backupBeforeWrite]）。 */
+        private const val PRUNE_EVERY = 20
 
         /**
          * 全局序号状态。

@@ -53,6 +53,22 @@ jobs:
           echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
           echo "$SDK/platform-tools" >> "$GITHUB_PATH"
 
+      # 缓存 llama.cpp 源码（~50MB，每次 clone 几分钟）与 CMake 产物。
+      #
+      # 为什么要缓存：`assembleDebug` 在 CI 上约 5 分钟，其中 lama.cpp 的
+      # 拉取 + NDK 编译占大头。源码按固定 tag（b4600）拉取，内容稳定，天然适合缓存。
+      # key 里带 tag：换版本时自动失效，不会拿到旧源码。
+      #
+      # 注意：**只缓存源码，不缓存 .so**。缓存二进制会让"改了 C++ 却没重编"变成
+      # 一个静默的坑（本地改了 jni 代码，CI 拿旧 .so 出包，行为对不上源码）。
+      - name: Cache llama.cpp source
+        uses: actions/cache@v4
+        with:
+          path: app/src/main/cpp/llama.cpp
+          key: llama-src-b4600-${{ runner.os }}
+          restore-keys: |
+            llama-src-b4600-
+
       - name: Point local.properties to SDK
         run: echo "sdk.dir=$ANDROID_HOME" > local.properties
 
