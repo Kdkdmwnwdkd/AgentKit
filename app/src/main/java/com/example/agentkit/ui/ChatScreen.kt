@@ -227,13 +227,33 @@ fun ChatScreen(
         // 是 internal，拿不到拖拽事件。
         var lastIdx = listState.firstVisibleItemIndex
         var lastOff = listState.firstVisibleItemScrollOffset
-        snapshotFlow { listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset }
-            .collect { (idx, off) ->
-                val movedBack = idx < lastIdx || (idx == lastIdx && off < lastOff)
-                if (movedBack) followTail = false
+        // 视口高度：软键盘弹出/收起、横竖屏切换都会改它。
+        //
+        // 【真机第三轮修复】只比 idx/offset 会把「键盘弹出导致 LazyColumn 微调」误判成
+        // 用户上翻：视口一矮，内容为保持可见项会往回让，offset 变小 → movedBack 成立 →
+        // followTail 被永久置 false → 之后发消息界面完全不动。而每次发消息前都要点输入框，
+        // 键盘必然弹一次，所以这个误判是**必然发生**的，不是偶发（实测 8/8 复现）。
+        // 视口尺寸变化时只同步基准值、不判方向，把「布局变化」和「用户手势」分开。
+        var lastViewportH = listState.layoutInfo.viewportSize.height
+        snapshotFlow {
+            Triple(
+                listState.firstVisibleItemIndex,
+                listState.firstVisibleItemScrollOffset,
+                listState.layoutInfo.viewportSize.height
+            )
+        }.collect { (idx, off, vpH) ->
+            if (vpH != lastViewportH) {
+                // 视口变了：这一跳是布局重排造成的，不当作手势，只更新基准
+                lastViewportH = vpH
                 lastIdx = idx
                 lastOff = off
+                return@collect
             }
+            val movedBack = idx < lastIdx || (idx == lastIdx && off < lastOff)
+            if (movedBack) followTail = false
+            lastIdx = idx
+            lastOff = off
+        }
     }
     LaunchedEffect(listState) {
         // 回到底部（content 末尾可见）才恢复自动跟随
@@ -472,6 +492,11 @@ fun ChatScreen(
                                     showCopy = showCopy,
                                     showMore = showMore,
                                     showSpeak = showSpeak,
+                                    // 错误气泡上把「重新生成」叫「重试」——
+                                    // 功能完全一样（都是重发上一轮），但用户看到 401 提示
+                                    // 「去改 Key」、改完回来找「重新生成」时对不上号。
+                                    // 「重试」是他此刻心理模型里的词。
+                                    regenLabel = if (isErrorBubble(item.text)) "重试" else "重新生成",
                                     speaking = speakingIndex == index,
                                     onSwitch = { delta -> vm.switchVariant(item.turnIndex, delta) },
                                     onRegenerate = { vm.regenerate() },
@@ -540,7 +565,11 @@ fun ChatScreen(
                                 followTail = true // 明确要求回底部 → 恢复自动跟随
                                 inputScope.launch {
                                     if (messages.isNotEmpty()) {
-                                        listState.animateScrollToItem(messages.lastIndex)
+                                        // 传 Int.MAX_VALUE 才是「滚到内容末尾」；
+                                        // 只传 index 等于把最后一条的**顶部**对齐视口顶端，
+                                        // 长消息（几百行思考过程/工具结果）看起来就像"没滚到底"。
+                                        // 与上面 W-43 的贴底逻辑保持同一写法。
+                                        listState.animateScrollToItem(messages.lastIndex, Int.MAX_VALUE)
                                     }
                                 }
                             },
@@ -604,6 +633,12 @@ fun ChatScreen(
                 // v6：模型没配就把请求打到空地址上，用户只会看到一句「调用失败」。
                 // 这里直接说明原因并送他到配置页——比让他自己猜快得多。
                 if (modelReady) {
+                    // 用户主动发了一条消息 → 他必然想看到结果，强制恢复贴底跟随。
+                    // 不加这句的话，点输入框时软键盘弹出会把视口压小、LazyColumn 为保持
+                    // 可见项微调滚动位置，那个位移会被下面的 movedBack 判成「用户上翻」，
+                    // 于是 followTail 被置 false —— 消息发出去之后界面一动不动，
+                    // 用户以为卡死了（真机实测 8 次发送 8 次复现）。
+                    followTail = true
                     vm.send()
                 } else {
                     Toast.makeText(ctx, "先配一个模型才能对话", Toast.LENGTH_SHORT).show()
@@ -1156,6 +1191,20 @@ private fun sameSender(a: UiItem, b: UiItem): Boolean = when {
 }
 
 /**
+ * 判断一条助手气泡是不是「错误提示」。
+ *
+ * 依据是 [ChatViewModel.friendlyMessage] 的固定前缀（🔑/⏳/🔧/⚠️/📶）。
+ * 用文案前缀判而不是加字段，是因为错误气泡不参与变体切换、也不落 turn，
+ * 为它给 UiItem.Assistant 加一个 isError 字段会连带影响落盘格式与去重逻辑，
+ * 收益不抵风险。前缀是这几处唯一出口，改文案时一并改这里即可。
+ */
+private fun isErrorBubble(text: String): Boolean {
+    val t = text.trimStart()
+    return t.startsWith("🔑") || t.startsWith("⏳") || t.startsWith("🔧") ||
+        t.startsWith("⚠️") || t.startsWith("📶")
+}
+
+/**
  * 助手气泡操作区（Phase 2 DoD② + 功能四 P0-1）：变体切换器 `← n/m →` + 「复制」+「重新生成」。
  *
  * 缩进对齐助手气泡（头像 28dp + 间距 8dp = 36dp）；`←`/`→` 用文字而非图标，
@@ -1174,6 +1223,7 @@ private fun AssistantActions(
     showCopy: Boolean,
     showMore: Boolean,
     showSpeak: Boolean,
+    regenLabel: String = "重新生成",
     speaking: Boolean,
     onSwitch: (Int) -> Unit,
     onRegenerate: () -> Unit,
@@ -1212,7 +1262,7 @@ private fun AssistantActions(
         if (showRegen) {
             if (showSwitch) Spacer(Modifier.width(AgentSpacing.space3))
             Text(
-                text = "重新生成",
+                text = regenLabel,
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.primary,
                 modifier = Modifier
@@ -2539,9 +2589,33 @@ private fun ToolCard(item: UiItem.Tool) {
     }
 }
 
-/** 「入参 / 结果」内嵌块：surface-1 底 radius 14dp，machineText 13sp/20，maxHeight 140dp 可滚动。 */
+/**
+ * 「入参 / 结果」内嵌块：surface-1 底 radius 14dp，machineText 13sp/20。
+ *
+ * ## 为什么要「折叠」而不只是「限高」
+ * 原实现只给 140dp 限高 + 内部滚动。听起来够用，但真机实测 `shell_run` 跑
+ * `seq 1 2000`（4000 字符、2000 行）时，内容区仍占了大半屏——限高在
+ * `animateContentSize` 包裹的 Column 里没兜住，用户看到的是「一屏数字」，
+ * 既不知道有多少内容、也不知道能滚，只会以为界面坏了。
+ *
+ * 现在改成**真的只渲染前 [COLLAPSE_LINES] 行**（不是靠限高裁剪）：
+ * - 内容短 → 原样展示，没有多余按钮；
+ * - 内容长 → 只显示前 20 行 + 「展开全部（共 N 行）」；
+ * - 展开后 → 全文 + 仍保留 140dp 限高与内部滚动（双保险）。
+ *
+ * 这样即使将来布局约束再变，也不可能出现「一条工具结果淹掉整屏」。
+ */
 @Composable
 private fun EmbedBlock(label: String, text: String, error: Boolean = false) {
+    val lines = remember(text) { text.lines() }
+    val collapsed = remember(text) {
+        lines.size > COLLAPSE_LINES || text.length > COLLAPSE_CHARS
+    }
+    // 短内容默认展开（不显示按钮）；长内容默认折叠
+    var expanded by remember(text) { mutableStateOf(!collapsed) }
+    val shown = remember(text, expanded) {
+        if (expanded) text else lines.take(COLLAPSE_LINES).joinToString("\n")
+    }
     Column(Modifier.padding(top = AgentSpacing.space2)) {
         Text(
             text = label,
@@ -2552,7 +2626,7 @@ private fun EmbedBlock(label: String, text: String, error: Boolean = false) {
         Box(
             Modifier
                 .fillMaxWidth()
-                .heightIn(max = 140.dp)
+                .heightIn(max = if (expanded) 320.dp else 140.dp)
                 .clip(RoundedCornerShape(14.dp))
                 .background(LocalAkColors.surface1)
                 .verticalScroll(rememberScrollState())
@@ -2560,15 +2634,36 @@ private fun EmbedBlock(label: String, text: String, error: Boolean = false) {
         ) {
             SelectionContainer {
                 Text(
-                    text = text,
+                    text = shown,
                     style = machineText,
                     color = if (error) MaterialTheme.colorScheme.error
                     else MaterialTheme.colorScheme.onSurface
                 )
             }
         }
+        if (collapsed) {
+            Spacer(Modifier.height(AgentSpacing.space1))
+            AkTextButton(
+                text = if (expanded) "收起"
+                else "展开全部（共 ${lines.size} 行 / ${text.length} 字）",
+                onClick = { expanded = !expanded }
+            )
+        }
     }
 }
+
+/** 工具结果折叠阈值：超过任一即折叠。20 行 / 600 字 ≈ 一屏内可扫完的量。 */
+private const val COLLAPSE_LINES = 20
+private const val COLLAPSE_CHARS = 600
+
+/**
+ * 危险操作审批的等待秒数。
+ *
+ * 10 秒实测不够：用户要读命令内容、判断风险、再点按钮，真机连试 3 次全部超时被拒。
+ * 30 秒够读完一条复杂命令，同时仍保留「自动拒绝」这个 fail-safe
+ * （不能让弹窗永远挂着，否则 Agent 会一直卡在等待里）。
+ */
+private const val APPROVAL_TIMEOUT_SEC = 30
 
 /**
  * 危险操作审批 Dialog（§6.4 招牌组件：简洁但警觉）。
@@ -2584,18 +2679,25 @@ private fun ApprovalDialog(request: ApprovalRequest, visible: Boolean, vm: ChatV
     val view = LocalView.current
     var askNoMore by remember(request) { mutableStateOf(false) }
 
-    // 倒计时：10s linear 排空 → 自动拒绝；剩余 3s 时 polite 播报一次（§6.4 TalkBack）
-    var remainingSec by remember(request) { mutableFloatStateOf(10f) }
+    // 倒计时：超时排空 → 自动拒绝；剩余 5s 时 polite 播报一次（§6.4 TalkBack）
+    //
+    // 【真机第三轮修复】10s → 30s。
+    // 实测连试 3 次、3 次都因超时被自动拒绝（读命令 + 判断风险 + 点按钮，10 秒不够）；
+    // 而审批是危险操作的最后一道闸，误拒的代价是"用户以为允许了、实际没执行"，
+    // 比多等 20 秒严重得多。
+    // 注意：**保留自动拒绝这个 fail-safe**，只是放宽时限——不能因为"太麻烦"就让它永不超时，
+    // 否则用户放着弹窗不管时，Agent 会一直卡在等待里。
+    var remainingSec by remember(request) { mutableFloatStateOf(APPROVAL_TIMEOUT_SEC.toFloat()) }
     var announced by remember(request) { mutableStateOf(false) }
     LaunchedEffect(request, visible) {
         if (!visible) return@LaunchedEffect
         val startMs = System.currentTimeMillis()
         while (true) {
-            val left = 10f - (System.currentTimeMillis() - startMs) / 1000f
-            remainingSec = left.coerceIn(0f, 10f)
-            if (!announced && left <= 3f) {
+            val left = APPROVAL_TIMEOUT_SEC - (System.currentTimeMillis() - startMs) / 1000f
+            remainingSec = left.coerceIn(0f, APPROVAL_TIMEOUT_SEC.toFloat())
+            if (!announced && left <= 5f) {
                 announced = true
-                view.announceForAccessibility("3 秒后自动拒绝")
+                view.announceForAccessibility("${APPROVAL_TIMEOUT_SEC} 秒倒计时，即将自动拒绝，剩余 5 秒")
             }
             if (left <= 0f) break
             delay(100)
@@ -2738,7 +2840,7 @@ private fun ApprovalDialog(request: ApprovalRequest, visible: Boolean, vm: ChatV
                     Spacer(Modifier.height(AgentSpacing.space4))
                     // ⑦ 倒计时：功能性进度（非装饰动效），reduce-motion 下保留
                     Text(
-                        text = "10 秒后自动拒绝",
+                        text = "${APPROVAL_TIMEOUT_SEC} 秒后自动拒绝",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         textAlign = TextAlign.Center,
@@ -2752,7 +2854,7 @@ private fun ApprovalDialog(request: ApprovalRequest, visible: Boolean, vm: ChatV
                     ) {
                         Box(
                             Modifier
-                                .fillMaxWidth(fraction = (remainingSec / 10f).coerceIn(0f, 1f))
+                                .fillMaxWidth(fraction = (remainingSec / APPROVAL_TIMEOUT_SEC).coerceIn(0f, 1f))
                                 .fillMaxHeight()
                                 .clip(CircleShape)
                                 .background(MaterialTheme.colorScheme.error)
@@ -2920,11 +3022,16 @@ private fun AskUserCard(
             Spacer(Modifier.height(AgentSpacing.space3))
             if (question.options.isNotEmpty()) {
                 question.options.forEach { option ->
-                    AkTextButton(
+                    // 【真机第三轮修复】AkTextButton → AkOutlinedButton。
+                    // 纯文字按钮看起来就是三个链接（实测截图里 Download/Temp/Cache 分不清
+                    // "可以点"还是"只是列出来"），而这里恰恰是要用户做选择的——
+                    // 描边按钮给出明确的"可点"外观，整行宽度也把热区放大到 48dp 以上。
+                    AkOutlinedButton(
                         text = option,
                         onClick = { onAnswer(option) },
                         modifier = Modifier.fillMaxWidth()
                     )
+                    Spacer(Modifier.height(AgentSpacing.space2))
                 }
             } else {
                 Row(verticalAlignment = Alignment.CenterVertically) {

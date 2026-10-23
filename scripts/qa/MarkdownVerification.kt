@@ -14,6 +14,7 @@
  *   F 流式：半截标记逐前缀解析全程不崩
  */
 
+import com.example.agentkit.ui.MdAlign
 import com.example.agentkit.ui.MdBlock
 import com.example.agentkit.ui.MdListItem
 import com.example.agentkit.ui.MdSpan
@@ -59,6 +60,7 @@ private fun blockSpans(b: MdBlock): List<MdSpan> = when (b) {
     is MdBlock.OrderedList -> b.items.flatMap { itemSpans(it) }
     is MdBlock.CodeBlock -> emptyList()
     MdBlock.Divider -> emptyList()
+    is MdBlock.Table -> b.table.header.flatten() + b.table.rows.flatten().flatten()
 }
 
 private fun itemSpans(item: MdListItem): List<MdSpan> =
@@ -386,6 +388,86 @@ private fun testStreaming() {
     }
 }
 
+/* ------------------------------ G. 表格（真机第三轮新增） ------------------------------ */
+
+/**
+ * 表格是模型最常用的输出格式之一（对比表 / 参数表 / 方案对照）。
+ * 真机实测原实现完全不认识表格语法，`| 列一 | 列二 |` 和 `|---|` 原样铺在气泡里，
+ * 用户读不了、也复制不出结构。这里把解析行为固定下来。
+ */
+private fun testTables() {
+    println("\n== G. 表格 ==")
+
+    check("① 标准 GFM 表格解析为 Table（1 表头 + 2 数据行，3 列）") {
+        val blocks = parse("| 列一 | 列二 | 列三 |\n|---|---|---|\n| a | b | c |\n| 1 | 2 | 3 |")
+        assertEquals("块数", 1, blocks.size)
+        val t = (blocks[0] as? MdBlock.Table)?.table ?: throw AssertionError("应为 Table")
+        assertEquals("列数", 3, t.alignments.size)
+        assertEquals("表头文本", listOf("列一", "列二", "列三"), t.header.map { plainText(it) })
+        assertEquals("数据行数", 2, t.rows.size)
+        assertEquals("首行首列", "a", plainText(t.rows[0][0]))
+        assertEquals("末行末列", "3", plainText(t.rows[1][2]))
+    }
+
+    check("② 对齐标记：:-- 左 / :-: 中 / --: 右") {
+        val blocks = parse("| a | b | c |\n|:--|:-:|--:|\n| 1 | 2 | 3 |")
+        val t = (blocks[0] as? MdBlock.Table)?.table ?: throw AssertionError("应为 Table")
+        assertEquals(
+            "对齐",
+            listOf(MdAlign.LEFT, MdAlign.CENTER, MdAlign.RIGHT),
+            t.alignments
+        )
+    }
+
+    check("③ 无首尾竖线也能解析（a | b 变体）") {
+        val blocks = parse("a | b\n--- | ---\n1 | 2")
+        val t = (blocks[0] as? MdBlock.Table)?.table ?: throw AssertionError("应为 Table")
+        assertEquals("列数", 2, t.alignments.size)
+        assertEquals("表头", listOf("a", "b"), t.header.map { plainText(it) })
+        assertEquals("数据", listOf("1", "2"), t.rows[0].map { plainText(it) })
+    }
+
+    check("④ 列数不足补空、超出截断（不因不规整就整块不渲染）") {
+        val blocks = parse("| a | b | c |\n|---|---|---|\n| 1 |\n| 1 | 2 | 3 | 4 |")
+        val t = (blocks[0] as? MdBlock.Table)?.table ?: throw AssertionError("应为 Table")
+        assertEquals("数据行数", 2, t.rows.size)
+        assertEquals("短行补空后长度", 3, t.rows[0].size)
+        assertEquals("短行缺列是空串", "", plainText(t.rows[0][1]))
+        assertEquals("长行截断后长度", 3, t.rows[1].size)
+        assertEquals("长行保留前 3 列", "3", plainText(t.rows[1][2]))
+    }
+
+    check("⑤ 单元格内联样式（粗体 / 行内码）仍生效") {
+        val blocks = parse("| **粗** | `code` |\n|---|---|\n| x | y |")
+        val t = (blocks[0] as? MdBlock.Table)?.table ?: throw AssertionError("应为 Table")
+        assertTrue("首列是 Bold", t.header[0].any { it is MdSpan.Bold })
+        assertTrue("次列是 Code", t.header[1].any { it is MdSpan.Code })
+    }
+
+    check("⑥ 只有表头 + 分隔行（0 数据行）也成立，不崩") {
+        val blocks = parse("| a | b |\n|---|---|")
+        val t = (blocks[0] as? MdBlock.Table)?.table ?: throw AssertionError("应为 Table")
+        assertEquals("数据行数", 0, t.rows.size)
+    }
+
+    check("⑦ 缺分隔行的竖线文本**不**当表格（退回普通段落，不渲染成错位表）") {
+        val blocks = parse("| a | b |\n| c | d |")
+        assertTrue("不应是 Table", blocks.none { it is MdBlock.Table })
+    }
+
+    check("⑧ 表格后紧跟正文时能正确断开") {
+        val blocks = parse("| a |\n|---|\n| 1 |\n\n后面的正文")
+        assertEquals("块数", 2, blocks.size)
+        assertTrue("第一块是表格", blocks[0] is MdBlock.Table)
+        assertTrue("第二块是段落", blocks[1] is MdBlock.Paragraph)
+    }
+
+    check("⑨ 流式半截：只给了表头行时按段落渲染，不崩") {
+        val blocks = parse("| 列一 | 列二 |")
+        assertTrue("未闭合时不是 Table", blocks.none { it is MdBlock.Table })
+    }
+}
+
 /* ------------------------------ main ------------------------------ */
 
 fun main() {
@@ -396,6 +478,7 @@ fun main() {
     testUnclosed()
     testBoundary()
     testStreaming()
+    testTables()
     println("\n=== 汇总: $passed passed, ${failures.size} failed ===")
     if (failures.isNotEmpty()) {
         failures.forEach { println("FAILED: $it") }

@@ -44,6 +44,8 @@ import com.example.agentkit.core.ConversationRecord
 import com.example.agentkit.core.DraftStore
 import com.example.agentkit.core.PromptDeleteResult
 import com.example.agentkit.core.llm.ProviderCatalog
+import com.example.agentkit.core.llm.objOrNull
+import com.example.agentkit.core.llm.primOrNull
 import com.example.agentkit.core.llm.FailureKind
 import com.example.agentkit.core.llm.Diagnosis
 import com.example.agentkit.core.llm.RecoveryAction
@@ -214,6 +216,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.contentOrNull
 import java.io.File
 import java.net.URL
 import java.util.UUID
@@ -2659,6 +2662,12 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
                 val outcome = runCatching { loop.run(fullInput, images, priorMessages) }
                 // 流式草稿使命结束：最终回答以整条消息落库（防草稿与整条同时显示）。
                 // hotfix30：清内存缓冲；显示态经 syncDraftDisplay 投影（owner!=active 时本就是 null）
+                //
+                // 【真机第三轮修复】清空前先把已流式生成的内容**捞出来**。
+                // 用户点停止时，模型其实已经吐了十几片文本，但原实现直接把它连同缓冲一起丢掉，
+                // 界面上只剩一句「已停止」——十几秒的产出白等。捞出来落成一条消息，
+                // 用户至少能接着读/复制已经生成的部分。
+                val partialDraft = draftBuffer?.takeIf { it.isNotBlank() }
                 draftBuffer = null
                 reasoningBuffer = null
                 syncDraftDisplay()
@@ -2701,8 +2710,23 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
                     // T05：取消是用户主动停止，不是错误——树尾闭合后历史已完整，给停止提示
                     if (it is CancellationException) {
                         AgentLogger.i("Chat", "运行已停止（历史已闭合，可继续提问）")
+                        // 【真机第三轮修复】先落「已生成的部分」，再给停止提示。
+                        // 文案也必须与事实一致：原来写「已完成的历史保留」，但实际连
+                        // 已流式生成的正文本都被丢了——用户看到"保留"却找不到内容，比丢内容更糟。
+                        val partial = partialDraft?.trim()
+                        val stopText = if (!partial.isNullOrBlank()) {
+                            val partialItem = UiItem.Assistant(
+                                partial,
+                                timeMs = System.currentTimeMillis()
+                            )
+                            if (isOwnerActive()) appendUiItem(partialItem)
+                            appendToStore(partialItem)
+                            "⏹ 已停止。以上是停止前已生成的部分，可基于它继续提问。"
+                        } else {
+                            "⏹ 已停止。本次没有生成任何内容。"
+                        }
                         val stopItem = UiItem.Assistant(
-                            "⏹ 已停止。已完成的历史保留，可基于它继续提问。",
+                            stopText,
                             timeMs = System.currentTimeMillis()
                         )
                         // hotfix30：停止气泡只上屏当前显示的正是 owner 会话时（切走期间只落盘）
@@ -2777,26 +2801,53 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
      * @param e AgentLoop / LLMClient 抛出的原始异常。
      * @return 可直接渲染进助手气泡的文案。
      */
+    /**
+     * 从服务端错误体里只提取「人话」部分：`message`（+ `code`）。
+     *
+     * 为什么不直接回显整段 JSON：真机实测 401 卡片里那串
+     * `{"error":{"message":"Incorrect API key provided","type":"invalid_request_error",
+     * "code":"invalid_api_key"}}` 占了大半屏，而 429/500 都只有一句话——
+     * 同一类错误三种风格，且 JSON 对普通用户完全不可读。
+     *
+     * 解析失败（上游返回 HTML、空体、非 JSON）时返回空串：宁可不显示，也不把脏数据铺给用户。
+     */
+    private fun summarizeServerError(body: String): String {
+        if (body.isBlank()) return ""
+        val obj = runCatching { Json.parseToJsonElement(body).objOrNull() }.getOrNull() ?: return ""
+        val err = obj["error"]?.objOrNull()
+        val msg = err?.get("message")?.primOrNull()?.contentOrNull
+            ?: obj["message"]?.primOrNull()?.contentOrNull
+        if (msg.isNullOrBlank()) return ""
+        val code = err?.get("code")?.primOrNull()?.contentOrNull
+        val clean = AgentLogger.sanitize(msg).take(120)
+        return if (code.isNullOrBlank()) clean else "$clean（$code）"
+    }
+
     private fun friendlyMessage(e: Throwable): String {
         // LlmHttpException 也是 IOException，必须先于网络分支判断
         val http = e as? LlmHttpException
         if (http != null) {
             return when {
                 http.code == 401 || http.code == 403 -> {
-                    // 401/403：在原有文案基础上，附上能直接定位的信息——服务端原始 message、
-                    // 实际请求端点、Key 指纹，让用户凭气泡就能判断是「Key 粘贴不全」还是「端点错了」，
-                    // 而不是再去翻日志。指纹只取 head/tail，绝不回显完整 Key。
+                    // 401/403：附上能直接定位的信息——实际请求端点、Key 指纹、服务端原因，
+                    // 让用户凭气泡就能判断是「Key 粘贴不全」还是「端点错了」，而不是再去翻日志。
+                    // 指纹只取 head/tail，绝不回显完整 Key。
+                    //
+                    // 【真机第三轮修复】两处改动：
+                    // ① 服务端原文不再整段铺 JSON（`{"error":{"message":…,"type":…,"code":…}}`
+                    //    占了半屏、普通用户完全读不了），只提取 message + code；
+                    // ② URL 在 `/` 后插零宽空格 —— 否则窄气泡里会被硬折成
+                    //    `…/chat/comple` + `tions`，把一个单词劈成两半。
                     val endpoint = "${ConfigSanitizer.normalizeBaseUrl(_config.value.baseUrl)}/chat/completions"
+                    val breakableEndpoint = endpoint.replace("/", "/\u200B")
                     val finger = keyFingerprint(_config.value.apiKey)
-                    val serverMsg = http.serverBody.take(200)
-                    val extra = buildString {
-                        append("\n端点：$endpoint")
+                    val server = summarizeServerError(http.serverBody)
+                    buildString {
+                        append("🔑 API Key 无效或已过期（${http.code}）：请到「模型」页检查 Key 是否正确、是否还有额度")
+                        append("\n\n端点：$breakableEndpoint")
                         append("\nKey 指纹：$finger")
-                        if (serverMsg.isNotBlank()) {
-                            append("\n服务端：${AgentLogger.sanitize(serverMsg)}")
-                        }
+                        if (server.isNotBlank()) append("\n服务端：$server")
                     }
-                    "🔑 API Key 无效或已过期（${http.code}）：请到「模型」页检查 Key 是否正确、是否还有额度$extra"
                 }
                 http.code == 429 ->
                     "⏳ 请求过于频繁（429）：请稍后再试"

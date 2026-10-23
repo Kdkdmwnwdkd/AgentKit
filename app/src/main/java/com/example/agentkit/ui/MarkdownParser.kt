@@ -40,6 +40,26 @@ data class MdListItem(
     val subList: MdBlock? = null
 )
 
+/** 表格列对齐（GFM 的 `:--` / `:-:` / `--:`）。 */
+enum class MdAlign { LEFT, CENTER, RIGHT }
+
+/**
+ * 表格（GFM 风格）。
+ *
+ * 为什么单独建模而不是塞进 Paragraph：表格有行列结构，按文本画必然错位——
+ * 真机实测模型输出的对比表会原样显示成 `| 列一 | 列二 |` 和 `|---|---|`，
+ * 用户完全读不了。表格是模型最常用的输出格式之一，必须真渲染。
+ *
+ * @param header 表头单元格（已按 [alignments] 数量对齐/补齐）
+ * @param rows 数据行；每行长度统一为 [alignments] 长度（不足补空、超出截断）
+ * @param alignments 每列对齐方式
+ */
+data class MdTable(
+    val header: List<List<MdSpan>>,
+    val rows: List<List<List<MdSpan>>>,
+    val alignments: List<MdAlign>
+)
+
 /** 块级 AST。 */
 sealed interface MdBlock {
     /** 标题；`#` 的数量即 level（1~6）。 */
@@ -62,6 +82,9 @@ sealed interface MdBlock {
 
     /** 分割线 `---` / `***` / `___`。 */
     data object Divider : MdBlock
+
+    /** 表格（GFM）。 */
+    data class Table(val table: MdTable) : MdBlock
 }
 
 /** 纯函数 Markdown 解析入口：不依赖任何 Android API，可脱离设备直接断言。 */
@@ -239,6 +262,17 @@ private class BlockParser(raw: String) {
                 continue
             }
 
+            // 表格：当前行 + 下一行是分隔行才成立（GFM 规定）。
+            // 必须排在「列表」「段落」之前：`| a | b |` 既不是列表也不是普通段落。
+            if (i + 1 < lines.size && isTableRow(line) && isTableDivider(lines[i + 1])) {
+                val (table, next) = parseTable(i)
+                if (table != null) {
+                    out += MdBlock.Table(table)
+                    i = next
+                    continue
+                }
+            }
+
             // 引用块：连续 `>` 行合并为一块
             if (trimmed.startsWith(">")) {
                 val sb = StringBuilder()
@@ -283,6 +317,52 @@ private class BlockParser(raw: String) {
             j++
         }
         return -1
+    }
+
+    /**
+     * 解析表格（起点 = 表头行，起点+1 = 分隔行）。
+     *
+     * 容错原则（模型输出经常不规整）：
+     * - 列数以**分隔行**为准（视觉上它决定了表格宽度）；
+     * - 某行列数不足 → 补空串；超出 → 截断（不因多一个 `|` 就整块不渲染）；
+     * - 数据行遇到空行 / 非表格行 → 表格结束；
+     * - 分隔行本身不合法（列数对不上）→ 返回 null，退化成普通段落（宁可按原文显示，不要渲染成错位的表）。
+     */
+    private fun parseTable(start: Int): Pair<MdTable?, Int> {
+        val headerCells = splitTableRow(lines[start])
+        val divCells = splitTableRow(lines[start + 1])
+        if (divCells.isEmpty()) return null to start
+
+        val cols = divCells.size
+        val aligns = divCells.map { cell ->
+            val t = cell.trim()
+            when {
+                t.startsWith(":") && t.endsWith(":") -> MdAlign.CENTER
+                t.endsWith(":") -> MdAlign.RIGHT
+                else -> MdAlign.LEFT
+            }
+        }
+        // 表头列数与分隔行不一致时，以分隔行为准补齐/截断
+        val header = normalizeCells(headerCells, cols)
+        val rows = mutableListOf<List<List<MdSpan>>>()
+        var j = start + 2
+        while (j < lines.size) {
+            val line = lines[j]
+            if (line.isBlank() || !isTableRow(line)) break
+            rows += normalizeCells(splitTableRow(line), cols)
+            j++
+        }
+        return MdTable(header, rows, aligns) to j
+    }
+
+    /** 把某行单元格数补齐/截断到 [cols]，并解析行内样式。 */
+    private fun normalizeCells(cells: List<String>, cols: Int): List<List<MdSpan>> {
+        val padded = when {
+            cells.size == cols -> cells
+            cells.size < cols -> cells + List(cols - cells.size) { "" }
+            else -> cells.take(cols)
+        }
+        return padded.map { MarkdownParser.parseInline(it.trim()) }
     }
 
     /** 解析一段列表：递归支持嵌套（子列表挂在上一项的 [MdListItem.subList]）。 */
@@ -418,5 +498,49 @@ private fun startsNewBlock(line: String): Boolean {
     if (isDivider(t)) return true
     if (t.startsWith(">")) return true
     if (matchListMarker(line) != null) return true
+    // 表格行也要断段：否则「正文 + 表格」会被并成同一个 Paragraph
+    if (isTableRow(line)) return true
     return false
+}
+
+/**
+ * 是否是表格行：至少含一个 `|`。
+ *
+ * 不要求首尾都有 `|`——GFM 允许 `a | b` 这种写法，模型输出里也很常见。
+ */
+private fun isTableRow(line: String): Boolean = line.contains('|')
+
+/**
+ * 是否是表格的「分隔行」：`|---|---|` / `|:--|--:|:-:|`。
+ *
+ * 每个单元格必须只由 `-`（至少一个）、可选的冒号组成——别把 `| a | b |` 误判成分隔行。
+ */
+private fun isTableDivider(line: String): Boolean {
+    val cells = splitTableRow(line)
+    if (cells.isEmpty()) return false
+    return cells.all { cell ->
+        val t = cell.trim()
+        if (t.isEmpty()) return@all false
+        val core = t.removePrefix(":").removeSuffix(":")
+        core.isNotEmpty() && core.all { it == '-' }
+    }
+}
+
+/**
+ * 切分表格行 → 单元格原文。
+ *
+ * 处理三种模型输出的常见变体：
+ * - `| a | b |`（标准）
+ * - `a | b`（无首尾竖线）
+ * - `| a | b`（只有首）
+ *
+ * 不做 `\|` 转义处理：GFM 支持，但模型输出里极少见，加进来会让切分逻辑复杂一倍、
+ * 收益很低；真遇到时退化成多一列，比整块不渲染好。
+ */
+private fun splitTableRow(line: String): List<String> {
+    var s = line.trim()
+    if (s.startsWith("|")) s = s.substring(1)
+    if (s.endsWith("|")) s = s.dropLast(1)
+    if (s.isEmpty()) return emptyList()
+    return s.split('|')
 }
