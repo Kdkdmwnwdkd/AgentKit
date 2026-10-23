@@ -160,6 +160,82 @@ object ToolchainInstaller {
     }
 
     /**
+     * 一个「候选版本」（D 批 · 版本矩阵探测）。
+     *
+     * @param version 版本号
+     * @param installable 该发行版**是否真有这个包**（false = 只能装默认版，见 note）
+     * @param note 说明，UI 直接展示
+     */
+    data class VersionOption(
+        val version: String,
+        val installable: Boolean,
+        val note: String = ""
+    )
+
+    /**
+     * 列出某语言在该包管理器下的**候选版本**。
+     *
+     * ## 这个功能解决什么
+     * 原来只能让用户在输入框里**手打**版本号（「18」「3.11」），
+     * 但用户并不知道哪些版本装得上——打完才失败，还得再猜一次。
+     * 这里把「已知存在的版本」列出来，让用户从列表里选。
+     *
+     * ## 诚实性约束（重要）
+     * 这张表是**编译期写死的候选**，不是实时查询仓库（那需要容器里有网、
+     * 还要跑 `apk search` / `apt-cache`，且各发行版镜像源差异极大）。
+     * 所以：
+     * - `installable = false` 的项**明确标注"只能装默认版"**，不假装可选；
+     * - 每条都带 note，UI 原样展示，不隐去限制。
+     *
+     * 宁可告诉用户"这里装不了"，也不要让他试三次才发现。
+     */
+    fun knownVersions(lang: Lang, pkg: PkgManager): List<VersionOption> = when (lang) {
+        Lang.NODE -> if (pkg == PkgManager.APK) {
+            listOf(
+                VersionOption("18", true),
+                VersionOption("20", true),
+                VersionOption("22", true),
+                VersionOption("16", true, "较旧，部分包可能已从仓库移除")
+            )
+        } else {
+            listOf(
+                VersionOption("20", false, "Debian 官方源只有默认版 nodejs；指定版本需自行配置 NodeSource")
+            )
+        }
+
+        Lang.PYTHON -> if (pkg == PkgManager.APK) {
+            listOf(
+                VersionOption("3", true, "Alpine 的 python3 是单版本线，具体小版本由镜像决定"),
+                VersionOption("3.11", false, "Alpine 不提供分小版本包，只能装 python3 当前版")
+            )
+        } else {
+            listOf(
+                VersionOption("3.11", true),
+                VersionOption("3.12", true),
+                VersionOption("3.10", true, "较旧，部分镜像源已移除")
+            )
+        }
+
+        Lang.JAVA -> if (pkg == PkgManager.APK) {
+            listOf(
+                VersionOption("17", true),
+                VersionOption("21", true),
+                VersionOption("11", true),
+                // 标 false 而不是 true：Alpine 的 openjdk8 与新版包名规则不同，
+                // 我们没法保证 resolveVersion 生成的包名一定能装上。
+                // "不确定"就标"装不上"——让用户少试一次，比让他试完才发现要强。
+                VersionOption("8", false, "Alpine 的 openjdk8 包名规则与新版不同，可能装不上；建议用 11/17")
+            )
+        } else {
+            listOf(
+                VersionOption("17", true),
+                VersionOption("21", true),
+                VersionOption("11", true)
+            )
+        }
+    }
+
+    /**
      * 探测 rootfs 里已有的运行时与包管理器。
      *
      * @param rootfs 已解压的 rootfs 目录
