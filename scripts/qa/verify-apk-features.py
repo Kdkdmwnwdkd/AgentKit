@@ -549,8 +549,18 @@ def main():
     except KeyError:
         # CI 拉不到内置包（匿名 API 限流）时，包内本来就不会有它——这是环境问题，
         # 不是代码把资产弄丢了。工作流会导出 AGENTKIT_SHIZUKU_ASSET=absent 作为信号。
+        #
+        # 本地用 `-PnoNative=true` 构建的 UI 验证包同样不带它：那条路径为了能在没有
+        # llama.cpp 源码的机器上出包，跳过了 NDK 编译，自然也不会跑 CI 的「Fetch Shizuku APK」。
+        #
+        # 判据用**本项目自己的 native 库**（libagentkit-llama.so），不能用「有没有 lib/」——
+        # noNative 包里 lib/ 仍然存在（androidx / mlkit 这些第三方 .so 照旧打包），
+        # 拿 lib/ 判断会恒为真，等于没判。
+        has_native = any("libagentkit-llama" in n for n in zf.namelist())
         if os.environ.get("AGENTKIT_SHIZUKU_ASSET") == "absent":
             print("  SKIP  assets/shizuku.apk 未内置（CI 拉取失败，App 会退到官方发布页）")
+        elif not has_native:
+            print("  SKIP  assets/shizuku.apk 未内置（本地 noNative 裁剪构建，不走 CI 的拉取步骤）")
         else:
             print("  FAIL  assets/shizuku.apk 不在包内（CI 的 Fetch Shizuku APK 步骤可能失败）")
             total_fail += 1

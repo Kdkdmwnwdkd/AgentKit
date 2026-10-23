@@ -2696,6 +2696,32 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
                             else -> Unit
                         }
                     }
+                    // 【真机第四轮修复】空回复不能沉默失败。
+                    //
+                    // 模型返回 200 但 content 为空时（供应商偶发、内容被安全策略清空、回复被截断），
+                    // 上面的 `if (msg.content.isNotBlank())` 会把这条 AssistantMessage 整个跳过——
+                    // 那个空判断本意是挡住「中间轮只有 toolCalls 没有文本」的空气泡，
+                    // 但对**最终轮也空**的情况同样生效，于是整个回合一个气泡都不产生。
+                    //
+                    // 表现（真机实测）：用户消息带着时间戳落下去了，下面一片空白，
+                    // 发送键早已恢复正常。用户分不清是消息没发出去、模型抽风、还是仍在等待，
+                    // 只会反复重发。这比报错更糟——报错至少说明了发生了什么。
+                    //
+                    // lastAnswer 已经是「本轮最后一条有文本的 Assistant」，它为 null 就说明
+                    // 本轮没有任何文字输出（无论有没有工具调用），必须补一条明确提示。
+                    if (lastAnswer == null) {
+                        val hadTool = history.any { it is ToolMessage }
+                        val emptyItem = UiItem.Assistant(
+                            emptyReplyHint(hadTool),
+                            timeMs = System.currentTimeMillis()
+                        )
+                        if (isOwnerActive()) appendUiItem(emptyItem)
+                        appendToStore(emptyItem)
+                        AgentLogger.w(
+                            "Chat",
+                            "本轮无任何文字回答（工具调用=${if (hadTool) "有" else "无"}），已补提示气泡"
+                        )
+                    }
                     // 功能五（P1-10）：回答完成提醒——开了开关且 App 在后台才发通知
                     // （前台提醒是噪音；权限被拒/被关由 CompletionNotifier 内部静默降级）。
                     // 只挂 send 路径：regenerate 是「重做这题」的主动操作，用户盯着概率极高
