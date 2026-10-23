@@ -265,6 +265,47 @@ class FileBackupStore(
         return n
     }
 
+    /**
+     * 一次备份与**当前文件**的差异（D 批 · 备份差异视图）。
+     *
+     * 语义：备份记录的是「这次写入**之前**的内容」，所以
+     * `diff(备份内容 → 当前内容)` 展示的正是 **Agent 那一次改了什么**。
+     *
+     * @return null 表示备份不存在或读不出旧内容（新建文件的备份没有旧内容，
+     *   这时返回一个「全部新增」的 diff 更贴切——见下面的处理）
+     */
+    data class BackupDiff(
+        val id: String,
+        val relPath: String,
+        val lines: List<TextDiff.Line>,
+        val stats: TextDiff.Stats,
+        /** 当前文件已不存在（Agent 后来删掉了） */
+        val currentMissing: Boolean
+    )
+
+    fun diffToCurrent(id: String): BackupDiff? = runCatching {
+        val meta = File(root, "$id.meta")
+        if (!meta.isFile) return null
+        val props = meta.readLines()
+            .mapNotNull { line -> line.split('=', limit = 2).takeIf { it.size == 2 } }
+            .associate { it[0] to it[1] }
+        val relPath = props["relPath"] ?: return null
+        val existed = props["existedBefore"]?.toBooleanStrictOrNull() ?: return null
+
+        // 备份时文件原本不存在（新建）→ 旧内容视为空
+        val before = if (!existed) "" else {
+            val src = File(File(root, id), relPath)
+            if (!src.isFile) return null
+            runCatching { src.readText() }.getOrNull() ?: return null
+        }
+        val target = File(workspace, relPath)
+        val missing = !target.isFile
+        val after = if (missing) "" else runCatching { target.readText() }.getOrDefault("")
+
+        val lines = TextDiff.lines(before, after)
+        BackupDiff(id, relPath, lines, TextDiff.stats(before, after), missing)
+    }.getOrNull()
+
     /** 删除一条备份。 */
     fun delete(id: String): Boolean = runCatching {
         File(root, id).deleteRecursively()

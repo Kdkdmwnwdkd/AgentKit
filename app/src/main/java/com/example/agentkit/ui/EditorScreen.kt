@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -49,11 +50,14 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.unit.sp
 import com.example.agentkit.core.workspace.CheckpointStore
 import com.example.agentkit.core.workspace.FileBackupStore
 import com.example.agentkit.core.workspace.FileBackupStoreFactory
+import com.example.agentkit.core.workspace.TextDiff
 import com.example.agentkit.core.workspace.WorkspaceStore
 
 /**
@@ -73,6 +77,8 @@ fun EditorScreen() {
     var collapsed by remember { mutableStateOf(setOf<String>()) }
     var checkpoints by remember { mutableStateOf(CheckpointStore.list(context)) }
     var backupGroups by remember { mutableStateOf(FileBackupStoreFactory.default(context).grouped()) }
+    // D 批：正在查看差异的备份（非 null 时弹层展示）
+    var diffTarget by remember { mutableStateOf<FileBackupStore.BackupDiff?>(null) }
     var newName by remember { mutableStateOf("") }
     var cpLabel by remember { mutableStateOf("") }
 
@@ -80,6 +86,11 @@ fun EditorScreen() {
         tree = WorkspaceStore.listTree(context)
         checkpoints = CheckpointStore.list(context)
         backupGroups = FileBackupStoreFactory.default(context).grouped()
+    }
+
+    // D 批：差异弹层放在最外层，与备份列表的嵌套层级解耦
+    diffTarget?.let { d ->
+        BackupDiffDialog(diff = d, onDismiss = { diffTarget = null })
     }
 
     Column(Modifier.fillMaxSize()) {
@@ -320,6 +331,14 @@ fun EditorScreen() {
                                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                                             modifier = Modifier.weight(1f)
                                         )
+                                        AkTextButton(text = "看改动", onClick = {
+                                            val d = FileBackupStoreFactory.default(context).diffToCurrent(b.id)
+                                            if (d == null) {
+                                                Toast.makeText(context, "读取备份内容失败", Toast.LENGTH_SHORT).show()
+                                            } else {
+                                                diffTarget = d
+                                            }
+                                        })
                                         AkTextButton(text = "回滚", onClick = {
                                             val ok = FileBackupStoreFactory.default(context).restore(b.id)
                                             if (ok) {
@@ -535,3 +554,157 @@ private val EditorMonoStyle: TextStyle = TextStyle(
     platformStyle = PlatformTextStyle(includeFontPadding = false),
     textAlign = TextAlign.Start
 )
+
+/**
+ * D 批：备份差异弹层。
+ *
+ * 为什么需要它：备份页原本只有「回滚」——那是个**不可逆**动作，用户盲点很危险。
+ * 先看一眼「这次到底改了什么」（+N −M 行），再决定要不要退，才是安全的交互。
+ *
+ * 视觉：等宽字体、逐行着色（新增 primary 底、删除 error 底），前缀 `+` / `−` / 空格
+ * 让色弱用户也能分辨（不只靠颜色）。
+ */
+@Composable
+private fun BackupDiffDialog(
+    diff: FileBackupStore.BackupDiff,
+    onDismiss: () -> Unit
+) {
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            shape = RoundedCornerShape(20.dp),
+            color = MaterialTheme.colorScheme.surface,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(Modifier.padding(AgentSpacing.space5)) {
+                Text(
+                    text = "改动对比",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    text = buildString {
+                        append(diff.relPath)
+                        append(" · ")
+                        append(diff.stats.label)
+                        if (diff.currentMissing) append(" · 当前文件已删除")
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(AgentSpacing.space3))
+
+                if (diff.stats.isEmpty && !diff.currentMissing) {
+                    Text(
+                        "这条备份与当前内容完全一致。",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                } else {
+                    // 只渲染「有变化」的上下文：纯 SAME 的中间段折叠成「… 未变 N 行 …」，
+                    // 否则一个 500 行文件里改 2 行，用户要滚 500 行才看得到改动点。
+                    val shown = remember(diff.id) { compactDiff(diff.lines) }
+                    Column(
+                        Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 360.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(LocalAkColors.surface1)
+                            .verticalScroll(rememberScrollState())
+                            .padding(AgentSpacing.space3)
+                    ) {
+                        shown.forEach { row ->
+                            when (row) {
+                                is DiffRow.Gap -> Text(
+                                    text = "… 未变 ${row.count} 行 …",
+                                    style = machineText,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                is DiffRow.Item -> DiffLineView(row.line)
+                            }
+                        }
+                    }
+                }
+                Spacer(Modifier.height(AgentSpacing.space4))
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    AkTextButton(text = "关闭", onClick = onDismiss)
+                }
+            }
+        }
+    }
+}
+
+/** 折叠后的 diff 行：普通行 / 被折叠的未变段。 */
+private sealed interface DiffRow {
+    data class Item(val line: TextDiff.Line) : DiffRow
+    data class Gap(val count: Int) : DiffRow
+}
+
+/** 保留改动行 + 前后各 2 行上下文，其余 SAME 段折叠。 */
+private fun compactDiff(lines: List<TextDiff.Line>, context: Int = 2): List<DiffRow> {
+    val keep = BooleanArray(lines.size)
+    lines.forEachIndexed { i, l ->
+        if (l.kind != TextDiff.Kind.SAME) {
+            for (k in (i - context)..(i + context)) {
+                if (k in lines.indices) keep[k] = true
+            }
+        }
+    }
+    val out = ArrayList<DiffRow>()
+    var i = 0
+    while (i < lines.size) {
+        if (keep[i]) {
+            out += DiffRow.Item(lines[i])
+            i++
+        } else {
+            var j = i
+            while (j < lines.size && !keep[j]) j++
+            out += DiffRow.Gap(j - i)
+            i = j
+        }
+    }
+    return out
+}
+
+/** 单行：前缀 + 行号 + 内容；新增/删除各有一层淡底。 */
+@Composable
+private fun DiffLineView(line: TextDiff.Line) {
+    val (prefix, bg, fg) = when (line.kind) {
+        TextDiff.Kind.ADD -> Triple(
+            "+",
+            MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
+            MaterialTheme.colorScheme.onSurface
+        )
+        TextDiff.Kind.DEL -> Triple(
+            "−",
+            MaterialTheme.colorScheme.error.copy(alpha = 0.12f),
+            MaterialTheme.colorScheme.onSurface
+        )
+        TextDiff.Kind.SAME -> Triple(" ", Color.Transparent, MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+    val no = (line.newNo ?: line.oldNo)?.toString().orEmpty()
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .background(bg)
+            .padding(vertical = 1.dp)
+    ) {
+        Text(
+            text = prefix,
+            style = machineText,
+            color = fg,
+            modifier = Modifier.width(14.dp)
+        )
+        Text(
+            text = no.padStart(4),
+            style = machineText,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.width(34.dp)
+        )
+        Text(
+            text = line.text.ifEmpty { " " },
+            style = machineText,
+            color = fg
+        )
+    }
+}

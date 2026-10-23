@@ -43,10 +43,11 @@ class ContainerToolchainTool(
     override val description =
         "管理容器里的语言运行时。action=status 报告容器已装哪些运行时（node/python/java）以及缺什么；" +
             "action=install 安装缺失的运行时（language 可指定 node/python/java，不填则全装）。" +
-            "容器默认只有 busybox，跑 Python/Node/Java 前需要先装。"
+            "容器默认只有 busybox，跑 Python/Node/Java 前需要先装。" +
+            "不确定有哪些版本可选时，先 action=versions 查候选列表，别猜版本号。"
 
     override val parameters = JsonSchema.objectSchema(
-        JsonSchema.prop("action", "string", "status（查看，默认）或 install（安装）"),
+        JsonSchema.prop("action", "string", "status（查看，默认）/ versions（列可选版本）/ install（安装）"),
         JsonSchema.prop(
             "language",
             "string",
@@ -88,6 +89,7 @@ class ContainerToolchainTool(
 
         when (action) {
             "status" -> statusResult(distro.id, detection)
+            "versions" -> versionsResult(detection, language)
             "install" -> installResult(distro.id, detection, language, version)
             else -> ToolResult.fail(
                 code = "bad_action",
@@ -95,6 +97,53 @@ class ContainerToolchainTool(
                 hint = "action 只能是 status 或 install。"
             )
         }
+    }
+
+    /**
+     * 列出候选版本（D 批 · 版本矩阵探测）。
+     *
+     * 为什么要这个：原来只能让用户手打版本号，打完才失败、还得再猜。
+     * 这里把"已知存在的版本"列出来，并**明确标注哪些装不上**——
+     * `installable=false` 的项会带 note 说明为什么（比如 Debian 官方源没有 node 18）。
+     *
+     * @param language 限定语言；为空则列全部
+     */
+    private fun versionsResult(
+        detection: ToolchainInstaller.Detection,
+        language: String?
+    ): ToolResult {
+        val pkg = detection.pkgManager ?: return ToolResult.fail(
+            code = "no_pkg_manager",
+            message = detection.reason ?: "该 rootfs 没有可识别的包管理器，无法判断可用版本。",
+            hint = "换一个 Alpine / Debian 系 rootfs。"
+        )
+        val targets = if (language.isNullOrBlank()) {
+            ToolchainInstaller.Lang.entries
+        } else {
+            listOfNotNull(ToolchainInstaller.Lang.byId(language))
+        }
+        if (targets.isEmpty()) {
+            return ToolResult.fail(
+                code = "bad_language",
+                message = "未知语言：$language",
+                hint = "language 只能是 node / python / java。"
+            )
+        }
+        val body = buildString {
+            appendLine("包管理器：${pkg.displayName}")
+            appendLine("以下为**候选**版本（编译期内置，不是实时查仓库；以实际安装结果为准）：")
+            targets.forEach { lang ->
+                appendLine()
+                appendLine("${lang.displayName}：")
+                ToolchainInstaller.knownVersions(lang, pkg).forEach { v ->
+                    val mark = if (v.installable) "✅" else "⚠️"
+                    appendLine("  $mark ${v.version}" + if (v.note.isNotBlank()) "  — ${v.note}" else "")
+                }
+            }
+            appendLine()
+            append("安装方式：action=install, language=<lang>, version=<版本号>")
+        }
+        return ToolResult.ok(code = "versions_listed", message = body)
     }
 
     /** 报告现状。 */

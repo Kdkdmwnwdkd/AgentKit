@@ -3,6 +3,7 @@ import com.example.agentkit.core.agent.AgentRunStateStore
 import com.example.agentkit.core.agent.ApprovalGrouping
 import com.example.agentkit.core.container.ToolchainInstaller
 import com.example.agentkit.core.workspace.FileBackupStore
+import com.example.agentkit.core.workspace.TextDiff
 import com.example.agentkit.skill.Capability
 import com.example.agentkit.skill.CapabilityRegistry
 import com.example.agentkit.skill.checkCapabilityGate
@@ -556,6 +557,124 @@ fun main() {
             assertTrue("自动清理应把条数压到不超过 keep+余量（实际 $n）", n <= 5 + 20)
             assertTrue("不应一条不剩（$n）", n > 0)
         }
+    }
+
+    /* ------------------------- D1 备份差异视图 ------------------------- */
+
+    check("D1-1 相同文本 → 无差异") {
+        val s = TextDiff.stats("a\nb\nc", "a\nb\nc")
+        assertTrue("应无变化", s.isEmpty)
+        assertEquals("摘要", "无变化", s.label)
+    }
+
+    check("D1-2 纯新增：只算 added") {
+        val s = TextDiff.stats("a\nb", "a\nb\nc\nd")
+        assertEquals("新增 2 行", 2, s.added)
+        assertEquals("删除 0 行", 0, s.removed)
+        assertEquals("摘要", "+2", s.label)
+    }
+
+    check("D1-3 纯删除：只算 removed") {
+        val s = TextDiff.stats("a\nb\nc", "a")
+        assertEquals("新增 0", 0, s.added)
+        assertEquals("删除 2", 2, s.removed)
+        assertEquals("摘要", "−2", s.label)
+    }
+
+    check("D1-4 改一行 = 一删一增（不是整段替换）") {
+        val lines = TextDiff.lines("a\nOLD\nc", "a\nNEW\nc")
+        val del = lines.count { it.kind == TextDiff.Kind.DEL }
+        val add = lines.count { it.kind == TextDiff.Kind.ADD }
+        val same = lines.count { it.kind == TextDiff.Kind.SAME }
+        assertEquals("删除 1 行", 1, del)
+        assertEquals("新增 1 行", 1, add)
+        assertEquals("未变 2 行（a 和 c）", 2, same)
+    }
+
+    check("D1-5 空文件 → 有内容：全部算新增，不产生虚假删除") {
+        val lines = TextDiff.lines("", "x\ny")
+        assertEquals("无删除", 0, lines.count { it.kind == TextDiff.Kind.DEL })
+        assertEquals("新增 2", 2, lines.count { it.kind == TextDiff.Kind.ADD })
+    }
+
+    check("D1-6 末尾换行不影响结果（a 与 a\\n 视为同一份）") {
+        assertTrue("应无差异", TextDiff.stats("a\n", "a").isEmpty)
+    }
+
+    check("D1-7 行号正确（新增行只有 newNo，删除行只有 oldNo）") {
+        val lines = TextDiff.lines("a\nb", "a\nx\nb")
+        val add = lines.first { it.kind == TextDiff.Kind.ADD }
+        assertEquals("新增行 oldNo 为空", null, add.oldNo)
+        assertEquals("新增行 newNo=2", 2, add.newNo)
+        assertEquals("新增内容", "x", add.text)
+    }
+
+    check("D1-8 FileBackupStore.diffToCurrent 能算出「这次改了什么」") {
+        tmpDir { dir ->
+            val ws = File(dir, "ws").apply { mkdirs() }
+            val store = FileBackupStore(File(dir, "bk"), ws)
+            val f = File(ws, "d.txt")
+            f.writeText("old line\nkeep\n")
+            val id = store.backupBeforeWrite("d.txt")!!
+            // 模拟 Agent 写入新内容
+            f.writeText("new line\nkeep\nadded\n")
+            val diff = store.diffToCurrent(id)
+            assertTrue("应拿到 diff", diff != null)
+            assertEquals("新增 2 行（new line + added）", 2, diff!!.stats.added)
+            assertEquals("删除 1 行（old line）", 1, diff.stats.removed)
+            assertTrue("当前文件还在", !diff.currentMissing)
+        }
+    }
+
+    check("D1-9 编辑器提供「看改动」入口与差异弹层") {
+        val screen = read("app/src/main/java/com/example/agentkit/ui/EditorScreen.kt")
+        assertTrue("应有看改动按钮", "\"看改动\"" in screen)
+        assertTrue("应有差异弹层", "BackupDiffDialog" in screen)
+        assertTrue("应调用 diffToCurrent", "diffToCurrent(" in screen)
+    }
+
+    /* ------------------------- D3 版本矩阵探测 ------------------------- */
+
+    check("D3-1 Alpine 的 node 候选版本可装（18/20/22）") {
+        val vs = ToolchainInstaller.knownVersions(
+            ToolchainInstaller.Lang.NODE, ToolchainInstaller.PkgManager.APK
+        )
+        val installable = vs.filter { it.installable }.map { it.version }
+        assertTrue("应含 18", "18" in installable)
+        assertTrue("应含 20", "20" in installable)
+        assertTrue("应含 22", "22" in installable)
+    }
+
+    check("D3-2 Debian 的 node 候选必须诚实标注「装不上」") {
+        val vs = ToolchainInstaller.knownVersions(
+            ToolchainInstaller.Lang.NODE, ToolchainInstaller.PkgManager.APT
+        )
+        assertTrue("不能假装有可装版本", vs.none { it.installable })
+        assertTrue("必须给出原因", vs.all { it.note.isNotBlank() })
+    }
+
+    check("D3-3 Alpine 的 java 给出 17/21/11") {
+        val vs = ToolchainInstaller.knownVersions(
+            ToolchainInstaller.Lang.JAVA, ToolchainInstaller.PkgManager.APK
+        ).filter { it.installable }.map { it.version }
+        assertEquals("java 候选", listOf("17", "21", "11"), vs)
+    }
+
+    check("D3-4 候选版本表与 resolveVersion 的包名映射一致（不会列出装不了的版本）") {
+        val vs = ToolchainInstaller.knownVersions(
+            ToolchainInstaller.Lang.JAVA, ToolchainInstaller.PkgManager.APK
+        ).filter { it.installable }
+        vs.forEach { v ->
+            val spec = ToolchainInstaller.resolveVersion(ToolchainInstaller.Lang.JAVA, v.version)
+            assertTrue("${v.version} 应能解析出包名", spec != null && spec.apkPackages.isNotEmpty())
+        }
+    }
+
+    check("D3-5 工具暴露 versions 动作并声明「以实际为准」") {
+        val tool = read("app/src/main/java/com/example/agentkit/tools/ContainerToolchainTool.kt")
+        assertTrue("应有 versions 分支", "\"versions\" ->" in tool)
+        assertTrue("应给出候选列表方法", "knownVersions(" in tool)
+        assertTrue("应说明不是实时查仓库", "不是实时查仓库" in tool)
     }
 
     /* ------------------------- C2 续跑与运行态推进 ------------------------- */

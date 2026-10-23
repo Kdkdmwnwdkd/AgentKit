@@ -48,6 +48,7 @@ SRCS=(
   "$SRC/core/agent/ApprovalGrouping.kt"
   "$SRC/core/container/ToolchainInstaller.kt"
   "$SRC/core/workspace/FileBackupStore.kt"
+  "$SRC/core/workspace/TextDiff.kt"
   "$SRC/skill/SkillSecurity.kt"
   "$ROOT/scripts/qa/BatchBVerification.kt"
 )

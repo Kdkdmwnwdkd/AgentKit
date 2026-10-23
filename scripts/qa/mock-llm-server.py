@@ -170,6 +170,16 @@ class H(BaseHTTPRequestHandler):
             self.tool_call(req, 'plan_propose', args)
             return
 
+        # 工具调用：write_file（测备份 / 回滚 / 差异视图）
+        # 每次内容不同（用已有 tool 消息数做序号），连续发几次就能造出多条备份。
+        if 'write' in t:
+            seq = len(tool_msgs) + 1
+            args = json.dumps({'path': 't.txt',
+                               'content': f'line A\nvalue {seq}\nline C\n'},
+                              ensure_ascii=False)
+            self.tool_call(req, 'write_file', args)
+            return
+
         # 工具调用：calculator（原有）
         if 'calc' in t:
             self.tool_call(req, 'calculator', '{"expression":"(120+80)*0.85"}')
