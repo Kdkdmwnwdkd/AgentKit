@@ -133,7 +133,10 @@ private fun testMessageCopy() {
     check("H2 助手行复制位次在「重新生成」之前（对齐 RikkaHub 顺序）") {
         val block = chat.substringAfter("private fun AssistantActions(")
         val copyAt = block.indexOf("text = \"复制\"")
-        val regenAt = block.indexOf("text = \"重新生成\"")
+        // 第三轮起「重新生成」的文案改成参数 regenLabel（错误气泡要显示成「重试」），
+        // 源码里不再有裸字面量 text = "重新生成"。改为定位它的渲染点 `text = regenLabel`——
+        // 这才是「这一行的位置」，比盯着会被改写的文案稳。
+        val regenAt = block.indexOf("text = regenLabel")
         assertTrue(
             "H2 复制应排在重新生成之前（copy=$copyAt regen=$regenAt）",
             copyAt >= 0 && regenAt > copyAt

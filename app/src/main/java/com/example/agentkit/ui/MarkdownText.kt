@@ -1,6 +1,7 @@
 package com.example.agentkit.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Box
@@ -30,6 +31,7 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
@@ -82,6 +84,88 @@ private fun MarkdownBlock(block: MdBlock, color: Color) {
         is MdBlock.OrderedList -> ListBlock(block.items, ordered = true, color = color)
         is MdBlock.Quote -> QuoteBlock(block)
         MdBlock.Divider -> DividerView()
+        is MdBlock.Table -> TableView(block.table)
+    }
+}
+
+/**
+ * 表格（GFM）。
+ *
+ * ## 布局取舍：等宽列 + 自动换行，不做横向滚动
+ * 表格通常 2~4 列，等宽分配 + 单元格内换行能保证「列对齐、不溢出气泡」，
+ * 这是移动端最稳的做法。列多（>5）时单元格会变窄，但仍可读；
+ * 换成横向滚动虽然更"完整"，却会让用户必须横滑才能看全一行，移动端体验更差。
+ *
+ * 视觉：外框 1dp + 表头 surface-1 底 + 表头加粗，行间不画线（靠留白分隔，避免"重网格"）。
+ */
+@Composable
+private fun TableView(table: MdTable) {
+    val borderColor = MaterialTheme.colorScheme.outline
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .border(1.dp, borderColor, RoundedCornerShape(12.dp))
+    ) {
+        TableRowView(
+            cells = table.header,
+            aligns = table.alignments,
+            header = true,
+            borderColor = borderColor
+        )
+        table.rows.forEach { row ->
+            TableRowView(
+                cells = row,
+                aligns = table.alignments,
+                header = false,
+                borderColor = borderColor
+            )
+        }
+    }
+}
+
+/** 一行表格：每列等宽（weight），单元格内自动换行。 */
+@Composable
+private fun TableRowView(
+    cells: List<List<MdSpan>>,
+    aligns: List<MdAlign>,
+    header: Boolean,
+    borderColor: Color
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(
+                if (header) LocalAkColors.surface1 else Color.Transparent
+            )
+            .height(IntrinsicSize.Min)
+    ) {
+        cells.forEachIndexed { index, cell ->
+            // 列间竖线：用「左内边距 + 左描边」画，避免再嵌一层 Row 增加测量开销
+            if (index > 0) {
+                Box(
+                    Modifier
+                        .width(1.dp)
+                        .fillMaxHeight()
+                        .background(borderColor)
+                )
+            }
+            Text(
+                text = inlineSpans(cell),
+                style = MaterialTheme.typography.bodyMedium.copy(
+                    fontWeight = if (header) FontWeight.Bold else FontWeight.Normal
+                ),
+                color = MaterialTheme.colorScheme.onSurface,
+                textAlign = when (aligns.getOrNull(index) ?: MdAlign.LEFT) {
+                    MdAlign.LEFT -> TextAlign.Start
+                    MdAlign.CENTER -> TextAlign.Center
+                    MdAlign.RIGHT -> TextAlign.End
+                },
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(horizontal = AgentSpacing.space2, vertical = AgentSpacing.space2)
+            )
+        }
     }
 }
 
@@ -133,36 +217,40 @@ private fun CodeBlockView(block: MdBlock.CodeBlock) {
             )
         }
         Spacer(Modifier.height(AgentSpacing.space2))
-        // 横向滚动：超长代码行不换行、不撑破气泡（垂直方向由宿主 LazyColumn 承担）
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .horizontalScroll(rememberScrollState())
-        ) {
-            // W-30：语法高亮——复用编辑器同一个词法器，模型给的代码块也能着色。
-            // 只改显示：复制按钮拿到的仍是 block.code 原文。
-            val keywordColor = MaterialTheme.colorScheme.primary
-            val stringColor = MaterialTheme.colorScheme.tertiary
-            val commentColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
-            val numberColor = MaterialTheme.colorScheme.secondary
-            Text(
-                text = remember(
-                    block.code, block.language,
-                    keywordColor, stringColor, commentColor, numberColor
-                ) {
-                    highlightCode(
-                        code = block.code.ifEmpty { " " },
-                        language = block.language,
-                        keyword = keywordColor,
-                        string = stringColor,
-                        comment = commentColor,
-                        number = numberColor
-                    )
-                },
-                style = machine,
-                softWrap = false
-            )
-        }
+        // 长行处理：**折行**，不做横向滚动。
+        //
+        // 【真机第三轮】原实现是 `horizontalScroll + softWrap = false`，意图是"长行横滑查看"。
+        // 但实测（去掉 fillMaxWidth 后也一样）横滑完全没反应，而 `softWrap = false` 会按
+        // Clip 裁掉超宽部分——`listOf(1, 2,` 后面的 `3)` 永远看不到，用户抄代码会抄错。
+        //
+        // 取舍：**内容完整 > 行不折断**。折行至少每个字符都在，横滑失败则整段内容消失。
+        // 代码缩进由 monospace + 每行自带的前导空格保留，折行后仍能看出层级。
+        // 如果以后确认了横滚失效的根因（怀疑是 Compose 在 NestedScroll 里的测量行为），
+        // 再换回 horizontalScroll 也不迟——但那必须有"横滑真的能滚"的实测证据。
+        //
+        // W-30：语法高亮——复用编辑器同一个词法器，模型给的代码块也能着色。
+        // 只改显示：复制按钮拿到的仍是 block.code 原文。
+        val keywordColor = MaterialTheme.colorScheme.primary
+        val stringColor = MaterialTheme.colorScheme.tertiary
+        val commentColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+        val numberColor = MaterialTheme.colorScheme.secondary
+        Text(
+            text = remember(
+                block.code, block.language,
+                keywordColor, stringColor, commentColor, numberColor
+            ) {
+                highlightCode(
+                    code = block.code.ifEmpty { " " },
+                    language = block.language,
+                    keyword = keywordColor,
+                    string = stringColor,
+                    comment = commentColor,
+                    number = numberColor
+                )
+            },
+            style = machine,
+            softWrap = true
+        )
     }
 }
 
