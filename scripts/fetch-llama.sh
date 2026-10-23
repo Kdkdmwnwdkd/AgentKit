@@ -13,16 +13,62 @@ DEST="${2:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/app/src/main/cpp/lla
 TAG="b4600"
 REPO="https://github.com/ggml-org/llama.cpp.git"
 
+# b4600 对应的**确切 commit**。
+#
+# 为什么要钉死 commit 而不只钉 tag：git tag 是可以被上游移动的（force-push / 重打 tag），
+# 一旦移动，同一份 `--branch b4600` 在不同时间 clone 出来的源码就不是同一份了——
+# 构建产物不可复现，而且这种漂移**完全静默**（不报错，只是行为变了）。
+# 钉死 commit 后，任何漂移都会当场被下面的校验抓住。
+EXPECTED_COMMIT="553f1e46e9e864514bbd6bf4009146db66be0541"
+
 mkdir -p "$DEST"
+
+# 校验目录里的源码是否就是那个 commit。
+# 返回 0 = 一致；1 = 不一致或不是 git 仓库（缓存被污染 / tag 漂移过）。
+verify_commit() {
+  local dest="$1"
+  [ -d "$dest/.git" ] || return 1
+  local actual
+  actual=$(git -C "$dest" rev-parse HEAD 2>/dev/null || echo "")
+  [ "$actual" = "$EXPECTED_COMMIT" ]
+}
 
 case "$MODE" in
   git)
-    if [ ! -f "$DEST/CMakeLists.txt" ]; then
+    if [ -f "$DEST/CMakeLists.txt" ]; then
+      if [ ! -d "$DEST/.git" ]; then
+        # 没有 git 元数据：多半是 cdn 模式拉出来的（逐文件下载，无 .git）。
+        # 这种情况**不能删**——本地开发者可能正靠它构建，删了就得重新逐文件拉一遍。
+        # 只警告无法校验，按"用户自己管"处理。
+        echo "[fetch-llama] WARN: 已有源码但不是 git 仓库（可能是 cdn 模式拉的），无法做 commit 校验，直接使用"
+        echo "[fetch-llama] 源码就绪: $DEST"
+        exit 0
+      fi
+      if verify_commit "$DEST"; then
+        echo "[fetch-llama] 源码已存在且 commit 校验通过，跳过（删掉 $DEST 可强制重新拉取）"
+      else
+        echo "[fetch-llama] WARN: 已有源码但 commit 不是 $EXPECTED_COMMIT（tag 被移动或缓存污染），重新拉取"
+        rm -rf "$DEST"
+        git clone --depth 1 --branch "$TAG" "$REPO" "$DEST"
+        if ! verify_commit "$DEST"; then
+          actual=$(git -C "$DEST" rev-parse HEAD 2>/dev/null || echo "?")
+          echo "[fetch-llama] FATAL: 拉到的 commit 是 $actual，期望 $EXPECTED_COMMIT" >&2
+          echo "[fetch-llama] 上游 tag $TAG 可能被移动过。若确认要升级，请同步更新本脚本的 EXPECTED_COMMIT。" >&2
+          exit 1
+        fi
+        echo "[fetch-llama] commit 校验通过：$EXPECTED_COMMIT"
+      fi
+    else
       echo "[fetch-llama] git clone $REPO @ $TAG -> $DEST"
       rm -rf "$DEST"
       git clone --depth 1 --branch "$TAG" "$REPO" "$DEST"
-    else
-      echo "[fetch-llama] 源码已存在，跳过（删掉 $DEST 可强制重新拉取）"
+      if ! verify_commit "$DEST"; then
+        actual=$(git -C "$DEST" rev-parse HEAD 2>/dev/null || echo "?")
+        echo "[fetch-llama] FATAL: 拉到的 commit 是 $actual，期望 $EXPECTED_COMMIT" >&2
+        echo "[fetch-llama] 上游 tag $TAG 可能被移动过。若确认要升级，请同步更新本脚本的 EXPECTED_COMMIT。" >&2
+        exit 1
+      fi
+      echo "[fetch-llama] commit 校验通过：$EXPECTED_COMMIT"
     fi
     ;;
   cdn)

@@ -510,6 +510,54 @@ fun main() {
         assertTrue("应提供 restoreAll 全量回滚", "restoreAll(" in screen)
     }
 
+    /* ------------------------- C1b 备份保留策略（交接文档 4.1-3） ------------------------- */
+
+    check("C1b-1 prune(keep) 只保留最新 N 条") {
+        tmpDir { dir ->
+            val ws = File(dir, "ws").apply { mkdirs() }
+            val store = FileBackupStore(File(dir, "bk"), ws)
+            val f = File(ws, "x.txt")
+            repeat(5) { i ->
+                f.writeText("v$i")
+                store.backupBeforeWrite("x.txt")
+                Thread.sleep(2)
+            }
+            assertEquals("5 条删到 2 条 = 删掉 3 条", 3, store.prune(2))
+            assertEquals("剩余条数", 2, store.list().size)
+        }
+    }
+
+    check("C1b-2 prune(0) 表示不清理（不能把备份删光）") {
+        tmpDir { dir ->
+            val ws = File(dir, "ws").apply { mkdirs() }
+            val store = FileBackupStore(File(dir, "bk"), ws)
+            val f = File(ws, "y.txt")
+            repeat(3) { i ->
+                f.writeText("v$i")
+                store.backupBeforeWrite("y.txt")
+                Thread.sleep(2)
+            }
+            assertEquals("keep=0 应删 0 条", 0, store.prune(0))
+            assertEquals("备份应全部保留", 3, store.list().size)
+        }
+    }
+
+    check("C1b-3 写入路径会自动触发清理（不再需要手动调 prune）") {
+        tmpDir { dir ->
+            val ws = File(dir, "ws").apply { mkdirs() }
+            // keep=5，每 20 次写触发一次清理 → 写 40 次必然触发
+            val store = FileBackupStore(File(dir, "bk"), ws, {}, keep = 5)
+            val f = File(ws, "z.txt")
+            repeat(40) { i ->
+                f.writeText("v$i")
+                store.backupBeforeWrite("z.txt")
+            }
+            val n = store.list().size
+            assertTrue("自动清理应把条数压到不超过 keep+余量（实际 $n）", n <= 5 + 20)
+            assertTrue("不应一条不剩（$n）", n > 0)
+        }
+    }
+
     /* ------------------------- C2 续跑与运行态推进 ------------------------- */
 
     check("C2-1 advance 真实推进步数与工具列表") {

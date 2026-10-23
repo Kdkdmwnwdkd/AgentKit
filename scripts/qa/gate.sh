@@ -6,10 +6,12 @@
 # 一个新引入的失效 harness 只要往 known-broken.txt 里加一行，就能长期悄悄挂在 CI 上。
 # 本脚本把这类「沉淀」变成**当场报红**。
 #
-# 门禁三条（任一不满足即失败）：
+# 门禁四条（任一不满足即失败）：
 #   1. known-broken.txt 里不能有非注释条目 —— 清单必须归零
 #   2. QA 汇总里 FAIL 必须为 0
 #   3. 日志里不能出现 XPASS —— 出现说明清单该更新了（脚本已修好却仍被当失效项）
+#   4. harness 覆盖完整性 —— 每个 *Verification.kt 都必须被某个 run-*.sh 引用，
+#      且 run-*.sh 的数量必须与日志里实际跑过的数量一致（防止"写了 harness 但没人跑"）
 #
 # 用法：
 #   bash scripts/qa/gate.sh [qa日志路径]
@@ -38,7 +40,7 @@ if [ -f "$BROKEN_FILE" ]; then
     printf '%s\n' "$entries" | sed 's/^/    - /' >&2
     say "  修好一条就删一条；确实修不好就先修，别让失效项沉淀成常态。"
   else
-    say "GATE OK 1/3：known-broken.txt 已归零（0 条）"
+    say "GATE OK 1/4：known-broken.txt 已归零（0 条）"
   fi
 else
   fail "known-broken.txt 不存在（$BROKEN_FILE）——门禁无法判定，请检查文件是否被误删"
@@ -46,7 +48,7 @@ fi
 
 # ---------------------------------------------------------------- 门禁 2 & 3
 if [ -z "$LOG" ]; then
-  say "GATE SKIP 2-3：未提供 QA 日志路径，只做了清单检查"
+  say "GATE SKIP 2-4：未提供 QA 日志路径，只做了清单检查"
   say "  CI 里本脚本会自动取 /tmp/qa.log；本地可手动传：bash scripts/qa/gate.sh qa-logs/xxx.log"
 elif [ ! -f "$LOG" ]; then
   fail "QA 日志不存在：$LOG（QA harness 可能被 QA_HARNESS=off 跳过了）"
@@ -64,7 +66,7 @@ else
     elif [ "$f" -ne 0 ]; then
       fail "QA 汇总 FAIL=$f（必须为 0）"
     else
-      say "GATE OK 2/3：FAIL=0（PASS=${p:-?} XFAIL=${x:-?}）"
+      say "GATE OK 2/4：FAIL=0（PASS=${p:-?} XFAIL=${x:-?}）"
     fi
   fi
 
@@ -72,7 +74,45 @@ else
     fail "QA 日志出现 XPASS（脚本已修好但仍列在 known-broken.txt），请从清单移除："
     grep -E '^XPASS ' "$LOG" | sed 's/^/    - /' >&2
   else
-    say "GATE OK 3/3：无 XPASS"
+    say "GATE OK 3/4：无 XPASS"
+  fi
+
+  # ------------------------------------------------------------ 门禁 4
+  #
+  # 「写了 harness 但没人跑」是比「harness 失效」更隐蔽的问题：
+  # 前者在 CI 上完全静默（不报错、不统计），断言等于不存在。
+  # 两种漏法：
+  #   ① 新增 *Verification.kt 后忘了写 run-*.sh —— 文件在，但 run-all 永远跑不到；
+  #   ② run-*.sh 写了但命名不合规 / 被 run-all 的 glob 漏掉 —— 日志里少一行。
+  # 这里都堵上：前者查引用，后者比数量。
+  orphan=""
+  for kt in scripts/qa/*Verification.kt; do
+    [ -f "$kt" ] || continue
+    base=$(basename "$kt")
+    # 允许被任一 run-*.sh 直接点名，或按约定名推导（Foo.kt → run-foo-verification.sh）
+    if ! grep -lqF "$base" scripts/qa/run-*.sh 2>/dev/null; then
+      stem=$(echo "${base%Verification.kt}" | tr '[:upper:]' '[:lower:]')
+      if ! ls scripts/qa/run-*.sh 2>/dev/null | grep -qi "$stem"; then
+        orphan="$orphan $base"
+      fi
+    fi
+  done
+
+  # run-*.sh 数量要排除 run-all.sh 本身（它是调度器，自己不会"被跑"）
+  runners=$(ls scripts/qa/run-*.sh 2>/dev/null | grep -v '/run-all\.sh$' | wc -l | tr -d ' ')
+  # 日志里每个 runner 一行，但两种格式并存：
+  #   PASS  scripts/qa/run-xxx.sh          ← 带路径
+  #   SKIP  run-apk-verification.sh（…）   ← 不带路径（SKIP 走的是另一条打印分支）
+  # 所以前缀要可选，否则 SKIP 的条目会被当成"没跑"。
+  ran=$(grep -cE '^(PASS|SKIP|XFAIL|XPASS|FAIL)[[:space:]]+(scripts/qa/)?run-' "$LOG" || true)
+
+  if [ -n "$orphan" ]; then
+    fail "以下 harness 没有任何 run-*.sh 引用（等于没跑）："
+    for f in $orphan; do echo "    - $f" >&2; done
+  elif [ "${ran:-0}" -lt "${runners:-0}" ]; then
+    fail "run-*.sh 有 $runners 个，但日志里只跑了 $ran 个（有 runner 没被 run-all 收录）"
+  else
+    say "GATE OK 4/4：harness 覆盖完整（$runners 个 runner 全部跑到，无孤儿 harness）"
   fi
 fi
 
