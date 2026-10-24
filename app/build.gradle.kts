@@ -61,7 +61,10 @@ android {
     // 容器相关链路（装运行时、跑命令）在服务器上就一直验证不了。
     // 该开关只在本地构建时用，CI 与正式包不带，避免白涨 ~8MB。
     if (project.hasProperty("x86Rootfs")) {
-        sourceSets.getByName("debug").assets.srcDir("src/debugX86/assets")
+        sourceSets.getByName("debug") {
+            assets.srcDir("src/debugX86/assets")
+            jniLibs.srcDir("src/debugX86/jniLibs")
+        }
     }
 
     // W-37：Shizuku UserService 走 AIDL 跨进程接口（app/src/main/aidl），显式开启
@@ -70,6 +73,15 @@ android {
         aidl = true
     }
     composeOptions { kotlinCompilerExtensionVersion = "1.5.15" }
+
+    // proot 以 libproot.so 的形式打进 jniLibs，运行时从 nativeLibraryDir 执行。
+    // 必须开 useLegacyPackaging：默认（minSdk>=23）native 库**不解压**，直接从 APK 里 mmap，
+    // 那样就没有可 execve 的文件路径，proot 会报 error=13。
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+        }
+    }
 
     // 本地 llama.cpp 推理：只出 arm64-v8a（市面手机全覆盖，先做扎实再扩 x86_64 模拟器）
     if (!skipNative) {

@@ -77,6 +77,19 @@ object ProotRunner {
         LIBANDROID_SHMEM_ASSET_NAME
     )
 
+    /** 只需要落到 filesDir 的运行库（proot 本体改走 jniLibs，不在此列）。 */
+    private val LIB_ASSET_NAMES = listOf(LIBTALLOC_ASSET_NAME, LIBANDROID_SHMEM_ASSET_NAME)
+
+    /**
+     * jniLibs 打包的 proot（`libproot.so`）。
+     *
+     * 系统会把它解压到 `applicationInfo.nativeLibraryDir`——**只有这个目录允许 execve**。
+     * `filesDir` 从 Android 10 起受 W^X 限制，`targetSdk 34` 下会直接
+     * `Cannot run program ...: error=13, Permission denied`（真机实测 2026-10-24）。
+     */
+    fun nativeProot(context: Context): File? =
+        File(context.applicationInfo.nativeLibraryDir, "libproot.so").takeIf { it.isFile }
+
     /** proot 落位目录（相对 `filesDir`）——抽成常量，便于 D1 改造时只改一处。 */
     const val PROOT_BIN_DIR = "bin"
 
@@ -133,8 +146,8 @@ object ProotRunner {
      */
     fun isAvailable(context: Context): Boolean {
         val dir = libDir(context)
-        return REQUIRED_ASSET_NAMES.all { File(dir, it).exists() } &&
-            binaryFile(context).canExecute()
+        val libsOk = LIB_ASSET_NAMES.all { File(dir, it).exists() }
+        return libsOk && (nativeProot(context) != null || binaryFile(context).canExecute())
     }
 
     /**
@@ -168,6 +181,15 @@ object ProotRunner {
      *   null（调用方降级），并落 `AgentLogger.e` 点名缺哪个。
      */
     fun ensureBinary(context: Context, force: Boolean = false): File? {
+        // 首选 jniLibs 里的 proot：nativeLibraryDir 允许 execve，绕开 Android 10+ 的 W^X。
+        // 两个运行库仍要落到 filesDir（LD_LIBRARY_PATH 指向那里）。
+        nativeProot(context)?.let { native ->
+            if (!force && isAvailable(context)) return native
+            if (extractLibs(context, force)) return native
+            AgentLogger.e(TAG, "运行库提取失败，proot 无法启动")
+            return null
+        }
+
         val out = binaryFile(context)
         if (!force && isAvailable(context)) return out
 
@@ -435,6 +457,26 @@ object ProotRunner {
     /** [buildCommandArgv] 的文本出口：argv → 可直接写进 pty stdin 的一行命令。 */
     fun toCommandLine(cwd: String, command: String, shell: String = GUEST_SHELL): String =
         buildCommandArgv(cwd, command, shell).joinToString(" ") { shellQuote(it) }
+
+    /** 把两个运行库从 assets 提到 filesDir；proot 通过 LD_LIBRARY_PATH 找它们。 */
+    private fun extractLibs(context: Context, force: Boolean): Boolean {
+        val dir = libDir(context)
+        runCatching { dir.mkdirs() }
+        for (name in LIB_ASSET_NAMES) {
+            val target = File(dir, name)
+            if (!force && target.exists()) continue
+            runCatching {
+                context.assets.open("${assetDir()}/$name").use { ais ->
+                    FileOutputStream(target).use { fos -> ais.copyTo(fos) }
+                }
+                Os.chmod(target.absolutePath, 0b111000000)
+            }.onFailure { e ->
+                AgentLogger.e(TAG, "提取 $name 失败：${e.message}")
+                return false
+            }
+        }
+        return true
+    }
 }
 
 /**
