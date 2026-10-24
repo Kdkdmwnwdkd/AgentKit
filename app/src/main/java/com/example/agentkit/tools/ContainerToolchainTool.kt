@@ -249,10 +249,14 @@ class ContainerToolchainTool(
 
         val result = ContainerCommandRunner.run(context, distroId, command)
         if (!result.ok) {
+            // 失败时别只丢一个 exit code：apk/apt 的报错能区分「没网」「没这个包」
+            // 「权限不足」三种最常见的坑，直接说人话比让用户猜省事。
+            val diagnosis = diagnoseInstallFailure(result.output)
             return ToolResult.fail(
                 code = "install_failed",
                 message = "安装失败（exit ${result.exitCode}）。",
-                hint = "容器内输出：${result.output.take(300)}\n可手动进容器执行：$command"
+                hint = (diagnosis?.let { "$it\n" } ?: "") +
+                    "容器内输出：${result.output.take(300)}\n可手动进容器执行：$command"
             )
         }
         val after = ToolchainInstaller.detect(RootfsManager.rootfsDir(context, distroId))
@@ -266,5 +270,36 @@ class ContainerToolchainTool(
                 (spec?.note?.let { "说明：$it\n" } ?: "") +
                 "输出：${result.output.take(300)}"
         )
+    }
+
+    /**
+     * 从 apk / apt 的报错里认出发病原因。
+     *
+     * 为什么需要：容器装运行时最常见的三种失败是「没网」「仓库里没这个包」「权限不足」，
+     * apk/apt 各自的措辞完全不同。只回一句 exit 1，用户只能自己翻输出猜。
+     *
+     * @return 人话原因；认不出返回 null（不硬编一个可能错的原因）
+     */
+    private fun diagnoseInstallFailure(output: String): String? {
+        val o = output.lowercase()
+        fun any(vararg keys: String) = keys.any { it in o }
+        return when {
+            any(
+                "temporary failure resolving", "could not resolve", "network is unreachable",
+                "network error", "connection refused", "connection timed out", "dns"
+            ) ->
+                "容器内没有可用网络（域名解析或连接失败）。安装需要容器能访问软件源，" +
+                    "先确认宿主机网络正常再重试。"
+            any(
+                "no such package", "unable to locate package", "has no installation candidate",
+                "couldn't find any package"
+            ) ->
+                "软件源里没有这个包。先用 action=versions 看当前发行版实际能装哪些版本，别凭记忆填。"
+            any("permission denied", "read-only file system") ->
+                "容器内写权限不足（安装目录或 /etc 不可写）。检查 rootfs 是否只读解压。"
+            any("not enough space", "no space left") ->
+                "存储空间不足。容器 rootfs 在应用私有目录，清一些空间再装。"
+            else -> null
+        }
     }
 }

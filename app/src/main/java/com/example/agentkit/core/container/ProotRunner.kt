@@ -1,6 +1,7 @@
 package com.example.agentkit.core.container
 
 import android.content.Context
+import android.os.Build
 import android.system.Os
 import com.example.agentkit.core.AgentLogger
 import com.example.agentkit.core.ProcessEnv
@@ -37,8 +38,25 @@ object ProotRunner {
 
     private const val TAG = "ProotRunner"
 
-    /** assets 内 proot 三件套目录（按 ABI 分目录，当前仅 arm64-v8a）。 */
+    /** assets 内 proot 三件套目录（正式包只有 arm64；运行时用 [assetDir] 选实际目录）。 */
     const val PROOT_ASSET_DIR = "bin/arm64-v8a"
+
+    /**
+     * 当前设备该用哪个 assets 目录。
+     *
+     * 正式包只带 arm64-v8a（真机全是 arm64）。本地调试包可用
+     * `-Px86Rootfs=true` 额外带 x86_64，让 x86_64 模拟器也能真跑容器——
+     * 否则容器链路在服务器上永远只能做逻辑断言。
+     *
+     * 按**首选 ABI** 判断，不看「支持列表里有没有」：arm64 设备通常也声明
+     * 支持 armeabi-v7a，但绝不能因此去取 32 位目录。
+     */
+    fun assetDir(): String =
+        if (Build.SUPPORTED_ABIS.firstOrNull()?.startsWith("x86") == true) {
+            "bin/x86_64"
+        } else {
+            "bin/arm64-v8a"
+        }
 
     /** assets 内 proot 主二进制完整路径（保留常量：调用方按「单文件」语义引用）。 */
     const val PROOT_ASSET = "bin/arm64-v8a/proot"
@@ -166,13 +184,13 @@ object ProotRunner {
         // 抛 IOException → 确实缺失，计入 missingAssets。
         val missingAssets = REQUIRED_ASSET_NAMES.filter { name ->
             runCatching {
-                context.assets.open("$PROOT_ASSET_DIR/$name").use { }
+                context.assets.open("${assetDir()}/$name").use { }
             }.isFailure
         }
         if (missingAssets.isNotEmpty()) {
             AgentLogger.e(
                 TAG,
-                "assets/$PROOT_ASSET_DIR 三件套不齐，缺少：${missingAssets.joinToString(", ")}" +
+                "assets/${assetDir()} 三件套不齐，缺少：${missingAssets.joinToString(", ")}" +
                     "（proot 需要 libtalloc.so.2 与 libandroid-shmem.so 才能启动）"
             )
             return null
@@ -181,14 +199,14 @@ object ProotRunner {
         for (name in REQUIRED_ASSET_NAMES) {
             val target = File(dir, name)
             runCatching {
-                context.assets.open("$PROOT_ASSET_DIR/$name").use { ais ->
+                context.assets.open("${assetDir()}/$name").use { ais ->
                     FileOutputStream(target).use { fos -> ais.copyTo(fos) }
                 }
                 // 0700：仅本应用可读可执行（proot 内含完整路径重写逻辑，最小权限够用；
                 // 两个 .so 同权——动态链接器按调用者权限读，无需放宽到 0644）
                 Os.chmod(target.absolutePath, 0b111000000)
             }.onFailure { e ->
-                AgentLogger.e(TAG, "提取 assets/$PROOT_ASSET_DIR/$name 失败：${e.message}")
+                AgentLogger.e(TAG, "提取 assets/${assetDir()}/$name 失败：${e.message}")
                 return null
             }
         }

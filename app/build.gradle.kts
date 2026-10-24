@@ -56,6 +56,14 @@ android {
         // 不要动 release（本项目不产出 release 包）
     }
 
+    // 仅本地/模拟器调试：`-Px86Rootfs=true` 时额外打进 x86_64 的 Alpine rootfs。
+    // 为什么需要它：内置 rootfs 是 aarch64，x86_64 模拟器上 proot 起不来，
+    // 容器相关链路（装运行时、跑命令）在服务器上就一直验证不了。
+    // 该开关只在本地构建时用，CI 与正式包不带，避免白涨 ~8MB。
+    if (project.hasProperty("x86Rootfs")) {
+        sourceSets.getByName("debug").assets.srcDir("src/debugX86/assets")
+    }
+
     // W-37：Shizuku UserService 走 AIDL 跨进程接口（app/src/main/aidl），显式开启
     buildFeatures {
         compose = true

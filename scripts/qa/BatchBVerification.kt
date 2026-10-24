@@ -947,6 +947,43 @@ fun main() {
         )
     }
 
+    check("E-9 版本表覆盖 Alpine 3.18 / 3.23 的实际版本") {
+        val a318 = ToolchainInstaller.Distro(ToolchainInstaller.PkgManager.APK, "3.18.6")
+        val a323 = ToolchainInstaller.Distro(ToolchainInstaller.PkgManager.APK, "3.23.0")
+        assertTrue(
+            "3.18 应可装 node 18",
+            ToolchainInstaller.resolveVersion(ToolchainInstaller.Lang.NODE, "18", a318)!!
+                .availableOn(ToolchainInstaller.PkgManager.APK)
+        )
+        assertTrue(
+            "3.23 应可装 node 24",
+            ToolchainInstaller.resolveVersion(ToolchainInstaller.Lang.NODE, "24", a323)!!
+                .availableOn(ToolchainInstaller.PkgManager.APK)
+        )
+        assertTrue(
+            "3.23 不该声称能装 node 22",
+            !ToolchainInstaller.resolveVersion(ToolchainInstaller.Lang.NODE, "22", a323)!!
+                .availableOn(ToolchainInstaller.PkgManager.APK)
+        )
+    }
+
+    check("E-10 安装失败能识别「容器没网」并说人话") {
+        val tool = read("app/src/main/java/com/example/agentkit/tools/ContainerToolchainTool.kt")
+        assertTrue("应有病因诊断函数", "diagnoseInstallFailure" in tool)
+        assertTrue("应识别域名解析失败", "temporary failure resolving" in tool)
+        assertTrue("应指出容器需要能访问软件源", "容器内没有可用网络" in tool)
+        assertTrue("应覆盖「仓库里没这个包」", "has no installation candidate" in tool)
+    }
+
+    check("E-11 抽屉底部的设置不随列表滚走（否则小屏点不到）") {
+        val s = read("app/src/main/java/com/example/agentkit/ui/AppScaffold.kt")
+        val scrollEnd = s.indexOf("滚动区结束")
+        val bottom = s.indexOf("BottomGroup.forEach")
+        assertTrue("应显式标注滚动区结束", scrollEnd > 0)
+        assertTrue("BottomGroup 必须在滚动区之外", bottom > scrollEnd)
+        assertTrue("滚动区应靠 weight(1f) 占剩余高度", "weight(1f)" in s)
+    }
+
     println("\n== 结果：$pass 通过 / $fail 失败 ==")
     if (fail > 0) kotlin.system.exitProcess(1)
 }

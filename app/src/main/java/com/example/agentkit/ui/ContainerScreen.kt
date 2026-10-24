@@ -1,6 +1,7 @@
 package com.example.agentkit.ui
 
 import android.content.Context
+import android.os.Build
 import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -78,7 +79,20 @@ fun ContainerScreen() {
      */
     val versionInputs = remember { mutableStateMapOf<String, String>() }
 
-    val prootReady = remember { ProotRunner.isAvailable(context) }
+    // proot 三件套是**首次使用时**才从 assets 提取的（ensureBinary）。
+    // 原来这里只判断 isAvailable，新装应用还没提取过 → 永远显示「需要 proot」，
+    // 用户根本没有触发提取的入口，等于容器功能对新用户完全不可用。
+    // 现在进页面就后台提取一次（幂等，已就绪直接返回）。
+    var prootReady by remember { mutableStateOf(ProotRunner.isAvailable(context)) }
+    var prootError by remember { mutableStateOf(false) }
+
+    LaunchedEffect(Unit) {
+        if (!prootReady) {
+            val bin = withContext(Dispatchers.IO) { ProotRunner.ensureBinary(context) }
+            prootReady = bin != null
+            prootError = bin == null
+        }
+    }
 
     LaunchedEffect(Unit) {
         distros = RootfsManager.listAvailable(context)
@@ -97,8 +111,14 @@ fun ContainerScreen() {
         if (!prootReady) {
             AkEmptyState(
                 icon = Icons.Outlined.ViewInAr,
-                title = "需要 proot 运行时",
-                description = "容器依赖 proot（GPL-2.0 独立可执行文件）。请运行仓库 scripts/build-proot.sh 用 NDK 交叉编译，或将 proot 放入 app/src/main/assets/bin/arm64-v8a/ 后重装应用。"
+                title = if (prootError) "proot 运行时不可用" else "正在准备容器运行时…",
+                description = if (prootError) {
+                    "没能从安装包里取出 proot（当前设备 ABI：${Build.SUPPORTED_ABIS.firstOrNull() ?: "未知"}）。" +
+                        "正式包只带 arm64-v8a；在 x86_64 模拟器上做容器验证，请用 " +
+                        "`-Px86Rootfs=true` 构建调试包（会额外带 x86_64 的 proot 与 rootfs）。"
+                } else {
+                    "首次进入需要把 proot 从安装包释放到应用私有目录，通常一两秒。"
+                }
             )
             return@Column
         }

@@ -20,6 +20,17 @@ object RootfsManager {
 
     private const val TAG = "RootfsManager"
 
+    /**
+     * 展示名映射。
+     *
+     * `alpine-x86_64` 只存在于本地调试包（`-Px86Rootfs=true`），用来在 x86_64 模拟器上
+     * 真正跑容器；正式包只有 `alpine`（arm64）。名字里标出架构，避免测试时选错。
+     */
+    private val DISPLAY_NAMES = mapOf(
+        "alpine" to "Alpine Linux",
+        "alpine-x86_64" to "Alpine Linux（x86_64 调试）"
+    )
+
     /** 一种可启动的发行版（由 `assets/containers/<name>.tar.gz` 描述）。 */
     data class Distro(
         val id: String,       // 目录名，如 "alpine"
@@ -41,7 +52,7 @@ object RootfsManager {
                     val id = asset.removeSuffix(".tar")
                     Distro(
                         id = id,
-                        name = id.replaceFirstChar {
+                        name = DISPLAY_NAMES[id] ?: id.replaceFirstChar {
                             if (it.isLowerCase()) it.titlecase(Locale.ROOT) else it.toString()
                         },
                         assetName = asset

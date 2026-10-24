@@ -18,5 +18,9 @@ app/.cxx/
 # W-13：内置 Shizuku APK 由 CI 构建时下载，不进仓库
 app/src/main/assets/shizuku.apk
 
+# x86_64 容器测试套件（~8MB 的 rootfs + proot），由 scripts/fetch-x86-testkit.sh 拉取，
+# 只用于 `-Px86Rootfs=true` 的本地调试包，不进仓库
+app/src/debugX86/assets/
+
 # QA 全套 runner 的日志目录（run-all.sh 生成，勿入库）
 qa-logs/

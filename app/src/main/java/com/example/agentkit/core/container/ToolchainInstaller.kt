@@ -314,7 +314,7 @@ object ToolchainInstaller {
                     PkgManager.APK -> ALPINE_NODE_BY_LINE[line]
                     PkgManager.APT -> DEBIAN_NODE_BY_LINE[line]
                 }
-                listOf("18", "20", "22").map { v ->
+                listOf("18", "20", "22", "24").map { v ->
                     when {
                         shipped == null -> VersionOption(
                             v, true,
@@ -337,11 +337,7 @@ object ToolchainInstaller {
                     PkgManager.APK -> ALPINE_PYTHON_BY_LINE[line]
                     PkgManager.APT -> DEBIAN_PYTHON_BY_LINE[line]
                 }
-                val candidates = if (pkg == PkgManager.APK) {
-                    listOf("3", "3.11", "3.12")
-                } else {
-                    listOf("3", "3.11", "3.12", "3.13")
-                }
+                val candidates = listOf("3", "3.9", "3.11", "3.12", "3.13")
                 candidates.map { v ->
                     when {
                         v == "3" -> VersionOption(
@@ -531,22 +527,31 @@ object ToolchainInstaller {
 
     /* ------------------------- 发行版 → 运行时版本对照表 -------------------------
      *
-     * 数据来源：官方仓库索引（2026-10 核对）。
-     * - Alpine：`https://dl-cdn.alpinelinux.org/alpine/<线>/main/x86_64/APKINDEX.tar.gz`
-     *   实测 v3.19 nodejs=20.15.1、python3=3.11.14；v3.20 nodejs=20.15.1、python3=3.12.13；
-     *   v3.21 nodejs=22.23.2、python3=3.12.15。**没有 nodejs18/20/22 这类分版本包**。
-     * - Debian：bookworm(12) nodejs=18.20.4、python3.11=3.11.2、openjdk 只有 17；
-     *   trixie(13) nodejs=20.x、python3=3.13。
+     * 数据来源：官方仓库索引（2026-10 核对，Alpine 侧用清华镜像的 APKINDEX 复验）。
+     * - Alpine：3.18 node=18.20.1 / py=3.11.12；3.19 node=20.15.1 / py=3.11.14；
+     *   3.20 node=20.15.1 / py=3.12.13；3.21 node=22.23.2 / py=3.12.15；
+     *   3.22 node=22.23.4 / py=3.12.15；3.23 node=24.22.1 / py=3.12.15。
+     *   **没有 nodejs18/20/22 这类分版本包**。
+     * - Debian：bullseye(11) node=12.22 / java 11、17；
+     *   bookworm(12) node=18.20.4 / py=3.11.2 / java 只有 17；
+     *   trixie(13) node=20.x / py=3.13 / java 17、21。
      *
      * 只收录**核实过**的版本线。表里没有的线不做判断（当未知处理），
      * 而不是拿相近版本猜——猜错就会让用户装到与预期不符的运行时。
      */
-    private val ALPINE_NODE_BY_LINE = mapOf("3.19" to "20", "3.20" to "20", "3.21" to "22")
-    private val ALPINE_PYTHON_BY_LINE = mapOf("3.19" to "3.11", "3.20" to "3.12", "3.21" to "3.12")
+    private val ALPINE_NODE_BY_LINE = mapOf(
+        "3.18" to "18", "3.19" to "20", "3.20" to "20",
+        "3.21" to "22", "3.22" to "22", "3.23" to "24"
+    )
+    private val ALPINE_PYTHON_BY_LINE = mapOf(
+        "3.18" to "3.11", "3.19" to "3.11", "3.20" to "3.12",
+        "3.21" to "3.12", "3.22" to "3.12", "3.23" to "3.12"
+    )
     private val ALPINE_JAVA_VERSIONS = listOf("11", "17", "21")
-    private val DEBIAN_NODE_BY_LINE = mapOf("12" to "18", "13" to "20")
-    private val DEBIAN_PYTHON_BY_LINE = mapOf("12" to "3.11", "13" to "3.13")
+    private val DEBIAN_NODE_BY_LINE = mapOf("11" to "12", "12" to "18", "13" to "20")
+    private val DEBIAN_PYTHON_BY_LINE = mapOf("11" to "3.9", "12" to "3.11", "13" to "3.13")
     private val DEBIAN_JAVA_BY_LINE = mapOf(
+        "11" to listOf("11", "17"),
         "12" to listOf("17"),
         "13" to listOf("17", "21")
     )
