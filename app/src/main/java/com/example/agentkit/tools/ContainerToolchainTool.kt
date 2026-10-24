@@ -256,7 +256,11 @@ class ContainerToolchainTool(
                 code = "install_failed",
                 message = "安装失败（exit ${result.exitCode}）。",
                 hint = (diagnosis?.let { "$it\n" } ?: "") +
-                    "容器内输出：${result.output.take(300)}\n可手动进容器执行：$command"
+                    "容器内输出：${result.output.take(300)}\n" +
+                    // proot 层的错误（execve/找不到解释器等）多半是 rootfs 残缺，
+                    // 直接把磁盘上的真实状态列出来，省掉「再猜一轮」
+                    "rootfs 体检：\n${RootfsManager.inspect(context, distroId)}\n" +
+                    "可手动进容器执行：$command"
             )
         }
         val after = ToolchainInstaller.detect(RootfsManager.rootfsDir(context, distroId))

@@ -2,6 +2,7 @@ package com.example.agentkit.core.container
 
 import android.content.Context
 import android.system.Os
+import android.system.OsConstants
 import com.example.agentkit.core.AgentLogger
 import java.io.File
 import java.io.FileOutputStream
@@ -64,10 +65,62 @@ object RootfsManager {
     fun rootfsDir(context: Context, id: String): File =
         File(context.filesDir, "containers/$id/rootfs")
 
-    /** 已解压判据：rootfs 下同时存在 `bin/` 与 `etc/`。 */
+    /**
+     * 已解压判据：**关键文件齐备**，而不是只看 `bin/` `etc/` 两个目录。
+     *
+     * 原来只判目录：解压中断（进程被杀 / 存储不足）会留下 `bin/` 与 `etc/` 都在、
+     * 但里面是空的残缺树，于是永远显示「已就绪」，`ensureExtracted` 也永远直接返回，
+     * 再也不会重新解压——真机上表现为「显示已就绪，但 proot 报 /bin/sh 不存在」。
+     *
+     * `bin/sh` 是**符号链接**（`-> /bin/busybox`），必须用 `lstat` 判断，不能用
+     * `File.exists()`——后者会跟随链接，在 Android 上解析到不存在的宿主 `/bin/busybox`，
+     * 永远返回 false。
+     */
     fun isExtracted(context: Context, id: String): Boolean {
         val d = rootfsDir(context, id)
-        return File(d, "bin").isDirectory && File(d, "etc").isDirectory
+        if (!File(d, "bin").isDirectory || !File(d, "etc").isDirectory) return false
+        if (lstatType(File(d, "bin/sh")) == LinkType.MISSING) return false
+        val busybox = File(d, "bin/busybox")
+        return busybox.isFile && busybox.length() > 0
+    }
+
+    private enum class LinkType { MISSING, SYMLINK, REGULAR }
+
+    private fun lstatType(f: File): LinkType = runCatching {
+        val st = Os.lstat(f.absolutePath)
+        when (st.st_mode and OsConstants.S_IFMT) {
+            OsConstants.S_IFLNK -> LinkType.SYMLINK
+            else -> LinkType.REGULAR
+        }
+    }.getOrDefault(LinkType.MISSING)
+
+    /**
+     * rootfs 体检报告（供安装失败时展示）。
+     *
+     * 只回答一个问题：**proot 要执行的那些文件，在磁盘上到底是不是齐的**。
+     * 排查「execve(/bin/sh) 找不到」时，这一屏比任何猜测都直接。
+     */
+    fun inspect(context: Context, id: String): String {
+        val d = rootfsDir(context, id)
+        if (!d.isDirectory) return "rootfs 目录不存在：${d.absolutePath}"
+        val sb = StringBuilder()
+        for (p in listOf("bin/sh", "bin/busybox", "lib", "etc/alpine-release")) {
+            val f = File(d, p)
+            when (lstatType(f)) {
+                LinkType.MISSING -> sb.append("$p：缺失\n")
+                LinkType.SYMLINK -> {
+                    val t = runCatching { Os.readlink(f.absolutePath) }.getOrNull().orEmpty()
+                    val target = if (t.startsWith("/")) File(d, t.trimStart('/'))
+                    else File(f.parentFile ?: d, t)
+                    val ok = lstatType(target) != LinkType.MISSING
+                    sb.append("$p：链接 -> $t（目标${if (ok) "在 rootfs 内存在" else "不存在"}）\n")
+                }
+                LinkType.REGULAR -> sb.append("$p：${if (f.isDirectory) "目录" else "${f.length()} 字节"}\n")
+            }
+        }
+        val binCount = File(d, "bin").listFiles()?.size ?: 0
+        sb.append("bin/ 条目数=$binCount")
+        return sb.toString()
     }
 
     /**
@@ -81,6 +134,12 @@ object RootfsManager {
     fun ensureExtracted(context: Context, distro: Distro): File? {
         val d = rootfsDir(context, distro.id)
         if (isExtracted(context, distro.id)) return d
+        // 目录在但校验不过 = 上次解压中断 / 旧版残留。必须先清空，
+        // 否则残留文件会让本次解压「看起来成功」但内容仍然不全。
+        if (d.exists()) {
+            AgentLogger.w(TAG, "rootfs(${distro.id}) 校验不通过，清空后重新解压：${inspect(context, distro.id)}")
+            runCatching { d.deleteRecursively() }
+        }
         runCatching {
             openRootfs(context, "containers/${distro.assetName}").use { stream ->
                 extractTar(stream, d)
