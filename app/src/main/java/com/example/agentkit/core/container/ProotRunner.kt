@@ -146,9 +146,31 @@ object ProotRunner {
      */
     fun isAvailable(context: Context): Boolean {
         val dir = libDir(context)
-        val libsOk = LIB_ASSET_NAMES.all { File(dir, it).exists() }
+        val libsOk = LIB_ASSET_NAMES.all { isElf(File(dir, it)) }
         return libsOk && (nativeProot(context) != null || binaryFile(context).canExecute())
     }
+
+    /**
+     * 文件是否是**有效的 ELF 可执行体**（只看魔数 `\x7fELF`）。
+     *
+     * 为什么不能只判「存在」：仓库里的三个 arm64 二进制曾以 base64 文本形态提交，
+     * APK 里带的就是纯文本。只看 `exists()` / `canExecute()` 会全部通过，
+     * 直到运行期动态链接器才报错。历史上装过旧版的用户，`filesDir/bin` 里
+     * 残留的正是这些文本文件——升级后若不重提，等于没修。
+     *
+     * 读 4 字节的代价可以忽略，换来的是「脏数据自动重建」。
+     */
+    private fun isElf(file: File): Boolean = runCatching {
+        if (!file.isFile || file.length() < 4L) return false
+        file.inputStream().use { ins ->
+            val head = ByteArray(4)
+            if (ins.read(head) != 4) return false
+            head[0] == 0x7F.toByte() &&
+                head[1] == 'E'.code.toByte() &&
+                head[2] == 'L'.code.toByte() &&
+                head[3] == 'F'.code.toByte()
+        }
+    }.getOrDefault(false)
 
     /**
      * 确保 proot 三件套就位：先对 [REQUIRED_ASSET_NAMES] 逐个 `assets.open` **探测**
@@ -474,7 +496,8 @@ object ProotRunner {
         runCatching { dir.mkdirs() }
         for (name in LIB_ASSET_NAMES) {
             val target = File(dir, name)
-            if (!force && target.exists()) continue
+            // 已存在但不是 ELF（旧版残留的 base64 文本）→ 必须覆盖，否则永远修不好
+            if (!force && isElf(target)) continue
             runCatching {
                 context.assets.open("${assetDir()}/$name").use { ais ->
                     FileOutputStream(target).use { fos -> ais.copyTo(fos) }
