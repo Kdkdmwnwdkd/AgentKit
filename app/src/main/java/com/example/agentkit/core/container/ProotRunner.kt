@@ -364,7 +364,17 @@ object ProotRunner {
         prootBinary: File,
         rootfs: File,
         workDir: String,
-        packageName: String
+        packageName: String,
+        /**
+         * 两个运行库所在目录（`LD_LIBRARY_PATH`）。
+         *
+         * **不能默认用 `prootBinary.parentFile`**：proot 本体已改从 `nativeLibraryDir`
+         * 执行（绕开 Android 10+ 的 W^X），但 `libtalloc.so.2` / `libandroid-shmem.so`
+         * 仍由 assets 提到 `filesDir/bin`。两者不同目录时若沿用 parentFile，
+         * 动态链接器会报 `library "libtalloc.so.2" not found`——exec 成功但立刻退出
+         *（真机/模拟器实测 2026-10-24）。
+         */
+        libDir: File? = null
     ): ProotInvocation {
         // 尽力确保 guest /tmp 与宿主侧 proot 临时目录存在（失败不影响调用，仅日志）。
         // mkdirs() 失败只返回 false 不抛异常（runCatching 抓不到），必须显式校验返回值。
@@ -380,7 +390,7 @@ object ProotRunner {
             addAll(prootOptions(rootfs, workDir))
             add(GUEST_SHELL) // guest shell
         }
-        val envMap = guestEnvMap(rootfs, packageName, libDir = prootBinary.parentFile)
+        val envMap = guestEnvMap(rootfs, packageName, libDir = libDir ?: prootBinary.parentFile)
         return ProotInvocation(
             executable = executable,
             argv = argv,
@@ -400,17 +410,17 @@ object ProotRunner {
         rootfs: File,
         workDir: String = GUEST_HOME
     ): ProotInvocation? {
-        val bin = binaryFile(context)
-        if (!isAvailable(context)) {
+        val bin = ensureBinary(context)
+        if (bin == null || !isAvailable(context)) {
             AgentLogger.w(
                 TAG,
-                "proot 三件套未就位（proot=${bin.absolutePath}，libDir=${libDir(context)}）：" +
+                "proot 三件套未就位（proot=${bin?.absolutePath ?: "null"}，libDir=${libDir(context)}）：" +
                     "请先 ensureBinary；若 proot 存在但不可执行，见 ensureBinary 的 KDoc" +
                     "（Android 10+ W^X 风险）；若 .so 缺失，proot 会启动即静默失败"
             )
             return null
         }
-        return buildInvocation(bin, rootfs, workDir, context.packageName)
+        return buildInvocation(bin, rootfs, workDir, context.packageName, libDir(context))
     }
 
     /**

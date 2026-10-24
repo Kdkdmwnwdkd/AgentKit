@@ -68,7 +68,9 @@ object ContainerCommandRunner {
             prootBinary = prootBin,
             rootfs = rootfs,
             workDir = ProotRunner.GUEST_HOME,
-            packageName = context.packageName
+            packageName = context.packageName,
+            // 运行库在 filesDir/bin，proot 本体在 nativeLibraryDir——必须显式区分
+            libDir = ProotRunner.libDir(context)
         )
         // 一次性命令：argv = proot + 选项 + guest shell + 命令参数
         val argv = invocation.argv.dropLast(1) + ProotRunner.buildCommandArgv(

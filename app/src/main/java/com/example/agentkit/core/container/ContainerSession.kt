@@ -59,7 +59,9 @@ object ContainerSession {
             prootBinary = prootBin,
             rootfs = rootfs,
             workDir = ProotRunner.GUEST_HOME,
-            packageName = context.packageName
+            packageName = context.packageName,
+            // 运行库在 filesDir/bin，proot 本体在 nativeLibraryDir——必须显式区分
+            libDir = ProotRunner.libDir(context)
         )
         // 日志自检（无 JUnit 的替代验收手段）：不变量不满足会落一条 WARN，adb 一查即知
         val problems = invocation.validate()
