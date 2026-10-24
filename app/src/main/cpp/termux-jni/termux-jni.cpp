@@ -32,6 +32,31 @@
 
 namespace {
 
+/**
+ * 把一条错误信息写进子进程 stderr（即 pty slave）。
+ *
+ * ## 为什么不能直接 `write(fd, buf, snprintf(...))`
+ * `snprintf` 返回的是「如果缓冲区够大，一共会写多少字节」，**不是实际写入量**。
+ * 直接把它当 `write` 的长度，目标串一旦比 `buf` 长，就会让 bionic 的 FORTIFY
+ * 检测到「从 64 字节的缓冲区里读 74 字节」，当场 abort：
+ *
+ *     FORTIFY: write: prevented 74-byte read from 64-byte
+ *     [连接已断开，退出码 134]
+ *
+ * 后果比丢日志严重得多——它发生在 exec 失败的处理路径上，把**真正的失败原因**
+ * （errno）连同整个子进程一起干掉，用户只看到一句 FORTIFY 噪音。
+ * 容器起不来时排查方向会被完全带偏（会去怀疑 proot / rootfs / SELinux）。
+ *
+ * 截断到实际容量再写。少几个字节的错误信息，换一条能看见的错误信息。
+ */
+void writeErrnoMessage(int fd, const char* buf, size_t cap, int want) {
+    if (want <= 0) return;
+    size_t n = static_cast<size_t>(want);
+    if (n > cap - 1) n = cap - 1;   // snprintf 已保证 cap-1 处是 '\0'
+    ssize_t ignored = write(fd, buf, n);
+    (void) ignored;
+}
+
 /** 一条 pty 会话：子进程 pid + master fd。句柄以 jlong 传给 Kotlin。 */
 struct Subprocess {
     pid_t pid;              // 子进程 pid（forkpty 内部已 setsid，pid 即进程组 id）
@@ -127,20 +152,18 @@ Java_com_example_agentkit_terminal_TerminalJni_createSubprocess(
         // execve 失败时经 stderr（即 slave）把 errno 写给父进程，再 _exit(127)。
         if (!cwdStr.empty() && chdir(cwdStr.c_str()) != 0) {
             const int e = errno;
-            char buf[64];
+            char buf[256];
             const int len = snprintf(buf, sizeof(buf), "chdir(%s) failed errno=%d\n",
                                      cwdStr.c_str(), e);
-            ssize_t ignored = write(STDERR_FILENO, buf, static_cast<size_t>(len));
-            (void) ignored;
+            writeErrnoMessage(STDERR_FILENO, buf, sizeof(buf), len);
         }
         char* const argv[] = {const_cast<char*>(cmdStr.c_str()), nullptr};
         execve(cmdStr.c_str(), argv, envp.data());
         const int e = errno;
-        char buf[64];
+        char buf[256];
         const int len = snprintf(buf, sizeof(buf), "execve(%s) failed errno=%d\n",
                                  cmdStr.c_str(), e);
-        ssize_t ignored = write(STDERR_FILENO, buf, static_cast<size_t>(len));
-        (void) ignored;
+        writeErrnoMessage(STDERR_FILENO, buf, sizeof(buf), len);
         _exit(127);
     }
 
@@ -202,11 +225,10 @@ Java_com_example_agentkit_terminal_TerminalJni_createSubprocessArgv(
         // —— 子进程路径 ——
         if (!cwdStr.empty() && chdir(cwdStr.c_str()) != 0) {
             const int e = errno;
-            char buf[64];
+            char buf[256];
             const int len = snprintf(buf, sizeof(buf), "chdir(%s) failed errno=%d\n",
                                      cwdStr.c_str(), e);
-            ssize_t ignored = write(STDERR_FILENO, buf, static_cast<size_t>(len));
-            (void) ignored;
+            writeErrnoMessage(STDERR_FILENO, buf, sizeof(buf), len);
         }
         // 把 K=V 环境变量注入子进程 environ（execvp 沿用 environ）
         for (auto& e : envStore) {
@@ -221,11 +243,10 @@ Java_com_example_agentkit_terminal_TerminalJni_createSubprocessArgv(
         argvp.push_back(nullptr);
         execvp(argvStore[0].c_str(), argvp.data());
         const int e = errno;
-        char buf[64];
+        char buf[256];
         const int len = snprintf(buf, sizeof(buf), "execvp(%s) failed errno=%d\n",
                                  argvStore[0].c_str(), e);
-        ssize_t ignored = write(STDERR_FILENO, buf, static_cast<size_t>(len));
-        (void) ignored;
+        writeErrnoMessage(STDERR_FILENO, buf, sizeof(buf), len);
         _exit(127);
     }
 
