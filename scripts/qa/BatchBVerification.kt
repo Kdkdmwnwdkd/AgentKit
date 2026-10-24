@@ -339,9 +339,12 @@ fun main() {
 
     check("B4-5 apk 安装命令正确且带 --no-cache") {
         val cmd = ToolchainInstaller.installCommand(ToolchainInstaller.Lang.NODE, ToolchainInstaller.PkgManager.APK)
-        assertTrue("应含 apk add", cmd!!.startsWith("apk add"))
+        assertTrue("应含 apk add", cmd!!.contains("apk add"))
         assertTrue("应带 --no-cache（避免 apk 缓存吃满手机存储）", "--no-cache" in cmd)
         assertTrue("应含 nodejs", "nodejs" in cmd)
+        // npm 在 Alpine 的 community 仓库，必须先把源补齐，否则装完 node 没有 npm
+        assertTrue("应先补 community 源", cmd.indexOf("/community") in 0 until cmd.indexOf("apk add"))
+        assertTrue("补源必须幂等（已有 community 就不重复追加）", "grep -qs '/community'" in cmd)
     }
 
     check("B4-6 apt 安装命令必须先 update") {
@@ -635,39 +638,55 @@ fun main() {
 
     /* ------------------------- D3 版本矩阵探测 ------------------------- */
 
-    check("D3-1 Alpine 的 node 候选版本可装（18/20/22）") {
+    check("D3-1 Alpine 3.21 的 node 候选只有 22 可精确装（官方没有 nodejs18 分包）") {
+        val d = ToolchainInstaller.Distro(ToolchainInstaller.PkgManager.APK, "3.21.3")
         val vs = ToolchainInstaller.knownVersions(
-            ToolchainInstaller.Lang.NODE, ToolchainInstaller.PkgManager.APK
+            ToolchainInstaller.Lang.NODE, ToolchainInstaller.PkgManager.APK, d
         )
-        val installable = vs.filter { it.installable }.map { it.version }
-        assertTrue("应含 18", "18" in installable)
-        assertTrue("应含 20", "20" in installable)
-        assertTrue("应含 22", "22" in installable)
+        val exact = vs.filter { it.installable && it.exact }.map { it.version }
+        assertEquals("只有 22 能精确装", listOf("22"), exact)
+        assertTrue("18/20 必须明确标装不到", vs.filter { it.version != "22" }.none { it.installable })
+        assertTrue("装不到的项必须给原因", vs.filter { !it.installable }.all { it.note.isNotBlank() })
     }
 
-    check("D3-2 Debian 的 node 候选必须诚实标注「装不上」") {
+    check("D3-2 Debian 12 的 node 是 18（bookworm 默认版），不是「一个都装不上」") {
+        val d = ToolchainInstaller.Distro(ToolchainInstaller.PkgManager.APT, "12.11")
         val vs = ToolchainInstaller.knownVersions(
-            ToolchainInstaller.Lang.NODE, ToolchainInstaller.PkgManager.APT
+            ToolchainInstaller.Lang.NODE, ToolchainInstaller.PkgManager.APT, d
         )
-        assertTrue("不能假装有可装版本", vs.none { it.installable })
-        assertTrue("必须给出原因", vs.all { it.note.isNotBlank() })
+        val exact = vs.filter { it.installable && it.exact }.map { it.version }
+        assertEquals("bookworm 官方源就是 18", listOf("18"), exact)
+        assertTrue("每项都要有说明", vs.all { it.note.isNotBlank() })
     }
 
     check("D3-3 Alpine 的 java 给出 17/21/11") {
+        val d = ToolchainInstaller.Distro(ToolchainInstaller.PkgManager.APK, "3.20.3")
         val vs = ToolchainInstaller.knownVersions(
-            ToolchainInstaller.Lang.JAVA, ToolchainInstaller.PkgManager.APK
+            ToolchainInstaller.Lang.JAVA, ToolchainInstaller.PkgManager.APK, d
         ).filter { it.installable }.map { it.version }
         assertEquals("java 候选", listOf("17", "21", "11"), vs)
     }
 
-    check("D3-4 候选版本表与 resolveVersion 的包名映射一致（不会列出装不了的版本）") {
+    check("D3-4 候选版本表与 resolveVersion 的结论一致（列出的版本都能解析出真实包名）") {
+        val d = ToolchainInstaller.Distro(ToolchainInstaller.PkgManager.APK, "3.20.3")
         val vs = ToolchainInstaller.knownVersions(
-            ToolchainInstaller.Lang.JAVA, ToolchainInstaller.PkgManager.APK
-        ).filter { it.installable }
+            ToolchainInstaller.Lang.JAVA, ToolchainInstaller.PkgManager.APK, d
+        ).filter { it.installable && it.exact }
         vs.forEach { v ->
-            val spec = ToolchainInstaller.resolveVersion(ToolchainInstaller.Lang.JAVA, v.version)
+            val spec = ToolchainInstaller.resolveVersion(ToolchainInstaller.Lang.JAVA, v.version, d)
             assertTrue("${v.version} 应能解析出包名", spec != null && spec.apkPackages.isNotEmpty())
+            assertTrue("${v.version} 解析结论应与候选表一致（可装）", spec!!.apkAvailable)
         }
+    }
+
+    check("D3-6 Debian 12 没有 openjdk-21-jdk（bookworm 只带 17）") {
+        val d = ToolchainInstaller.Distro(ToolchainInstaller.PkgManager.APT, "12.11")
+        val vs = ToolchainInstaller.knownVersions(
+            ToolchainInstaller.Lang.JAVA, ToolchainInstaller.PkgManager.APT, d
+        )
+        val exact = vs.filter { it.installable && it.exact }.map { it.version }
+        assertEquals("bookworm 只有 17", listOf("17"), exact)
+        assertTrue("21 必须标装不到", vs.first { it.version == "21" }.installable.not())
     }
 
     check("D3-5 工具暴露 versions 动作并声明「以实际为准」") {
@@ -801,18 +820,27 @@ fun main() {
 
     /* ------------------------- C3 指定版本号安装 ------------------------- */
 
-    check("C3-1 node 指定版本映射到 Alpine 分版本包") {
+    check("C3-1 node 指定版本不再拼出不存在的 nodejs18 包") {
         val spec = ToolchainInstaller.resolveVersion(ToolchainInstaller.Lang.NODE, "18")
         assertTrue("应能解析", spec != null)
-        assertTrue("Alpine 包名应含 nodejs18", spec!!.apkPackages.contains("nodejs18"))
+        assertTrue("包名必须是真实存在的 nodejs", spec!!.apkPackages.contains("nodejs"))
+        assertTrue(
+            "绝不能拼 nodejs18/nodejs20（官方仓库没有这种分包）",
+            spec.apkPackages.none { it.matches(Regex("^nodejs[0-9]+$")) }
+        )
         assertEquals("版本应记录", "18", spec.version)
     }
 
-    check("C3-2 python 指定版本映射到对应包") {
+    check("C3-2 python 指定版本的包名真实存在（pip 不跟着小版本走）") {
         val spec = ToolchainInstaller.resolveVersion(ToolchainInstaller.Lang.PYTHON, "3.11")
         assertTrue("应能解析", spec != null)
         assertTrue("Alpine 包名应含 python3", spec!!.apkPackages.contains("python3"))
         assertTrue("Debian 包名应含 python3.11", spec.aptPackages.contains("python3.11"))
+        assertTrue("pip 包名是 python3-pip", spec.aptPackages.contains("python3-pip"))
+        assertTrue(
+            "不存在 python3.11-pip（旧实现会拼出这个不存在的包）",
+            spec.aptPackages.none { it.endsWith("-pip") && it != "python3-pip" }
+        )
     }
 
     check("C3-3 java 指定版本映射到 openjdk-N") {
@@ -829,10 +857,11 @@ fun main() {
         assertTrue("纯符号应拒", ToolchainInstaller.resolveVersion(ToolchainInstaller.Lang.NODE, "..") == null)
     }
 
-    check("C3-5 指定版本时安装命令用版本包名") {
+    check("C3-5 指定版本时安装命令用真实包名") {
         val spec = ToolchainInstaller.resolveVersion(ToolchainInstaller.Lang.NODE, "18")!!
         val apk = ToolchainInstaller.installCommand(ToolchainInstaller.Lang.NODE, ToolchainInstaller.PkgManager.APK, spec)
-        assertTrue("apk 命令应含 nodejs18", apk!!.contains("nodejs18"))
+        assertTrue("apk 命令应含 nodejs", apk!!.contains("nodejs"))
+        assertTrue("apk 命令不应含 nodejs18", !apk.contains("nodejs18"))
         val apt = ToolchainInstaller.installCommand(ToolchainInstaller.Lang.NODE, ToolchainInstaller.PkgManager.APT, spec)
         assertTrue("apt 命令应先 update", apt!!.startsWith("apt-get update"))
     }
@@ -849,6 +878,73 @@ fun main() {
         assertTrue("应调用 resolveVersion", "resolveVersion" in tool)
         assertTrue("非法版本应有专门错误码", "bad_version" in tool)
         assertTrue("应仍用软转换读取 version", "primOrNull" in tool)
+    }
+
+    /* ------------------------- E 发行版版本可得性 ------------------------- */
+
+    check("E-1 从 rootfs 识别 Alpine 版本线") {
+        tmpDir { dir ->
+            File(dir, "sbin").mkdirs()
+            File(dir, "sbin/apk").writeText("")
+            File(dir, "etc").mkdirs()
+            File(dir, "etc/alpine-release").writeText("3.21.3\n")
+            val d = ToolchainInstaller.detect(dir)
+            assertEquals("包管理器", ToolchainInstaller.PkgManager.APK, d.pkgManager)
+            assertEquals("版本线", "3.21", d.distro?.line)
+        }
+    }
+
+    check("E-2 从 rootfs 识别 Debian 主版本") {
+        tmpDir { dir ->
+            File(dir, "usr/bin").mkdirs()
+            File(dir, "usr/bin/apt-get").writeText("")
+            File(dir, "etc").mkdirs()
+            File(dir, "etc/debian_version").writeText("12.11\n")
+            val d = ToolchainInstaller.detect(dir)
+            assertEquals("版本线", "12", d.distro?.line)
+        }
+    }
+
+    check("E-3 Alpine 3.21 上要 node 18：判定装不到，并说清该线是 22") {
+        val d = ToolchainInstaller.Distro(ToolchainInstaller.PkgManager.APK, "3.21.3")
+        val spec = ToolchainInstaller.resolveVersion(ToolchainInstaller.Lang.NODE, "18", d)!!
+        assertTrue("应判定不可装", !spec.availableOn(ToolchainInstaller.PkgManager.APK))
+        assertTrue("说明应指出实际是 22", "22" in spec.note)
+    }
+
+    check("E-4 Alpine 3.20 上要 node 18：同样装不到（该线是 20）") {
+        val d = ToolchainInstaller.Distro(ToolchainInstaller.PkgManager.APK, "3.20.3")
+        val spec = ToolchainInstaller.resolveVersion(ToolchainInstaller.Lang.NODE, "18", d)!!
+        assertTrue("应判定不可装", !spec.availableOn(ToolchainInstaller.PkgManager.APK))
+        assertTrue("说明应指出实际是 20", "20" in spec.note)
+    }
+
+    check("E-5 Debian bookworm 上要 node 18：可装") {
+        val d = ToolchainInstaller.Distro(ToolchainInstaller.PkgManager.APT, "12.11")
+        val spec = ToolchainInstaller.resolveVersion(ToolchainInstaller.Lang.NODE, "18", d)!!
+        assertTrue("应判定可装", spec.availableOn(ToolchainInstaller.PkgManager.APT))
+    }
+
+    check("E-6 Debian bookworm 上要 java 21：装不到（该发行版只带 17）") {
+        val d = ToolchainInstaller.Distro(ToolchainInstaller.PkgManager.APT, "12.11")
+        val spec = ToolchainInstaller.resolveVersion(ToolchainInstaller.Lang.JAVA, "21", d)!!
+        assertTrue("应判定不可装", !spec.availableOn(ToolchainInstaller.PkgManager.APT))
+        assertTrue("说明应指出只有 17", "17" in spec.note)
+    }
+
+    check("E-7 发行版版本未知时不误拦（只提示无法确认）") {
+        val spec = ToolchainInstaller.resolveVersion(ToolchainInstaller.Lang.NODE, "18", null)!!
+        assertTrue("不应硬判装不到", spec.availableOn(ToolchainInstaller.PkgManager.APK))
+        assertTrue("必须提示无法确认", spec.note.isNotBlank())
+    }
+
+    check("E-8 工具在装不到时返回 version_unavailable，而不是硬装") {
+        val tool = read("app/src/main/java/com/example/agentkit/tools/ContainerToolchainTool.kt")
+        assertTrue("应有 version_unavailable", "version_unavailable" in tool)
+        assertTrue(
+            "应把发行版传给 resolveVersion",
+            "resolveVersion(lang, version, detection.distro)" in tool
+        )
     }
 
     println("\n== 结果：$pass 通过 / $fail 失败 ==")

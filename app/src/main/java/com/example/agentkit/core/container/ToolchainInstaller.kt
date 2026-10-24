@@ -78,13 +78,46 @@ object ToolchainInstaller {
         APT("apt", "Debian (apt)")
     }
 
+    /**
+     * 已识别的发行版（版本号用来判断「要的这个版本，官方源到底有没有」）。
+     *
+     * 为什么需要它：Alpine 与 Debian 的官方源**都不提供分版本的 nodejs 包**——
+     * 没有 `nodejs18` / `nodejs20` 这种东西。每个发行版只有一条 `nodejs` 版本线，
+     * 具体是 18 还是 22 由发行版版本决定。所以「装 node 18」能不能成，
+     * 取决于 rootfs 是哪个发行版的哪个版本；不识别发行版就只能瞎猜。
+     *
+     * @param version Alpine 形如 "3.21.3"，Debian 形如 "12.11"；读不到为 null。
+     */
+    data class Distro(
+        val pkgManager: PkgManager,
+        val version: String? = null
+    ) {
+        /**
+         * 版本线：Alpine 取前两段（"3.21"），Debian 取主版本（"12"）。
+         *
+         * Alpine 每个次版本对应一套独立仓库（3.19/3.20/3.21 各一份），
+         * 运行时版本随仓库走；Debian 同理按主版本（11/12/13）区分。
+         */
+        val line: String?
+            get() {
+                val v = version?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+                val parts = v.split('.')
+                return when (pkgManager) {
+                    PkgManager.APK -> if (parts.size >= 2) "${parts[0]}.${parts[1]}" else null
+                    PkgManager.APT -> parts[0].takeIf { p -> p.isNotEmpty() && p.all { it.isDigit() } }
+                }
+            }
+    }
+
     /** 探测结果。 */
     data class Detection(
         val pkgManager: PkgManager?,
         /** 已安装的语言运行时。 */
         val installed: Set<Lang>,
         /** rootfs 里没找到包管理器时的原因（供 UI 展示）。 */
-        val reason: String? = null
+        val reason: String? = null,
+        /** 识别到的发行版（版本可用性判断依赖它）；识别不到为 null。 */
+        val distro: Distro? = null
     )
 
     /**
@@ -93,12 +126,19 @@ object ToolchainInstaller {
      * 用户要装运行时时，常常不是「随便给我个 node」——而是「我要 node 18」
      *（因为某个项目 lockfile 卡在 18）或「python 要 3.11」（依赖某些新语法）。
      *
-     * 不同发行版、不同版本的**包名不一样**，这是这里要解决的核心问题：
-     * - Alpine 的 node 版本是分包的：`nodejs`（当前版）/ `nodejs18` / `nodejs20`；
-     * - Debian 的 node 版本在第三方源（NodeSource），官方源只有 `nodejs`；
-     * - Java 的版本包名直接带号：`openjdk17` / `openjdk21` / `default-jdk`。
+     * ## 一个必须先说清的事实（2026-10 按官方仓库核实）
+     * Alpine 与 Debian 的**官方仓库都不提供分版本的 nodejs 包**：
+     * - Alpine v3.19 / v3.20 的 `nodejs` 是 20.x，v3.21 是 22.x；没有 `nodejs18`、`nodejs20`；
+     * - Debian bookworm 的 `nodejs` 是 18.20.x（trixie 才是 20.x）；同样没有 `nodejs18`。
      *
-     * 所以约束要**按包管理器分别解析**，不能一套包名走天下。
+     * 所以「装 node 18」在 Alpine 3.21 上**根本装不到**——不是包名写错，是仓库里没有。
+     * 旧实现拼出 `apk add nodejs18`，命令必然失败；候选表还把 18/20/22 全标成可装。
+     *
+     * 现在的做法：包名只写**真实存在**的那些，能不能装到指定版本由 [Distro] 判断，
+     * 装不到就明确说「装不到」，绝不悄悄换成另一个大版本。
+     *
+     * Java 是例外：`openjdk11/17/21` 确实是分版本包，按号拼包名成立
+     *（但 Debian 每个发行版只有其中一两个）。
      */
     data class VersionSpec(
         /** 版本号，如 "18" / "3.11" / "17"。 */
@@ -107,53 +147,119 @@ object ToolchainInstaller {
         val apkPackages: List<String>,
         /** 该语言在 Debian 下对应的包名。 */
         val aptPackages: List<String>,
-        /** 解析说明（供 UI 展示「你要的版本装不上，退而求其次装了哪个」）。 */
-        val note: String = ""
-    )
+        /** 解析说明（供 UI 展示「为什么装不到 / 实际会装到哪个版本」）。 */
+        val note: String = "",
+        /** Alpine 官方源里是否真有这个版本。 */
+        val apkAvailable: Boolean = true,
+        /** Debian 官方源里是否真有这个版本。 */
+        val aptAvailable: Boolean = true
+    ) {
+        /** 该版本在指定包管理器下是否可装。 */
+        fun availableOn(pkg: PkgManager): Boolean = when (pkg) {
+            PkgManager.APK -> apkAvailable
+            PkgManager.APT -> aptAvailable
+        }
+    }
 
     /**
      * 解析版本约束（C 批）。
      *
      * @param lang 目标语言
      * @param version 用户指定的版本号；空串表示不指定
+     * @param distro 已识别的发行版；null 表示未知（此时不做「装不到」的硬判定，
+     *        只在 note 里提示无法确认，避免在信息不足时误拦）
      * @return 解析结果；版本号非法（如含字母、空格）返回 null
      */
-    fun resolveVersion(lang: Lang, version: String): VersionSpec? {
+    fun resolveVersion(lang: Lang, version: String, distro: Distro? = null): VersionSpec? {
         val v = version.trim()
         if (v.isEmpty()) return null
         // 只接受数字与点（如 18 / 3.11）——版本号会拼进 shell 命令，
         // 必须严格白名单，不能让 `18; rm -rf /` 这类东西混进来。
         if (!v.matches(Regex("^[0-9]+(\\.[0-9]+)*$"))) return null
 
+        val major = v.substringBefore('.')
+        val line = distro?.line
         return when (lang) {
             Lang.NODE -> {
-                // Alpine：nodejs18 / nodejs20 这类分版本包；Debian 官方源只有 nodejs
-                val major = v.substringBefore('.')
+                // 官方源只有一个 nodejs：版本由发行版决定，无法按包名指定。
+                val shipped = when (distro?.pkgManager) {
+                    PkgManager.APK -> ALPINE_NODE_BY_LINE[line]
+                    PkgManager.APT -> DEBIAN_NODE_BY_LINE[line]
+                    null -> null
+                }
+                val ok = shipped == null || shipped == major
+                val note = when {
+                    shipped == null ->
+                        "未能识别发行版版本，无法确认官方源是否有 node $major.x；该发行版可能只带默认版本。"
+                    ok ->
+                        "${distroName(distro)} 官方源的 nodejs 就是 $shipped.x，装到的正是你要的大版本。"
+                    else ->
+                        "${distroName(distro)} 官方源只有 nodejs $shipped.x，没有 node $major 的包；要 node $major 需自行配置 NodeSource。"
+                }
                 VersionSpec(
                     version = v,
-                    apkPackages = listOf("nodejs$major", "npm"),
+                    apkPackages = listOf("nodejs", "npm"),
                     aptPackages = listOf("nodejs", "npm"),
-                    note = "Debian 官方源只提供默认版本 nodejs；如需 node $major 请在容器内配置 NodeSource。"
+                    note = note,
+                    apkAvailable = ok,
+                    aptAvailable = ok
                 )
             }
             Lang.PYTHON -> {
-                // Alpine 的 python3 是主版本线；Debian 用完整版本号做包名
-                val major = v.substringBefore('.')
+                // Alpine 只有 python3 一条线；Debian 的包名带完整小版本（python3.11）。
+                val shipped = when (distro?.pkgManager) {
+                    PkgManager.APK -> ALPINE_PYTHON_BY_LINE[line]
+                    PkgManager.APT -> DEBIAN_PYTHON_BY_LINE[line]
+                    null -> null
+                }
+                val wantsMinor = '.' in v
+                val ok = shipped == null || !wantsMinor || shipped == v
+                val note = when {
+                    shipped == null ->
+                        "未能识别发行版版本，无法确认是否有 python $v；装不到时安装命令会直接报错。"
+                    ok && wantsMinor ->
+                        "${distroName(distro)} 官方源的 python3 就是 $shipped，与你要的一致。"
+                    ok ->
+                        "${distroName(distro)} 官方源的 python3 是 $shipped。"
+                    else ->
+                        "${distroName(distro)} 官方源只有 python3 $shipped，没有 python $v 的包。"
+                }
                 VersionSpec(
                     version = v,
-                    apkPackages = listOf("python$major", "py$major-pip"),
-                    aptPackages = listOf("python$v", "python$v-pip"),
-                    note = "若仓库没有 python $v 的包，安装会失败，可改用默认版本。"
+                    // Alpine 无分小版本包：python3 恒为当前线
+                    apkPackages = listOf("python3", "py3-pip"),
+                    // pip 统一是 python3-pip，不存在 python3.11-pip 这种包
+                    aptPackages = if (wantsMinor) {
+                        listOf("python$v", "python3-pip")
+                    } else {
+                        listOf("python3", "python3-pip")
+                    },
+                    note = note,
+                    apkAvailable = ok,
+                    aptAvailable = ok
                 )
             }
             Lang.JAVA -> {
-                // Java 的版本直接编码在包名里（openjdk17 / openjdk21）
-                val major = v.substringBefore('.')
+                // Java 确实是分版本包（openjdk11 / openjdk17 / openjdk21）
+                val apkOk = major in ALPINE_JAVA_VERSIONS
+                val aptOk = when {
+                    line == null -> true
+                    else -> major in (DEBIAN_JAVA_BY_LINE[line] ?: emptyList())
+                }
+                val note = when {
+                    !apkOk -> "Alpine 官方源没有 openjdk$major；可选 11 / 17 / 21。"
+                    line == null -> "未能识别发行版版本；openjdk-$major-jdk 在部分发行版里不存在。"
+                    !aptOk -> "${distroName(distro)} 官方源没有 openjdk-$major-jdk；该发行版自带的是 " +
+                        (DEBIAN_JAVA_BY_LINE[line] ?: emptyList()).joinToString("/") { "openjdk-$it" } + "。"
+                    else -> ""
+                }
                 VersionSpec(
                     version = v,
                     apkPackages = listOf("openjdk$major", "openjdk$major-jdk"),
                     aptPackages = listOf("openjdk-$major-jdk"),
-                    note = "Debian 下需 openjdk-$major-jdk 包；仓库缺失时请换用 default-jdk。"
+                    note = note,
+                    apkAvailable = apkOk,
+                    aptAvailable = aptOk
                 )
             }
         }
@@ -163,13 +269,16 @@ object ToolchainInstaller {
      * 一个「候选版本」（D 批 · 版本矩阵探测）。
      *
      * @param version 版本号
-     * @param installable 该发行版**是否真有这个包**（false = 只能装默认版，见 note）
+     * @param installable 该发行版**是否真有这个包**（false = 装不到，见 note）
      * @param note 说明，UI 直接展示
+     * @param exact 是否能**精确**装到该版本；false 表示只能装到发行版默认版本，
+     *        实际装到的可能是别的大版本（不会假装精确）
      */
     data class VersionOption(
         val version: String,
         val installable: Boolean,
-        val note: String = ""
+        val note: String = "",
+        val exact: Boolean = true
     )
 
     /**
@@ -183,55 +292,92 @@ object ToolchainInstaller {
      * ## 诚实性约束（重要）
      * 这张表是**编译期写死的候选**，不是实时查询仓库（那需要容器里有网、
      * 还要跑 `apk search` / `apt-cache`，且各发行版镜像源差异极大）。
-     * 所以：
-     * - `installable = false` 的项**明确标注"只能装默认版"**，不假装可选；
-     * - 每条都带 note，UI 原样展示，不隐去限制。
+     * 但「写死」不等于「瞎写」：条目按官方仓库实际内容核对过，
+     * 并且用 [distro] 的发行版版本收窄成「这个 rootfs 上真正能装的」。
+     *
+     * 三态而不是两态：
+     * - `installable=true, exact=true`  → ✅ 官方源就是这个版本；
+     * - `installable=true, exact=false` → 🔄 能装，但装到的是发行版默认版本；
+     * - `installable=false`             → ⚠️ 官方源没有，装不到。
      *
      * 宁可告诉用户"这里装不了"，也不要让他试三次才发现。
      */
-    fun knownVersions(lang: Lang, pkg: PkgManager): List<VersionOption> = when (lang) {
-        Lang.NODE -> if (pkg == PkgManager.APK) {
-            listOf(
-                VersionOption("18", true),
-                VersionOption("20", true),
-                VersionOption("22", true),
-                VersionOption("16", true, "较旧，部分包可能已从仓库移除")
-            )
-        } else {
-            listOf(
-                VersionOption("20", false, "Debian 官方源只有默认版 nodejs；指定版本需自行配置 NodeSource")
-            )
-        }
+    fun knownVersions(
+        lang: Lang,
+        pkg: PkgManager,
+        distro: Distro? = null
+    ): List<VersionOption> {
+        val line = distro?.line
+        return when (lang) {
+            Lang.NODE -> {
+                val shipped = when (pkg) {
+                    PkgManager.APK -> ALPINE_NODE_BY_LINE[line]
+                    PkgManager.APT -> DEBIAN_NODE_BY_LINE[line]
+                }
+                listOf("18", "20", "22").map { v ->
+                    when {
+                        shipped == null -> VersionOption(
+                            v, true,
+                            "未能识别发行版版本；官方源只有一条 nodejs 版本线，装到的不一定是 $v.x",
+                            exact = false
+                        )
+                        shipped == v -> VersionOption(
+                            v, true, "${distroName(distro)} 官方源的 nodejs 就是 $v.x"
+                        )
+                        else -> VersionOption(
+                            v, false,
+                            "${distroName(distro)} 官方源只有 nodejs $shipped.x，没有 node $v 的包"
+                        )
+                    }
+                }
+            }
 
-        Lang.PYTHON -> if (pkg == PkgManager.APK) {
-            listOf(
-                VersionOption("3", true, "Alpine 的 python3 是单版本线，具体小版本由镜像决定"),
-                VersionOption("3.11", false, "Alpine 不提供分小版本包，只能装 python3 当前版")
-            )
-        } else {
-            listOf(
-                VersionOption("3.11", true),
-                VersionOption("3.12", true),
-                VersionOption("3.10", true, "较旧，部分镜像源已移除")
-            )
-        }
+            Lang.PYTHON -> {
+                val shipped = when (pkg) {
+                    PkgManager.APK -> ALPINE_PYTHON_BY_LINE[line]
+                    PkgManager.APT -> DEBIAN_PYTHON_BY_LINE[line]
+                }
+                val candidates = if (pkg == PkgManager.APK) {
+                    listOf("3", "3.11", "3.12")
+                } else {
+                    listOf("3", "3.11", "3.12", "3.13")
+                }
+                candidates.map { v ->
+                    when {
+                        v == "3" -> VersionOption(
+                            v, true,
+                            if (shipped != null) "python3 当前线是 $shipped" else "装 python3 当前线",
+                            exact = false
+                        )
+                        shipped == null -> VersionOption(
+                            v, true, "未能识别发行版版本，装不到时会直接报错", exact = false
+                        )
+                        shipped == v -> VersionOption(v, true, "官方源的 python3 就是 $v")
+                        else -> VersionOption(
+                            v, false, "${distroName(distro)} 官方源只有 python3 $shipped"
+                        )
+                    }
+                }
+            }
 
-        Lang.JAVA -> if (pkg == PkgManager.APK) {
-            listOf(
-                VersionOption("17", true),
-                VersionOption("21", true),
-                VersionOption("11", true),
-                // 标 false 而不是 true：Alpine 的 openjdk8 与新版包名规则不同，
-                // 我们没法保证 resolveVersion 生成的包名一定能装上。
-                // "不确定"就标"装不上"——让用户少试一次，比让他试完才发现要强。
-                VersionOption("8", false, "Alpine 的 openjdk8 包名规则与新版不同，可能装不上；建议用 11/17")
-            )
-        } else {
-            listOf(
-                VersionOption("17", true),
-                VersionOption("21", true),
-                VersionOption("11", true)
-            )
+            Lang.JAVA -> {
+                val available = when (pkg) {
+                    PkgManager.APK -> ALPINE_JAVA_VERSIONS
+                    PkgManager.APT -> DEBIAN_JAVA_BY_LINE[line] ?: listOf("11", "17", "21")
+                }
+                listOf("17", "21", "11").map { v ->
+                    when {
+                        v in available -> VersionOption(v, true)
+                        line == null -> VersionOption(
+                            v, true, "未能识别发行版版本；openjdk-$v-jdk 可能不存在", exact = false
+                        )
+                        else -> VersionOption(
+                            v, false,
+                            "${distroName(distro)} 官方源没有 openjdk-$v-jdk（可用：${available.joinToString("/")}）"
+                        )
+                    }
+                }
+            }
         }
     }
 
@@ -249,7 +395,51 @@ object ToolchainInstaller {
             pkg != null -> null
             else -> "未识别到包管理器（apk / apt-get 都不存在），该 rootfs 无法自动安装运行时"
         }
-        return Detection(pkg, installed, reason)
+        return Detection(pkg, installed, reason, detectDistro(rootfs, pkg))
+    }
+
+    /**
+     * 识别发行版版本（决定「指定版本能不能装到」）。
+     *
+     * 不解析 `os-release` 的全部字段，只取能定版本的那一个：
+     * - Alpine：`/etc/alpine-release`（形如 "3.21.3"）
+     * - Debian：`/etc/debian_version`（形如 "12.11"；testing 会是 "trixie/sid"）
+     * - 兜底：`/etc/os-release` 的 `VERSION_ID`
+     *
+     * @return 识别不到版本时返回 Distro(pkg, null)——仍然带上包管理器，
+     *         只是无法做版本判定（调用方按「未知」处理，不误拦）
+     */
+    fun detectDistro(rootfs: File, pkg: PkgManager? = null): Distro? {
+        val manager = pkg ?: detectPkgManager(rootfs) ?: return null
+        val raw = when (manager) {
+            PkgManager.APK -> readTrimmed(File(rootfs, "etc/alpine-release"))
+            PkgManager.APT -> readTrimmed(File(rootfs, "etc/debian_version"))
+        } ?: readOsReleaseVersionId(rootfs)
+        return Distro(manager, raw)
+    }
+
+    /** 读文件并 trim；不存在或为空返回 null。 */
+    private fun readTrimmed(file: File): String? = runCatching {
+        if (!file.isFile) return null
+        file.readText().trim().takeIf { it.isNotEmpty() }
+    }.getOrNull()
+
+    /** 从 `/etc/os-release` 取 VERSION_ID（形如 3.21.3 / 12）。 */
+    private fun readOsReleaseVersionId(rootfs: File): String? = runCatching {
+        val f = File(rootfs, "etc/os-release")
+        if (!f.isFile) return null
+        f.readLines()
+            .firstOrNull { it.startsWith("VERSION_ID=") }
+            ?.substringAfter('=')
+            ?.trim()?.trim('"')?.takeIf { it.isNotEmpty() }
+    }.getOrNull()
+
+    /** 展示用的发行版名（Alpine 3.21 / Debian 12）。 */
+    private fun distroName(distro: Distro?): String {
+        if (distro == null) return "该发行版"
+        val base = if (distro.pkgManager == PkgManager.APK) "Alpine" else "Debian"
+        val line = distro.line ?: return base
+        return "$base $line"
     }
 
     /** 识别包管理器（看二进制是否存在，不猜发行版名）。 */
@@ -286,7 +476,11 @@ object ToolchainInstaller {
         }
         if (packages.isEmpty()) return null
         return when (pkgManager) {
-            PkgManager.APK -> "apk add --no-cache ${packages.joinToString(" ")}"
+            // 前奏：npm / py3-pip / openjdk 都在 Alpine 的 community 仓库，
+            // 而精简 rootfs 往往只启用 main。缺了它 `apk add nodejs npm` 会报
+            // "npm (no such package)"——这不是版本问题，是源没开全。
+            PkgManager.APK -> apkCommunityPrelude() +
+                "apk add --no-cache ${packages.joinToString(" ")}"
             PkgManager.APT -> "apt-get update && apt-get install -y ${packages.joinToString(" ")}"
         }
     }
@@ -304,7 +498,7 @@ object ToolchainInstaller {
         return when (pkg) {
             PkgManager.APK -> {
                 val all = missing.flatMap { it.apkPackages }.distinct()
-                "apk add --no-cache ${all.joinToString(" ")}"
+                apkCommunityPrelude() + "apk add --no-cache ${all.joinToString(" ")}"
             }
             PkgManager.APT -> {
                 val all = missing.flatMap { it.aptPackages }.distinct()
@@ -313,10 +507,47 @@ object ToolchainInstaller {
         }
     }
 
+    /**
+     * Alpine 的 community 仓库前奏（幂等）。
+     *
+     * 为什么要它：`npm`、`py3-pip`、`openjdk*` 都在 community 仓库，minirootfs
+     * 常常只写了 main。不补这一句，装 node 就会卡在 npm 上（node 装上了、npm 没有）。
+     *
+     * 逻辑：读 /etc/alpine-release 得到 "3.21"，若 /etc/apk/repositories 里
+     * 没有 community，就追加对应版本的 community 源。读不到版本（非 Alpine）
+     * 就什么都不做，交给 apk 自己报错——不猜、不写死版本号。
+     */
+    private fun apkCommunityPrelude(): String =
+        "ALP=\$(sed -n '1s/[^0-9]*\\([0-9][0-9]*\\.[0-9][0-9]*\\).*/\\1/p' /etc/alpine-release 2>/dev/null); " +
+            "[ -z \"\$ALP\" ] || grep -qs '/community' /etc/apk/repositories 2>/dev/null || " +
+            "echo \"https://dl-cdn.alpinelinux.org/alpine/v\$ALP/community\" >> /etc/apk/repositories; "
+
     /** 二进制是否存在（查 rootfs 下常见 bin 目录）。 */
     private fun binaryExists(rootfs: File, name: String): Boolean =
         BIN_DIRS.any { dir -> File(rootfs, "$dir/$name").exists() }
 
     /** rootfs 内的可执行文件目录（覆盖 Alpine 与 Debian 布局）。 */
     private val BIN_DIRS = listOf("bin", "sbin", "usr/bin", "usr/sbin", "usr/local/bin")
+
+    /* ------------------------- 发行版 → 运行时版本对照表 -------------------------
+     *
+     * 数据来源：官方仓库索引（2026-10 核对）。
+     * - Alpine：`https://dl-cdn.alpinelinux.org/alpine/<线>/main/x86_64/APKINDEX.tar.gz`
+     *   实测 v3.19 nodejs=20.15.1、python3=3.11.14；v3.20 nodejs=20.15.1、python3=3.12.13；
+     *   v3.21 nodejs=22.23.2、python3=3.12.15。**没有 nodejs18/20/22 这类分版本包**。
+     * - Debian：bookworm(12) nodejs=18.20.4、python3.11=3.11.2、openjdk 只有 17；
+     *   trixie(13) nodejs=20.x、python3=3.13。
+     *
+     * 只收录**核实过**的版本线。表里没有的线不做判断（当未知处理），
+     * 而不是拿相近版本猜——猜错就会让用户装到与预期不符的运行时。
+     */
+    private val ALPINE_NODE_BY_LINE = mapOf("3.19" to "20", "3.20" to "20", "3.21" to "22")
+    private val ALPINE_PYTHON_BY_LINE = mapOf("3.19" to "3.11", "3.20" to "3.12", "3.21" to "3.12")
+    private val ALPINE_JAVA_VERSIONS = listOf("11", "17", "21")
+    private val DEBIAN_NODE_BY_LINE = mapOf("12" to "18", "13" to "20")
+    private val DEBIAN_PYTHON_BY_LINE = mapOf("12" to "3.11", "13" to "3.13")
+    private val DEBIAN_JAVA_BY_LINE = mapOf(
+        "12" to listOf("17"),
+        "13" to listOf("17", "21")
+    )
 }

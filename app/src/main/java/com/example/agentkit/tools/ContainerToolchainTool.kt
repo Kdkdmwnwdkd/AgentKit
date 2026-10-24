@@ -131,12 +131,20 @@ class ContainerToolchainTool(
         }
         val body = buildString {
             appendLine("包管理器：${pkg.displayName}")
+            detection.distro?.let { d ->
+                appendLine("发行版：${d.pkgManager.displayName} ${d.line ?: "（版本未识别）"}")
+            }
             appendLine("以下为**候选**版本（编译期内置，不是实时查仓库；以实际安装结果为准）：")
+            appendLine("✅ = 官方源就是这个版本   🔄 = 能装，但装到的是发行版默认版本   ⚠️ = 官方源没有，装不到")
             targets.forEach { lang ->
                 appendLine()
                 appendLine("${lang.displayName}：")
-                ToolchainInstaller.knownVersions(lang, pkg).forEach { v ->
-                    val mark = if (v.installable) "✅" else "⚠️"
+                ToolchainInstaller.knownVersions(lang, pkg, detection.distro).forEach { v ->
+                    val mark = when {
+                        v.installable && v.exact -> "✅"
+                        v.installable -> "🔄"
+                        else -> "⚠️"
+                    }
                     appendLine("  $mark ${v.version}" + if (v.note.isNotBlank()) "  — ${v.note}" else "")
                 }
             }
@@ -203,12 +211,26 @@ class ContainerToolchainTool(
                     message = "指定版本时必须同时指定 language。",
                     hint = "version 需要配合 language 使用（如 language=node, version=18）。"
                 )
-            val parsed = ToolchainInstaller.resolveVersion(lang, version)
+            val parsed = ToolchainInstaller.resolveVersion(lang, version, detection.distro)
                 ?: return ToolResult.fail(
                     code = "bad_version",
                     message = "版本号格式非法：$version",
                     hint = "版本号只能由数字和点组成，如 18 / 3.11 / 17。"
                 )
+            // 官方源里没有这个版本时**直接拒绝**，不降级安装另一个大版本。
+            // 用户要 node 18 却装回 node 22，比报错更糟：lockfile 会在运行时炸。
+            if (!parsed.availableOn(pkg)) {
+                val alternatives = ToolchainInstaller
+                    .knownVersions(lang, pkg, detection.distro)
+                    .filter { it.installable }
+                    .joinToString("、") { it.version }
+                return ToolResult.fail(
+                    code = "version_unavailable",
+                    message = parsed.note.ifBlank { "该发行版的官方源里没有 ${lang.displayName} $version。" },
+                    hint = "当前可装的版本：${alternatives.ifBlank { "默认版本" }}。" +
+                        "要指定版本可换对应发行版的 rootfs，或参考 NodeSource/pyenv 自行安装。"
+                )
+            }
             parsed
         } else {
             null
@@ -234,10 +256,12 @@ class ContainerToolchainTool(
             )
         }
         val after = ToolchainInstaller.detect(RootfsManager.rootfsDir(context, distroId))
+        val specHint = spec?.let { s ->
+            if (s.note.isNotBlank()) "（请求 ${s.version}，详见说明）" else "（${s.version}）"
+        } ?: ""
         return ToolResult.ok(
             code = "install_ok",
-            message = "已安装：${target.joinToString("、") { it.displayName }}" +
-                (spec?.let { "（目标版本 ${it.version}）" } ?: ""),
+            message = "已安装：${target.joinToString("、") { it.displayName }}$specHint",
             data = "现在容器里有：${after.installed.joinToString("、") { it.displayName }}\n" +
                 (spec?.note?.let { "说明：$it\n" } ?: "") +
                 "输出：${result.output.take(300)}"

@@ -252,14 +252,26 @@ fun ContainerScreen() {
                                                 placeholder = "默认",
                                                 machine = true
                                             )
+                                            val pm = detection.pkgManager
                                             val spec = if (vInput.isBlank()) null
-                                            else ToolchainInstaller.resolveVersion(lang, vInput)
+                                            else ToolchainInstaller.resolveVersion(lang, vInput, detection.distro)
                                             // 版本号非法时**明确报错**，不静默回落成默认版——
                                             // 用户要 node 18 却悄悄装了 node 20，比报错更糟。
+                                            val unavailable = spec != null && pm != null && !spec.availableOn(pm)
                                             if (vInput.isNotBlank() && spec == null) {
                                                 Spacer(Modifier.height(AgentSpacing.space1))
                                                 Text(
                                                     text = "版本号非法：只接受数字与点（如 18 / 3.11）",
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    color = MaterialTheme.colorScheme.error
+                                                )
+                                            } else if (unavailable) {
+                                                // 官方源没有这个版本：说清原因，且不给可点的按钮。
+                                                // 换成相近版本悄悄装上去，比装不上更难排查。
+                                                Spacer(Modifier.height(AgentSpacing.space1))
+                                                Text(
+                                                    text = spec?.note?.takeIf { it.isNotBlank() }
+                                                        ?: "该发行版装不到 ${lang.displayName} ${spec?.version ?: vInput}",
                                                     style = MaterialTheme.typography.bodySmall,
                                                     color = MaterialTheme.colorScheme.error
                                                 )
