@@ -975,13 +975,20 @@ fun main() {
         assertTrue("应覆盖「仓库里没这个包」", "has no installation candidate" in tool)
     }
 
-    check("E-11 抽屉底部的设置不随列表滚走（否则小屏点不到）") {
+    check("E-11 抽屉菜单与设置必须同处一个滚动区（拆开会把菜单挤成 0 高）") {
         val s = read("app/src/main/java/com/example/agentkit/ui/AppScaffold.kt")
-        val scrollEnd = s.indexOf("滚动区结束")
-        val bottom = s.indexOf("BottomGroup.forEach")
-        assertTrue("应显式标注滚动区结束", scrollEnd > 0)
-        assertTrue("BottomGroup 必须在滚动区之外", bottom > scrollEnd)
-        assertTrue("滚动区应靠 weight(1f) 占剩余高度", "weight(1f)" in s)
+        val fn = s.indexOf("private fun DrawerContent(")
+        val scroll = s.indexOf("verticalScroll(rememberScrollState())", fn)
+        val bottom = s.indexOf("BottomGroup.forEach", fn)
+        assertTrue("抽屉应有滚动区", scroll > fn)
+        assertTrue("设置项必须在同一个滚动区内", bottom > scroll)
+        // 曾经试图把设置「固定到底部」，用 weight(1f) 拆成两层 Column，
+        // 结果在真机上整段菜单测量成 0 高，抽屉里只剩一个设置项。
+        // 小屏裁切的代价远小于菜单消失，这里锁死为单滚动区。
+        assertTrue(
+            "不要在抽屉里用 weight 拆两层（真机上会让菜单高度归零）",
+            "weight(1f)\n            .verticalScroll" !in s
+        )
     }
 
     println("\n== 结果：$pass 通过 / $fail 失败 ==")

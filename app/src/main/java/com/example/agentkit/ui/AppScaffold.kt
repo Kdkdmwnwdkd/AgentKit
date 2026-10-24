@@ -754,13 +754,7 @@ private fun DrawerContent(
             .fillMaxSize()
             .statusBarsPadding()
             .navigationBarsPadding()
-    ) {
-    // 滚动区：内容高 <740dp 的老旧小屏允许抽屉内部滚动（§6.5.2）。
-    // 「设置」必须固定在底部——它原来跟在列表末尾，小屏上会被裁到可视区外，
-    // 而容器 / 编辑器 / MCP 等入口全在设置页里，等于整条路径走不通。
-    Column(
-        Modifier
-            .weight(1f)
+            // 内容高 <740dp 的老旧小屏允许抽屉内部滚动：不加折叠、不加「查看更多」（§6.5.2）
             .verticalScroll(rememberScrollState())
     ) {
         DrawerHeader(
@@ -828,9 +822,7 @@ private fun DrawerContent(
             )
         }
 
-        }   // ← 滚动区结束
-
-        // 底部位：固定在抽屉底部（不在滚动区内）。间距 20dp，不加分隔线、不配分组标题。
+        // 底部位：与上方间距 20dp，不加分隔线、不配分组标题（§6.5.2）
         Spacer(Modifier.height(AgentSpacing.space5))
         BottomGroup.forEach { item ->
             DrawerItem(
