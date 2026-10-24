@@ -81,8 +81,14 @@ object RootfsManager {
         if (!File(d, "bin").isDirectory || !File(d, "etc").isDirectory) return false
         if (lstatType(File(d, "bin/sh")) == LinkType.MISSING) return false
         val busybox = File(d, "bin/busybox")
-        return busybox.isFile && busybox.length() > 0
+        if (!busybox.isFile || busybox.length() == 0L) return false
+        // 布局版本：早期解压保留的是「绝对符号链接」，在 Android 上 execve 会解析到
+        // 宿主的 /bin/busybox（不存在）。没有这个标记说明是旧布局，需要重解压一次。
+        return File(d, LAYOUT_MARKER).isFile
     }
+
+    /** 解压布局版本标记：有它才认为 rootfs 可用（见 [isExtracted]）。 */
+    private const val LAYOUT_MARKER = ".agentkit-layout-v2"
 
     private enum class LinkType { MISSING, SYMLINK, REGULAR }
 
@@ -149,7 +155,9 @@ object RootfsManager {
             runCatching { d.deleteRecursively() } // 残损目录清理，避免下次误判已解压
             return null
         }
-        return if (isExtracted(context, distro.id)) d else null
+        if (!isExtracted(context, distro.id)) return null
+        runCatching { File(d, LAYOUT_MARKER).createNewFile() }
+        return d
     }
 
     /**
@@ -203,11 +211,13 @@ object RootfsManager {
                     skipPad(input, size)
                 }
                 '2' -> { // 符号链接
-                    val f = File(dest, sanitize(name))
+                    val rel = sanitize(name)
+                    val f = File(dest, rel)
                     f.parentFile?.mkdirs()
+                    val target = relativizeLink(dest, rel, linkname)
                     runCatching {
-                        if (f.exists()) f.delete()
-                        Os.symlink(linkname, f.absolutePath)
+                        if (lstatType(f) != LinkType.MISSING) f.delete()
+                        Os.symlink(target, f.absolutePath)
                     }
                     skipPad(input, size)
                 }
@@ -222,6 +232,25 @@ object RootfsManager {
                 }
             }
         }
+    }
+
+    /**
+     * 把**绝对**符号链接改成相对，限制在 rootfs 内。
+     *
+     * Alpine 的 `/bin/sh -> /bin/busybox` 是绝对链接。交给内核 execve 时，绝对目标
+     * 会从**宿主根**解析——Android 上没有 `/bin/busybox`，直接 ENOENT。
+     * proot 本应在 guest 命名空间内翻译它，但真机上这一步没生效
+     *（`proot error: execve("/bin/sh"): No such file or directory`）。
+     *
+     * 转成 `sh -> busybox` 后，内核在 `$ROOTFS/bin/` 内直接解析成功，不依赖 proot
+     * 的符号链接翻译。服务器对照实验里两种形态都能跑，但相对形态在 Android 上更稳。
+     */
+    private fun relativizeLink(root: File, linkRel: String, target: String): String {
+        if (!target.startsWith("/")) return target
+        val linkParent = File(root, linkRel).parentFile ?: root
+        val absolute = File(root, target.trimStart('/'))
+        val rel = runCatching { absolute.relativeTo(linkParent).path }.getOrNull()
+        return if (rel.isNullOrEmpty()) "." else rel
     }
 
     private fun sanitize(name: String): String = name.removePrefix("./").trimStart('/')
