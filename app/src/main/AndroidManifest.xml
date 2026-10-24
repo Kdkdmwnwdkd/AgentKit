@@ -117,6 +117,12 @@
             android:exported="false"
             android:foregroundServiceType="dataSync" />
 
+        <!-- 后台存活自检：没有电脑的用户用它替代 adb dumpsys -->
+        <service
+            android:name=".core.agent.SurvivalCheckService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+
         <!-- W-13：Shizuku 提供者（权限/服务发现） -->
         <provider
             android:name="rikka.shizuku.ShizukuProvider"

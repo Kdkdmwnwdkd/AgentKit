@@ -66,6 +66,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import android.widget.Toast
+import com.example.agentkit.core.agent.SurvivalCheckService
 
 /**
  * 设置页（UX v1 §1.8）：外观 / 自动化 / 各处入口的收纳页。
@@ -262,6 +263,22 @@ fun SettingsScreen(
                     title = "权限中心",
                     description = "无障碍服务、通知与使用情况三项授予状态",
                     onClick = { onNavigate(AppDest.PERMISSIONS) }
+                )
+                AkDivider(Modifier.padding(start = AgentSpacing.space4))
+                // 存活自检：给没有电脑、拉不了 adb 的用户一个自测入口。
+                // 判据写在通知里——锁屏回来数字还在涨就是没被冻结。
+                AkListItem(
+                    icon = null,
+                    title = "后台存活自检",
+                    description = "锁屏 5 分钟，通知里的秒数还在涨说明任务不会被冻结",
+                    onClick = {
+                        SurvivalCheckService.start(context)
+                        Toast.makeText(
+                            context,
+                            "已开始：锁屏后回来看通知里的秒数",
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
                 )
             }
 
