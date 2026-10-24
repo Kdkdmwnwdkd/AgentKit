@@ -23,12 +23,19 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import android.os.Build
+import com.example.agentkit.core.update.UpdateChecker
+import kotlinx.coroutines.launch
 
 /**
  * 关于页（UX v1 §1.9）：版本、设计规范、开源许可与数据去向。
@@ -73,6 +80,9 @@ fun AboutScreen() {
                     style = machineSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+                Spacer(Modifier.height(AgentSpacing.space2))
+                // 更新入口放在版本号下面：用户想「看看有没有新版」时，视线就在这一行
+                UpdateRow()
             }
 
             // —— 设计规范 ----
@@ -135,5 +145,105 @@ fun AboutScreen() {
                 )
             }
         }
+    }
+}
+
+
+/** 检查更新的三种终态 + 进行中。 */
+private sealed interface UpdateState {
+    data object Idle : UpdateState
+    data object Checking : UpdateState
+    data object Latest : UpdateState
+    data class HasUpdate(val latest: Int) : UpdateState
+    data class Failed(val reason: String) : UpdateState
+}
+
+/**
+ * 版本行 + 检查更新。
+ *
+ * 失败不弹窗、不重试：`api.github.com` 在国内不一定通，硬转圈只会让人以为卡死。
+ * 失败时直接把加速下载链接给出来——用户要的是新包，不是「检查成功」这个状态。
+ */
+@Composable
+private fun UpdateRow() {
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var state by remember { mutableStateOf<UpdateState>(UpdateState.Idle) }
+    val currentCode = remember(ctx) {
+        runCatching {
+            val info = ctx.packageManager.getPackageInfo(ctx.packageName, 0)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                info.longVersionCode.toInt()
+            } else {
+                @Suppress("DEPRECATION")
+                info.versionCode
+            }
+        }.getOrDefault(0)
+    }
+
+    fun startCheck() {
+        if (state == UpdateState.Checking) return
+        state = UpdateState.Checking
+        scope.launch {
+            UpdateChecker.check(currentCode).fold(
+                onSuccess = { info ->
+                    state = if (info.hasUpdate) UpdateState.HasUpdate(info.latestCode) else UpdateState.Latest
+                },
+                onFailure = { e ->
+                    state = UpdateState.Failed(e.message?.take(60) ?: "网络错误")
+                }
+            )
+        }
+    }
+
+    Column(Modifier.fillMaxWidth()) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = when (val s = state) {
+                    UpdateState.Idle -> "当前构建号 $currentCode"
+                    UpdateState.Checking -> "正在检查…"
+                    UpdateState.Latest -> "已是最新版（构建 $currentCode）"
+                    is UpdateState.HasUpdate -> "有新版本：构建 ${s.latest}（当前 $currentCode）"
+                    is UpdateState.Failed -> "检查失败：${s.reason}"
+                },
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.bodySmall,
+                color = if (state is UpdateState.HasUpdate) {
+                    MaterialTheme.colorScheme.primary
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                }
+            )
+            when (state) {
+                is UpdateState.HasUpdate -> AkTextButton(
+                    text = "去下载",
+                    onClick = { openUrl(ctx, UpdateChecker.DOWNLOAD_URL) }
+                )
+                UpdateState.Checking -> Unit
+                else -> AkTextButton(text = "检查更新", onClick = { startCheck() })
+            }
+        }
+        // 检查失败时也给下载入口：多半是接口不通，但包本身是能下的
+        if (state is UpdateState.Failed) {
+            AkTextButton(
+                text = "直接下载最新包",
+                onClick = { openUrl(ctx, UpdateChecker.DOWNLOAD_URL) }
+            )
+            AkTextButton(
+                text = "打开 Release 页",
+                onClick = { openUrl(ctx, UpdateChecker.RELEASE_PAGE) }
+            )
+        }
+    }
+}
+
+private fun openUrl(ctx: android.content.Context, url: String) {
+    runCatching {
+        ctx.startActivity(
+            android.content.Intent(
+                android.content.Intent.ACTION_VIEW,
+                android.net.Uri.parse(url)
+            ).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+        )
     }
 }
