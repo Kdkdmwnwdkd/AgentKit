@@ -19,56 +19,61 @@ import androidx.compose.ui.unit.sp
  * fontScale >1.3 的行高 ×1.4 例外由各容器 heightIn(min) 兜底（UX v1 §5.2），不在样式层写死。
  */
 
-private val noFontPadding = PlatformTextStyle(includeFontPadding = false)
+// 真机反馈（2026-10-24 录屏）：设置页 / 容器页出现「标题压住副标题、同一行字上下错位」。
+// 布局本身是 heightIn(min) + Column 自适应，不存在裁切；问题在字体度量——
+// 部分厂商 ROM 的中文字体 ascent/descent 与 Compose 按 lineHeight 计算的 line box 对不上，
+// 关掉 font padding 后字形会溢出到相邻行。
+// 恢复系统默认（true）：行高多 2~4dp，换「任何字体下都不会叠字」。
+private val fontPaddingStyle = PlatformTextStyle(includeFontPadding = true)
 
 internal val AgentKitTypography = Typography(
     headlineSmall = TextStyle(
         fontWeight = FontWeight.SemiBold,
         fontSize = 22.sp,
         lineHeight = 30.sp,
-        platformStyle = noFontPadding
+        platformStyle = fontPaddingStyle
     ),
     titleLarge = TextStyle(
         fontWeight = FontWeight.SemiBold,
         fontSize = 18.sp,
         lineHeight = 26.sp,
-        platformStyle = noFontPadding
+        platformStyle = fontPaddingStyle
     ),
     titleMedium = TextStyle(
         fontWeight = FontWeight.Medium,
         fontSize = 16.sp,
         lineHeight = 24.sp,
-        platformStyle = noFontPadding
+        platformStyle = fontPaddingStyle
     ),
     bodyLarge = TextStyle(
         fontWeight = FontWeight.Normal,
         fontSize = 15.sp,
         lineHeight = 26.sp,
-        platformStyle = noFontPadding
+        platformStyle = fontPaddingStyle
     ),
     bodySmall = TextStyle(
         fontWeight = FontWeight.Normal,
         fontSize = 13.sp,
         lineHeight = 20.sp,
-        platformStyle = noFontPadding
+        platformStyle = fontPaddingStyle
     ),
     labelLarge = TextStyle(
         fontWeight = FontWeight.SemiBold,
         fontSize = 14.sp,
         lineHeight = 20.sp,
-        platformStyle = noFontPadding
+        platformStyle = fontPaddingStyle
     ),
     labelMedium = TextStyle(
         fontWeight = FontWeight.Medium,
         fontSize = 12.sp,
         lineHeight = 16.sp,
-        platformStyle = noFontPadding
+        platformStyle = fontPaddingStyle
     ),
     labelSmall = TextStyle(
         fontWeight = FontWeight.Medium,
         fontSize = 11.sp,
         lineHeight = 14.sp,
-        platformStyle = noFontPadding
+        platformStyle = fontPaddingStyle
     )
 )
 
@@ -78,7 +83,7 @@ internal val machineText: TextStyle = TextStyle(
     fontWeight = FontWeight.Normal,
     fontSize = 13.sp,
     lineHeight = 20.sp,
-    platformStyle = noFontPadding
+    platformStyle = fontPaddingStyle
 )
 
 /** 时间戳 / STEP n/m / 时长 / 指纹 / 版本（mono 12sp/16）。 */
@@ -87,5 +92,5 @@ internal val machineSmall: TextStyle = TextStyle(
     fontWeight = FontWeight.Normal,
     fontSize = 12.sp,
     lineHeight = 16.sp,
-    platformStyle = noFontPadding
+    platformStyle = fontPaddingStyle
 )
