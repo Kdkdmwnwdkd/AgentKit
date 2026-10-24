@@ -31,8 +31,19 @@ def adb(*args, timeout=60):
 
 
 def dump():
-    adb("shell", "uiautomator", "dump", "/sdcard/ui-smoke.xml")
-    return adb("shell", "cat", "/sdcard/ui-smoke.xml")
+    """抓两次取节点更多的那份。
+
+    Compose 在转场动画期间语义树是不完整的：抽屉刚推开时 dump 会漏掉一半菜单，
+    脚本就会误报「菜单缺失」。多抓一次几乎不花时间，能消掉这类假失败。
+    """
+    best = ""
+    for _ in range(2):
+        adb("shell", "uiautomator", "dump", "/sdcard/ui-smoke.xml")
+        xml = adb("shell", "cat", "/sdcard/ui-smoke.xml")
+        if xml.count("<node") > best.count("<node"):
+            best = xml
+        time.sleep(0.4)
+    return best
 
 
 def nodes(xml):
@@ -124,6 +135,15 @@ def main():
         for _ in range(10):
             n = find(dump(), key)
             if n:
+                # 目标贴近屏幕底部时，中心点会落在导航栏/屏幕外，点击无效。
+                # 这种情况再滑一次，把它顶到可视区中间。
+                if n["center"][1] > h * 0.82:
+                    adb("shell", "input", "swipe", str(w // 2), str(int(h * 0.85)),
+                        str(w // 2), str(int(h * 0.45)), "300")
+                    time.sleep(0.6)
+                    n = find(dump(), key)
+                    if not n:
+                        continue
                 tap(*n["center"])
                 return 0
             # 距离要够、时长要够：短促的 swipe 容易被当成"轻扫"后回弹，

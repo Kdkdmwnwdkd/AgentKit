@@ -93,8 +93,11 @@ if $UI has "就能全自动"; then
     bad "清单点不开"
     shot "02b-readiness"
   fi
+elif $UI has "说点什么"; then
+  ok "准备清单未显示（四项已就绪）"
 else
-  ok "准备清单未显示（说明四项都已就绪）"
+  bad "没找到准备清单，也不在对话页" "可能停在别的页面，或卡片渲染失败"
+  shot "02b-no-readiness"
 fi
 
 echo "== 抽屉 =="
@@ -164,9 +167,9 @@ else
 fi
 
 if $UI has "点击解压 rootfs"; then
-  echo "  … 解压 rootfs（最多 180s；TCG 模拟器解压 8MB tar 很慢）"
+  echo "  … 解压 rootfs（最多 300s；TCG 模拟器解压 8MB tar 可能超过 3 分钟）"
   $UI tap "点击解压 rootfs" >/dev/null 2>&1
-  if $UI wait "已就绪" 180; then
+  if $UI wait "已就绪" 300; then
     ok "rootfs 解压完成（已就绪）"
   else
     bad "rootfs 180s 内未就绪"
