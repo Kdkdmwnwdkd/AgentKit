@@ -630,6 +630,7 @@ private fun ScreenHost(
                     vm = vm,
                     onOpenModel = { onNavigate(AppDest.MODEL) },
                     onOpenGuide = { onNavigate(AppDest.PERMISSION_GUIDE) },
+                    onOpenContainer = { onNavigate(AppDest.CONTAINER) },
                     onManagePrompts = { onNavigate(AppDest.PROMPTS) }
                 )
                 // 功能一：模型页不再硬跳对话页——从哪来往哪回（抽屉来的回抽屉关闭态，空态直达的回对话页）

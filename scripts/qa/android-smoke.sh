@@ -76,6 +76,27 @@ if [ "$started" -eq 0 ]; then ok "首屏已渲染"; else bad "首屏 40s 内没�
 # 引导页（仅首次安装出现）
 $UI tap "先自己看看" >/dev/null 2>&1 && { ok "跳过引导"; sleep 3; }
 
+echo "== 准备清单 =="
+# 全新安装时四项权限都没给，卡片必然出现。若四项都就绪则卡片不显示，也算正常。
+if $UI has "就能全自动"; then
+  ok "对话页顶部有准备清单"
+  # 「展开」两个字的节点在某些版本上 bounds 为 0，点标题更稳（整行都可点）
+  if $UI tap "就能全自动" >/dev/null 2>&1 || $UI tap "展开" >/dev/null 2>&1; then
+    sleep 2
+    if $UI has "无障碍服务" || $UI has "通知权限" || $UI has "使用情况访问"; then
+      ok "清单可展开且有条目"
+    else
+      bad "清单展开后没有条目"
+      shot "02b-readiness"
+    fi
+  else
+    bad "清单点不开"
+    shot "02b-readiness"
+  fi
+else
+  ok "准备清单未显示（说明四项都已就绪）"
+fi
+
 echo "== 抽屉 =="
 # 汉堡按钮没有 content-desc，只能按比例点。比例取自 720x1280 的实测中心 (48,169)，
 # 点完必须确认抽屉真的开了——不同状态栏高度会让它偏，所以带一次重试。

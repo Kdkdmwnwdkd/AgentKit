@@ -166,6 +166,7 @@ fun ChatScreen(
     vm: ChatViewModel,
     onOpenModel: () -> Unit,
     onOpenGuide: () -> Unit,
+    onOpenContainer: () -> Unit,
     onManagePrompts: () -> Unit
 ) {
     val messages by vm.messages.collectAsStateWithLifecycle()
@@ -402,6 +403,17 @@ fun ChatScreen(
         if (sessionUsage.totalTokens > 0) {
             UsageSummaryBar(usage = sessionUsage)
         }
+        // 准备清单：只列「还差什么」，全部就绪自动消失。
+        // 放在分支之外——空会话和非空会话都该看到，而不是只有第一次才有。
+        // 折叠态只占一行，点开才展开；不拦路、不弹窗。
+        ReadinessCard(
+            vm = vm,
+            onOpenContainer = onOpenContainer,
+            modifier = Modifier.padding(
+                horizontal = AgentSpacing.space4,
+                vertical = AgentSpacing.space2
+            )
+        )
         if (messages.isEmpty() && streamDraft == null) {
             EmptyGuide(
                 modifier = Modifier
