@@ -10,6 +10,7 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import com.example.agentkit.MainActivity
 import com.example.agentkit.core.AgentLogger
@@ -42,6 +43,31 @@ import com.example.agentkit.core.AgentLogger
  */
 class AgentRunService : Service() {
 
+    /**
+     * CPU 唤醒锁。
+     *
+     * 前台服务只保证「进程有通知、不被随手回收」，**不保证 CPU 不睡**。
+     * 锁屏后 CPU 进入 suspend，流式响应和容器命令会被挂起，用户看到的是「任务卡住不动」。
+     *
+     * 上限 15 分钟：够覆盖绝大多数 Agent 任务；万一某个任务卡死，
+     * 超时后系统自动回收，不会把电池耗干（`setReferenceCounted(false)` 保证只释放一次）。
+     */
+    private var wakeLock: PowerManager.WakeLock? = null
+
+    override fun onCreate() {
+        super.onCreate()
+        wakeLock = runCatching {
+            val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+            pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "AgentKit:run").apply {
+                setReferenceCounted(false)
+                acquire(15 * 60 * 1000L)
+            }
+        }.onFailure {
+            // 拿不到锁不该让任务失败：最坏情况是锁屏后变慢，不是不能跑。
+            AgentLogger.w(TAG, "WakeLock 获取失败：${it.message}")
+        }.getOrNull()
+    }
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -68,6 +94,10 @@ class AgentRunService : Service() {
     }
 
     override fun onDestroy() {
+        wakeLock?.let { lock ->
+            runCatching { if (lock.isHeld) lock.release() }
+        }
+        wakeLock = null
         runCatching {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
                 stopForeground(STOP_FOREGROUND_REMOVE)
