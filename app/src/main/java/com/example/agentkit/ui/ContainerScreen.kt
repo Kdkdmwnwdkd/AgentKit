@@ -264,14 +264,19 @@ fun ContainerScreen() {
                                             installResult = null
                                             // 装完刷新探测结果（列表项用 remember(id, toolchainTick) 重算）
                                             scope.launch(Dispatchers.IO) {
-                                                val res = runInstallInContainer(context, id, cmd)
+                                                val (res, verified) = installAndVerify(context, id, cmd, missing)
                                                 withContext(Dispatchers.Main) {
                                                     installing = null
                                                     toolchainTick++
-                                                    installResult = InstallReport(id, allLabel, res)
+                                                    installResult = InstallReport(
+                                                        id, allLabel, res,
+                                                        targets = missing.map { it.id }.toSet(),
+                                                        verified = verified
+                                                    )
+                                                    val ok = res.ok || verified.containsAll(missing.map { it.id })
                                                     Toast.makeText(
                                                         context,
-                                                        if (res.ok) "安装完成：$allLabel" else "安装失败（exit ${res.exitCode}）",
+                                                        if (ok) "安装完成：$allLabel" else "安装失败（exit ${res.exitCode}）",
                                                         Toast.LENGTH_SHORT
                                                     ).show()
                                                 }
@@ -358,14 +363,19 @@ fun ContainerScreen() {
                                                             installing = langKey
                                                             installResult = null
                                                             scope.launch(Dispatchers.IO) {
-                                                                val res = runInstallInContainer(context, id, cmd)
+                                                                val (res, verified) = installAndVerify(context, id, cmd, listOf(lang))
                                                                 withContext(Dispatchers.Main) {
                                                                     installing = null
                                                                     toolchainTick++
-                                                                    installResult = InstallReport(id, langLabel, res)
+                                                                    installResult = InstallReport(
+                                                                        id, langLabel, res,
+                                                                        targets = setOf(lang.id),
+                                                                        verified = verified
+                                                                    )
+                                                                    val ok = res.ok || lang.id in verified
                                                                     Toast.makeText(
                                                                         context,
-                                                                        if (res.ok) "安装完成：$langLabel"
+                                                                        if (ok) "安装完成：$langLabel"
                                                                         else "安装失败（exit ${res.exitCode}）",
                                                                         Toast.LENGTH_SHORT
                                                                     ).show()
@@ -402,9 +412,19 @@ fun ContainerScreen() {
                                     Text(
                                         text = report.summary,
                                         style = MaterialTheme.typography.bodySmall,
-                                        color = if (report.result.ok) MaterialTheme.colorScheme.primary
+                                        color = if (report.effectiveOk) MaterialTheme.colorScheme.primary
                                         else MaterialTheme.colorScheme.error
                                     )
+                                    // 卡片只放得下十来行，apk 的「1 error」上面几十行才是真因；
+                                    // 告诉用户完整输出在哪，别再靠截图来回猜。
+                                    if (!report.effectiveOk && !report.result.busy) {
+                                        Spacer(Modifier.height(AgentSpacing.space1))
+                                        Text(
+                                            text = "完整输出已存到应用 files/logs/container-fail-*.log，可在「日志」页导出。",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
                                 }
                                 Spacer(Modifier.height(AgentSpacing.space3))
                             }
@@ -446,29 +466,76 @@ private suspend fun runInstallInContainer(
 }
 
 /**
+ * 安装 + 失败后自检。
+ *
+ * 包管理器的退出码不能代表「能不能用」：真机上 `apk add openjdk17 openjdk17-jdk`
+ * 装完 77 个包后报 `1 error`（退出码 1，某个 trigger 脚本在 proot 下失败），
+ * 但 `java -version && javac -version` 是正常的。反过来，退出码 0 也不等于
+ * `javac` 真在（JRE 包装上了、JDK 包被跳过）。
+ *
+ * 所以失败时补一次真实自检（一次容器命令，约 2 秒），用**能力**下结论。
+ *
+ * @return 安装结果 与 自检通过的语言 id 集合
+ */
+private suspend fun installAndVerify(
+    context: Context,
+    distroId: String,
+    command: String,
+    targets: List<ToolchainInstaller.Lang>
+): Pair<ContainerCommandRunner.Result, Set<String>> = withContext(Dispatchers.IO) {
+    val res = ContainerCommandRunner.run(context, distroId, command)
+    if (res.ok || res.busy) return@withContext res to emptySet<String>()
+    val script = ToolchainInstaller.verifyScript(targets)
+    if (script.isBlank()) return@withContext res to emptySet<String>()
+    val verify = ContainerCommandRunner.run(context, distroId, script)
+    res to ToolchainInstaller.verifiedLangs(verify.output)
+}
+
+/**
  * 一次安装的结果（内联展示用）。
  *
  * 为什么不用 Toast 汇报失败：Toast 只能容纳两行，且马上消失；而 apk / apt 的失败
  * 原因几乎总在输出的**最后几行**（`ERROR: ...`），前 80 字截断恰好把它们切掉。
  * 真机上用户拿到的就是 `exit 99` 加一句被切一半的话，等于没给信息。
+ *
+ * @param targets  这次安装想装的语言 id
+ * @param verified 安装命令失败后，用 `--version` 自检通过的语言 id
  */
 private data class InstallReport(
     val distroId: String,
     val label: String,
-    val result: ContainerCommandRunner.Result
+    val result: ContainerCommandRunner.Result,
+    val targets: Set<String> = emptySet(),
+    val verified: Set<String> = emptySet()
 ) {
-    /** 失败时保留最后几行（错误在尾部），成功时只报一句。 */
+    /**
+     * 包管理器说失败，但目标运行时全部通过自检。
+     *
+     * 真机实例：`apk add openjdk17 openjdk17-jdk` 装完 77 个包后报 `1 error`（退出码 1，
+     * 某个 trigger 脚本在 proot 下失败），但 `java -version && javac -version` 正常。
+     * 这时候告诉用户「安装失败」是错的——他明明能跑 javac。
+     */
+    val okByCapability: Boolean
+        get() = !result.ok && targets.isNotEmpty() && verified.containsAll(targets)
+
+    /** 最终结论：命令成功，或命令失败但能力已具备。 */
+    val effectiveOk: Boolean get() = result.ok || okByCapability
+
+    /** 失败时保留可诊断的行：错误行优先，再补尾部。 */
     val summary: String
         get() = when {
             result.ok -> "$label 安装完成。"
             result.busy -> "$label：同一条命令已在执行，等它结束再点。"
+            okByCapability -> "$label 已就位：包管理器报了错误，但自检通过" +
+                "（${targets.joinToString("、")} 可执行）。"
             else -> {
-                val tail = result.output.trim().lines()
-                    .filter { it.isNotBlank() }
-                    .takeLast(4)
-                    .joinToString("\n")
-                "$label 安装失败（exit ${result.exitCode}）：" +
-                    if (tail.isBlank()) "（无输出）" else "\n$tail"
+                val lines = result.output.trim().lines().filter { it.isNotBlank() }
+                val errors = lines.filter {
+                    it.contains("error", ignoreCase = true) || it.contains("fail", ignoreCase = true)
+                }.takeLast(5)
+                val shown = (errors + lines.takeLast(6)).distinct().takeLast(12).joinToString("\n")
+                "$label 安装失败（exit ${result.exitCode}）：\n" +
+                    shown.ifBlank { "（无输出）" }
             }
         }
 }

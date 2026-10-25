@@ -64,7 +64,9 @@ object ToolchainInstaller {
             probeBinaries = listOf("java", "javac"),
             apkPackages = listOf("openjdk17", "openjdk17-jdk"),
             aptPackages = listOf("default-jdk"),
-            verifyCommand = "java -version"
+            // 卡片的标题写着「JRE + JDK」，自检就得把 javac 一起验：
+            // 只验 `java -version` 会把「JRE 在、JDK 缺」当成装成功。
+            verifyCommand = "java -version && javac -version"
         );
 
         companion object {
@@ -517,6 +519,57 @@ object ToolchainInstaller {
         "ALP=\$(sed -n '1s/[^0-9]*\\([0-9][0-9]*\\.[0-9][0-9]*\\).*/\\1/p' /etc/alpine-release 2>/dev/null); " +
             "[ -z \"\$ALP\" ] || grep -qs '/community' /etc/apk/repositories 2>/dev/null || " +
             "echo \"https://dl-cdn.alpinelinux.org/alpine/v\$ALP/community\" >> /etc/apk/repositories; "
+
+    /**
+     * 生成「装完自检」脚本：逐语言跑它的 `verifyCommand`，成功打 `OK:<id>`，失败打 `FAIL:<id>`。
+     *
+     * ## 为什么不能只看 apk 的退出码（真机 exit 1）
+     * 真机上装 `openjdk17 + openjdk17-jdk`（424 MiB / 77 个包）最后是：
+     * ```
+     * Executing busybox-1.36.1-r29.trigger
+     * 1 error: 424 MiB in 77 packages
+     * ```
+     * 包全部装完了（卡片也显示「已安装 Java」），但只要有一个 trigger 脚本在 proot 下
+     * 返回非 0，apk 的整体退出码就是 1。**退出码 ≠ 能力**：判断「能不能跑 java」的
+     * 唯一办法是跑一次 `java -version`。
+     *
+     * 反过来也成立：退出码 0 不代表 `javac` 真能用（JRE 包装上了、JDK 包被跳过的情形）。
+     * 所以自检是独立的一步，不依赖包管理器的结论。
+     *
+     * @param langs 需要自检的语言；空集合返回空串（调用方应跳过这次容器命令）
+     * @return 可直接交给 [ContainerCommandRunner] 执行的一行 shell 脚本
+     */
+    fun verifyScript(langs: List<Lang>): String {
+        if (langs.isEmpty()) return ""
+        // 子 shell 包住整条命令再重定向：`java -version` 走 stderr，只重定向 stdout 会漏出去
+        return langs.joinToString("; ") { lang ->
+            "( ${lang.verifyCommand} ) >/dev/null 2>&1 && echo \"OK:${lang.id}\" || echo \"FAIL:${lang.id}\""
+        }
+    }
+
+    /**
+     * 从 [verifyScript] 的输出里取出通过自检的语言 id。
+     *
+     * 纯函数，JVM harness 可断言（不依赖 Android / 容器）。
+     */
+    fun verifiedLangs(output: String): Set<String> =
+        output.lineSequence()
+            .map { it.trim() }
+            .filter { it.startsWith("OK:") }
+            .map { it.removePrefix("OK:").trim() }
+            .filter { it.isNotEmpty() }
+            .toSet()
+
+    /**
+     * 解析自检失败项（供 UI 说明「哪个没装上」）。
+     */
+    fun failedLangs(output: String): Set<String> =
+        output.lineSequence()
+            .map { it.trim() }
+            .filter { it.startsWith("FAIL:") }
+            .map { it.removePrefix("FAIL:").trim() }
+            .filter { it.isNotEmpty() }
+            .toSet()
 
     /** 二进制是否存在（查 rootfs 下常见 bin 目录）。 */
     private fun binaryExists(rootfs: File, name: String): Boolean =

@@ -68,6 +68,9 @@ object ContainerCommandRunner {
     /** 单次输出上限（安装日志可能很长，截断避免 OOM）。 */
     private const val MAX_OUTPUT_CHARS = 64 * 1024
 
+    /** 失败输出落盘保留份数（`logs/container-fail-*.log`）。 */
+    private const val DIR_KEEP_FILES = 5
+
     /** 抢锁失败后的重试间隔；长度即重试次数（不含首次）。 */
     private val LOCK_RETRY_DELAYS_MS = longArrayOf(2_000L, 5_000L)
 
@@ -123,6 +126,11 @@ object ContainerCommandRunner {
                     TAG,
                     "容器命令结束：distro=$distroId exit=${result.exitCode} 耗时=${cost}s"
                 )
+                // 失败时把完整输出落盘：UI 只能显示十来行，而 apk 的「1 error」前面
+                // 往往还有决定性的那一条。落盘后用户从日志页就能导出，不用再靠截图。
+                if (result.exitCode != 0 && result.exitCode != EXIT_BUSY) {
+                    dumpFailure(context, distroId, command, result)
+                }
                 return result
             }
         } finally {
@@ -167,6 +175,38 @@ object ContainerCommandRunner {
             invocation.envArray,
             maxOf(timeoutMinutes, estimateTimeoutMinutes(command))
         )
+    }
+
+    /**
+     * 把失败命令的完整输出写到 `filesDir/logs/container-fail-<ts>.log`（保留最近 5 份）。
+     *
+     * 为什么需要：UI 卡片只能放下十来行，而 apk 的收尾是
+     * `1 error: 424 MiB in 77 packages`——真正的错误行在它上面几十行处。
+     * 落盘后用户可以在日志页导出完整内容，不必反复截图猜。
+     */
+    private fun dumpFailure(
+        context: Context,
+        distroId: String,
+        command: String,
+        result: Result
+    ) {
+        runCatching {
+            val dir = File(context.filesDir, "logs").apply { mkdirs() }
+            val file = File(dir, "container-fail-${System.currentTimeMillis()}.log")
+            file.writeText(
+                buildString {
+                    append("exit=").append(result.exitCode).append('\n')
+                    append("distro=").append(distroId).append('\n')
+                    append("command=").append(command).append("\n\n")
+                    append(result.output)
+                }
+            )
+            dir.listFiles { f -> f.name.startsWith("container-fail-") }
+                ?.sortedByDescending { it.lastModified() }
+                ?.drop(DIR_KEEP_FILES)
+                ?.forEach { it.delete() }
+            AgentLogger.w(TAG, "失败输出已保存：${file.absolutePath}")
+        }.onFailure { AgentLogger.w(TAG, "保存失败输出出错：${it.message}") }
     }
 
     /**

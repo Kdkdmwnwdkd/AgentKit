@@ -473,6 +473,19 @@ fun main() {
         assertTrue("大包（JDK）应有更长超时", "estimateTimeoutMinutes" in runner)
     }
 
+    check("B4-16 装完自检：以能力为准，而不是包管理器退出码") {
+        val script = ToolchainInstaller.verifyScript(listOf(ToolchainInstaller.Lang.JAVA))
+        assertTrue("应验 java", "java -version" in script)
+        // 卡片标题是「Java (JRE + JDK)」：只验 java 会把「JRE 在、JDK 缺」当成功
+        assertTrue("应同时验 javac", "javac -version" in script)
+        assertTrue("应打 OK:<id> 标记", "OK:java" in script)
+        assertEquals("空列表应返回空串（调用方据此跳过这次容器命令）", "", ToolchainInstaller.verifyScript(emptyList()))
+        val out = "FAIL:node\nOK:java\n"
+        assertEquals("应解析出 java 通过", setOf("java"), ToolchainInstaller.verifiedLangs(out))
+        assertEquals("应解析出 node 失败", setOf("node"), ToolchainInstaller.failedLangs(out))
+        assertEquals("无标记时应为空集", emptySet<String>(), ToolchainInstaller.verifiedLangs("noise\n"))
+    }
+
     /* ------------------------- C1 备份分组与批量回滚 ------------------------- */
 
     check("C1-1 同一文件的多次改动聚成一组，组内按时间倒序") {
