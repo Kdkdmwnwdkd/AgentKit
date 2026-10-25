@@ -248,6 +248,17 @@ class ContainerToolchainTool(
         )
 
         val result = ContainerCommandRunner.run(context, distroId, command)
+        // 「同一条命令已在执行」不是失败，是别重复提交：apk/apt 抢数据库锁会直接
+        // exit 99，所以执行器宁可立刻拒绝也不排队。这里必须单独说清楚，
+        // 否则会被下面的失败分支报成「安装失败（exit -2）」——用户完全看不懂。
+        if (result.busy) {
+            return ToolResult.fail(
+                code = "install_busy",
+                message = "容器里已有同一条安装命令在执行。",
+                hint = "等它结束后再试。包管理器（apk/apt）同一时刻只能有一个写者，" +
+                    "并发执行会抢数据库锁并以 exit 99 失败，所以这里直接拒绝而不是排队。"
+            )
+        }
         if (!result.ok) {
             // 失败时别只丢一个 exit code：apk/apt 的报错能区分「没网」「没这个包」
             // 「权限不足」三种最常见的坑，直接说人话比让用户猜省事。
