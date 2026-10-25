@@ -54,9 +54,12 @@
     <uses-permission android:name="android.permission.RECEIVE_SMS" />
 
     <!-- android:name 指向 AgentKitApplication：它只做一件事——在最早时机装上 CrashLogger -->
+    <!-- requestLegacyExternalStorage：targetSdk 降到 28 后，Android 10/11 上要显式声明
+         才能用旧版共享存储模式（容器 -b /sdcard 与作品库读写依赖它） -->
     <application
         android:name=".AgentKitApplication"
         android:allowBackup="false"
+        android:requestLegacyExternalStorage="true"
         android:label="AgentKit"
         android:supportsRtl="true"
         android:networkSecurityConfig="@xml/network_security_config"

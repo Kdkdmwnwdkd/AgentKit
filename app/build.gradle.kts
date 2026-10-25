@@ -34,7 +34,13 @@ android {
     defaultConfig {
         applicationId = "com.example.agentkit"
         minSdk = 26
-        targetSdk = 34
+        // 28 而不是 34：Android 10+ 对 targetSdk>=29 的应用禁止从**应用数据目录**
+        // 调用 execve（W^X）。容器里的所有程序（busybox、之后装的 node/python）
+        // 都落在 filesDir，因此 proot 一旦进 guest 就必然失败——
+        // 表现为 error=13 / execve("/bin/sh")，且无法通过改代码绕开。
+        // Termux 至今保持 targetSdk 28，正是同一原因。
+        // 代价：存储/通知/包可见性回退到旧模式（本项目不依赖 29+ 的新约束）。
+        targetSdk = 28
         // 版本号每次构建自增：CI 上用 GITHUB_RUN_NUMBER（每次运行单调递增），
         // 本地构建回退到 LOCAL_FALLBACK_VERSION_CODE 常量。
         // 取 coerceAtLeast 兜底，确保 versionCode 永不小于历史值，否则 Android 拒绝覆盖安装。
