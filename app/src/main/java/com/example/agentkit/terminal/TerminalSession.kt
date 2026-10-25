@@ -163,8 +163,17 @@ class TerminalSession(
             break
         }
         val code = runCatching { TerminalJni.waitFor(handle, 3000) }.getOrDefault(-1)
-        AgentLogger.i(TAG, "终端会话结束，退出码=$code")
-        postExit(code)
+        // 主动销毁（离开页面 / 旋转窗口期结束）会 kill 进程组，waitFor 拿到的必然是
+        // 137（128+SIGKILL）。这不是崩溃——把它当退出码上报，UI 会显示「进程被杀死」
+        // 这类吓人的错误，日志里也会出现一条看起来像故障的记录。真机排查时这条误报
+        // 曾与真正的 SIGKILL（LMK 杀进程）混在一起，得靠时间戳猜。所以这里分开记：
+        // 主动销毁只记一行 INFO，不回调 onExit（页面已离开，没人需要这个码）。
+        if (destroyed) {
+            AgentLogger.i(TAG, "终端会话已主动结束（code=$code，kill 进程组的预期结果）")
+        } else {
+            AgentLogger.i(TAG, "终端会话结束，退出码=$code")
+            postExit(code)
+        }
     }
 
     /**

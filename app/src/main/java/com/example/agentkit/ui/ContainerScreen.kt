@@ -79,6 +79,25 @@ fun ContainerScreen() {
      */
     val versionInputs = remember { mutableStateMapOf<String, String>() }
 
+    /**
+     * 正在执行的安装任务（key = "<发行版id>:<语言id>" 或 "<发行版id>:all"）；null = 空闲。
+     *
+     * 存在的理由（真机 exit 99）：按钮原来没有运行态，连点两下就会起两个 proot
+     * 同时跑 `apk add`，apk 数据库抢锁，第二个必然
+     * `exit 99: Unable to lock database`。底层 [ContainerCommandRunner] 已加串行闸门，
+     * 这一层再把按钮禁用掉——让用户在点下去之前就知道「已经在装了」，而不是等一个
+     * 失败提示才反应过来。
+     */
+    var installing by remember { mutableStateOf<String?>(null) }
+
+    /**
+     * 最近一次安装的结果（内联常驻）。
+     *
+     * 原来只有 Toast：一闪而过，且 `take(80)` 截断会把真正的报错行切掉，
+     * 用户只能截图问「这什么意思」。现在把完整尾段留在卡片里，能看懂也能复制。
+     */
+    var installResult by remember { mutableStateOf<InstallReport?>(null) }
+
     // proot 三件套是**首次使用时**才从 assets 提取的（ensureBinary）。
     // 原来这里只判断 isAvailable，新装应用还没提取过 → 永远显示「需要 proot」，
     // 用户根本没有触发提取的入口，等于容器功能对新用户完全不可用。
@@ -210,25 +229,34 @@ fun ContainerScreen() {
                                 if (detection.pkgManager != null && missing.isNotEmpty()) {
                                     // 命令先算出来，UI 与执行共用同一份——避免文案与实际执行不一致
                                     val installCmd = ToolchainInstaller.installMissingCommand(detection)
+                                    val allKey = "$id:all"
+                                    val allLabel = missing.joinToString("、") { it.displayName }
                                     Spacer(Modifier.height(AgentSpacing.space2))
                                     AkTextButton(
-                                        text = "安装 ${missing.joinToString("、") { it.displayName }}",
+                                        text = if (installing == allKey) "正在安装 $allLabel…"
+                                        else "安装 $allLabel",
+                                        enabled = installCmd != null && installing == null,
                                         onClick = {
                                             val cmd = installCmd
                                             if (cmd == null) {
                                                 Toast.makeText(context, "无法生成安装命令", Toast.LENGTH_SHORT).show()
                                                 return@AkTextButton
                                             }
+                                            // 立刻上锁：从点击这一刻起其它安装按钮全禁用，
+                                            // 不靠「底层会串行」兜底（那会让用户以为点了没反应）
+                                            installing = allKey
+                                            installResult = null
                                             // 装完刷新探测结果（列表项用 remember(id, toolchainTick) 重算）
                                             scope.launch(Dispatchers.IO) {
                                                 val res = runInstallInContainer(context, id, cmd)
                                                 withContext(Dispatchers.Main) {
+                                                    installing = null
                                                     toolchainTick++
+                                                    installResult = InstallReport(id, allLabel, res)
                                                     Toast.makeText(
                                                         context,
-                                                        if (res.ok) "安装完成：${missing.joinToString("、") { it.displayName }}"
-                                                        else "安装失败（exit ${res.exitCode}）：${res.output.take(80)}",
-                                                        Toast.LENGTH_LONG
+                                                        if (res.ok) "安装完成：$allLabel" else "安装失败（exit ${res.exitCode}）",
+                                                        Toast.LENGTH_SHORT
                                                     ).show()
                                                 }
                                             }
@@ -301,25 +329,29 @@ fun ContainerScreen() {
                                                 )
                                                 if (cmd != null) {
                                                     Spacer(Modifier.height(AgentSpacing.space1))
+                                                    val langKey = "$id:${lang.id}"
+                                                    val langLabel = lang.displayName +
+                                                        (spec?.let { " ${it.version}" } ?: "")
                                                     AkTextButton(
-                                                        text = "安装 ${lang.displayName}" +
-                                                            (spec?.let { " ${it.version}" } ?: ""),
+                                                        text = if (installing == langKey) "正在安装 $langLabel…"
+                                                        else "安装 $langLabel",
+                                                        enabled = installing == null,
                                                         onClick = {
                                                             // cmd 已被外层 if (cmd != null) 收窄为非空，
                                                             // 这里不再重复判 null（编译器会报恒真警告）。
+                                                            installing = langKey
+                                                            installResult = null
                                                             scope.launch(Dispatchers.IO) {
                                                                 val res = runInstallInContainer(context, id, cmd)
                                                                 withContext(Dispatchers.Main) {
+                                                                    installing = null
                                                                     toolchainTick++
+                                                                    installResult = InstallReport(id, langLabel, res)
                                                                     Toast.makeText(
                                                                         context,
-                                                                        if (res.ok) {
-                                                                            "安装完成：${lang.displayName}" +
-                                                                                (spec?.let { " ${it.version}" } ?: "")
-                                                                        } else {
-                                                                            "安装失败（exit ${res.exitCode}）：${res.output.take(80)}"
-                                                                        },
-                                                                        Toast.LENGTH_LONG
+                                                                        if (res.ok) "安装完成：$langLabel"
+                                                                        else "安装失败（exit ${res.exitCode}）",
+                                                                        Toast.LENGTH_SHORT
                                                                     ).show()
                                                                 }
                                                             }
@@ -345,6 +377,18 @@ fun ContainerScreen() {
                                             Spacer(Modifier.height(AgentSpacing.space3))
                                         }
                                     }
+                                }
+                                // 安装结果常驻展示：Toast 一闪而过，而 apk/apt 的失败原因
+                                // 几乎都在输出的最后几行——真机上的 exit 99 就是这样被截成半句
+                                // 「ERROR: Unable to lock database: temporary error」，等于没给信息。
+                                installResult?.takeIf { it.distroId == id }?.let { report ->
+                                    Spacer(Modifier.height(AgentSpacing.space2))
+                                    Text(
+                                        text = report.summary,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = if (report.result.ok) MaterialTheme.colorScheme.primary
+                                        else MaterialTheme.colorScheme.error
+                                    )
                                 }
                                 Spacer(Modifier.height(AgentSpacing.space3))
                             }
@@ -383,6 +427,34 @@ private suspend fun runInstallInContainer(
     command: String
 ): ContainerCommandRunner.Result = withContext(Dispatchers.IO) {
     ContainerCommandRunner.run(context, distroId, command)
+}
+
+/**
+ * 一次安装的结果（内联展示用）。
+ *
+ * 为什么不用 Toast 汇报失败：Toast 只能容纳两行，且马上消失；而 apk / apt 的失败
+ * 原因几乎总在输出的**最后几行**（`ERROR: ...`），前 80 字截断恰好把它们切掉。
+ * 真机上用户拿到的就是 `exit 99` 加一句被切一半的话，等于没给信息。
+ */
+private data class InstallReport(
+    val distroId: String,
+    val label: String,
+    val result: ContainerCommandRunner.Result
+) {
+    /** 失败时保留最后几行（错误在尾部），成功时只报一句。 */
+    val summary: String
+        get() = when {
+            result.ok -> "$label 安装完成。"
+            result.busy -> "$label：同一条命令已在执行，等它结束再点。"
+            else -> {
+                val tail = result.output.trim().lines()
+                    .filter { it.isNotBlank() }
+                    .takeLast(4)
+                    .joinToString("\n")
+                "$label 安装失败（exit ${result.exitCode}）：" +
+                    if (tail.isBlank()) "（无输出）" else "\n$tail"
+            }
+        }
 }
 
 /** 发行版卡片：图标底座 + 名称 + 状态（已就绪 / 解压中 / 点击解压）+ 整卡点击。 */

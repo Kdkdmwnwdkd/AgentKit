@@ -522,6 +522,31 @@ object ToolchainInstaller {
     private fun binaryExists(rootfs: File, name: String): Boolean =
         BIN_DIRS.any { dir -> File(rootfs, "$dir/$name").exists() }
 
+    /**
+     * 失败是否是「包管理器数据库被占用」。
+     *
+     * ## 为什么这条判据放在这里（而不是执行器里）
+     * 它属于**包管理器的语义**，不是进程管理的语义：apk 报 99、apt 报 100，文本也不同。
+     * 放在纯逻辑层有两个好处：
+     * 1. JVM harness 能直接断言（执行器带 `android.content.Context`，进不了 harness）；
+     * 2. 真机复现一次锁冲突要好几分钟，而判据写错的代价是「重试逻辑静默失效」——
+     *    必须有不需要真机就能守住的测试。
+     *
+     * 覆盖三种真实形态：
+     * - Alpine apk：退出码 99 / `Unable to lock database: temporary error (try again later)`
+     * - Debian apt：`Could not get lock /var/lib/dpkg/lock-frontend`
+     *
+     * @param exitCode 进程退出码
+     * @param output 合并后的 stdout+stderr
+     */
+    fun isLockConflict(exitCode: Int, output: String): Boolean {
+        if (exitCode == 99) return true
+        val text = output.lowercase()
+        return "unable to lock database" in text ||
+            "could not get lock" in text ||
+            "lock-frontend" in text
+    }
+
     /** rootfs 内的可执行文件目录（覆盖 Alpine 与 Debian 布局）。 */
     private val BIN_DIRS = listOf("bin", "sbin", "usr/bin", "usr/sbin", "usr/local/bin")
 

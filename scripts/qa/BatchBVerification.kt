@@ -408,6 +408,56 @@ fun main() {
         assertTrue("容器页应调用执行器", "ContainerCommandRunner" in screen)
     }
 
+    /* --------------- B4-12..14：真机 exit 99（apk 并发抢锁）回归 --------------- */
+
+    check("B4-12 锁冲突判据覆盖 apk 与 apt 的真实形态，且不误判普通失败") {
+        // 真机原文：Alpine 3.20 上连点两次安装 Node.js 20
+        assertTrue(
+            "apk 退出码 99 应判为抢锁",
+            ToolchainInstaller.isLockConflict(
+                99,
+                "ERROR: Unable to lock database: temporary error (try again later)\nERROR: Failed"
+            )
+        )
+        // 只看文本也要能判（部分版本退出码被包装成 1）
+        assertTrue(
+            "apk 文本判据应生效",
+            ToolchainInstaller.isLockConflict(1, "ERROR: Unable to lock database")
+        )
+        assertTrue(
+            "apt 锁冲突应判为抢锁",
+            ToolchainInstaller.isLockConflict(
+                100,
+                "E: Could not get lock /var/lib/dpkg/lock-frontend. It is held by process 1234"
+            )
+        )
+        // 反例：网络失败绝不能当成抢锁去重试（否则会把 15 分钟耗在一次下载重试上）
+        assertTrue(
+            "网络失败不应判为抢锁",
+            !ToolchainInstaller.isLockConflict(1, "ERROR: https://dl-cdn.alpinelinux.org: temporary failure in name resolution")
+        )
+        assertTrue(
+            "成功不应判为抢锁",
+            !ToolchainInstaller.isLockConflict(0, "OK: 12 MiB in 8 packages")
+        )
+    }
+
+    check("B4-13 执行器串行化：同一时刻只允许一个包管理器在跑") {
+        val runner = read("app/src/main/java/com/example/agentkit/core/container/ContainerCommandRunner.kt")
+        assertTrue("应有进程级公平锁", "ReentrantLock(true)" in runner)
+        assertTrue("执行必须持锁", "execLock.withLock" in runner)
+        assertTrue("重复命令应有专用退出码", "EXIT_BUSY" in runner)
+        assertTrue("应在 finally 里释放登记，异常也不留脏状态", "inFlight.remove(key)" in runner)
+        assertTrue("抢锁应重试", "runProcessWithLockRetry" in runner)
+    }
+
+    check("B4-14 容器页安装按钮有运行态防重入（不能只靠底层串行）") {
+        val screen = read("app/src/main/java/com/example/agentkit/ui/ContainerScreen.kt")
+        assertTrue("应有 installing 运行态", "var installing by remember" in screen)
+        assertTrue("按钮应据此禁用", "enabled = installing == null" in screen)
+        assertTrue("结果应内联常驻（Toast 会截断错误尾行）", "InstallReport" in screen)
+    }
+
     /* ------------------------- C1 备份分组与批量回滚 ------------------------- */
 
     check("C1-1 同一文件的多次改动聚成一组，组内按时间倒序") {
