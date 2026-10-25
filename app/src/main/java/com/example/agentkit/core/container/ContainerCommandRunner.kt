@@ -162,7 +162,25 @@ object ContainerCommandRunner {
         )
         // envArray 已是「宿主 env + guest env」的并集（见 ProotRunner.buildInvocation），
         // 直接透传给子进程即可，不需要再拼一次。
-        return runProcessWithLockRetry(argv, invocation.envArray, timeoutMinutes)
+        return runProcessWithLockRetry(
+            argv,
+            invocation.envArray,
+            maxOf(timeoutMinutes, estimateTimeoutMinutes(command))
+        )
+    }
+
+    /**
+     * 按命令估算超时（只放宽已知的大包，不做全局调大）。
+     *
+     * 15 分钟对 `apk add nodejs npm`（约 40 MB）够用；但 `openjdk17` + `openjdk17-jdk`
+     * 在 aarch64 上合计约 200 MB，慢网（200 KB/s）光下载就要十几分钟。
+     * 把「还在下」误判成「卡死」比多等一会儿更糟——用户会以为是 bug 去重试，
+     * 而重试又要从零开始。
+     */
+    private fun estimateTimeoutMinutes(command: String): Long = when {
+        "openjdk" in command || "jdk" in command -> 30L
+        "nodejs" in command -> 20L
+        else -> DEFAULT_TIMEOUT_MINUTES
     }
 
     /**
@@ -202,7 +220,27 @@ object ContainerCommandRunner {
         }
     }
 
-    /** 起进程、等退出、收输出。 */
+    /**
+     * 起进程、等退出、**并发收输出**。
+     *
+     * ## 为什么必须并发读（真机实测：装 JDK 卡满 15 分钟，零输出）
+     * 旧实现是「先 `waitFor`，再读 inputStream」。这在输出少的命令上看不出问题，
+     * 但管道缓冲区只有约 64 KB：`apk add openjdk17 openjdk17-jdk` 的输出（下载 +
+     * 逐个解包几百个文件）会写满缓冲区，子进程阻塞在 `write(2)` 上等我们读，
+     * 而我们在 `waitFor` 等它退出——**双方互等**，直到 15 分钟超时。
+     * 真机日志：
+     * ```
+     * 14:31:37 容器命令开始：... apk add --no-cache openjdk17 openjdk17-jdk
+     * 14:46:37 容器命令结束：exit=-1 耗时=900s      ← 整整 15 分钟，一个字节输出都没有
+     * ```
+     * Node / Python 输出少（< 64 KB），所以之前"看着正常"——不是没问题，是没撞上。
+     *
+     * 现在起一条守护线程持续把 stdout 抽干，主线程只管等退出，两边不再互锁。
+     *
+     * ## 输出策略
+     * 只保留**尾部** [MAX_OUTPUT_CHARS]：apk / apt 的失败原因和成功摘要都在最后，
+     * 而开头的进度行既没有诊断价值、又会把关键信息挤出窗口。
+     */
     private fun runProcess(argv: List<String>, env: Array<String>, timeoutMinutes: Long): Result =
         runCatching {
             val process = ProcessBuilder(argv)
@@ -212,17 +250,90 @@ object ContainerCommandRunner {
                     redirectErrorStream(true)
                 }
                 .start()
+            val sink = OutputSink(MAX_OUTPUT_CHARS)
+            val reader = Thread({ sink.drain(process.inputStream) }, "container-stdout").apply {
+                isDaemon = true
+                start()
+            }
             val finished = process.waitFor(timeoutMinutes, TimeUnit.MINUTES)
             if (!finished) {
                 process.destroyForcibly()
-                return@runCatching Result(-1, "命令超时（${timeoutMinutes} 分钟）已终止")
+                runCatching { reader.join(1_500) }
+                val tail = sink.tail(3)
+                AgentLogger.e(
+                    TAG,
+                    "容器命令超时（${timeoutMinutes}min）已终止；最后输出=${sink.lastLine().ifBlank { "（无）" }}"
+                )
+                return@runCatching Result(
+                    -1,
+                    buildString {
+                        append("命令超时（${timeoutMinutes} 分钟）已终止。")
+                        if (tail.isBlank()) {
+                            // 零输出是重要信号：说明不是「下载慢」，而是进程根本没跑起来
+                            append("\n[AgentKit] 这段时间内没有任何输出——更像是卡在启动阶段（proot/rootfs），不是网速慢。")
+                        } else {
+                            append("\n[AgentKit] 最后输出：\n").append(tail)
+                        }
+                    }
+                )
             }
-            val out = runCatching {
-                process.inputStream.bufferedReader().use { it.readText() }
-            }.getOrDefault("")
-            Result(process.exitValue(), out.take(MAX_OUTPUT_CHARS))
+            // 进程已退出，但管道里可能还剩最后几 KB；给读线程一点时间收尾
+            runCatching { reader.join(2_000) }
+            Result(process.exitValue(), sink.text())
         }.getOrElse {
             AgentLogger.e(TAG, "容器命令执行失败：${it.message}")
             Result(-1, "执行失败：${it.message}")
         }
+
+    /**
+     * 边跑边收的输出池（线程安全，只保留尾部）。
+     *
+     * 顺带记录「最后一个非空行」：超时时间（15/30 分钟）里用户只看到一个转圈，
+     * 日志里一行都没有——把最后一行写进日志，下次就能一眼看出是卡在
+     * `fetch ...`（网络）、`(1/12) Installing ...`（解包）还是压根没输出（启动失败）。
+     */
+    private class OutputSink(private val limit: Int) {
+        private val buf = StringBuilder()
+        private val lock = Any()
+        private var current = StringBuilder()
+        private var lastLine = ""
+
+        /** 在专属线程里跑：把流读干直到 EOF。 */
+        fun drain(stream: java.io.InputStream) {
+            runCatching {
+                stream.reader(Charsets.UTF_8).use { r ->
+                    val chunk = CharArray(4_096)
+                    while (true) {
+                        val n = r.read(chunk)
+                        if (n <= 0) break
+                        feed(chunk, n)
+                    }
+                }
+            }
+        }
+
+        private fun feed(chunk: CharArray, n: Int) {
+            synchronized(lock) {
+                buf.append(chunk, 0, n)
+                if (buf.length > limit) buf.delete(0, buf.length - limit)
+                for (i in 0 until n) {
+                    val c = chunk[i]
+                    if (c == '\n' || c == '\r') {
+                        val line = current.toString().trim()
+                        if (line.isNotEmpty()) lastLine = line.take(200)
+                        current = StringBuilder()
+                    } else if (current.length < 400) {
+                        current.append(c)
+                    }
+                }
+            }
+        }
+
+        fun text(): String = synchronized(lock) { buf.toString() }
+
+        /** 最后 [n] 个非空行（失败诊断用；错误几乎都在尾部）。 */
+        fun tail(n: Int): String = text().trim().lines().filter { it.isNotBlank() }.takeLast(n).joinToString("\n")
+
+        fun lastLine(): String = synchronized(lock) { lastLine }
+    }
 }

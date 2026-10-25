@@ -456,6 +456,21 @@ fun main() {
         assertTrue("应有 installing 运行态", "var installing by remember" in screen)
         assertTrue("按钮应据此禁用", "enabled = installing == null" in screen)
         assertTrue("结果应内联常驻（Toast 会截断错误尾行）", "InstallReport" in screen)
+        assertTrue("进行中应显示秒数（15 分钟无反馈会被当成卡死）", "installElapsed" in screen)
+    }
+
+    check("B4-15 执行器必须并发抽干输出（否则管道写满，父子互等到超时）") {
+        val runner = read("app/src/main/java/com/example/agentkit/core/container/ContainerCommandRunner.kt")
+        assertTrue("应有独立读线程", "Thread({ sink.drain" in runner)
+        val drainAt = runner.indexOf("sink.drain")
+        val waitAt = runner.indexOf("process.waitFor")
+        assertTrue(
+            "读操作必须早于 waitFor（先 waitFor 再 readText 会让 64KB 管道写满后互锁）：drain=$drainAt wait=$waitAt",
+            drainAt > 0 && waitAt > 0 && drainAt < waitAt
+        )
+        assertTrue("进程退出后应等读线程收尾", "reader.join" in runner)
+        assertTrue("只在管道尾部保留输出", "if (buf.length > limit)" in runner)
+        assertTrue("大包（JDK）应有更长超时", "estimateTimeoutMinutes" in runner)
     }
 
     /* ------------------------- C1 备份分组与批量回滚 ------------------------- */

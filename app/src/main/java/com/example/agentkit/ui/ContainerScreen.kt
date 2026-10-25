@@ -98,6 +98,22 @@ fun ContainerScreen() {
      */
     var installResult by remember { mutableStateOf<InstallReport?>(null) }
 
+    /**
+     * 安装已进行的秒数（每 5 秒跳一次）。
+     *
+     * 为什么要它：装 JDK 要下约 200 MB，慢网下要几分钟到十几分钟。原先前端只有一句
+     * 「正在安装」，几分钟不动就没人分得清是「还在下」还是「已经卡死」——真机上用户
+     * 就是这样干等了 15 分钟。数字在跳，至少说明流程还活着。
+     */
+    var installElapsed by remember { mutableStateOf(0) }
+    LaunchedEffect(installing) {
+        installElapsed = 0
+        while (installing != null) {
+            kotlinx.coroutines.delay(5_000)
+            installElapsed += 5
+        }
+    }
+
     // proot 三件套是**首次使用时**才从 assets 提取的（ensureBinary）。
     // 原来这里只判断 isAvailable，新装应用还没提取过 → 永远显示「需要 proot」，
     // 用户根本没有触发提取的入口，等于容器功能对新用户完全不可用。
@@ -233,7 +249,7 @@ fun ContainerScreen() {
                                     val allLabel = missing.joinToString("、") { it.displayName }
                                     Spacer(Modifier.height(AgentSpacing.space2))
                                     AkTextButton(
-                                        text = if (installing == allKey) "正在安装 $allLabel…"
+                                        text = if (installing == allKey) "正在安装 $allLabel… ${installElapsed}s"
                                         else "安装 $allLabel",
                                         enabled = installCmd != null && installing == null,
                                         onClick = {
@@ -333,7 +349,7 @@ fun ContainerScreen() {
                                                     val langLabel = lang.displayName +
                                                         (spec?.let { " ${it.version}" } ?: "")
                                                     AkTextButton(
-                                                        text = if (installing == langKey) "正在安装 $langLabel…"
+                                                        text = if (installing == langKey) "正在安装 $langLabel… ${installElapsed}s"
                                                         else "安装 $langLabel",
                                                         enabled = installing == null,
                                                         onClick = {
