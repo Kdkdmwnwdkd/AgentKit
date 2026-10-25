@@ -78,13 +78,23 @@ object RootfsManager {
      */
     fun isExtracted(context: Context, id: String): Boolean {
         val d = rootfsDir(context, id)
+        // 布局版本：早期解压保留的是「绝对符号链接」，在 Android 上 execve 会解析到
+        // 宿主的 /bin/busybox（不存在）。没有这个标记说明是旧布局，需要重解压一次。
+        return contentReady(d) && File(d, LAYOUT_MARKER).isFile
+    }
+
+    /**
+     * 只看**内容**是否齐备，不看布局标记。
+     *
+     * 拆开的原因是顺序：`ensureExtracted` 必须先用它确认解压成功，**再**写布局标记。
+     * 曾经把两者合在一起，于是「校验要标记、标记要校验先通过」，解压永远算失败，
+     * 变成无限重解压（真机日志里同一秒刷了 30 多次）。
+     */
+    private fun contentReady(d: File): Boolean {
         if (!File(d, "bin").isDirectory || !File(d, "etc").isDirectory) return false
         if (lstatType(File(d, "bin/sh")) == LinkType.MISSING) return false
         val busybox = File(d, "bin/busybox")
-        if (!busybox.isFile || busybox.length() == 0L) return false
-        // 布局版本：早期解压保留的是「绝对符号链接」，在 Android 上 execve 会解析到
-        // 宿主的 /bin/busybox（不存在）。没有这个标记说明是旧布局，需要重解压一次。
-        return File(d, LAYOUT_MARKER).isFile
+        return busybox.isFile && busybox.length() > 0L
     }
 
     /** 解压布局版本标记：有它才认为 rootfs 可用（见 [isExtracted]）。 */
@@ -155,8 +165,14 @@ object RootfsManager {
             runCatching { d.deleteRecursively() } // 残损目录清理，避免下次误判已解压
             return null
         }
-        if (!isExtracted(context, distro.id)) return null
+        // 顺序不能反：先确认内容解出来了，再写布局标记（标记本身也参与 isExtracted）。
+        if (!contentReady(d)) {
+            AgentLogger.e(TAG, "解压后内容仍不完整：${inspect(context, distro.id)}")
+            runCatching { d.deleteRecursively() }
+            return null
+        }
         runCatching { File(d, LAYOUT_MARKER).createNewFile() }
+        AgentLogger.i(TAG, "rootfs(${distro.id}) 解压完成：${inspect(context, distro.id)}")
         return d
     }
 
