@@ -64,6 +64,8 @@ object ContainerCommandRunner {
             return Result(-1, "rootfs($distroId) 尚未解压")
         }
         val rootfs = RootfsManager.rootfsDir(context, distroId)
+        // 容器内 DNS：rootfs 自带的 resolv.conf 是空/缺失，不写就解析不了域名
+        ContainerNetwork.ensureResolvConf(context, rootfs)
         val invocation = ProotRunner.buildInvocation(
             prootBinary = prootBin,
             rootfs = rootfs,

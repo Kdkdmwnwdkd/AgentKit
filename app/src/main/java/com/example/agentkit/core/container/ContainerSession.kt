@@ -55,6 +55,8 @@ object ContainerSession {
         }
         val rootfs = RootfsManager.rootfsDir(context, distro.id)
         val home = File(rootfs, "root")
+        // 容器内 DNS：rootfs 自带的 resolv.conf 是空/缺失，不写就解析不了域名
+        ContainerNetwork.ensureResolvConf(context, rootfs)
         val invocation = ProotRunner.buildInvocation(
             prootBinary = prootBin,
             rootfs = rootfs,
