@@ -285,7 +285,22 @@ object ProotRunner {
      * - `-b /dev -b /proc -b /sys`：透传 Android 的三个伪文件系统（容器里 `ps`/挂载视图靠它）；
      * - `-b /sdcard`：把外存挂进容器，便于和宿主交换文件；
      * - `-w <workDir>`：guest 初始工作目录（如 `/root`）；
-     * - `-L`：fake_id0 扩展，让容器内 uid 映射成 0（非 root 安卓机上也能 `apt`/构建）。
+     * - `-L`（`--link2symlink`）：把硬链接降级成符号链接。Android 上 `/data` 与 `/sdcard`
+     *   是不同设备，tar 解包 / 包管理器建硬链接会 EFBIG/EXDEV，这一项让它们改走 symlink；
+     * - `--root-id`（`-0`）：**fake root**，容器内 uid/gid 映射成 0。
+     *   缺了它容器里就是普通 app uid——提示符是 `$` 而不是 `#`，更关键的是包管理器
+     *   的 trigger 脚本里 `chown root:root` 会直接失败（真机装 JDK 时的
+     *   `1 error: 424 MiB in 77 packages` 正是这个：77 个包全装上了，只有一个
+     *   trigger 因非 root 返回非 0，把 apk 的整体退出码拖成 1）。
+     *   **注意 `-L` 不是 fake root**（旧注释写错了）：`-L` 是 link2symlink，
+     *   fake root 的长选项是 `--root-id`，两者必须分别给；
+     * - `--kill-on-exit`（`-k`）：proot 退出时杀掉它所有 tracee。
+     *   没有它，超时后我们 `destroyForcibly()` 只杀 proot 本身，底下的 `apk` 会被
+     *   detach 继续跑并占着 `/lib/apk/db/lock`，下一次安装直接 exit 99——
+     *   这正是「超时 → 抢锁」的死循环入口。
+     *
+     * 以上三个选项均已在实际使用的 proot 二进制里确认存在
+     *（`strings libproot.so` 可见 `--link2symlink` / `--root-id` / `--kill-on-exit`）。
      *
      * **注意**：返回值**不含 proot 自身路径**，只是选项片段；直接当 argv 用会让所有选项
      * 错位一位（`-r` 被当成 argv[0]）。需要完整调用请用 [buildInvocation]。
@@ -300,7 +315,9 @@ object ProotRunner {
         add("-b"); add("/sys")
         add("-b"); add("/sdcard")
         add("-w"); add(workDir)
-        add("-L")
+        add("--link2symlink")
+        add("--root-id")
+        add("--kill-on-exit")
     }
 
     /**

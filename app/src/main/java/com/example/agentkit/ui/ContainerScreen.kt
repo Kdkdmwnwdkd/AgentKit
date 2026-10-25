@@ -297,20 +297,30 @@ fun ContainerScreen() {
                                 // 往往是特定版本（项目 lockfile 卡在 node 18、代码用了
                                 // python 3.11 的新语法）。所以这里逐语言给出版本输入框：
                                 // 留空 = 用默认版；填了 = 装指定版本。
-                                if (detection.pkgManager != null && missing.isNotEmpty()) {
+                                //
+                                // 条件不再要求 `missing.isNotEmpty()`：三个运行时全装上之后，
+                                // 这块整块消失，用户想「换 node 22」「JDK 装坏了要重装」时
+                                // 一个入口都没有（真机就是这个状态：卡片只剩一行
+                                // 「已安装：Node.js、Python 3、Java」）。现在始终显示，
+                                // 已装的语言按钮变成「重装」。
+                                if (detection.pkgManager != null) {
                                     Spacer(Modifier.height(AgentSpacing.space3))
                                     Text(
-                                        text = "指定版本安装",
+                                        text = if (missing.isEmpty()) "重装 / 更换版本" else "指定版本安装",
                                         style = MaterialTheme.typography.titleSmall,
                                         color = MaterialTheme.colorScheme.onSurface
                                     )
                                     Text(
-                                        text = "留空则安装默认版本；填入版本号则装对应版本。",
+                                        text = if (missing.isEmpty()) {
+                                            "三个运行时都已安装。留空版本号则按发行版默认版重装；填入版本号则装对应版本。"
+                                        } else {
+                                            "留空则安装默认版本；填入版本号则装对应版本。"
+                                        },
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
                                     Spacer(Modifier.height(AgentSpacing.space2))
-                                    missing.forEach { lang ->
+                                    ToolchainInstaller.Lang.entries.forEach { lang ->
                                         val vKey = "$id:${lang.id}"
                                         val vInput = versionInputs[vKey].orEmpty()
                                         Column(Modifier.fillMaxWidth()) {
@@ -355,6 +365,7 @@ fun ContainerScreen() {
                                                         (spec?.let { " ${it.version}" } ?: "")
                                                     AkTextButton(
                                                         text = if (installing == langKey) "正在安装 $langLabel… ${installElapsed}s"
+                                                        else if (lang in detection.installed) "重装 $langLabel"
                                                         else "安装 $langLabel",
                                                         enabled = installing == null,
                                                         onClick = {

@@ -473,7 +473,15 @@ fun main() {
         assertTrue("大包（JDK）应有更长超时", "estimateTimeoutMinutes" in runner)
     }
 
-    check("B4-16 装完自检：以能力为准，而不是包管理器退出码") {
+    check("B4-17 proot 必须 fake root，且退出时杀掉 tracee") {
+        val proot = read("app/src/main/java/com/example/agentkit/core/container/ProotRunner.kt")
+        // 提示符是 "$" 而不是 "#" → 容器里不是 root → trigger 里的 chown 失败 → apk exit 1
+        assertTrue("应有 --root-id（fake root）", "\"--root-id\"" in proot)
+        // 超时后 destroyForcibly 只杀 proot，残留的 apk 会占着 /lib/apk/db/lock
+        assertTrue("应有 --kill-on-exit", "\"--kill-on-exit\"" in proot)
+        assertTrue("应有 --link2symlink", "\"--link2symlink\"" in proot)
+    }
+
         val script = ToolchainInstaller.verifyScript(listOf(ToolchainInstaller.Lang.JAVA))
         assertTrue("应验 java", "java -version" in script)
         // 卡片标题是「Java (JRE + JDK)」：只验 java 会把「JRE 在、JDK 缺」当成功
