@@ -58,6 +58,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -72,9 +73,11 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import android.widget.Toast
 import com.example.agentkit.core.agent.SurvivalCheckService
 import com.example.agentkit.automation.adb.AdbCredentials
+import com.example.agentkit.automation.adb.AdbDiscovery
 import com.example.agentkit.automation.adb.AdbSession
 import com.example.agentkit.automation.shizuku.ShizukuShell
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -843,19 +846,69 @@ private fun DebugChannelSection() {
  */
 @Composable
 private fun AdbPairDialog(onClose: () -> Unit) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+
+    // 端点：可能来自扫描（主路径）、上次配对（连接端口已知）、或手动填写（兜底）
     var host by remember { mutableStateOf(AdbCredentials.host().orEmpty()) }
     var pairPort by remember { mutableStateOf("") }
-    var code by remember { mutableStateOf("") }
     var connectPort by remember {
         mutableStateOf(AdbCredentials.connectPort().takeIf { it > 0 }?.toString().orEmpty())
     }
+    var code by remember { mutableStateOf("") }
+
+    var scanning by remember { mutableStateOf(true) }
+    var scanNote by remember { mutableStateOf("正在寻找本机的无线调试服务…") }
+    var showManual by remember { mutableStateOf(false) }
+    var scanRound by remember { mutableStateOf(0) }
+
     var busy by remember { mutableStateOf(false) }
     var done by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
-    val scope = rememberCoroutineScope()
 
-    val canSubmit = host.isNotBlank() && pairPort.isNotBlank() &&
-        connectPort.isNotBlank() && code.length == 6
+    // W-52：进对话框就自动发现端点（配对端口 + 连接端口 + IP），用户只需输 6 位码
+    DisposableEffect(scanRound) {
+        val session = AdbDiscovery.start(
+            context,
+            onUpdate = { ep ->
+                scope.launch(Dispatchers.Main) {
+                    ep.host?.let { host = it }
+                    ep.pairPort?.let { pairPort = it.toString() }
+                    ep.connectPort?.let { connectPort = it.toString() }
+                    scanNote = when {
+                        ep.complete ->
+                            "已找到 ${ep.host}：配对端口 ${ep.pairPort}、连接端口 ${ep.connectPort}（已自动填好）"
+                        ep.pairPort == null && ep.connectPort != null ->
+                            "已找到本机 ${ep.host ?: ""}，但配对端口还没出现——" +
+                                "请在手机上点「使用配对码配对设备」，这边会自动补上"
+                        ep.pairPort != null && ep.connectPort == null ->
+                            "已找到配对端口 ${ep.pairPort}，等待连接端口广播…"
+                        else -> scanNote
+                    }
+                }
+            },
+            onError = { msg ->
+                scope.launch(Dispatchers.Main) {
+                    scanNote = "$msg（可展开「手动填写」）"
+                }
+            }
+        )
+        onDispose { session?.stop() }
+    }
+
+    // mDNS 常驻监听耗电，且配对端口只在弹窗打开期间有效——20 秒后收工
+    LaunchedEffect(scanRound) {
+        scanning = true
+        delay(20_000)
+        scanning = false
+        val complete = host.isNotBlank() && pairPort.isNotBlank() && connectPort.isNotBlank()
+        if (!complete) {
+            scanNote = "扫描结束：没拿到完整端点（部分系统限制 mDNS），可「重新扫描」或展开「手动填写」"
+        }
+    }
+
+    val canSubmit = code.length == 6 && host.isNotBlank() &&
+        pairPort.isNotBlank() && connectPort.isNotBlank()
 
     AlertDialog(
         onDismissRequest = { if (!busy) onClose() },
@@ -863,55 +916,78 @@ private fun AdbPairDialog(onClose: () -> Unit) {
         text = {
             Column(Modifier.verticalScroll(rememberScrollState())) {
                 Text(
-                    "手机上：开发者选项 → 无线调试 → 打开开关 → 点「使用配对码配对设备」。\n" +
-                        "弹窗里是 6 位配对码和【配对端口】；无线调试主页那行 IP:端口 是【连接端口】——" +
-                        "两个端口不一样，填反了会提示解密失败。",
+                    "① 手机上：开发者选项 → 无线调试 → 打开开关\n" +
+                        "② 点「使用配对码配对设备」，弹窗里有 6 位码\n" +
+                        "③ 在这里输入这 6 位码即可——IP 和两个端口会自动填",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+
                 Spacer(Modifier.height(AgentSpacing.space3))
-                OutlinedTextField(
-                    value = host,
-                    onValueChange = { host = it.trim() },
-                    label = { Text("IP 地址") },
-                    placeholder = { Text("192.168.1.8") },
-                    singleLine = true,
-                    enabled = !busy && !done,
-                    modifier = Modifier.fillMaxWidth()
+                Text(
+                    text = scanNote,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (scanNote.startsWith("已找到"))
+                        MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                Spacer(Modifier.height(AgentSpacing.space2))
-                OutlinedTextField(
-                    value = pairPort,
-                    onValueChange = { pairPort = it.filter(Char::isDigit).take(5) },
-                    label = { Text("配对端口（配对弹窗里）") },
-                    placeholder = { Text("如 37123") },
-                    singleLine = true,
-                    enabled = !busy && !done,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    modifier = Modifier.fillMaxWidth()
-                )
+                if (!scanning && !done) {
+                    TextButton(onClick = { scanRound++ }, enabled = !busy) {
+                        Text("重新扫描")
+                    }
+                }
+
                 Spacer(Modifier.height(AgentSpacing.space2))
                 OutlinedTextField(
                     value = code,
                     onValueChange = { code = it.filter(Char::isDigit).take(6) },
                     label = { Text("6 位配对码") },
-                    placeholder = { Text("如 042618") },
+                    placeholder = { Text("手机上弹窗里的那 6 个数字") },
                     singleLine = true,
                     enabled = !busy && !done,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                     modifier = Modifier.fillMaxWidth()
                 )
-                Spacer(Modifier.height(AgentSpacing.space2))
-                OutlinedTextField(
-                    value = connectPort,
-                    onValueChange = { connectPort = it.filter(Char::isDigit).take(5) },
-                    label = { Text("连接端口（主页 IP:端口）") },
-                    placeholder = { Text("如 35123") },
-                    singleLine = true,
-                    enabled = !busy && !done,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    modifier = Modifier.fillMaxWidth()
-                )
+
+                TextButton(
+                    onClick = { showManual = !showManual },
+                    enabled = !busy && !done
+                ) {
+                    Text(if (showManual) "收起手动填写" else "手动填写 IP / 端口")
+                }
+
+                if (showManual) {
+                    OutlinedTextField(
+                        value = host,
+                        onValueChange = { host = it.trim() },
+                        label = { Text("IP 地址") },
+                        placeholder = { Text("192.168.1.8") },
+                        singleLine = true,
+                        enabled = !busy && !done,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(Modifier.height(AgentSpacing.space2))
+                    OutlinedTextField(
+                        value = pairPort,
+                        onValueChange = { pairPort = it.filter(Char::isDigit).take(5) },
+                        label = { Text("配对端口（配对弹窗里）") },
+                        singleLine = true,
+                        enabled = !busy && !done,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(Modifier.height(AgentSpacing.space2))
+                    OutlinedTextField(
+                        value = connectPort,
+                        onValueChange = { connectPort = it.filter(Char::isDigit).take(5) },
+                        label = { Text("连接端口（主页 IP:端口）") },
+                        singleLine = true,
+                        enabled = !busy && !done,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+
                 val msg = message
                 if (msg != null) {
                     Spacer(Modifier.height(AgentSpacing.space3))

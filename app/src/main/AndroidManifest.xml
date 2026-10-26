@@ -4,6 +4,9 @@
 
     <!-- ===== L0 基础网络 ===== -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- W-52：无线调试端点靠 mDNS 自动发现（配对/连接端口都在广播里）。
+         normal 权限，安装即授予、不弹窗；NsdManager 本身用它加入组播组。 -->
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
