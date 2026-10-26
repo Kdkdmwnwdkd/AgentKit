@@ -97,7 +97,16 @@ internal data class UiNodeSummary(
     val depth: Int = 0,
     val clickable: Boolean = false,
     val parentIndex: Int = -1,
-    val bounds: String = ""
+    val bounds: String = "",
+    /**
+     * W-50：以下四项只在「调试通道（uiautomator dump）」这条路径上用于还原节点形状，
+     * 无障碍路径的 JSON 依旧直接读 [android.view.accessibility.AccessibilityNodeInfo]。
+     * 给默认值是为了不动既有构造点（两条路径共用同一份节点模型，匹配器才能复用）。
+     */
+    val cls: String = "",
+    val scrollable: Boolean = false,
+    val editable: Boolean = false,
+    val checked: Boolean = false
 ) {
     /** 参与匹配/展示的标签：优先可见文本，无文本时退回 contentDescription。 */
     val label: String get() = text.ifBlank { desc }

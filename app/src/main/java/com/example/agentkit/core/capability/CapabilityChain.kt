@@ -7,7 +7,7 @@ import com.example.agentkit.core.AgentLogger
  *
  * ## 解决的问题
  * Agent 要执行一个动作时，往往有**多条可用执行路径**（例如「跑一条 shell 命令」：proot 容器
- * → 本机 user shell；「操作屏幕」：无障碍服务 → 明确告知不可用）。此前这些路径的可用性判断
+ * → 本机 user shell；「操作屏幕」：无障碍服务 → 调试通道（Shizuku））。此前这些路径的可用性判断
  * 散落在各处，用户在界面上一级级试、一级级被拒，体验断裂。
  *
  * 本文件把这件事收敛成一个**纯函数**：
@@ -52,7 +52,13 @@ enum class Capability(val wire: String, val title: String) {
     /** 执行一条 shell 命令：候选 = proot 容器 → 本机 user shell。 */
     RUN_SHELL("run_shell", "执行 shell 命令"),
 
-    /** 操作手机界面：候选 = 无障碍服务（无更低一级可用路径，不可用即明确告知）。 */
+    /**
+     * 操作手机界面：候选 = 无障碍服务 → 调试通道（Shizuku）。
+     *
+     * W-50：原先只挂无障碍一条候选，等于「没开无障碍 = 界面类工具全灭」，而 shell（uid 2000）
+     * 明明能做 `input tap/swipe/text/keyevent`、`uiautomator dump`、`screencap`。现在无障碍
+     * 仍是首选（实时、免 dump），调试通道作为兜底——只开无线调试也能干活，只是读树慢 1~2 秒。
+     */
     CONTROL_SCREEN("control_screen", "操作手机界面")
 }
 

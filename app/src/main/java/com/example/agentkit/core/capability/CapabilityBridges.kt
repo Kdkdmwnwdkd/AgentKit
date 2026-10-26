@@ -132,7 +132,33 @@ fun accessibilityBackendAvailability(
 }
 
 /**
- * 「操作手机界面」的候选可用性快照（纯函数）：只有无障碍服务一条路径。
+ * 「操作手机界面」的候选可用性快照（纯函数）：**无障碍服务 → 调试通道（Shizuku）**。
+ *
+ * W-50 之前这里只有无障碍一条候选，注释还写着「无更低一级可用路径」。但那条判断不成立：
+ * shell（uid 2000）能做 `input tap/swipe/text/keyevent`、`uiautomator dump`、`screencap`，
+ * 足以覆盖界面操作的大头。于是「只开无线调试、没开无障碍」的用户被整条链路挡住，
+ * 明明有可用通道却被告知「全链不可用」。
+ *
+ * @param serviceConnected 无障碍服务是否已连接
+ * @param masterEnabled 自动化总开关是否开启
+ * @param shizukuAvailable 调试通道是否就绪（Shizuku 已运行且已授权本应用）
  */
+fun controlScreenSnapshot(
+    serviceConnected: Boolean,
+    masterEnabled: Boolean,
+    shizukuAvailable: Boolean
+): List<BackendAvailability> = listOf(
+    // 首选：实时、无需 dump、能拿界面变化事件
+    accessibilityBackendAvailability(serviceConnected, masterEnabled),
+    // 兜底：读树靠 uiautomator dump（慢 1~2 秒），其余动作与无障碍等价
+    shellBackendAvailability(TerminalBackend.KEY_SHIZUKU, shizukuAvailable)
+)
+
+/**
+ * 旧的单候选快照（仅无障碍）。
+ *
+ * @Deprecated 保留是为了不破坏既有 harness 断言；新调用点请用 [controlScreenSnapshot]。
+ */
+@Deprecated("改用 controlScreenSnapshot(...)，它包含调试通道兜底")
 fun accessibilityCapabilitySnapshot(serviceConnected: Boolean, masterEnabled: Boolean): List<BackendAvailability> =
     listOf(accessibilityBackendAvailability(serviceConnected, masterEnabled))

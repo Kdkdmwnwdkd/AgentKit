@@ -19,7 +19,7 @@ import com.example.agentkit.core.capability.CAPABILITY_FALLBACK_HINT
 import com.example.agentkit.core.capability.Capability
 import com.example.agentkit.core.capability.CapabilityRequest
 import com.example.agentkit.core.capability.CapabilityResolution
-import com.example.agentkit.core.capability.accessibilityCapabilitySnapshot
+import com.example.agentkit.core.capability.controlScreenSnapshot
 import com.example.agentkit.core.capability.logTrace
 import com.example.agentkit.core.capability.resolveCapability
 import com.example.agentkit.core.capability.shellBackendAvailability
@@ -285,13 +285,13 @@ private fun testAccessibilityCopy() {
     println("\n== 无障碍：未连接 / 总开关关闭 文案不同 ==")
 
     check("服务连接 + 总开关开 → 可用（Selected）") {
-        val snap = accessibilityCapabilitySnapshot(serviceConnected = true, masterEnabled = true)
+        val snap = controlScreenSnapshot(serviceConnected = true, masterEnabled = true, shizukuAvailable = false)
         val r = resolveCapability(CapabilityRequest(Capability.CONTROL_SCREEN, snap))
         assertTrue("Selected", r is CapabilityResolution.Selected)
     }
 
     check("无障碍服务未连接 → 文案指向系统「无障碍」设置") {
-        val snap = accessibilityCapabilitySnapshot(serviceConnected = false, masterEnabled = true)
+        val snap = controlScreenSnapshot(serviceConnected = false, masterEnabled = true, shizukuAvailable = false)
         val r = resolveCapability(CapabilityRequest(Capability.CONTROL_SCREEN, snap))
         assertTrue("Unavailable", r is CapabilityResolution.Unavailable)
         r as CapabilityResolution.Unavailable
@@ -301,7 +301,7 @@ private fun testAccessibilityCopy() {
     }
 
     check("自动化总开关关闭 → 文案指向 App「自动化」总开关") {
-        val snap = accessibilityCapabilitySnapshot(serviceConnected = true, masterEnabled = false)
+        val snap = controlScreenSnapshot(serviceConnected = true, masterEnabled = false, shizukuAvailable = false)
         val r = resolveCapability(CapabilityRequest(Capability.CONTROL_SCREEN, snap))
         assertTrue("Unavailable", r is CapabilityResolution.Unavailable)
         r as CapabilityResolution.Unavailable
@@ -311,19 +311,37 @@ private fun testAccessibilityCopy() {
 
     check("两种缺失的最终文案/hint 不相同，且都非空") {
         val notConnected = resolveCapability(
-            CapabilityRequest(Capability.CONTROL_SCREEN, accessibilityCapabilitySnapshot(false, true))
+            CapabilityRequest(Capability.CONTROL_SCREEN, controlScreenSnapshot(false, true, false))
         ) as CapabilityResolution.Unavailable
         val masterOff = resolveCapability(
-            CapabilityRequest(Capability.CONTROL_SCREEN, accessibilityCapabilitySnapshot(true, false))
+            CapabilityRequest(Capability.CONTROL_SCREEN, controlScreenSnapshot(true, false, false))
         ) as CapabilityResolution.Unavailable
         assertTrue("messages differ", notConnected.message != masterOff.message)
         assertTrue("hints differ", notConnected.hint != masterOff.hint)
         assertTrue("both non-blank", notConnected.hint.isNotBlank() && masterOff.hint.isNotBlank())
     }
 
+    check("W-50：无障碍缺失但调试通道可用 → 选中 Shizuku（降级 1 级）") {
+        val snap = controlScreenSnapshot(serviceConnected = false, masterEnabled = true, shizukuAvailable = true)
+        val r = resolveCapability(CapabilityRequest(Capability.CONTROL_SCREEN, snap))
+        assertTrue("Selected", r is CapabilityResolution.Selected)
+        r as CapabilityResolution.Selected
+        assertTrue("backend = shizuku", r.backend.backendId == "shizuku")
+        assertTrue("降级 1 级 = 轨迹 2 条", r.trace.size == 2)
+        assertTrue("首条是无障碍且不可用", r.trace[0].available.not())
+    }
+
+    check("W-50：两条都不可用 → 仍明确告知，并同时给出两种修复路径") {
+        val snap = controlScreenSnapshot(serviceConnected = false, masterEnabled = false, shizukuAvailable = false)
+        val r = resolveCapability(CapabilityRequest(Capability.CONTROL_SCREEN, snap)) as CapabilityResolution.Unavailable
+        assertContains("hint 提到无障碍", r.hint, "无障碍")
+        assertContains("hint 提到调试通道", r.hint, "调试通道")
+        assertTrue("轨迹含两级候选", r.trace.size == 2)
+    }
+
     check("两者都缺 → 合并给出两条动作（先系统后 App）") {
         val r = resolveCapability(
-            CapabilityRequest(Capability.CONTROL_SCREEN, accessibilityCapabilitySnapshot(false, false))
+            CapabilityRequest(Capability.CONTROL_SCREEN, controlScreenSnapshot(false, false, false))
         ) as CapabilityResolution.Unavailable
         assertContains("has accessibility action", r.hint, "无障碍")
         assertContains("has master switch action", r.hint, "总开关")

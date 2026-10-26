@@ -28,8 +28,9 @@ import kotlinx.serialization.json.jsonPrimitive
 private fun notReady(): ToolResult =
     ToolResult.fail(
         code = "service_not_ready",
-        message = "自动化未启用：请在「设置 → 自动化」中开启总开关，并到系统设置授予 AgentKit 无障碍权限。",
-        hint = "引导用户开启自动化总开关与无障碍权限后重试；勿重复调用同一自动化工具。"
+        message = "自动化未启用：请在「设置 → 自动化」中开启总开关并授予无障碍权限；" +
+            "若只用调试通道，请到「权限中心 → 调试通道」完成 Shizuku 授权。",
+        hint = "引导用户开启自动化总开关与无障碍权限（或完成调试通道授权）后重试；勿重复调用同一自动化工具。"
     )
 
 /** 在主线程调用服务方法，并把 Boolean 成败转成 ToolResult（统一契约）。 */
@@ -125,7 +126,25 @@ class UiTreeTool : AgentTool {
 
     override suspend fun execute(args: JsonObject): ToolResult {
         val svc = AutomationBridge.service
-        if (!AutomationBridge.isReady() || svc == null) return notReady()
+        if (!AutomationBridge.isReady() || svc == null) {
+            // W-50：无障碍不可用时改走调试通道（uiautomator dump）。
+            // 这是「只开了无线调试/Shizuku」的用户能继续干活的关键——原先这里直接返回
+            // notReady()，导致 ui_tree 不可用 → 模型不知道点哪 → 后续 tap 再能兜底也没用。
+            val tree = ShellUiBackend.dumpTree()
+                ?: return ToolResult.fail(
+                    code = "service_not_ready",
+                    message = "读取界面失败：无障碍服务未启用，调试通道（Shizuku）也不可用。",
+                    hint = "任选其一：① 到系统「设置 → 无障碍」开启 AgentKit 的无障碍服务；" +
+                        "② 到「权限中心 → 调试通道」完成一次 Shizuku 授权（需已装 Shizuku 并通过无线调试启动）。"
+                )
+            return ToolResult.ok(
+                code = "ui_tree_ok_via_debug",
+                message = "已通过调试通道读取界面结构（${tree.json().length} 字符，保留 ${tree.kept} 个有效节点" +
+                    (if (tree.filtered > 0) "，已过滤 ${tree.filtered} 个纯容器节点" else "") +
+                    "）。该通道基于 uiautomator dump，比无障碍慢 1~2 秒；操作后请重新读取。",
+                data = tree.json()
+            )
+        }
         return try {
             // W-7 P1-1：用带陈旧窗口防护的新版抓取——刚切换窗口时根节点可能没跟上，
             // 会自动轮询等待（≤1.5s），避免模型拿到 [] 或 AgentKit 自己的界面。
@@ -343,12 +362,21 @@ class UiKeyTool : AgentTool {
                 message = "缺少 key",
                 hint = "ui_key 必须提供 key，取值 home/back/recent 之一。"
             )
+        // W-50：系统键同样可以走 shell（input keyevent），无障碍挂掉时不该整条失败
+        val shellKey: String? = when (key.lowercase()) {
+            "home" -> "KEYCODE_HOME"
+            "back" -> "KEYCODE_BACK"
+            "recent", "recents", "overview" -> "KEYCODE_APP_SWITCH"
+            else -> null
+        }
+        val fallback: (() -> String)? = shellKey?.let { c -> { "input keyevent $c" } }
         return runOnService(
             okCode = "key_ok",
             okMsg = "已执行系统动作：$key",
             failCode = "key_failed",
             failMsg = "未知或失败的系统动作：$key",
-            hint = "key 仅支持 home/back/recent；请用受支持的取值重试。"
+            hint = "key 仅支持 home/back/recent；请用受支持的取值重试。",
+            shizukuCommand = fallback
         ) { it.globalAction(key) }
     }
 }
@@ -381,7 +409,25 @@ class UiClickTool : AgentTool {
             )
         }
         val svc = AutomationBridge.service
-        if (!AutomationBridge.isReady() || svc == null) return notReady()
+        if (!AutomationBridge.isReady() || svc == null) {
+            // W-50：无障碍不可用时，按文本/ID 定位改走调试通道（同一套匹配器，候选一致）。
+            val outcome =
+                if (!rid.isNullOrBlank()) ShellUiBackend.clickByResourceId(rid!!)
+                else ShellUiBackend.clickByText(text!!)
+            if (outcome.clicked) {
+                return ToolResult.ok(
+                    code = "click_ok_via_debug",
+                    message = "已点击「${text ?: rid}」（无障碍不可用，已用调试通道）"
+                )
+            }
+            val extra = if (outcome.candidates.isEmpty()) "" else "屏幕上最相近的候选：${outcome.candidates.joinToString("、")}；"
+            val why = outcome.reason?.let { "原因：$it；" }.orEmpty()
+            return ToolResult.fail(
+                code = "click_not_found",
+                message = "未找到匹配元素或点击失败（调试通道）",
+                hint = extra + why + "请从候选里选最接近的「重试一次」；仍失败改用 ui_tap 按 ui_tree 的 bounds 中心坐标点击。"
+            )
+        }
         return try {
             val ok = withContext(Dispatchers.Main) {
                 if (!rid.isNullOrBlank()) svc.clickByResourceId(rid)
