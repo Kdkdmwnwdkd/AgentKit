@@ -155,7 +155,7 @@ class LocalUserBackendProvider(
 }
 
 /**
- * 组装真实终端后端工厂（T07 出口）：proot 优先，回落本机 user。
+ * 组装真实终端后端工厂（T07 出口）：proot → 无线调试（可注入）→ 本机 user。
  *
  * 放在本文件（Android 侧）而非 [TerminalBackendFactory]：后者须保持零 Android 依赖
  * 以便 JVM harness 直接验证降级链与缓存语义。
@@ -165,10 +165,16 @@ class LocalUserBackendProvider(
  */
 fun createTerminalBackendFactory(
     context: Context,
-    distroProvider: () -> RootfsManager.Distro?
+    distroProvider: () -> RootfsManager.Distro?,
+    /**
+     * 额外后端（W-53）：无线调试的 provider 在 `automation.adb` 包，而本函数在 `core`——
+     * 让 core 反向依赖 automation 会破坏分层，所以由装配处（ViewModel）注入。
+     * 工厂按 `backendKey` 查找，顺序无关（见 [TerminalBackendFactory.providersFor]）。
+     */
+    extraProviders: List<TerminalBackendProvider> = emptyList()
 ): TerminalBackendFactory = TerminalBackendFactory(
     listOf(
         ProotBackendProvider(context, distroProvider),
         LocalUserBackendProvider(context)
-    )
+    ) + extraProviders
 )

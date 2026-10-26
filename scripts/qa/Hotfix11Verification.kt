@@ -1186,13 +1186,23 @@ private fun testConversationSwitchWhileRunning() {
         assertContains("Y1", vm, "private fun syncDraftDisplay() {")
         assertContains("Y1", vm, "val generatingConvId: StateFlow<String?> = _generatingConvId.asStateFlow()")
     }
-    check("Y2 send/regenerate：启动捕获 owner + finally 全套收尾（双路径同纪律）") {
-        assertTrue("Y2", vm.split("runOwnerConvId = owner").size - 1 >= 2)
-        assertTrue("Y2", vm.split("_generatingConvId.value = owner").size - 1 >= 2)
-        assertTrue("Y2", vm.split("runOwnerConvId = null").size - 1 >= 2)
-        assertTrue("Y2", vm.split("draftBuffer = null").size - 1 >= 2)
-        // syncDraftDisplay 调用点：send 启动/收草稿/finally + regenerate 同三处 + switchConversation
-        assertTrue("Y2", vm.split("syncDraftDisplay()").size - 1 >= 6)
+    check("Y2 send/regenerate：启动捕获 owner + finally 全套收尾（W-54 起由 TurnRunner 唯一实现）") {
+        // W-54：这两段原各写一份，靠 6 条「与 send 同策略」注释同步；现合并为 TurnRunner。
+        // 断言随之改为「两处都调用」+「TurnRunner 内确有全套复位」——
+        // 比原来的「同一字符串出现 ≥2 次」更贴意图：一处定义、两处调用。
+        // 若将来有人把 begin/finish 拆回两份，这两组断言会同时失效。
+        assertContains("Y2 send.begin", vm, "turnRunner.begin(owner, placeholderDraft = false)")
+        assertContains("Y2 regen.begin", vm, "turnRunner.begin(owner, placeholderDraft = true)")
+        assertContains("Y2 send.finish", vm, "turnRunner.finish(rebuildMessages = true)")
+        assertContains("Y2 regen.finish", vm, "turnRunner.finish(rebuildMessages = false)")
+        // TurnRunner 内部：owner 捕获 + 全套复位（各一处，因为只有一份实现）
+        assertContains("Y2 begin 捕获 owner", vm, "runOwnerConvId = owner")
+        assertContains("Y2 finish 清 owner", vm, "runOwnerConvId = null")
+        assertContains("Y2 finish 清 generating", vm, "_generatingConvId.value = null")
+        assertContains("Y2 finish 清草稿", vm, "draftBuffer = null")
+        assertContains("Y2 finish 清 retry", vm, "_retryState.value = null")
+        // 草稿投影调用点：begin / finish / 两处「收草稿」/ switchConversation
+        assertTrue("Y2 syncDraftDisplay", vm.split("syncDraftDisplay()").size - 1 >= 5)
     }
     check("Y3 在途写按 owner：appendToStore/appendVariant/流式草稿三通道") {
         val appendStore = vm.substringAfter("private fun appendToStore(item: UiItem)")

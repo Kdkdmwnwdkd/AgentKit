@@ -3,7 +3,9 @@
 > 状态：**已启用**。`AdbSession` + `Spake2Ed25519` 支撑「设置 → 调试通道 → 无线调试配对」，
 > 并以 `AdbShellChannel` 的形式接进 `ShellChannels`，供 `ui_tree` / `ui_click` / `input` 兜底。
 >
-> 仍未接入的地方：`run_shell`（走 `TerminalBackendFactory`，需新增 provider 与终端流式 UI）。
+> `run_shell` 的第三级后端也已接上（W-53）：`AdbTerminalBackend` 用
+> `AdbClient.openInteractiveShell()` 起一条常驻 `sh`，语义与 `LocalUserBackend` 一致
+> （只是 uid 从 App 变成 2000）。候选顺序 `proot → adb → user`。
 
 ## 与 Shizuku 的关系
 
@@ -31,6 +33,9 @@
 | **`Spake2Ed25519.kt`** | SPAKE2（boringssl/AOSP 版）：Ed25519 群运算 + 协议流程 |
 | **`AdbCredentials.kt`** | 密钥对与端点持久化（SharedPreferences，私有目录） |
 | **`AdbSession.kt`** | 会话管理：配对、连接复用、闲置重建、失败重连一次 |
+| **`AdbTerminalBackend.kt`** | `run_shell` 的第三级后端：交互式 shell（持久、保 cwd） |
+| **`AdbDiscovery.kt`** / `AdbEndpoint.kt` | 无线调试端点自动发现（mDNS）+ 合并规则 |
+| **`Spake2Ed25519.kt`** | 见下；配对全流程 |
 
 ## 复用时最容易踩的三个坑
 

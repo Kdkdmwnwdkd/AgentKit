@@ -4,8 +4,8 @@ package com.example.agentkit.core.terminal.backend
  * 终端后端工厂（T07，来源：zafiro B1 · libterm `createRuntimeManager`，净室重写）。
  *
  * 职责：
- *  - **降级链** [getHighestAvailable]：proot 可用 → [TerminalBackend.KEY_PROOT]；
- *    否则回落 [TerminalBackend.KEY_USER] 本机 user（零依赖 `ProcessBuilder`）；
+ *  - **降级链** [getHighestAvailable]：proot → 无线调试 → 本机 user
+ *    （W-53 插入 ADB 一级，见 [providersFor] 里的排序理由）；
  *  - [getUserPreferred]：本机 user；
  *  - [obtain]：会话池使用的按身份取后端入口；
  *  - **可用性缓存 + [clearCache]**：proot 探测要碰文件系统，缓存判定；
@@ -14,8 +14,9 @@ package com.example.agentkit.core.terminal.backend
  * 设计说明（与 zafiro 的差异，已在实现注释中标注）：
  *  - 缓存的是「**可用性判定**」而非后端**实例**——一个后端 = 一条独立 shell 进程，
  *    不能被多个会话共享，故 [obtain] 每次都构造**新实例**，只在探测这一步做缓存；
- *  - `Su` / `Shizuku` / `Ssh` 未实现：本类对它们直接返回 null（不可用），
- *    **不引入任何新依赖**（无 libsu / shizuku / ssh 库）。
+ *  - `Su` / `Shizuku` / `Ssh` 仍未实现：本类对它们直接返回 null（不可用），
+ *    **不引入任何新依赖**（无 libsu / shizuku / ssh 库）。Shizuku 未做成后端的原因
+ *    见 [TerminalBackend.KEY_SHIZUKU] 的注释。
  *
  * 零 Android 依赖：Android 探测全部经由注入的 [TerminalBackendProvider]，
  * 本类可在 JVM harness 里用假 provider 直接验证降级链与缓存语义。
@@ -56,15 +57,18 @@ class TerminalBackendFactory(
      * proot → user 的候选序列，再用 [isAvailable] 求值即可，**不重复实现降级顺序与探测**。
      *
      * @param identity 声明身份；非 [TerminalIdentity.User] 返回空（首期未实现）
-     * @param preferProot true = `[proot, user]`；false = `[user]`
+     * @param preferProot true = `[proot, adb, user]`；false = `[user]`
      */
     fun providersFor(identity: TerminalIdentity, preferProot: Boolean): List<TerminalBackendProvider> {
         if (identity != TerminalIdentity.User) {
             // Su / Shizuku / Ssh 首期只留接口不实现——显式返回空，绝不引入依赖
             return emptyList()
         }
+        // W-53：中间插入无线调试。顺序按「能力」而非「速度」排——
+        // proot 有完整 Linux 工具链（apk/pacman），ADB 是 uid 2000（能改系统设置、停应用），
+        // 本机 user 只有 App 身份。shell 工具的痛点是权限不足，所以快的排最后。
         val order = if (preferProot) {
-            listOf(TerminalBackend.KEY_PROOT, TerminalBackend.KEY_USER)
+            listOf(TerminalBackend.KEY_PROOT, TerminalBackend.KEY_ADB, TerminalBackend.KEY_USER)
         } else {
             listOf(TerminalBackend.KEY_USER)
         }

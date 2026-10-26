@@ -106,9 +106,9 @@ ShellChannels.active()     → 按优先级取第一个可用
 1. **真机端到端配对未验**：需要一台开着无线调试的手机。SPAKE2 已与本实现外的独立
    实现对拍，但「TLS 导出密钥材料 + PeerInfo 加密 + 设备侧接受公钥」这一段只能在真机验。
    验证路径：设置 → 调试通道 → 配对，成功即 `echo` 通过；失败看 Toast 里的具体原因。
-2. **`run_shell` 的 ADB 通道未接**：目前只有 `control_screen` 用上 ADB。`run_shell` 走
-   `TerminalBackendFactory`，要新增 provider 并接终端流式 UI，工作量另算。
-   影响面：agent 的 shell 工具在「无 Shizuku 但有无线调试」时仍不可用。
+2. ~~**`run_shell` 的 ADB 通道未接**~~ —— **W-53 已补**（见 `docs/W53-NOTES.md`）：
+   `AdbTerminalBackend` 走交互式 shell，候选顺序 `proot → adb → user`。
+   原文保留供对照：当时只有 `control_screen` 用上 ADB，`run_shell` 仍走 proot/user。
 3. **mDNS 自动发现未做**：`_adb-tls-pairing._tcp` 能自动找到配对端口，省掉手输。
    当前让用户抄四个数字（其中两个容易混），是可用的下限，不是上限。
 4. **配对失败的错误粒度**：`AdbPairingClient.pair()` 里 GCM 解密失败只抛「配对码错误或

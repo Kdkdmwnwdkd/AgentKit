@@ -95,10 +95,16 @@ private class FakeProvider(
 }
 
 /** 构造只含 proot + user 两条候选的假工厂。 */
-private fun fakeFactory(prootAvailable: Boolean, userAvailable: Boolean): TerminalBackendFactory =
+private fun fakeFactory(
+    prootAvailable: Boolean,
+    userAvailable: Boolean,
+    /** W-53：中间插入的无线调试档。默认不可用，与「没配对过」的真实默认一致。 */
+    adbAvailable: Boolean = false
+): TerminalBackendFactory =
     TerminalBackendFactory(
         listOf(
             FakeProvider(TerminalIdentity.User, TerminalBackend.KEY_PROOT, prootAvailable),
+            FakeProvider(TerminalIdentity.User, TerminalBackend.KEY_ADB, adbAvailable),
             FakeProvider(TerminalIdentity.User, TerminalBackend.KEY_USER, userAvailable)
         )
     )
@@ -229,22 +235,49 @@ private fun testUnavailableAndEmpty() {
 private fun testFactoryLinkage() {
     println("\n== 与 T07 工厂联动：proot 不可用 → 回落本机 user ==")
 
-    check("shellCapabilitySnapshot 顺序 = shizuku(诊断) → proot → user，且可用性来自工厂 probe") {
+    check("shellCapabilitySnapshot 顺序 = shizuku(诊断) → proot → adb → user，且可用性来自工厂 probe") {
         val factory = fakeFactory(prootAvailable = false, userAvailable = true)
         val snapshot = factory.shellCapabilitySnapshot()
-        // 3 个候选：首项是 shizuku 调试通道的「诊断条目」。
-        // 它排在最前是因为 uid 2000 能做的活最多，但**不可用时只作诊断呈现**，
-        // 不影响 proot → user 的降级链（见 CapabilityBridges.shellCapabilitySnapshot 的 KDoc）。
-        // 注意：本断言原先写的是 2 candidates / 1st=proot，是 Shizuku 诊断条目加入前的旧期望，
-        // 一直报红——现已对齐当前实现语义。
-        assertEquals("3 candidates", 3, snapshot.size)
+        // 4 个候选：首项是 shizuku 调试通道的「诊断条目」（不可用时只作诊断呈现，
+        // 不在执行链里）；其后是 W-53 插入的无线调试档。
+        assertEquals("4 candidates", 4, snapshot.size)
         assertEquals("1st=shizuku(diagnostic)", TerminalBackend.KEY_SHIZUKU, snapshot[0].backendId)
         assertTrue("shizuku unavailable", !snapshot[0].available)
         assertEquals("2nd=proot", TerminalBackend.KEY_PROOT, snapshot[1].backendId)
         assertTrue("proot unavailable", !snapshot[1].available)
         assertTrue("proot has reason", !snapshot[1].reason.isNullOrBlank())
-        assertEquals("3rd=user", TerminalBackend.KEY_USER, snapshot[2].backendId)
-        assertTrue("user available", snapshot[2].available)
+        assertEquals("3rd=adb", TerminalBackend.KEY_ADB, snapshot[2].backendId)
+        assertTrue("adb unavailable", !snapshot[2].available)
+        assertTrue("adb has reason", !snapshot[2].reason.isNullOrBlank())
+        assertEquals("4th=user", TerminalBackend.KEY_USER, snapshot[3].backendId)
+        assertTrue("user available", snapshot[3].available)
+    }
+
+    check("W-53：proot 不可用但无线调试可用 → 选中 adb（中间级，不直接掉到 user）") {
+        val factory = fakeFactory(prootAvailable = false, userAvailable = true, adbAvailable = true)
+        val r = resolveCapability(
+            CapabilityRequest(Capability.RUN_SHELL, factory.shellCapabilitySnapshot())
+        ) as CapabilityResolution.Selected
+        assertEquals("selected=adb", TerminalBackend.KEY_ADB, r.backend.backendId)
+    }
+
+    check("W-53：proot 可用时仍首选 proot（adb 可用也不抢——proot 有完整工具链）") {
+        val factory = fakeFactory(prootAvailable = true, userAvailable = true, adbAvailable = true)
+        val r = resolveCapability(
+            CapabilityRequest(Capability.RUN_SHELL, factory.shellCapabilitySnapshot())
+        ) as CapabilityResolution.Selected
+        assertEquals("selected=proot", TerminalBackend.KEY_PROOT, r.backend.backendId)
+        // 命中即止：轨迹 = shizuku(诊断，不可用) + proot(可用)，不列到 adb
+        assertEquals("命中即止，不列到 adb", 2, r.trace.size)
+    }
+
+    check("W-53：adb 是唯一可用 → 选中 adb（user 更快但权限更低，排在后面）") {
+        val factory = fakeFactory(prootAvailable = false, userAvailable = false, adbAvailable = true)
+        val r = resolveCapability(
+            CapabilityRequest(Capability.RUN_SHELL, factory.shellCapabilitySnapshot())
+        ) as CapabilityResolution.Selected
+        assertEquals("selected=adb", TerminalBackend.KEY_ADB, r.backend.backendId)
+        assertEquals("轨迹含 3 级（shizuku 诊断条目不参与裁决前后缀判断）", 3, r.trace.size)
     }
 
     check("proot 不可用 → 能力链选中 user（与工厂 getHighestAvailable 一致）") {
@@ -253,8 +286,8 @@ private fun testFactoryLinkage() {
         assertTrue("Selected", r is CapabilityResolution.Selected)
         r as CapabilityResolution.Selected
         assertEquals("chain selects user", TerminalBackend.KEY_USER, r.backend.backendId)
-        // 轨迹含诊断条目：shizuku → proot → user，共 3 条
-        assertEquals("trace size", 3, r.trace.size)
+        // 轨迹含诊断条目与 W-53 的 adb 档：shizuku → proot → adb → user，共 4 条
+        assertEquals("trace size", 4, r.trace.size)
         // 复用既有断言思路：工厂自身的降级结果也回落到 user
         assertEquals("factory highest=user", TerminalBackend.KEY_USER, factory.getHighestAvailable()?.backendKey)
     }

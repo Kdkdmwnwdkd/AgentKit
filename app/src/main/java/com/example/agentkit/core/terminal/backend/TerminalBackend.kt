@@ -51,8 +51,22 @@ interface TerminalBackend {
         /** root（su）后端键：首期未实现。 */
         const val KEY_SU = "su"
 
-        /** Shizuku 后端键：首期未实现。 */
+        /**
+         * Shizuku 后端键。
+         *
+         * 仍未实现为 [TerminalBackend]：Shizuku 的 `newProcess` 返回的是**远端进程代理**，
+         * 它的 `waitFor`/流语义与本地 `Process` 不一致（W-36 踩过：定时 waitFor 立刻抛异常，
+         * 「启动失败」被误报成「超时」）。持久 shell + 哨兵这套协议要求稳定的 stdin/stdout 流，
+         * 用 `ShizukuShell.exec` 逐条执行又保不住 cwd。故维持「诊断条目 + 单独工具兜底」现状。
+         */
         const val KEY_SHIZUKU = "shizuku"
+
+        /**
+         * 无线调试（adb over TCP）后端键。W-53 起实现为 [com.example.agentkit.automation.adb.AdbTerminalBackend]。
+         *
+         * 与能力链的 `BACKEND_ADB` 同值——两处都指向「同一条通道」，日志里可对齐。
+         */
+        const val KEY_ADB = "adb-wireless"
 
         /** SSH 后端键：首期未实现。 */
         const val KEY_SSH = "ssh"

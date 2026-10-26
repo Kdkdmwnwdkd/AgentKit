@@ -15,6 +15,7 @@ import android.content.ComponentName
 import android.provider.Settings
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.agentkit.automation.adb.AdbBackendProvider
 import com.example.agentkit.automation.AutomationBridge
 import com.example.agentkit.automation.AutomationPrefs
 import com.example.agentkit.automation.DeviceForegroundAppTool
@@ -778,7 +779,13 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
      * 单独持有引用，供能力链（DoD⑤）复用其带缓存的可用性判断，避免重复实现降级顺序与探测。
      */
     private val terminalBackendFactory: TerminalBackendFactory =
-        createTerminalBackendFactory(app) { RootfsManager.listAvailable(app).firstOrNull() }
+        createTerminalBackendFactory(
+            context = app,
+            distroProvider = { RootfsManager.listAvailable(app).firstOrNull() },
+            // W-53：无线调试作为第三级（proot → adb → user）。provider 在 automation 包，
+            // 由这里注入，避免 core 反向依赖 automation。
+            extraProviders = listOf(AdbBackendProvider())
+        )
 
     /**
      * 终端会话池（T08）：shell 工具的运行时底座。后端工厂 proot 优先、不可用回落本机 user；
@@ -1300,6 +1307,76 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         _reasoningDraft.value = if (isOwnerActive()) reasoningBuffer else null
     }
 
+    /* --------------------------- 一轮对话的开场 / 收尾 --------------------------- */
+
+    /**
+     * W-54：`send()` 与 `regenerate()` 的**开场仪式**与**收尾仪式**（此前是两份逐行同构的代码）。
+     *
+     * ## 为什么之前必须靠注释同步
+     *
+     * 两处各有 6~8 行完全相同的状态复位：`runOwnerConvId` / `_generatingConvId` /
+     * `draftBuffer` / `reasoningBuffer` / `syncDraftDisplay()` / `isRunning` / `_retryState`。
+     * 代码里出现过 6 次「与 send 同策略」「send 同套保险」这类注释——**用注释去同步两份
+     * 本该只有一份的代码**，而且已经分叉（`reloadActiveMessages` 只有 send 收尾会调）。
+     *
+     * ## 为什么不做成独立类
+     *
+     * 这些字段全是 ViewModel 的私有可变状态（`draftBuffer`、`runOwnerConvId`…）。独立类要
+     * 么暴露 8 个 setter，要么把状态搬出去再引一堆回调——比现在这层 inner class 更绕。
+     * inner class 直接读写宿主字段，零额外耦合，也保住了「一处定义、两处调用」。
+     *
+     * ## 唯一的真实差异，用参数表达
+     *
+     * `placeholderDraft`：regenerate 需要一个**空草稿占位**（`draftBuffer = ""`），send 不需要
+     * （`null`）。这不是历史遗留——UI 用 `streamDraft != null` 决定是否多渲染一行草稿气泡
+     * （ChatScreen 的 `streamDraft != null` → `MessageRow(..., streaming = true)`）：
+     * send 时用户消息气泡本身就是「在生成」的占位，regenerate 时没有新气泡，得自己造一个。
+     * 所以两个值都对，只是场景不同——**把它变成显式参数，而不是两个函数各写一遍**。
+     */
+    private inner class TurnRunner {
+
+        /**
+         * 开场：置归属会话、生成中标识、清草稿与推理缓冲、开运行态。
+         *
+         * @param owner 本轮归属的会话 id（用户切走后，在途写仍按它落盘）
+         * @param placeholderDraft true = 立刻渲染一个空草稿气泡（regenerate 用）；
+         *   false = 等第一个 delta 再出气泡（send 用）
+         */
+        fun begin(owner: String, placeholderDraft: Boolean) {
+            runOwnerConvId = owner
+            _generatingConvId.value = owner
+            draftBuffer = if (placeholderDraft) "" else null
+            reasoningBuffer = null
+            syncDraftDisplay()
+            isRunning.value = true
+        }
+
+        /**
+         * 收尾：清归属/生成中/缓冲、关运行态、清「正在恢复」横幅。
+         *
+         * 取消路径也必须走这里——`finally` 保证 withContext 抛 CancellationException 时
+         * 状态不残留（否则 UI 永远停在「运行中」，发送键禁用）。
+         *
+         * @param rebuildMessages 是否用轮次变体结构重建消息列表。send 需要（补上助手气泡的
+         *   变体游标元数据）；regenerate 不需要——它在 `onSuccess` / `onFailure` 里各自
+         *   reload 过，取消路径草稿已清、列表未变，再 reload 是多余 IO。
+         */
+        fun finish(rebuildMessages: Boolean) {
+            runOwnerConvId = null
+            _generatingConvId.value = null
+            draftBuffer = null
+            reasoningBuffer = null
+            syncDraftDisplay()
+            isRunning.value = false
+            // Phase 2 DoD③：兜底清「正在恢复」——重试收尾事件之外的最后一道保险
+            _retryState.value = null
+            if (rebuildMessages) reloadActiveMessages()
+            refreshLogs()
+        }
+    }
+
+    private val turnRunner = TurnRunner()
+
     /* ------------------------------ W-17 定时任务 ------------------------------ */
 
     fun refreshWorkflows() {
@@ -1502,12 +1579,9 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
 
         // hotfix30：同 send——捕获在途归属会话，切走再切回不写串（appendVariant 按 owner）
         val owner = _activeConversationId.value
-        runOwnerConvId = owner
-        _generatingConvId.value = owner
-        draftBuffer = ""
-        reasoningBuffer = null
-        syncDraftDisplay()
-        isRunning.value = true
+        // W-54：开场仪式与 send 共用；placeholderDraft=true 是因为这里没有新的用户气泡，
+        // 需要一个空草稿行告诉用户「正在重做」（见 TurnRunner 的 KDoc）
+        turnRunner.begin(owner, placeholderDraft = true)
         AgentLogger.i("Chat", "重新生成：第 ${turnIndex + 1} 轮")
         runJob = viewModelScope.launch {
             try {
@@ -1522,7 +1596,8 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
                 reasoningBuffer = null
                 syncDraftDisplay()
                 outcome.onSuccess { history ->
-                    // 过程事件已实时渲染；未渲染的工具卡兜底补上（与 send 同策略）
+                    // 过程事件已实时渲染；但用户中途切走过会话时，期间的 Tool 事件只落盘
+                    // 不上屏（`isOwnerActive()` 为 false），这里按 id 比对补投影
                     history.forEach { msg ->
                         if (msg is ToolMessage) {
                             val shown = _messages.value.any { it is UiItem.Tool && it.call.id == msg.id }
@@ -1562,16 +1637,9 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
                 }
             } finally {
                 runJob = null
-                // hotfix30：收尾清 owner/生成中标识/缓冲（send 同套保险）
-                runOwnerConvId = null
-                _generatingConvId.value = null
-                draftBuffer = null
-                reasoningBuffer = null
-                syncDraftDisplay()
-                isRunning.value = false
-                // Phase 2 DoD③：兜底清「正在恢复」（与 send 同一保险）
-                _retryState.value = null
-                refreshLogs()
+                // W-54：收尾仪式与 send 共用。rebuildMessages=false——成功/失败分支各自
+                // reload 过，取消分支草稿已清、列表未变，不必再重建一遍
+                turnRunner.finish(rebuildMessages = false)
             }
         }
     }
@@ -2574,15 +2642,13 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         // hotfix30：捕获在途归属会话——此后所有在途写（appendToStore/handleAgentEvent/
         // 流式草稿）按它落盘，用户切走再切回不写串；finally 清
         val owner = _activeConversationId.value
-        runOwnerConvId = owner
         // W-46：先把历史摊平（此时当前这句还没落库，天然不含本轮）——loop 每回合只造
         // 「系统提示 + 当前输入」，不带历史就会出现「它 / 继续 / 第二个方案」全失忆
+        // （放在 begin 之前：摊平是纯读 store，不需要运行态已置位）
         val priorMessages = buildPriorMessages(owner)
-        _generatingConvId.value = owner
-        draftBuffer = null
-        reasoningBuffer = null
-        syncDraftDisplay()
-        isRunning.value = true
+        // W-54：开场仪式与 regenerate 共用。placeholderDraft=false——用户消息气泡本身
+        // 就是「在生成」的占位，不必再造一个空草稿行
+        turnRunner.begin(owner, placeholderDraft = false)
         AgentLogger.i(
             "Chat",
             "用户发送：${text.take(120)}" +
@@ -2811,20 +2877,10 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
                         ) ?: return@runCatching
                     )
                 }
-                // hotfix30：清 owner/生成中标识/草稿缓冲（regenerate 同套保险）；
-                // 用户此刻若正停在 owner 会话，reloadActiveMessages 会重建含最终回答的完整列表
-                runOwnerConvId = null
-                _generatingConvId.value = null
-                draftBuffer = null
-                reasoningBuffer = null
-                syncDraftDisplay()
-                isRunning.value = false
-                // Phase 2 DoD③：兜底清「正在恢复」——重试收尾事件之外的最后一道保险
-                _retryState.value = null
-                // Phase 2 DoD②：用轮次变体结构重建 _messages——补上助手气泡的变体游标元数据
+                // W-54：收尾仪式与 regenerate 共用。rebuildMessages=true——Phase 2 DoD②
+                // 要求用轮次变体结构重建 _messages，补上助手气泡的变体游标元数据
                 // （首条回答变体数=1，切换器不显示；重新生成后才会 >1）
-                reloadActiveMessages()
-                refreshLogs()
+                turnRunner.finish(rebuildMessages = true)
             }
         }
     }

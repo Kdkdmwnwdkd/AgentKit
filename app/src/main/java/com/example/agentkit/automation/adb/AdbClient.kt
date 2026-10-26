@@ -164,6 +164,106 @@ class AdbClient(
         return ShellResult(out.toString(), err.toString(), exit, truncated)
     }
 
+    /**
+     * 打开一条**交互式** shell（`shell,v2,raw:` 不带命令）——设备侧起一个常驻 `sh`，
+     * 之后用 [ShellStream] 持续写 stdin、读事件。
+     *
+     * ## 为什么需要它（W-53）
+     *
+     * [exec] 是「一条命令一个进程」：每次 `cd /tmp` 之后下一条命令仍在原 cwd。
+     * 而 `run_shell` 的会话池是**持久 shell + 哨兵**模型（写入命令 → 写入
+     * `echo "<哨兵>$?"` → 从输出流等哨兵），要求 `cd` / 环境变量跨命令保持。
+     * 所以必须开交互式 shell，而不是把每条命令包成一次 [exec]。
+     *
+     * ## 与 PTY 的差别
+     *
+     * adbd 的 shell 通道不带伪终端：没有提示符、`Ctrl-C` 不是真中断、
+     * `ls --color` 之类的交互特性不生效——与 `LocalUserBackend` 的限制一致，
+     * 已在 shell 工具描述里告知模型。
+     *
+     * @throws IOException 设备拒绝或连接中断
+     */
+    fun openInteractiveShell(timeoutMs: Int = 8_000): ShellStream {
+        socket.soTimeout = timeoutMs
+        val localId = NEXT_ID.incrementAndGet()
+        write(AdbPacket(AdbCommand.OPEN, localId, 0, shellOpenPayload("")))
+        while (true) {
+            val p = readPacket() ?: throw IOException("打开交互式 shell 失败：连接被对端关闭")
+            when (p.command) {
+                AdbCommand.OKAY -> if (p.arg0 == localId) return ShellStream(localId, p.arg1)
+                AdbCommand.CLSE -> throw IOException("设备拒绝交互式 shell（adbd 可能不支持 shell,v2）")
+                else -> Unit // 忽略其它流
+            }
+        }
+    }
+
+    /**
+     * 交互式 shell 会话。**独占**：一个 [AdbClient] 同时只能有一条活动 shell——
+     * 底层是单 socket、单读循环，两个会话会互相抢包。
+     */
+    inner class ShellStream internal constructor(
+        private val localId: Int,
+        private val remoteId: Int
+    ) {
+        private val parser = ShellV2Parser()
+        private val queue = ArrayDeque<ShellEvent>()
+
+        @Volatile
+        private var closed = false
+
+        /** 写 stdin（shell v2 的 stream id 0）。 */
+        fun writeStdin(text: String): Boolean {
+            if (closed) return false
+            val payload = ByteArray(text.toByteArray(Charsets.UTF_8).size + 1)
+            payload[0] = 0 // stream id 0 = stdin
+            text.toByteArray(Charsets.UTF_8).copyInto(payload, 1)
+            return runCatching {
+                write(AdbPacket(AdbCommand.WRTE, remoteId, localId, payload))
+                true
+            }.getOrDefault(false)
+        }
+
+        /**
+         * 读一个事件。
+         *
+         * @return 事件；连接关闭返回 null
+         * @throws java.net.SocketTimeoutException 读取超时（调用方应继续轮询，
+         *   不要把超时当成会话结束——否则「长时间没输出」会被误判成 shell 退出）
+         */
+        fun read(timeoutMs: Int): ShellEvent? {
+            queue.removeFirstOrNull()?.let { return it }
+            if (closed) return null
+            socket.soTimeout = timeoutMs
+            while (true) {
+                val p = readPacket() ?: run {
+                    closed = true
+                    return null
+                }
+                when (p.command) {
+                    AdbCommand.WRTE -> if (p.arg0 == remoteId) {
+                        val events = parser.feed(p.payload)
+                        if (events.isNotEmpty()) {
+                            queue.addAll(events)
+                            return queue.removeFirst()
+                        }
+                    }
+                    AdbCommand.CLSE -> if (p.arg0 == remoteId) {
+                        runCatching { write(AdbPacket(AdbCommand.CLSE, localId, remoteId, ByteArray(0))) }
+                        closed = true
+                        return null
+                    }
+                    else -> Unit
+                }
+            }
+        }
+
+        fun close() {
+            if (closed) return
+            closed = true
+            runCatching { write(AdbPacket(AdbCommand.CLSE, localId, remoteId, ByteArray(0))) }
+        }
+    }
+
     // ---- 读写 ----
 
     private fun write(p: AdbPacket) {
