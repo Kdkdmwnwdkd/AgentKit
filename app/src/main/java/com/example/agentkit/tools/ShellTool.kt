@@ -98,7 +98,9 @@ class ShellRunTool(
     override val description =
         "在终端会话里执行一条 shell 命令并返回输出与退出码。无 session 时自动开辟一条会话并返回其句柄；" +
             "复用同一 session 句柄可保持工作目录与环境变量（多轮 cd/export 生效）。identity 取值 " +
-            "user/su/shizuku/ssh；identity=shizuku 走提权通道（uid 2000，可改设置/停应用/读文件，需先配好 Shizuku）。" +
+            "user/su/shizuku/ssh；identity=shizuku 走提权通道（uid 2000，可改设置/停应用/读文件，需先配好 Shizuku）——" +
+            "**该通道是一次性执行**：不返回会话句柄，本次的 cd / export 不会保留到下一次调用；" +
+            "需要连续操作请不带 identity 建立会话（走 proot / 无线调试 / 本机 shell）后复用句柄。" +
             "prefer_proot 是否优先容器（默认 true，不可用回落本机 shell）。" +
             "无 PTY/交互支持：不要用需要交互输入的命令（如不带 -y 的 apt、分页器 less），必要时改用非交互参数。" +
             "注意：shell_run 不能用来操控界面——dumpsys、am start、settings put/get、input tap 都会因权限不足失败；" +
@@ -108,7 +110,8 @@ class ShellRunTool(
             "session 传入即可在同一 shell 里继续操作（cwd 与 export 的环境变量会保持）。不再需要的会话用 " +
             "shell_close 关闭。命令输出过长会被截断（只保留头尾），必要时拆小命令分批查看。" +
             "提权通道（identity=shizuku）可用时，settings put/get、pm、文件操作都能真正生效；" +
-            "未配置 Shizuku 时会自动回落本机 shell（权限不足会明确报 permission_denied）。" +
+            "但它是**一次性执行**（一条命令一个进程），cd / export 不跨调用保持——" +
+            "要多步连续操作就先不带 identity 开一个会话、拿句柄再复用。" +
             "shell_run 只用于文件读写、命令执行、查看本机信息，**不能操控界面**" +
             "（dumpsys/am start/settings put|get 都会因权限不足失败）；操控界面请用 ui_* 工具。"
 
@@ -211,7 +214,17 @@ class ShellRunTool(
                         data = output.take(400)
                     )
                 }
-                val header = "通道 Shizuku（uid 2000）退出码 ${out.exitCode}"
+                // W-54：这条通道是**一次性执行**（一条命令一个远端进程），cd/export 不会留到
+                // 下一次调用。命令里带了状态变更时必须明说，否则模型会以为 cwd 已切换，
+                // 后续命令全在默认目录跑、还以为是路径写错了——与 W-36「启动失败被误报成超时」
+                // 同一类问题：不是执行错，是语义被误读。
+                val stateHint = if (mutatesShellState(command)) {
+                    "\n\n注意：本通道为一次性执行，本次的 cd / export 只在本次生效，" +
+                        "下一次调用回到默认工作目录。需要连续操作请不带 identity 开一个会话再复用句柄。"
+                } else {
+                    ""
+                }
+                val header = "通道 Shizuku（uid 2000）退出码 ${out.exitCode}$stateHint"
                 return if (out.exitCode == 0) {
                     ToolResult.ok(code = "shell_ok", message = header, data = output.ifBlank { "(命令无输出)" })
                 } else {
@@ -387,4 +400,24 @@ fun terminalShellCommandRunner(
             )
         }
     }.getOrNull()
+}
+
+/**
+ * W-54：这条命令是否会改变 shell 状态（工作目录 / 环境变量）。
+ *
+ * 只对「一次性通道」有意义：[ShellTool] 的 Shizuku 分支一条命令一个远端进程，
+ * `cd` / `export` 不会留到下一次调用。函数用来决定要不要在返回文案里加那句提示——
+ * 没有状态变更的普通命令（`ls` / `cat` / `pm list`）不加，避免每条都啰嗦。
+ *
+ * 纯函数：零 Android 依赖，可在 JVM harness 直接断言。
+ */
+internal fun mutatesShellState(command: String): Boolean {
+    val c = command.trim()
+    if (c.isEmpty()) return false
+    // 语句开头或 `;` `&&` `||` `|` 之后出现 cd / pushd / popd
+    if (Regex("(^|[;&|]\\s*)(cd|pushd|popd)(\\s|$)").containsMatchIn(c)) return true
+    if (Regex("(^|[;&|]\\s*)(export|unset)(\\s|$)").containsMatchIn(c)) return true
+    // 变量赋值前缀（`FOO=bar cmd` 或 `FOO=bar`）也算改环境
+    if (Regex("(^|[;&|]\\s*)[A-Za-z_][A-Za-z0-9_]*=").containsMatchIn(c)) return true
+    return false
 }
