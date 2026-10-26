@@ -100,6 +100,14 @@ object RootfsManager {
     /** 解压布局版本标记：有它才认为 rootfs 可用（见 [isExtracted]）。 */
     private const val LAYOUT_MARKER = ".agentkit-layout-v2"
 
+    /**
+     * 单个「数据块当字符串」条目的大小上限（GNU 长文件名 `L`）。
+     *
+     * header 里的 size 是归档自己写的：恶意/损坏的 header 声明 2GB，`ByteArray(size)` 直接
+     * OOM。tar 的路径长度受 PATH_MAX（通常 4096）约束，64KB 已远超任何合法取值。
+     */
+    private const val READ_NAME_LIMIT = 64L * 1024L
+
     private enum class LinkType { MISSING, SYMLINK, REGULAR }
 
     private fun lstatType(f: File): LinkType = runCatching {
@@ -223,11 +231,20 @@ object RootfsManager {
                     continue
                 }
                 '5' -> { // 目录
-                    File(dest, sanitize(name)).mkdirs()
+                    val rel = sanitize(name)
+                    if (rel.isEmpty()) {
+                        skipPad(input, size)
+                        continue
+                    }
+                    File(dest, rel).mkdirs()
                     skipPad(input, size)
                 }
                 '2' -> { // 符号链接
                     val rel = sanitize(name)
+                    if (rel.isEmpty()) {
+                        skipPad(input, size)
+                        continue
+                    }
                     val f = File(dest, rel)
                     f.parentFile?.mkdirs()
                     val target = relativizeLink(dest, rel, linkname)
@@ -239,7 +256,12 @@ object RootfsManager {
                 }
                 '1', '3', '4', '6' -> skipPad(input, size) // 硬链/设备/FIFO：跳过数据
                 else -> { // '0'/'7'/其它：常规文件
-                    val f = File(dest, sanitize(name))
+                    val rel = sanitize(name)
+                    if (rel.isEmpty()) {
+                        skipPad(input, size)
+                        continue
+                    }
+                    val f = File(dest, rel)
                     f.parentFile?.mkdirs()
                     FileOutputStream(f).use { copyN(input, it, size) }
                     val mode = parseOctal(header, 100, 8)
@@ -269,7 +291,26 @@ object RootfsManager {
         return if (rel.isNullOrEmpty()) "." else rel
     }
 
-    private fun sanitize(name: String): String = name.removePrefix("./").trimStart('/')
+    /**
+     * 归一化归档条目名：去掉前导 `./` 与 `/`，并**丢弃所有 `..` 段**（防 Zip-Slip）。
+     *
+     * 现在 rootfs 只来自 APK 自带 assets（可信），但目录管理已支持删除/重建，一旦开放
+     * 「导入第三方 rootfs」，不处理 `..` 就等于允许写到应用私有目录之外
+     * （`../../databases/x` 会落到 `filesDir` 的上层）。代价是每个条目一次 split，可忽略。
+     *
+     * 归一化后为空（整条名就是 `..` 之类）返回空串，由调用方**跳过该条目**——
+     * 失败关闭，绝不放行到 dest 的上级目录。
+     */
+    private fun sanitize(name: String): String {
+        val cleaned = name.removePrefix("./").trimStart('/')
+        if (!cleaned.contains("..")) return cleaned // 快路径：绝大多数条目一次 contains 就过
+        val parts = cleaned.split('/').filter { it.isNotEmpty() && it != "." && it != ".." }
+        if (parts.isEmpty()) {
+            AgentLogger.w(TAG, "归档条目路径非法，已跳过：$name")
+            return ""
+        }
+        return parts.joinToString("/")
+    }
 
     private fun readFully(input: InputStream, buf: ByteArray): Int {
         var off = 0
@@ -302,11 +343,23 @@ object RootfsManager {
         return value
     }
 
+    /**
+     * 读一个「数据块当字符串」的条目（GNU 长文件名）。
+     *
+     * 超限部分必须**自己吃掉**：消费的字节数要和 header 声明的一致，否则后续 header 会
+     * 错位、整个归档解出一堆垃圾（[skipPad] 只补块对齐，替代不了这一步）。
+     */
     private fun readString(input: InputStream, size: Long): String {
-        val n = size.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+        val n = size.coerceAtMost(READ_NAME_LIMIT).toInt()
         val buf = ByteArray(n)
-        readFully(input, buf)
-        return String(buf, Charsets.UTF_8)
+        val got = readFully(input, buf)
+        var rest = size - got
+        while (rest > 0) {
+            val skipped = input.skip(rest)
+            if (skipped <= 0) break
+            rest -= skipped
+        }
+        return String(buf, 0, got, Charsets.UTF_8)
     }
 
     private fun copyN(input: InputStream, out: FileOutputStream, size: Long) {

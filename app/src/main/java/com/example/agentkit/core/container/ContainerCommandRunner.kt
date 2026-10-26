@@ -1,6 +1,8 @@
 package com.example.agentkit.core.container
 
 import android.content.Context
+import android.system.Os
+import android.system.OsConstants
 import com.example.agentkit.core.AgentLogger
 import java.io.File
 import java.util.concurrent.TimeUnit
@@ -73,6 +75,18 @@ object ContainerCommandRunner {
 
     /** 抢锁失败后的重试间隔；长度即重试次数（不含首次）。 */
     private val LOCK_RETRY_DELAYS_MS = longArrayOf(2_000L, 5_000L)
+
+    /**
+     * 超时后交给 SIGTERM 的宽限时间。
+     *
+     * proot 的 `--kill-on-exit` 是 `atexit` 注册的清理钩子（二进制符号可见
+     * `kill_all_tracees` / `__atexit_handler_wrapper`），只有在进程**自己走完 exit()**
+     * 时才执行。给 3 秒足够它杀掉 tracee 并回收；真机上正常路径 < 200ms 就退出了。
+     */
+    private const val TERM_GRACE_MS = 3_000L
+
+    /** 进程树下探深度上限（proot → sh → apk → 子进程……），防异常环路。 */
+    private const val MAX_TREE_DEPTH = 6
 
     /**
      * 全局串行闸门（公平锁：先来先服务，不会饿死）。
@@ -297,7 +311,8 @@ object ContainerCommandRunner {
             }
             val finished = process.waitFor(timeoutMinutes, TimeUnit.MINUTES)
             if (!finished) {
-                process.destroyForcibly()
+                // 先礼后兵：SIGTERM → 宽限 → 抓子树 → SIGKILL（见 terminateTree 的 KDoc）
+                terminateTree(process)
                 runCatching { reader.join(1_500) }
                 val tail = sink.tail(3)
                 AgentLogger.e(
@@ -324,6 +339,100 @@ object ContainerCommandRunner {
             AgentLogger.e(TAG, "容器命令执行失败：${it.message}")
             Result(-1, "执行失败：${it.message}")
         }
+
+    /**
+     * 超时终止：SIGTERM → 宽限 → 抓子树 → SIGKILL。
+     *
+     * ## 为什么不能直接 destroyForcibly()
+     *
+     * `--kill-on-exit` 在 proot 里是 `atexit` 钩子（符号表可见 `kill_all_tracees` /
+     * `__atexit_handler_wrapper`），**只在进程自己走完 exit() 时执行**：
+     * - SIGKILL 不可捕获 —— 进程被内核直接摘掉，钩子一次都不会跑；
+     * - SIGTERM 只有在 proot 装了处理器并转成 exit() 时才有效，否则同样静默终止。
+     *
+     * 任一情况下 proot 的 tracee（`apk` / `apt`）都会被内核 detach 后**继续运行**，
+     * 继续占着 `/lib/apk/db/lock`，下一次安装直接 exit 99。这正是
+     * [runProcessWithLockRetry] 那套抢锁重试在兜的坑——但那是兜底，不是正解。
+     *
+     * ## 顺序为什么必须是「先抓子树，再 SIGKILL」
+     *
+     * proot 一死，它的子进程立刻被 reparent 到 init，`/proc` 里的父子关系就断了，
+     * 事后无从查找。所以次序是：
+     * 1. `destroy()`（SIGTERM）+ 宽限 [TERM_GRACE_MS]；
+     * 2. 还活着 → 递归读 `/proc/<pid>/task/<pid>/children`，记下整棵子树；
+     * 3. `destroyForcibly()` 杀 proot，再逐个 SIGKILL 记下的 pid。
+     *
+     * 全程 best-effort：任一环节失败（拿不到 pid / SELinux 挡住 /proc）只记日志，
+     * 不抛异常——超时路径本身已在失败处理里，再抛就把「超时」变成「崩溃」了。
+     */
+    private fun terminateTree(process: Process) {
+        val pid = pidOf(process)
+        process.destroy()
+        if (process.waitFor(TERM_GRACE_MS, TimeUnit.MILLISECONDS)) {
+            AgentLogger.i(TAG, "超时进程已由 SIGTERM 正常收尾（pid=${pid ?: "?"}）")
+            return
+        }
+        // 必须在 destroyForcibly 之前抓：proot 死后子树就 reparent 到 init 了
+        val tree = pid?.let { collectDescendants(it) }.orEmpty()
+        process.destroyForcibly()
+        if (tree.isEmpty()) {
+            AgentLogger.w(
+                TAG,
+                "超时进程 SIGTERM 无效，已强杀 proot（pid=${pid ?: "?"}，未取到子树）"
+            )
+            return
+        }
+        var killed = 0
+        tree.forEach { child ->
+            if (runCatching { Os.kill(child, OsConstants.SIGKILL) }.isSuccess) killed++
+        }
+        AgentLogger.w(
+            TAG,
+            "超时进程 SIGTERM 无效：已强杀 proot（pid=$pid）及子树 $killed/${tree.size} 个进程"
+        )
+    }
+
+    /**
+     * 取进程 pid。
+     *
+     * API 26~32 没有公开的 `Process.pid()`（那是 Java 9 API，Android 较新版本才有），
+     * 只能反射 libcore `ProcessImpl` 的私有字段 `pid`。取不到返回 null，调用方跳过子树
+     * 清理——宁可少杀，也不要因为拿不到 pid 把超时变成崩溃。
+     */
+    private fun pidOf(process: Process): Int? = runCatching {
+        val field = process.javaClass.getDeclaredField("pid").apply { isAccessible = true }
+        field.getInt(process)
+    }.getOrNull()
+
+    /**
+     * 递归收集 [rootPid] 的全部后代 pid（best-effort，最多 [MAX_TREE_DEPTH] 层）。
+     *
+     * 数据源是 `/proc/<pid>/task/<pid>/children`（内核 3.5+ 提供，Android 全版本可用，
+     * 空格分隔）。读不到（SELinux、内核裁剪、进程已消失）就返回已收集到的部分——
+     * 少杀的那几个由 [runProcessWithLockRetry] 的抢锁重试兜底。
+     *
+     * 用 `LinkedHashSet` 而不是 List：proot 多线程 fork 时同一 pid 可能被父子两路各列
+     * 一次，去重顺便防环。
+     */
+    private fun collectDescendants(rootPid: Int, maxDepth: Int = MAX_TREE_DEPTH): List<Int> {
+        val out = LinkedHashSet<Int>()
+        fun walk(pid: Int, depth: Int) {
+            if (depth > maxDepth) return
+            val kids = runCatching {
+                File("/proc/$pid/task/$pid/children").readText()
+                    .trim()
+                    .split(' ')
+                    .filter { it.isNotEmpty() }
+                    .map { it.toInt() }
+            }.getOrDefault(emptyList())
+            for (kid in kids) {
+                if (kid <= 0 || !out.add(kid)) continue
+                walk(kid, depth + 1)
+            }
+        }
+        walk(rootPid, 1)
+        return out.toList()
+    }
 
     /**
      * 边跑边收的输出池（线程安全，只保留尾部）。

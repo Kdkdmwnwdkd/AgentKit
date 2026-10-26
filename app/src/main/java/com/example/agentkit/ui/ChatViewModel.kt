@@ -1897,6 +1897,17 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
             // Phase 2 DoD③：准备重试 → 置位「正在恢复」横幅（U 显示 n/N + 原因）
             is AgentEvent.RetryStarted -> {
                 _retryState.value = RetryState(ev.attempt, ev.max, ev.reason)
+                // W-49：重试是**整次重新请求**（见 RealAgentLoop.callWithRetry 的重试粒度），
+                // 上一次已经通过 onTextDelta 推上屏的增量，重试后会从头发一遍。不清缓冲就会
+                // 出现「前半段 → 重试后整段再来一次」的重复观感；而 429 退避是 10/30/60 秒，
+                // 用户这时早就把前半段读完了，重复比丢内容更刺眼。
+                // 锁序：msgLock → streamDraftLock（反向不存在，handleTextDelta 不取 msgLock）。
+                synchronized(streamDraftLock) {
+                    draftBuffer = null
+                    reasoningBuffer = null
+                    _streamDraft.value = null
+                    _reasoningDraft.value = null
+                }
             }
 
             // Phase 2 DoD③：重试收尾（成功 / 最终失败 / 取消）→ 清除横幅

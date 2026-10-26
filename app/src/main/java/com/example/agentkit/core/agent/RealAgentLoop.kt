@@ -82,8 +82,8 @@ import java.util.concurrent.atomic.AtomicBoolean
  * @param llmProvider lambda 而非实例：模型配置可在运行时变化（每轮调用时取最新）。
  * @param registry 当前可用工具集合（受 Project 工具白名单约束）。
  * @param systemPrompt 基础系统提示（工具自带提示与记忆摘要在其上拼接）。
- * @param maxSteps 单轮最大步数（默认 40；与 core/AgentLoop.kt 适配层默认值必须一致，
- *   hotfix5 起两处均为 40，改一处务必同步另一处）。
+ * @param maxSteps 单轮最大步数（默认 **60**；与 core/AgentLoop.kt 适配层默认值必须一致，
+ *   W-49 起两处均为 60，改一处务必同步另一处）。
  * @param maxParallelTools 全只读批次并行上限（分块限流，默认 5）。
  * @param providerRetry 供应商瞬时失败重试次数（默认 3，共 4 次尝试；hotfix10 上调：
  *   429 限流序列 10s/30s/60s 需 3 次重试才走得完，2 次会在第 3 次 429 后直接失败）。
@@ -276,6 +276,10 @@ class RealAgentLoop(
         messages.addAll(priorMessages)
         // 功能四（P0-2）：用户手动附带的图片随首条用户消息一起发
         messages.add(UserMessage(userInput, images))
+        // W-49：本轮输入在 messages 里的下标。解图（pruneImages）必须按它锚定——
+        // 多轮会话里「首条 UserMessage」是历史最老的那条且不带图，把它当锚点等于没保护，
+        // 反例见 ContextBudget.pruneImages 的 KDoc。
+        val turnInputIndex = messages.lastIndex
         // 对外返回值 = 系统提示 + 本回合新增部分，**不含历史**（历史只用于构造请求）。
         // 保留 SystemMessage 是契约：调用方与 harness 一直把 history[0] 当系统提示读；
         // 而历史若一并返回，ChatViewModel 的落盘循环会把上一轮的问答再写一遍（重复）。
@@ -291,7 +295,7 @@ class RealAgentLoop(
             // W-10：只把「裁剪后的请求视图」发给 LLM——旧截图剥图、超预算丢最老步；
             // messages 本身保持完整（UI 工具卡片与落盘历史不受影响）。
             // 视图在重试循环外算一次：同一请求的多次重试必须发完全相同的载荷。
-            val requestMessages = buildRequestMessages(messages)
+            val requestMessages = buildRequestMessages(messages, turnInputIndex)
             val resp = try {
                 callWithRetry { chatOnce(requestMessages, exposure) }
             } catch (e: Throwable) {
@@ -805,11 +809,21 @@ class RealAgentLoop(
      *
      * 产物只用于 `chatOnce`，不写回 [runTurn] 的 messages——取消/落盘/UI 仍是完整历史。
      * 无超限时 [ContextBudget] 原样返回入参（零分配）。
+     *
+     * @param turnInputIndex 本轮输入消息在 [messages] 里的下标，作为「不裁图」的锚点
+     *   （W-49：不传则退回「首条 UserMessage」，多轮会话下会保护错对象）
      */
-    private fun buildRequestMessages(messages: List<ChatMessage>): List<ChatMessage> {
+    private fun buildRequestMessages(
+        messages: List<ChatMessage>,
+        turnInputIndex: Int? = null
+    ): List<ChatMessage> {
         // 本地 llama.cpp 默认 n_ctx=4096，不能用云端预算——按通道自适应（见 ContextBudget）
         val budget = ContextBudget.budgetForProvider(llmProvider().id, contextBudgetTokens)
-        val pruned = ContextBudget.pruneImages(messages, keepLast = keepRecentImages)
+        val pruned = ContextBudget.pruneImages(
+            messages,
+            keepLast = keepRecentImages,
+            anchorIndex = turnInputIndex
+        )
         val fitted = ContextBudget.fitToBudget(
             pruned,
             budgetTokens = budget,

@@ -146,14 +146,37 @@ object ContextBudget {
     /**
      * 只保留最近 [keepLast] 条**工具截图**消息的图片，更早的剥掉 base64 并追加省略标记。
      *
-     * 首条用户消息里的图片**不裁**——那是用户本次任务的输入（例如「按这张图改」），
-     * 裁掉等于把任务本身删了。只裁工具回灌的截图。
+     * **本轮输入里的图片不裁**——那是用户本次任务的输入（例如「按这张图改」），裁掉等于把
+     * 任务本身删了。只裁工具回灌的截图。
+     *
+     * ## 锚点必须由调用方显式给（W-49 修）
+     *
+     * 早前实现用 `indexOfFirst { it is UserMessage }` 当锚点，那是单回合形态下的写法。
+     * loop 实际传进来的是 `[System] + priorMessages + [本轮输入]`，**首条用户消息是多轮
+     * 历史里最早的那条**，不是本轮输入：
+     * - 历史消息本身不带图（`ChatViewModel.buildPriorMessages` 只拼纯文本），所以那个
+     *   「保护」在正常路径上是个空操作——测试里能过，真机上什么也没保护；
+     * - 更糟的是反例：用户一次贴 3 张图，agent 又截了 2 次图，`keepLast=2` 会把
+     *   **本轮输入那条整个剥掉**（图片是整条消息原子丢弃的），任务输入当场消失。
+     *
+     * 因此新增 [anchorIndex]：调用方（[RealAgentLoop.buildRequestMessages]）传入本轮输入
+     * 在 messages 里的下标。不传时退回旧语义（首条 UserMessage），保证既有 harness 与
+     * 单回合调用点行为不变。
      *
      * 入参不被修改；返回新列表（未命中的元素原样复用，零拷贝）。
+     *
+     * @param keepLast 保留最近几条工具截图的图片（负数 = 完全关闭裁剪，原样返回）
+     * @param anchorIndex 本轮输入消息的下标（必须指向一条 UserMessage，否则忽略并退回默认）
      */
-    fun pruneImages(messages: List<ChatMessage>, keepLast: Int = DEFAULT_KEEP_IMAGES): List<ChatMessage> {
+    fun pruneImages(
+        messages: List<ChatMessage>,
+        keepLast: Int = DEFAULT_KEEP_IMAGES,
+        anchorIndex: Int? = null
+    ): List<ChatMessage> {
         if (keepLast < 0) return messages
-        val anchorIdx = messages.indexOfFirst { it is UserMessage }
+        val anchorIdx = anchorIndex
+            ?.takeIf { it in messages.indices && messages[it] is UserMessage }
+            ?: messages.indexOfFirst { it is UserMessage }
         val imageIdx = messages.indices.filter { i ->
             i != anchorIdx && (messages[i] as? UserMessage)?.images?.isNotEmpty() == true
         }

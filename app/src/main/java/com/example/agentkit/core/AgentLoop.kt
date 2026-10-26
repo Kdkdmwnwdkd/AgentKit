@@ -113,12 +113,13 @@ class AgentLoop(
     registry: ToolRegistry,
     systemPrompt: String = DEFAULT_SYSTEM_PROMPT,
     /**
-     * H2 修复（W-7）：默认值必须与 [RealAgentLoop] 保持单一真源（40）。
+     * H2 修复（W-7）：默认值必须与 [RealAgentLoop] 保持单一真源（当前 **60**）。
      *
      * hotfix5 只改了 `core/agent/RealAgentLoop.kt` 的默认值（40），本适配层默认值漏改；
      * 而适配层在下方 [impl] 构造处**显式透传** maxSteps（L149），`ui/ChatViewModel.kt:879`
      * 构造适配层时未传该参数——生产实际生效值因此一直是 16，跨应用多步任务被提前截断。
-     * 两处默认值必须一致（40）：改这里或改 RealAgentLoop 时，务必同步另一处。
+     * 两处默认值必须一致（**60**）：改这里或改 RealAgentLoop 时，务必同步另一处。
+     * （W-49 校正：注释此前停在 40，代码早已上调到 60——以本行数值为准。）
      *
      * 消耗警示（W-7 审核 F3）：步数上调直接放大 token 消耗与单回合时长（最坏 N 次
      * LLM 往返）；上下文侧由 [contextBudgetTokens] / [maxHistoryMessages] 双闸兜底
