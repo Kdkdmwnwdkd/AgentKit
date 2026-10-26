@@ -52,6 +52,11 @@ Shizuku 就绪时默认不经过池，ADB 后端不会被自动选中。
    只对 `cd` / `pushd` / `popd` / `export` / `unset` / 变量赋值前缀生效——
    普通命令（`ls` / `cat` / `pm list`）不加，否则每条都啰嗦。
 
+3. **修掉我自己写出来的一个同类误导**：初版文案写的是「需要连续操作请**不带 identity**
+   建立会话」——可不带 identity 且 Shizuku 就绪时，恰恰又走一次性通道，根本拿不到句柄。
+   已改成「显式传 `identity=user`」：那是唯一保证进会话池的写法
+   （`shouldUsePrivilegedShell` 对非 null 且非 shizuku 的 identity 返回 false）。
+
 ## 三、为什么没直接「把 Shizuku 做成会话后端」
 
 技术上可行（`Shizuku.newProcess(["sh"])` 拿到的 Process 有流），W-36 踩的坑是
