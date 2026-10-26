@@ -4,8 +4,8 @@ package com.example.agentkit.core.terminal.backend
  * 终端后端工厂（T07，来源：zafiro B1 · libterm `createRuntimeManager`，净室重写）。
  *
  * 职责：
- *  - **降级链** [getHighestAvailable]：proot → 无线调试 → 本机 user
- *    （W-53 插入 ADB 一级，见 [providersFor] 里的排序理由）；
+ *  - **降级链** [getHighestAvailable]：proot → shizuku → 无线调试 → 本机 user
+ *    （W-53 插入 ADB、W-56 插入 Shizuku 持久后端，见 [providersFor] 里的排序理由）；
  *  - [getUserPreferred]：本机 user；
  *  - [obtain]：会话池使用的按身份取后端入口；
  *  - **可用性缓存 + [clearCache]**：proot 探测要碰文件系统，缓存判定；
@@ -71,18 +71,24 @@ class TerminalBackendFactory(
      * proot → user 的候选序列，再用 [isAvailable] 求值即可，**不重复实现降级顺序与探测**。
      *
      * @param identity 声明身份；非 [TerminalIdentity.User] 返回空（首期未实现）
-     * @param preferProot true = `[proot, adb, user]`；false = `[user]`
+     * @param preferProot true = `[proot, shizuku, adb, user]`；false = `[user]`
      */
     fun providersFor(identity: TerminalIdentity, preferProot: Boolean): List<TerminalBackendProvider> {
         if (identity != TerminalIdentity.User) {
             // Su / Shizuku / Ssh 首期只留接口不实现——显式返回空，绝不引入依赖
             return emptyList()
         }
-        // W-53：中间插入无线调试。顺序按「能力」而非「速度」排——
-        // proot 有完整 Linux 工具链（apk/pacman），ADB 是 uid 2000（能改系统设置、停应用），
-        // 本机 user 只有 App 身份。shell 工具的痛点是权限不足，所以快的排最后。
+        // 顺序按「能力」而非「速度」排：proot 有完整 Linux 工具链（apk/pacman）；
+        // W-56 起 Shizuku 也成了池里的后端（uid 2000 + 持久 shell），走 binder、探测微秒级；
+        // 无线调试同样是 uid 2000，但要不依赖第三方 App 时才有优势，故排在 Shizuku 之后；
+        // 本机 user 只有 App 身份，最快的排最后——shell 工具的痛点是权限不足，不是慢。
         val order = if (preferProot) {
-            listOf(TerminalBackend.KEY_PROOT, TerminalBackend.KEY_ADB, TerminalBackend.KEY_USER)
+            listOf(
+                TerminalBackend.KEY_PROOT,
+                TerminalBackend.KEY_SHIZUKU,
+                TerminalBackend.KEY_ADB,
+                TerminalBackend.KEY_USER
+            )
         } else {
             listOf(TerminalBackend.KEY_USER)
         }

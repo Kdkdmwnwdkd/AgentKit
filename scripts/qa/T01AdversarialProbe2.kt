@@ -559,7 +559,19 @@ private suspend fun testR9StopSendRace() = runBlocking {
 
     check("确定性守卫：工具执行中（已过 send 入口重置）stop() → 必优雅收尾（在飞停止永不被吞）") {
         val entered = CompletableDeferred<Unit>()
-        val stopper = FakeTool("stopper", readOnly = true, onExecute = { entered.complete(Unit) })
+        // W-56：让工具**挂住**，直到测试线程发出 stop 再放行。
+        // 原来 onExecute 只 complete(entered) 就返回：工具立刻结束、回合可能已推进到下一轮，
+        // 于是 stop() 有时落在「在飞」窗口外——这条用例因此 3 次里偶发 1 次失败（实测）。
+        // 挂住之后「stop 落在工具执行中」是确定的，失败就一定是实现问题，不是时序运气。
+        val release = CompletableDeferred<Unit>()
+        val stopper = FakeTool(
+            "stopper",
+            readOnly = true,
+            onExecute = {
+                entered.complete(Unit)
+                withTimeoutOrNull(5_000) { release.await() }
+            }
+        )
         val reg = ToolRegistry().register(stopper)
         val calls = listOf(ToolCall("c0", "stopper", argsOf()))
         val fake = ScriptLlm(listOf(AssistantMessage("", calls), AssistantMessage("final")))
@@ -568,6 +580,7 @@ private suspend fun testR9StopSendRace() = runBlocking {
         val job = launch(Dispatchers.Default) { history = loop.send("x") }
         withTimeout(5_000) { entered.await(); true } // 确保 stop 落在在飞回合内（入口重置早已完成）
         loop.stop()
+        release.complete(Unit) // 放行工具，让它走到取消检查点
         withTimeout(10_000) { job.join(); true }
         if (job.isActive) job.cancel() // 防御：join 超时也不让 runBlocking 尾部干等
         assertContains("graceful stop", (history!!.last() as AssistantMessage).content, "已根据请求停止")

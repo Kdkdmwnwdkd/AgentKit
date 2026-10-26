@@ -93,9 +93,13 @@ fun TerminalBackendFactory.shellCapabilitySnapshot(
     // 不可用时仅作为「诊断条目」呈现，不影响后续 proot/user 的降级链。
     add(shellBackendAvailability(TerminalBackend.KEY_SHIZUKU, shizukuAvailable))
     addAll(
-        providersFor(TerminalIdentity.User, preferProot = true).map { provider ->
-            shellBackendAvailability(provider.backendKey, isAvailable(provider))
-        }
+        providersFor(TerminalIdentity.User, preferProot = true)
+            // W-56：Shizuku 已是池里的后端，但上面那行用「实时状态」把它放在首位——
+            // 这里跳过，避免同一档出现两次（展示顺序与执行顺序不一致会更难解释）。
+            .filter { it.backendKey != TerminalBackend.KEY_SHIZUKU }
+            .map { provider ->
+                shellBackendAvailability(provider.backendKey, isAvailable(provider))
+            }
     )
 }
 

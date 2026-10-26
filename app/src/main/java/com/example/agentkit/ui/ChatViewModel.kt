@@ -16,6 +16,7 @@ import android.provider.Settings
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.agentkit.automation.adb.AdbBackendProvider
+import com.example.agentkit.automation.shizuku.ShizukuBackendProvider
 import com.example.agentkit.automation.AutomationBridge
 import com.example.agentkit.automation.AutomationPrefs
 import com.example.agentkit.automation.DeviceForegroundAppTool
@@ -784,7 +785,9 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
             distroProvider = { RootfsManager.listAvailable(app).firstOrNull() },
             // W-53：无线调试作为第三级（proot → adb → user）。provider 在 automation 包，
             // 由这里注入，避免 core 反向依赖 automation。
-            extraProviders = listOf(AdbBackendProvider())
+            // W-56：Shizuku 也做成池后端（uid 2000 + 持久 shell），所以默认会话链是
+            // proot → shizuku → adb → user
+            extraProviders = listOf(ShizukuBackendProvider(), AdbBackendProvider())
         )
 
     /**

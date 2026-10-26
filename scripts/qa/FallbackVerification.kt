@@ -99,13 +99,16 @@ private fun fakeFactory(
     prootAvailable: Boolean,
     userAvailable: Boolean,
     /** W-53：中间插入的无线调试档。默认不可用，与「没配对过」的真实默认一致。 */
-    adbAvailable: Boolean = false
+    adbAvailable: Boolean = false,
+    /** W-56：Shizuku 也成了池后端。默认不可用，与「没装 Shizuku」的真实默认一致。 */
+    shizukuAvailable: Boolean = false
 ): TerminalBackendFactory =
     TerminalBackendFactory(
         listOf(
             FakeProvider(TerminalIdentity.User, TerminalBackend.KEY_PROOT, prootAvailable),
             FakeProvider(TerminalIdentity.User, TerminalBackend.KEY_ADB, adbAvailable),
-            FakeProvider(TerminalIdentity.User, TerminalBackend.KEY_USER, userAvailable)
+            FakeProvider(TerminalIdentity.User, TerminalBackend.KEY_USER, userAvailable),
+            FakeProvider(TerminalIdentity.User, TerminalBackend.KEY_SHIZUKU, shizukuAvailable)
         )
     )
 
@@ -251,6 +254,48 @@ private fun testFactoryLinkage() {
         assertTrue("adb has reason", !snapshot[2].reason.isNullOrBlank())
         assertEquals("4th=user", TerminalBackend.KEY_USER, snapshot[3].backendId)
         assertTrue("user available", snapshot[3].available)
+    }
+
+    check("W-56：工厂候选顺序 = proot → shizuku → adb → user（按能力排，非按速度）") {
+        val factory = fakeFactory(
+            prootAvailable = true,
+            userAvailable = true,
+            adbAvailable = true,
+            shizukuAvailable = true
+        )
+        val keys = factory.providersFor(TerminalIdentity.User, preferProot = true).map { it.backendKey }
+        assertEquals(
+            "order",
+            listOf(
+                TerminalBackend.KEY_PROOT,
+                TerminalBackend.KEY_SHIZUKU,
+                TerminalBackend.KEY_ADB,
+                TerminalBackend.KEY_USER
+            ),
+            keys
+        )
+    }
+
+    check("W-56：proot 不可用但 Shizuku 可用 → 选中 shizuku（同是 uid 2000，binder 比 TCP 优先）") {
+        val factory = fakeFactory(
+            prootAvailable = false,
+            userAvailable = true,
+            adbAvailable = true,
+            shizukuAvailable = true
+        )
+        val r = resolveCapability(
+            CapabilityRequest(
+                Capability.RUN_SHELL,
+                factory.shellCapabilitySnapshot(shizukuAvailable = true)
+            )
+        ) as CapabilityResolution.Selected
+        assertEquals("selected=shizuku", TerminalBackend.KEY_SHIZUKU, r.backend.backendId)
+    }
+
+    check("W-56：Shizuku 已进池，但快照里只出现一次（不重复成两条）") {
+        val factory = fakeFactory(prootAvailable = true, userAvailable = true, shizukuAvailable = true)
+        val snap = factory.shellCapabilitySnapshot(shizukuAvailable = true)
+        assertEquals("shizuku 只出现一次", 1, snap.count { it.backendId == TerminalBackend.KEY_SHIZUKU })
     }
 
     check("W-53：proot 不可用但无线调试可用 → 选中 adb（中间级，不直接掉到 user）") {
