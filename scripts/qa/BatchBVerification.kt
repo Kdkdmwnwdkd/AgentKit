@@ -482,6 +482,7 @@ fun main() {
         assertTrue("应有 --link2symlink", "\"--link2symlink\"" in proot)
     }
 
+    check("B4-16 装完自检：以能力为准，而不是包管理器退出码") {
         val script = ToolchainInstaller.verifyScript(listOf(ToolchainInstaller.Lang.JAVA))
         assertTrue("应验 java", "java -version" in script)
         // 卡片标题是「Java (JRE + JDK)」：只验 java 会把「JRE 在、JDK 缺」当成功
