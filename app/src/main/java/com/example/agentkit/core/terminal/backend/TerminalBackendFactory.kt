@@ -50,6 +50,20 @@ class TerminalBackendFactory(
     }
 
     /**
+     * W-55：按候选顺序构造**全部**可用后端实例（供会话池「逐个 start，失败回落」）。
+     *
+     * 顺序与 [obtain] 严格一致（都来自 [providersFor]），只是不在第一个成功处停下——
+     * 因为「能构造」不等于「能启动」（rootfs 可能刚被删、配对可能刚失效）。
+     */
+    override fun obtainCandidates(
+        identity: TerminalIdentity,
+        preferProot: Boolean
+    ): List<TerminalBackend> = providersFor(identity, preferProot).mapNotNull { provider ->
+        if (!isAvailable(provider)) return@mapNotNull null
+        runCatching { provider.create() }.getOrNull()
+    }
+
+    /**
      * 按（身份, proot 优先）给出**有序候选提供者**，顺序与 [obtain] 完全一致（单一真源）。
      *
      * 供需要「逐级可用性快照」的上层复用（例如统一的

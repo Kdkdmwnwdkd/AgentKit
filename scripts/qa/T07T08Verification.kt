@@ -224,6 +224,90 @@ private class PermissiveSource(
 private fun userSource(): TerminalBackendSource =
     FakeSource(user = { FakeShellBackend(TerminalBackend.KEY_USER) })
 
+/**
+ * W-55 用：按顺序给出**多条候选**的假来源（对应真工厂的 `obtainCandidates`）。
+ *
+ * `FakeSource` 只实现 `obtain`，默认 `obtainCandidates` 会退化成单候选——
+ * 要测「首选起不来、回落下一档」就必须显式给全量。
+ */
+private class CandidateSource(private val makers: List<() -> TerminalBackend>) : TerminalBackendSource {
+    override fun obtain(identity: TerminalIdentity, preferProot: Boolean): TerminalBackend? =
+        if (identity == TerminalIdentity.User) makers.firstOrNull()?.invoke() else null
+
+    override fun obtainCandidates(identity: TerminalIdentity, preferProot: Boolean): List<TerminalBackend> =
+        if (identity == TerminalIdentity.User) makers.mapNotNull { it() } else emptyList()
+}
+
+/* ================================================================== */
+/* 0. W-55：后端 start 失败 → 回落下一档                                 */
+/* ================================================================== */
+
+/**
+ * 现实对应：rootfs 被删 / 无线调试配对失效后，proot 或 adb 后端「能构造、起不来」，
+ * 而本机 shell 明明可用。改动前 `open()` 是「取一个 → start，失败就报 start_failed」，
+ * 用户看到失败而不是回落——这组用例钉住新语义。
+ */
+private fun testBackendStartFallback() = runBlocking {
+    println("\n== W-55：后端 start 失败 → 回落下一档 ==")
+
+    check("首选（proot）起不来 → 落到第二档 user，且 backendKey 如实报 user") {
+        val pool = TerminalSessionPool(
+            CandidateSource(
+                listOf(
+                    { FakeShellBackend(TerminalBackend.KEY_PROOT, startOk = false) },
+                    { FakeShellBackend(TerminalBackend.KEY_USER) }
+                )
+            ),
+            commandTimeoutMs = 8000
+        )
+        val opened = pool.open(TerminalIdentity.User, alias = null, preferProot = true)
+        assertTrue("open ok (code=${opened.errorCode})", opened.ok)
+        assertEquals("pool=user", TerminalBackend.KEY_USER, opened.backendKey)
+        val r = pool.run(opened.handle!!, "echo hi")
+        assertTrue("回落后的会话可用", r.ok)
+    }
+
+    check("三档依次失败两档 → 第三档接手（逐级回落，不是只试一次）") {
+        val pool = TerminalSessionPool(
+            CandidateSource(
+                listOf(
+                    { FakeShellBackend(TerminalBackend.KEY_PROOT, startOk = false) },
+                    { FakeShellBackend(TerminalBackend.KEY_ADB, startOk = false) },
+                    { FakeShellBackend(TerminalBackend.KEY_USER) }
+                )
+            ),
+            commandTimeoutMs = 8000
+        )
+        val opened = pool.open(TerminalIdentity.User, alias = null, preferProot = true)
+        assertTrue("open ok (code=${opened.errorCode})", opened.ok)
+        assertEquals("pool=user", TerminalBackend.KEY_USER, opened.backendKey)
+    }
+
+    check("全部起不来 → start_failed，消息里列出尝试过的每一档（不笼统说失败）") {
+        val pool = TerminalSessionPool(
+            CandidateSource(
+                listOf(
+                    { FakeShellBackend(TerminalBackend.KEY_PROOT, startOk = false) },
+                    { FakeShellBackend(TerminalBackend.KEY_ADB, startOk = false) }
+                )
+            ),
+            commandTimeoutMs = 8000
+        )
+        val opened = pool.open(TerminalIdentity.User, alias = null, preferProot = true)
+        assertTrue("open 应失败", !opened.ok)
+        assertEquals("code", "start_failed", opened.errorCode)
+        assertTrue("message 含 proot", opened.message.contains(TerminalBackend.KEY_PROOT))
+        assertTrue("message 含 adb", opened.message.contains(TerminalBackend.KEY_ADB))
+    }
+
+    check("空候选 → no_backend（不崩、不静默降级到别处）") {
+        val pool = TerminalSessionPool(CandidateSource(emptyList()), commandTimeoutMs = 8000)
+        val opened = pool.open(TerminalIdentity.User)
+        assertTrue("open 应失败", !opened.ok)
+        assertEquals("code", "no_backend", opened.errorCode)
+    }
+}
+
 /* ================================================================== */
 /* 1. 两后端走同一接口（假 proot + 真 /bin/sh）                          */
 /* ================================================================== */
@@ -696,6 +780,7 @@ private fun testReleaseLifecycle() = runBlocking {
 
 fun main() {
     println("=== Phase1 · T07/T08 终端后端抽象 + 会话池 QA 行为验证 ===")
+    testBackendStartFallback()
     testTwoBackendsSameInterface()
     testFactoryDegradeAndCache()
     testHandleFormatAndCollision()

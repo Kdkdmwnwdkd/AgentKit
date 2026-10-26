@@ -192,72 +192,88 @@ class TerminalSessionPool(
         alias: String? = null,
         preferProot: Boolean = true
     ): OpenResult {
-        // 1) 取后端（新实例）。identity 未实现 / 无可用后端 → 明确报错，不静默降级到别处。
-        val backend = source.obtain(identity, preferProot)
-            ?: return if (identity == TerminalIdentity.User) {
+        // 1) 取候选（W-55：不再只取一个——首个 start 失败时按顺序回落）
+        val candidates = source.obtainCandidates(identity, preferProot)
+        if (candidates.isEmpty()) {
+            return if (identity == TerminalIdentity.User) {
                 OpenResult.failure(
                     code = "no_backend",
-                    message = "当前环境下没有可用的终端后端（proot 不可用且回落失败）。",
-                    hint = "确认设备可执行 /system/bin/sh；若期望容器请先解压 rootfs 后重试。"
+                    message = "当前环境下没有可用的终端后端（proot / 无线调试都不可用，本机 shell 也起不来）。",
+                    hint = "确认设备可执行 /system/bin/sh；若期望容器请先解压 rootfs；若期望 shell 权限请先配对无线调试。"
                 )
             } else {
                 OpenResult.failure(
                     code = "identity_unsupported",
                     message = "身份「${identity.wire}」首期未实现，无对应后端。",
-                    hint = "当前仅支持 identity=user（proot 容器与本机 shell 均以 App 用户身份运行）。"
+                    hint = "当前仅支持 identity=user：proot 容器、无线调试与本机 shell 都以该身份运行" +
+                        "（前两者在内核侧分别是 fake root / uid 2000）。"
                 )
             }
+        }
 
-        val backendKey = backend.backendKey
-        val effectiveAlias = normalizeAlias(alias ?: TerminalBackendFactory.defaultAliasFor(backendKey))
-        val poolKey = poolKey(backendKey, effectiveAlias)
+        // 2) 按候选顺序：先查该槽位有无存活会话可复用，再试启动；起不来的**继续试下一档**
+        //
+        // 改动前这里是「obtain 选一个 → start，失败就报 start_failed」：一旦首选后端
+        // 因环境变化起不来（rootfs 被删、配对失效、adbd 回收），用户看到的是失败，
+        // 而不是回落到仍然可用的本机 shell。
+        val tried = ArrayList<String>(candidates.size)
+        for (candidate in candidates) {
+            val backendKey = candidate.backendKey
+            val effectiveAlias = normalizeAlias(alias ?: TerminalBackendFactory.defaultAliasFor(backendKey))
+            val poolKey = poolKey(backendKey, effectiveAlias)
 
-        // 2) 该槽位是否已有会话
-        val existing = synchronized(lock) { byAlias[poolKey] }
-        if (existing != null) {
-            if (existing.alive) {
-                if (existing.identity != identity) {
-                    // 身份冲突：绝不静默复用（用户以为提权了，命令仍以旧身份跑）
-                    runCatching { backend.close() } // 回收刚建的多余后端
-                    return OpenResult.failure(
-                        code = "identity_conflict",
-                        message = "别名「$effectiveAlias」上已有身份为「${existing.identity.wire}」的存活会话，" +
-                            "与请求身份「${identity.wire}」冲突。",
-                        hint = "改用同一身份，或先 shell_close(handle=${existing.handle}) 关闭旧会话再以新身份开辟。"
+            val existing = synchronized(lock) { byAlias[poolKey] }
+            if (existing != null) {
+                if (existing.alive) {
+                    if (existing.identity != identity) {
+                        // 身份冲突：绝不静默复用（用户以为提权了，命令仍以旧身份跑）
+                        runCatching { candidate.close() }
+                        return OpenResult.failure(
+                            code = "identity_conflict",
+                            message = "别名「$effectiveAlias」上已有身份为「${existing.identity.wire}」的存活会话，" +
+                                "与请求身份「${identity.wire}」冲突。",
+                            hint = "改用同一身份，或先 shell_close(handle=${existing.handle}) 关闭旧会话再以新身份开辟。"
+                        )
+                    }
+                    // 复用：丢弃刚建的多余后端，返回既有句柄
+                    runCatching { candidate.close() }
+                    return OpenResult.ok(
+                        existing.handle, existing.identity, existing.backendKey, existing.alias, reused = true
                     )
                 }
-                // 复用：丢弃刚建的多余后端，返回既有句柄
-                runCatching { backend.close() }
-                return OpenResult.ok(existing.handle, existing.identity, existing.backendKey, existing.alias, reused = true)
+                // 僵尸：释放别名 + 回收资源
+                releaseEntry(existing)
+                runCatching { existing.backend.close() }
             }
-            // 僵尸：释放别名 + 回收资源
-            releaseEntry(existing)
-            runCatching { existing.backend.close() }
-        }
 
-        // 3) 启动后端
-        val started = runCatching { backend.start() }.getOrDefault(false)
-        if (!started) {
-            runCatching { backend.close() }
-            return OpenResult.failure(
-                code = "start_failed",
-                message = "后端启动失败（identity=${identity.wire}, backend=$backendKey）。",
-                hint = "确认 rootfs 已就绪 / shell 路径可执行；可重试或改用 identity=user。"
+            val started = runCatching { candidate.start() }.getOrDefault(false)
+            if (!started) {
+                tried += backendKey
+                runCatching { candidate.close() }
+                AgentLogger.w(TAG, "后端启动失败，回落到下一档：$backendKey（identity=${identity.wire}）")
+                continue
+            }
+
+            val handle = allocateHandle()
+            val entry = Entry(handle, identity, backendKey, effectiveAlias, candidate)
+            synchronized(lock) {
+                byHandle[handle] = entry
+                byAlias[poolKey] = entry
+            }
+            AgentLogger.i(
+                TAG,
+                "会话已开辟 handle=$handle identity=${identity.wire} pool=$backendKey alias=$effectiveAlias"
             )
+            return OpenResult.ok(handle, identity, backendKey, effectiveAlias, reused = false)
         }
 
-        // 4) 分配 4-hex 句柄（含碰撞处理）并登记
-        val handle = allocateHandle()
-        val entry = Entry(handle, identity, backendKey, effectiveAlias, backend)
-        synchronized(lock) {
-            byHandle[handle] = entry
-            byAlias[poolKey] = entry
-        }
-        AgentLogger.i(
-            TAG,
-            "会话已开辟 handle=$handle identity=${identity.wire} pool=$backendKey alias=$effectiveAlias"
+        // 全部候选都起不来：列出试过哪些，不笼统说「失败」
+        return OpenResult.failure(
+            code = "start_failed",
+            message = "所有终端后端都启动失败（identity=${identity.wire}，已尝试：${tried.joinToString(" → ")}）。",
+            hint = "逐个确认：proot 的 rootfs / proot 三件套是否就绪；无线调试是否仍配对（端口会变）；" +
+                "本机 shell 是否可执行。也可先只用 identity=user。"
         )
-        return OpenResult.ok(handle, identity, backendKey, effectiveAlias, reused = false)
     }
 
     /**

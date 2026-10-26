@@ -89,6 +89,17 @@ fun interface TerminalBackendSource {
      * @return 后端实例；不可用返回 null
      */
     fun obtain(identity: TerminalIdentity, preferProot: Boolean): TerminalBackend?
+
+    /**
+     * W-55：按候选顺序给出**全部**可构造实例，供会话池「逐个 start，失败回落」。
+     *
+     * 与 [obtain] 的关系：`obtain` 是最快路径（第一个能造的），本方法给全量。
+     * 默认实现退化为单候选——harness 里的 lambda 假 source 因此不用改。
+     *
+     * **调用方负责**：没用上的实例要 `close()`，否则每条候选都留一个未启动的后端对象。
+     */
+    fun obtainCandidates(identity: TerminalIdentity, preferProot: Boolean): List<TerminalBackend> =
+        listOfNotNull(obtain(identity, preferProot))
 }
 
 /**
