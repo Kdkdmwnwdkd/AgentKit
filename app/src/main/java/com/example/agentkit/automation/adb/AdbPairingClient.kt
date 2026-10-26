@@ -15,9 +15,8 @@ import javax.net.ssl.X509TrustManager
 /**
  * adb 无线配对客户端（W-13 配对层）。
  *
- * ⚠️ **W-38 已停用**：本包全部代码零引用。四家参照（Operit / AiCode / Coomi / RikkaHub）
- * 没有一家自己做配对，都是让用户装 Shizuku 并在 Shizuku 内「通过无线调试启动」。
- * 详见同目录 `README.md`。
+ * **W-51 起已启用**：`AdbSession.pairAndConnect()` 调它完成一次配对。SPAKE2 实现在
+ * [Spake2Ed25519]（此前这里只有 `Spake2` 接口，是本通道无法启用的唯一硬阻塞）。
  *
  * 协议（AOSP `pairing_connection`）：
  * ```

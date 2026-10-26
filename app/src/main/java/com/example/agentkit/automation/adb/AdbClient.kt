@@ -13,9 +13,10 @@ import java.security.KeyPair
 /**
  * adb 客户端连接（W-13 阶段二 a：连接 / AUTH / shell 执行）。
  *
- * ⚠️ **W-38 已停用**：本包全部代码**零引用**，不提供任何用户可见功能。提权统一走 Shizuku
- * （见 [com.example.agentkit.automation.shizuku.ShizukuShell]）。原因与复用时该做什么，
- * 见同目录 `README.md`。
+ * **W-51 起已启用**：作为「无线调试」通道的传输层，服务于 `AdbSession`
+ * （配对见 [AdbPairingClient]，密码学核心见 [Spake2Ed25519]，通道抽象见
+ * `automation/ShellChannel.kt`）。W-38 曾因「四家参照都走 Shizuku」而停用，
+ * 但用户真实场景里「只开无线调试、不装 Shizuku」并不少见，故重新接线。
  *
  * 职责边界：**只做传输与认证**，不负责配对（配对是独立的 TLS+SPAKE2 流程，见配对层）。
  * 所以它适用于「本机或该设备已信任我们的公钥」的场景；未配对时设备会回新的 AUTH TOKEN，

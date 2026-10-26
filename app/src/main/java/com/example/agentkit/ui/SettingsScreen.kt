@@ -45,6 +45,9 @@ import androidx.compose.material.icons.outlined.TouchApp
 import androidx.compose.material.icons.outlined.ViewInAr
 import androidx.compose.material.icons.outlined.VpnKey
 import androidx.compose.material.icons.outlined.Widgets
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -55,6 +58,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -67,6 +71,12 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import android.widget.Toast
 import com.example.agentkit.core.agent.SurvivalCheckService
+import com.example.agentkit.automation.adb.AdbCredentials
+import com.example.agentkit.automation.adb.AdbSession
+import com.example.agentkit.automation.shizuku.ShizukuShell
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * 设置页（UX v1 §1.8）：外观 / 自动化 / 各处入口的收纳页。
@@ -281,6 +291,9 @@ fun SettingsScreen(
                     }
                 )
             }
+
+            // —— W-51：调试通道（不用无障碍也能操作界面的两条路）——
+            DebugChannelSection()
 
             // —— 工具与创作：从抽屉搬来的常用工具（用户反馈侧边栏拥挤，参照 RikkaHub 收纳）——
             AkGroup(
@@ -703,4 +716,244 @@ private fun ChatBackgroundSection(vm: ChatViewModel) {
         }
         }
     }
+}
+
+/* ------------------------------------------------------------------ */
+/* W-51：调试通道（Shizuku / 无线调试）                                  */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 「调试通道」分组：uid 2000 的两条路——不依赖无障碍服务也能操作界面。
+ *
+ * 为什么值得单列：
+ * - 用户真实反馈是「**两个模式必须开一个，不开就全都用不了**」——根因是 `ui_*` 只认无障碍；
+ * - Shizuku 要装第三方 App，无线调试只要开发者选项里开一次并配对，门槛更低；
+ * - 两条通道可独立失效（Shizuku 被杀进程 / 无线调试端口变化），状态必须分别显示，
+ *   否则用户无法判断该修哪条。
+ *
+ * 状态只在本页刷新（点测试/配对后 tick 自增），不做轮询：`Shizuku.pingBinder()` 是
+ * 跨进程调用，`adb` 探测更贵，设置页常驻轮询不值当。
+ */
+@Composable
+private fun DebugChannelSection() {
+    var tick by remember { mutableStateOf(0) }
+    var showPair by remember { mutableStateOf(false) }
+    var testing by remember { mutableStateOf(false) }
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+
+    val shizukuStatus = remember(tick) { ShizukuShell.status() }
+    val adbStatus = remember(tick) { AdbSession.status() }
+    val adbError = remember(tick) { AdbSession.lastError() }
+    val host = remember(tick) { AdbCredentials.host() }
+    val port = remember(tick) { AdbCredentials.connectPort() }
+
+    AkGroup(
+        title = "调试通道",
+        description = "不用无障碍也能操作界面；Shizuku 与无线调试任选其一"
+    ) {
+        AkListItem(
+            icon = null,
+            title = "Shizuku",
+            description = when (shizukuStatus) {
+                ShizukuShell.Status.READY ->
+                    "已就绪：界面操作用 Shizuku（实时，无需 dump）"
+                ShizukuShell.Status.NO_PERMISSION ->
+                    "已安装但未授权：打开 Shizuku，在应用列表里授权 AgentKit"
+                ShizukuShell.Status.NOT_RUNNING ->
+                    "未运行：装好 Shizuku 并在其中「通过无线调试启动」"
+            }
+        )
+        AkDivider(Modifier.padding(start = AgentSpacing.space4))
+        AkListItem(
+            icon = null,
+            title = "无线调试（ADB）",
+            description = when (adbStatus) {
+                AdbSession.Status.CONNECTED ->
+                    "已连接 $host:$port（以 shell 身份执行）"
+                AdbSession.Status.NOT_CONNECTED ->
+                    "已配对 $host:$port，用到时自动连"
+                AdbSession.Status.NOT_CONFIGURED ->
+                    adbError ?: "未配对：点右侧配对，输入手机上的配对码"
+            },
+            onClick = { showPair = true },
+            trailing = {
+                Text(
+                    text = if (adbStatus == AdbSession.Status.NOT_CONFIGURED) "配对" else "重配",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
+        )
+        if (adbStatus != AdbSession.Status.NOT_CONFIGURED) {
+            AkDivider(Modifier.padding(start = AgentSpacing.space4))
+            AkListItem(
+                icon = null,
+                title = "测试连接",
+                description = if (testing) "正在执行 echo…" else "执行 echo 验证 shell 身份是否可用",
+                onClick = {
+                    if (testing) return@AkListItem
+                    testing = true
+                    scope.launch {
+                        val r = withContext(Dispatchers.IO) {
+                            AdbSession.exec("echo agentkit-debug-ok", timeoutSec = 12)
+                        }
+                        testing = false
+                        tick++
+                        val msg = if (r.ok) {
+                            "连接正常（${r.elapsedMs}ms）"
+                        } else {
+                            r.startError ?: "退出码 ${r.exitCode}：${r.stderr.take(120)}"
+                        }
+                        Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
+                    }
+                }
+            )
+            AkDivider(Modifier.padding(start = AgentSpacing.space4))
+            AkListItem(
+                icon = null,
+                title = "断开并清除凭据",
+                description = "换设备或怀疑凭据泄漏时用；清除后需重新配对",
+                onClick = {
+                    AdbSession.disconnect()
+                    AdbCredentials.resetAll()
+                    tick++
+                    Toast.makeText(context, "已清除无线调试凭据", Toast.LENGTH_SHORT).show()
+                }
+            )
+        }
+    }
+
+    if (showPair) {
+        AdbPairDialog(
+            onClose = {
+                showPair = false
+                tick++
+            }
+        )
+    }
+}
+
+/**
+ * 无线调试配对对话框。
+ *
+ * 三个数字缺一不可，且**两个端口极易混淆**（手机界面上一处显示配对端口、另一处显示
+ * 连接端口），所以文案里把「在哪个弹窗/哪一行」写清楚——这是配对失败最常见的原因，
+ * 比任何错误码都值得强调。
+ */
+@Composable
+private fun AdbPairDialog(onClose: () -> Unit) {
+    var host by remember { mutableStateOf(AdbCredentials.host().orEmpty()) }
+    var pairPort by remember { mutableStateOf("") }
+    var code by remember { mutableStateOf("") }
+    var connectPort by remember {
+        mutableStateOf(AdbCredentials.connectPort().takeIf { it > 0 }?.toString().orEmpty())
+    }
+    var busy by remember { mutableStateOf(false) }
+    var done by remember { mutableStateOf(false) }
+    var message by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+
+    val canSubmit = host.isNotBlank() && pairPort.isNotBlank() &&
+        connectPort.isNotBlank() && code.length == 6
+
+    AlertDialog(
+        onDismissRequest = { if (!busy) onClose() },
+        title = { Text("无线调试配对", style = MaterialTheme.typography.titleMedium) },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                Text(
+                    "手机上：开发者选项 → 无线调试 → 打开开关 → 点「使用配对码配对设备」。\n" +
+                        "弹窗里是 6 位配对码和【配对端口】；无线调试主页那行 IP:端口 是【连接端口】——" +
+                        "两个端口不一样，填反了会提示解密失败。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(AgentSpacing.space3))
+                OutlinedTextField(
+                    value = host,
+                    onValueChange = { host = it.trim() },
+                    label = { Text("IP 地址") },
+                    placeholder = { Text("192.168.1.8") },
+                    singleLine = true,
+                    enabled = !busy && !done,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(Modifier.height(AgentSpacing.space2))
+                OutlinedTextField(
+                    value = pairPort,
+                    onValueChange = { pairPort = it.filter(Char::isDigit).take(5) },
+                    label = { Text("配对端口（配对弹窗里）") },
+                    placeholder = { Text("如 37123") },
+                    singleLine = true,
+                    enabled = !busy && !done,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(Modifier.height(AgentSpacing.space2))
+                OutlinedTextField(
+                    value = code,
+                    onValueChange = { code = it.filter(Char::isDigit).take(6) },
+                    label = { Text("6 位配对码") },
+                    placeholder = { Text("如 042618") },
+                    singleLine = true,
+                    enabled = !busy && !done,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(Modifier.height(AgentSpacing.space2))
+                OutlinedTextField(
+                    value = connectPort,
+                    onValueChange = { connectPort = it.filter(Char::isDigit).take(5) },
+                    label = { Text("连接端口（主页 IP:端口）") },
+                    placeholder = { Text("如 35123") },
+                    singleLine = true,
+                    enabled = !busy && !done,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier.fillMaxWidth()
+                )
+                val msg = message
+                if (msg != null) {
+                    Spacer(Modifier.height(AgentSpacing.space3))
+                    Text(
+                        text = msg,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (done) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.error
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = !busy && (done || canSubmit),
+                onClick = {
+                    if (done) {
+                        onClose()
+                    } else {
+                        scope.launch {
+                            busy = true
+                            message = null
+                            val r = withContext(Dispatchers.IO) {
+                                AdbSession.pairAndConnect(
+                                    host = host,
+                                    pairPort = pairPort.toIntOrNull() ?: 0,
+                                    code = code,
+                                    connectPort = connectPort.toIntOrNull() ?: 0
+                                )
+                            }
+                            busy = false
+                            done = r.ok
+                            message = r.message
+                        }
+                    }
+                }
+            ) {
+                Text(if (busy) "配对中…" else if (done) "完成" else "配对")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onClose, enabled = !busy) { Text(if (done) "关闭" else "取消") }
+        }
+    )
 }

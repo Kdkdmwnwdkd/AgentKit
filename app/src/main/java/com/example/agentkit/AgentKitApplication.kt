@@ -3,6 +3,7 @@ package com.example.agentkit
 import android.app.Activity
 import android.app.Application
 import android.os.Bundle
+import com.example.agentkit.automation.adb.AdbSession
 import com.example.agentkit.automation.shizuku.ShizukuShell
 import com.example.agentkit.core.AgentLogger
 import com.example.agentkit.core.CrashLogger
@@ -47,6 +48,10 @@ class AgentKitApplication : Application() {
         // 要尽早挂上（否则服务重启后代理悬空，第一次调用必挂）。内部全程 runCatching，
         // 失败不影响启动，只是提权通道回落 newProcess。
         runCatching { ShizukuShell.init(this) }
+        // W-51：无线调试通道的凭据存储（adb 密钥对 + 端点）。只读 SharedPreferences，
+        // 不发网络包也不生成密钥——首次配对时才生成 RSA（见 AdbCredentials.keyPair）。
+        // 失败（存储不可用）不影响启动，只是该通道会如实返回「密钥不可用」。
+        runCatching { AdbSession.init(this) }
         // 功能五（P1-10）：前台 Activity 计数——「回答完成提醒」只在 App 退到后台时
         // 发通知（用户正盯着聊天界面时提醒是噪音）。用 ActivityLifecycleCallbacks
         // 而不是 ProcessLifecycleOwner：不引 lifecycle-process 新依赖，计数语义也够用。

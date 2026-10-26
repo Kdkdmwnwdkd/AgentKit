@@ -28,9 +28,11 @@ import kotlinx.serialization.json.jsonPrimitive
 private fun notReady(): ToolResult =
     ToolResult.fail(
         code = "service_not_ready",
-        message = "自动化未启用：请在「设置 → 自动化」中开启总开关并授予无障碍权限；" +
-            "若只用调试通道，请到「权限中心 → 调试通道」完成 Shizuku 授权。",
-        hint = "引导用户开启自动化总开关与无障碍权限（或完成调试通道授权）后重试；勿重复调用同一自动化工具。"
+        message = "自动化未启用：需要无障碍服务，或一条可用的调试通道（Shizuku / 无线调试）。",
+        hint = "任选其一后重试：①「设置 → 自动化」开总开关并授予无障碍权限；" +
+            "② 到「权限中心 → 调试通道」完成 Shizuku 授权；" +
+            "③ 到「设置 → 调试通道」用配对码连一次无线调试（不需装任何 App）。" +
+            "三条都不可用时再请用户手动操作，勿重复调用同一工具。"
     )
 
 /** 在主线程调用服务方法，并把 Boolean 成败转成 ToolResult（统一契约）。 */
@@ -133,13 +135,14 @@ class UiTreeTool : AgentTool {
             val tree = ShellUiBackend.dumpTree()
                 ?: return ToolResult.fail(
                     code = "service_not_ready",
-                    message = "读取界面失败：无障碍服务未启用，调试通道（Shizuku）也不可用。",
+                    message = "读取界面失败：无障碍服务未启用，调试通道（Shizuku / 无线调试）也不可用。",
                     hint = "任选其一：① 到系统「设置 → 无障碍」开启 AgentKit 的无障碍服务；" +
-                        "② 到「权限中心 → 调试通道」完成一次 Shizuku 授权（需已装 Shizuku 并通过无线调试启动）。"
+                        "② 到「权限中心 → 调试通道」完成一次 Shizuku 授权（需已装 Shizuku）；" +
+                        "③ 到「设置 → 调试通道」用配对码连一次无线调试（不需要装任何 App）。"
                 )
             return ToolResult.ok(
                 code = "ui_tree_ok_via_debug",
-                message = "已通过调试通道读取界面结构（${tree.json().length} 字符，保留 ${tree.kept} 个有效节点" +
+                message = "已通过「${tree.channelLabel}」读取界面结构（${tree.json().length} 字符，保留 ${tree.kept} 个有效节点" +
                     (if (tree.filtered > 0) "，已过滤 ${tree.filtered} 个纯容器节点" else "") +
                     "）。该通道基于 uiautomator dump，比无障碍慢 1~2 秒；操作后请重新读取。",
                 data = tree.json()
@@ -417,7 +420,7 @@ class UiClickTool : AgentTool {
             if (outcome.clicked) {
                 return ToolResult.ok(
                     code = "click_ok_via_debug",
-                    message = "已点击「${text ?: rid}」（无障碍不可用，已用调试通道）"
+                    message = "已点击「${text ?: rid}」（无障碍不可用，已用${outcome.channelLabel ?: "调试通道"}）"
                 )
             }
             val extra = if (outcome.candidates.isEmpty()) "" else "屏幕上最相近的候选：${outcome.candidates.joinToString("、")}；"

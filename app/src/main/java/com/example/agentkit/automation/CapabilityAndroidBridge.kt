@@ -1,5 +1,6 @@
 package com.example.agentkit.automation
 
+import com.example.agentkit.automation.adb.AdbSession
 import com.example.agentkit.automation.shizuku.ShizukuShell
 import com.example.agentkit.core.capability.BackendAvailability
 import com.example.agentkit.core.capability.controlScreenSnapshot
@@ -13,6 +14,9 @@ import com.example.agentkit.core.capability.controlScreenSnapshot
  *
  * W-50：候选链由「只有无障碍」扩成「无障碍 → 调试通道（Shizuku）」。后者复用
  * `ShizukuShell.status()` 判定，与 run_shell 的候选探测同源，不重复实现。
+ *
+ * W-51：再加一级「无线调试（ADB）」。判据是 `AdbSession.available()`（已配对即可，
+ * 不在此处发网络包——否则每次读能力链都要等一次 TCP 超时）。
  */
 
 /**
@@ -25,5 +29,6 @@ fun screenCapabilitySnapshot(): List<BackendAvailability> =
     controlScreenSnapshot(
         serviceConnected = AutomationBridge.service != null,
         masterEnabled = AutomationBridge.enabled,
-        shizukuAvailable = ShizukuShell.status() == ShizukuShell.Status.READY
+        shizukuAvailable = ShizukuShell.status() == ShizukuShell.Status.READY,
+        adbAvailable = AdbSession.available()
     )

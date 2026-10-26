@@ -1,7 +1,6 @@
 package com.example.agentkit.automation
 
 import android.util.Xml
-import com.example.agentkit.automation.shizuku.ShizukuShell
 import com.example.agentkit.core.AgentLogger
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -12,7 +11,11 @@ import org.xmlpull.v1.XmlPullParser
 import java.io.StringReader
 
 /**
- * W-50：**调试通道（Shizuku）驱动的界面操作后端**——无障碍之外的第二条「操作手机界面」路径。
+ * W-50：**调试通道驱动的界面操作后端**——无障碍之外的第二条「操作手机界面」路径。
+ *
+ * W-51 起「调试通道」不再只有 Shizuku：`ShellChannels.active()` 按优先级取
+ * **Shizuku → 无线调试（ADB）**，两者都是 uid 2000，命令完全一致，因此本类不需要
+ * 关心是哪条——只有日志与返回文案会带上实际通道名（[ShellChannel.label]）。
  *
  * ## 为什么需要它
  *
@@ -47,9 +50,6 @@ internal object ShellUiBackend {
 
     private const val TAG = "ShellUi"
 
-    /** 后端稳定键（与能力链的 shell 候选同键，日志里可对齐）。 */
-    const val BACKEND_ID = "shizuku"
-
     /** dump 落盘路径：/data/local/tmp 是 shell 稳定可写的目录（不受 scoped storage 影响）。 */
     private const val DUMP_PATH = "/data/local/tmp/.agentkit-ui.xml"
 
@@ -59,8 +59,8 @@ internal object ShellUiBackend {
     /** dump 的超时（秒）：TCG 模拟器上会到 5~8s，真机通常 1~2s。 */
     private const val DUMP_TIMEOUT_SEC = 25L
 
-    /** 调试通道是否可用（Shizuku 已运行且已授权本应用）。 */
-    fun isReady(): Boolean = ShizukuShell.status() == ShizukuShell.Status.READY
+    /** 是否存在可用的调试通道（Shizuku 或无线调试，见 [ShellChannels]）。 */
+    fun isReady(): Boolean = ShellChannels.active() != null
 
     /**
      * 一次界面快照。
@@ -72,7 +72,9 @@ internal object ShellUiBackend {
     data class Tree(
         val nodes: List<UiNodeSummary>,
         val kept: Int,
-        val filtered: Int
+        val filtered: Int,
+        /** 实际读到树的那条通道（"调试通道（Shizuku）" / "无线调试（ADB）"）。 */
+        val channelLabel: String = ""
     ) {
         /**
          * 与无障碍快照**同形**的 JSON（字段：text/desc/id/cls/bounds/clickable/scrollable/
@@ -105,18 +107,21 @@ internal object ShellUiBackend {
      * （连续两次 dump 会互相拖慢）；调用点已经是「一次工具调用一次 dump」的粒度。
      */
     suspend fun dumpTree(): Tree? = withContext(Dispatchers.IO) {
-        if (!isReady()) return@withContext null
+        val channel = ShellChannels.active() ?: run {
+            AgentLogger.w(TAG, "无可用调试通道：Shizuku 未就绪，且无线调试未配对")
+            return@withContext null
+        }
         val cmd = "uiautomator dump $DUMP_PATH >/dev/null 2>&1; cat $DUMP_PATH 2>/dev/null"
-        val out = runCatching { ShizukuShell.exec(cmd, DUMP_TIMEOUT_SEC) }.getOrNull()
+        val out = runCatching { channel.exec(cmd, DUMP_TIMEOUT_SEC) }.getOrNull()
         if (out == null || !out.ok || !out.stdout.contains("<hierarchy")) {
             AgentLogger.w(
                 TAG,
-                "调试通道 dump 失败（exit=${out?.exitCode}，len=${out?.stdout?.length ?: 0}）：" +
-                    (out?.stderr?.take(160) ?: "通道不可用")
+                "${channel.label} dump 失败（exit=${out?.exitCode}，len=${out?.stdout?.length ?: 0}）：" +
+                    (out?.startError ?: out?.stderr?.take(160) ?: "通道不可用")
             )
             return@withContext null
         }
-        runCatching { parse(out.stdout) }.onFailure {
+        runCatching { parse(out.stdout, channel.label) }.onFailure {
             AgentLogger.e(TAG, "dump XML 解析失败：${it.message}")
         }.getOrNull()
     }
@@ -152,7 +157,8 @@ internal object ShellUiBackend {
             "recent", "recents", "overview" -> "KEYCODE_APP_SWITCH"
             else -> return@withContext false
         }
-        val out = runCatching { ShizukuShell.exec("input keyevent $code", 10) }.getOrNull()
+        val channel = ShellChannels.active() ?: return@withContext false
+        val out = runCatching { channel.exec("input keyevent $code", 10) }.getOrNull()
         out?.ok == true
     }
 
@@ -160,7 +166,9 @@ internal object ShellUiBackend {
     data class ClickOutcome(
         val clicked: Boolean,
         val candidates: List<String> = emptyList(),
-        val reason: String? = null
+        val reason: String? = null,
+        /** 实际生效的通道展示名（未点成功时为 null）——写进工具文案，避免用户以为是无障碍做的。 */
+        val channelLabel: String? = null
     )
 
     /* ------------------------------------------------------------------ */
@@ -173,14 +181,20 @@ internal object ShellUiBackend {
         val bounds = parseBounds(nodes.getOrNull(idx)?.bounds) ?: return ClickOutcome(false, result.candidates, "命中元素没有有效坐标")
         val cx = (bounds[0] + bounds[2]) / 2
         val cy = (bounds[1] + bounds[3]) / 2
+        val channel = withContext(Dispatchers.IO) { ShellChannels.active() }
+            ?: return ClickOutcome(false, result.candidates, "无可用调试通道")
         val out = withContext(Dispatchers.IO) {
-            runCatching { ShizukuShell.exec("input tap $cx $cy", 10) }.getOrNull()
+            runCatching { channel.exec("input tap $cx $cy", 10) }.getOrNull()
         }
         return if (out?.ok == true) {
-            AgentLogger.i(TAG, "调试通道点击 ($cx,$cy) 策略=${result.strategy}")
-            ClickOutcome(true)
+            AgentLogger.i(TAG, "${channel.label} 点击 ($cx,$cy) 策略=${result.strategy}")
+            ClickOutcome(true, channelLabel = channel.label)
         } else {
-            ClickOutcome(false, result.candidates, out?.stderr?.take(120) ?: "input tap 执行失败")
+            ClickOutcome(
+                false,
+                result.candidates,
+                out?.startError ?: out?.stderr?.take(120) ?: "input tap 执行失败"
+            )
         }
     }
 
@@ -193,7 +207,7 @@ internal object ShellUiBackend {
      * `index` 恒等于列表下标（匹配器契约），因此**不做过滤**：纯容器节点也保留，
      * 只在 [Tree.json] 输出时跳过。
      */
-    private fun parse(xml: String): Tree {
+    private fun parse(xml: String, channelLabel: String): Tree {
         val parser = Xml.newPullParser()
         parser.setInput(StringReader(xml))
         val nodes = ArrayList<UiNodeSummary>(64)
@@ -237,7 +251,7 @@ internal object ShellUiBackend {
             event = parser.next()
         }
         val kept = nodes.count { informative(it) }
-        return Tree(nodes = nodes, kept = kept, filtered = nodes.size - kept)
+        return Tree(nodes = nodes, kept = kept, filtered = nodes.size - kept, channelLabel = channelLabel)
     }
 
     /** `[l,t][r,b]` → `l,t,r,b`（与无障碍快照的 bounds 格式统一）。 */

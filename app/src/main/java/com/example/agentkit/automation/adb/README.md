@@ -1,39 +1,45 @@
-# automation/adb —— **未启用的实验代码，不要当成现有能力**
+# automation/adb —— 无线调试通道（W-51 起部分启用）
 
-> 状态：**未接入**（零引用）。保留是因为协议实现（CNXN/AUTH/OPEN/WRTE、RSA 签名、SPAKE2 配对包）
-> 本身是对的，将来若真要做 App 内 adb 可以复用；但它**现在不提供任何用户可见功能**。
+> 状态：**已启用**。`AdbSession` + `Spake2Ed25519` 支撑「设置 → 调试通道 → 无线调试配对」，
+> 并以 `AdbShellChannel` 的形式接进 `ShellChannels`，供 `ui_tree` / `ui_click` / `input` 兜底。
+>
+> 仍未接入的地方：`run_shell`（走 `TerminalBackendFactory`，需新增 provider 与终端流式 UI）。
 
-## 为什么停在这里
+## 与 Shizuku 的关系
 
-W-13 最初的设想是「App 自己连无线调试」：用户开一次无线调试、配对一次，之后 App 以 uid 2000
-执行命令，不依赖 Shizuku。做完协议层后发现这条路投入产出比极差：
+两者都是 **uid 2000（shell）**，能做同一批事（`input` / `uiautomator dump` / `screencap` /
+`pm` / `settings`）。区别只在前置条件与失效模式：
 
-1. **四家参照都不做**：Operit、AiCode、Coomi 全部依赖 Shizuku，RikkaHub 根本没有 shell。
-   全仓搜 `adb pair` / `SPAKE2` / `wireless` 零命中。
-2. **配对协议重**：Android 11+ 走 TLS + SPAKE2（Curve25519）+ 6 位码，细节全部要对齐 AOSP，
-   还要处理厂商 ROM 裁剪无线调试。
-3. **Shizuku 已经把这件事做完了**：用户在 Shizuku 里点「通过无线调试启动」，Shizuku 自己
-   完成配对并维持服务，App 只需要 `requestPermission` + 执行命令。
-
-结论：**提权走 Shizuku，不要再往 ADB 配对投入**。要动这里之前，先读
-`docs/w13-adb-channel-plan.md` 与 `docs/reference/参考仓库-索引.md`，确认需求真的无法用
-Shizuku 满足。
-
-## 现有文件
-
-| 文件 | 内容 | 引用情况 |
+| | Shizuku | 无线调试直连 |
 |---|---|---|
-| `AdbPacket.kt` | 消息头编解码（CNXN/AUTH/OPEN/WRTE/OKAY/CLSE） | 无 |
-| `AdbCrypto.kt` | RSA-2048 生成、adb 公钥格式、TOKEN 签名 | 无 |
-| `AdbClient.kt` | 连接 + AUTH + shell v2 | 无 |
-| `AdbShellProtocol.kt` | shell v2 子协议（stdout/stderr/exit 分流） | 无 |
-| `AdbPairingClient.kt` / `AdbPairingPacket.kt` | TLS + SPAKE2 配对 | 无 |
+| 前置 | 装 Shizuku App 并授权本应用 | 开发者选项里开「无线调试」并配对一次 |
+| 依赖 | 第三方 App 常驻进程 | 无（系统 adbd） |
+| 失效模式 | Shizuku 进程被杀 → binder 失效 | 端口变化 / 配对失效 → 需重配 |
+| 探测成本 | `pingBinder()`，微秒级 | 只看「是否配对过」，不发包 |
 
-harness（可独立跑，仅验证协议编解码与签名，不连设备）：
-`scripts/qa/AdbProtocolVerification.kt`、`AdbClientVerification.kt`、`AdbPairingVerification.kt`。
+所以候选链是 `无障碍 → Shizuku → 无线调试`：Shizuku 更轻，ADB 更独立。
 
-## 如果真的要用
+## 文件
 
-第一步不是写代码，是**先接一个入口**（设置页「调试通道」→ 选择 Shizuku / ADB），
-并把 `AdbClient` 接进 `ShellRunTool` 的 `privilegedExec` 三级降级链末端。
-在那之前，这里任何类都不该被当作可用能力引用。
+| 文件 | 内容 |
+|---|---|
+| `AdbPacket.kt` | 消息头编解码（CNXN/AUTH/OPEN/WRTE/OKAY/CLSE） |
+| `AdbCrypto.kt` | RSA-2048 生成、adb 公钥格式、TOKEN 签名 |
+| `AdbClient.kt` | 连接 + AUTH + shell v2 |
+| `AdbShellProtocol.kt` | shell v2 子协议（stdout/stderr/exit 分流） |
+| `AdbPairingClient.kt` / `AdbPairingPacket.kt` | TLS + SPAKE2 配对、PeerInfo 加解密 |
+| **`Spake2Ed25519.kt`** | SPAKE2（boringssl/AOSP 版）：Ed25519 群运算 + 协议流程 |
+| **`AdbCredentials.kt`** | 密钥对与端点持久化（SharedPreferences，私有目录） |
+| **`AdbSession.kt`** | 会话管理：配对、连接复用、闲置重建、失败重连一次 |
+
+## 复用时最容易踩的三个坑
+
+1. **SPAKE2 的 M/N 是 8L 阶（带 8-torsion）**，不是标准 SPAKE2 的 L 阶点。所以私钥与
+   口令标量都必须 ×8，否则低阶分量残留，密钥必错。
+2. **名字常量含结尾 NUL**（`"adb pair client\0"`，16 字节）——AOSP 用 `sizeof()` 传长度。
+3. **配对端口 ≠ 连接端口**：前者在「使用配对码配对设备」弹窗里，后者在无线调试主页
+   的 `IP:端口` 那行。填反的表现是「配对码正确却解密失败」，极易误判。
+
+harness（可独立跑，不连设备）：
+`scripts/qa/run-spake2-verification.sh`（向量对拍 + 群运算 + 协议行为）、
+`run-adb-protocol-verification.sh`、`run-adb-client-verification.sh`、`run-adb-pairing-verification.sh`。

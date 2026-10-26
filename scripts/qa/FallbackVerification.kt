@@ -327,6 +327,7 @@ private fun testAccessibilityCopy() {
         assertTrue("Selected", r is CapabilityResolution.Selected)
         r as CapabilityResolution.Selected
         assertTrue("backend = shizuku", r.backend.backendId == "shizuku")
+        // 命中即止：选中第 2 级时轨迹就 2 条，第 3 级（无线调试）不会被列入
         assertTrue("降级 1 级 = 轨迹 2 条", r.trace.size == 2)
         assertTrue("首条是无障碍且不可用", r.trace[0].available.not())
     }
@@ -336,7 +337,41 @@ private fun testAccessibilityCopy() {
         val r = resolveCapability(CapabilityRequest(Capability.CONTROL_SCREEN, snap)) as CapabilityResolution.Unavailable
         assertContains("hint 提到无障碍", r.hint, "无障碍")
         assertContains("hint 提到调试通道", r.hint, "调试通道")
-        assertTrue("轨迹含两级候选", r.trace.size == 2)
+        assertContains("hint 提到无线调试", r.hint, "无线调试")
+        assertTrue("轨迹含三级候选", r.trace.size == 3)
+    }
+
+    check("W-51：无障碍与 Shizuku 都不可用、无线调试已配对 → 选中 ADB（降级 2 级）") {
+        val snap = controlScreenSnapshot(
+            serviceConnected = false,
+            masterEnabled = true,
+            shizukuAvailable = false,
+            adbAvailable = true
+        )
+        val r = resolveCapability(CapabilityRequest(Capability.CONTROL_SCREEN, snap))
+        assertTrue("Selected", r is CapabilityResolution.Selected)
+        r as CapabilityResolution.Selected
+        assertTrue("backend = adb-wireless", r.backend.backendId == "adb-wireless")
+        assertTrue("轨迹 3 条", r.trace.size == 3)
+        assertTrue("前两条不可用", !r.trace[0].available && !r.trace[1].available)
+        assertTrue("第三条可用", r.trace[2].available)
+    }
+
+    check("W-51：无线调试未配对 → 作为候选列出但不可用，并给出配对引导") {
+        val snap = controlScreenSnapshot(false, false, false, false)
+        val r = resolveCapability(CapabilityRequest(Capability.CONTROL_SCREEN, snap))
+            as CapabilityResolution.Unavailable
+        assertTrue("轨迹 3 条", r.trace.size == 3)
+        assertContains("hint 提到无线调试", r.hint, "无线调试")
+        assertContains("hint 说明要配对", r.hint, "配对")
+    }
+
+    check("W-51：三条都可用时仍首选无障碍（降级链不改变优先级）") {
+        val snap = controlScreenSnapshot(true, true, true, true)
+        val r = resolveCapability(CapabilityRequest(Capability.CONTROL_SCREEN, snap))
+            as CapabilityResolution.Selected
+        assertTrue("backend = accessibility", r.backend.backendId == "accessibility")
+        assertTrue("无降级轨迹", r.trace.size == 1)
     }
 
     check("两者都缺 → 合并给出两条动作（先系统后 App）") {

@@ -21,6 +21,14 @@ import com.example.agentkit.core.terminal.backend.TerminalIdentity
 /** 无障碍能力候选的后端键（与能力链其它候选区分）。 */
 const val BACKEND_ACCESSIBILITY = "accessibility"
 
+/**
+ * 无线调试（adb over TCP）候选的后端键。
+ *
+ * 与 `TerminalBackend.KEY_SHIZUKU` 同层：两者都是 uid 2000，做同一批事，只是通道不同。
+ * 这里不复用 shell 的 `KEY_SSH`——那是「连到别的机器」，语义不同。
+ */
+const val BACKEND_ADB = "adb-wireless"
+
 /* ------------------------------------------------------------------ */
 /* shell 能力：调试通道(Shizuku) → proot 容器 → 本机 user shell        */
 /* ------------------------------------------------------------------ */
@@ -132,7 +140,28 @@ fun accessibilityBackendAvailability(
 }
 
 /**
- * 「操作手机界面」的候选可用性快照（纯函数）：**无障碍服务 → 调试通道（Shizuku）**。
+ * 无线调试候选的可用性快照（纯函数）。
+ *
+ * @param configured 是否已配对过（有密钥 + 端点）。**不看当前连接是否活着**——端点在、
+ *   连接可重建，真正的失败（端口变了/配对失效）会在执行时如实报错，比在探测阶段
+ *   干等一次 TCP 超时更诚实。
+ */
+fun adbBackendAvailability(configured: Boolean): BackendAvailability =
+    if (configured) {
+        BackendAvailability(BACKEND_ADB, "无线调试（ADB）", available = true)
+    } else {
+        BackendAvailability(
+            backendId = BACKEND_ADB,
+            label = "无线调试（ADB）",
+            available = false,
+            reason = "无线调试未配对（没有可用的 adb 凭据）",
+            hint = "到「设置 → 调试通道」用配对码配对一次：先在开发者选项打开「无线调试」，" +
+                "点「使用配对码配对设备」拿到配对端口与 6 位码，再填主页显示的连接端口。"
+        )
+    }
+
+/**
+ * 「操作手机界面」的候选可用性快照（纯函数）：**无障碍服务 → 调试通道（Shizuku）→ 无线调试**。
  *
  * W-50 之前这里只有无障碍一条候选，注释还写着「无更低一级可用路径」。但那条判断不成立：
  * shell（uid 2000）能做 `input tap/swipe/text/keyevent`、`uiautomator dump`、`screencap`，
@@ -142,16 +171,20 @@ fun accessibilityBackendAvailability(
  * @param serviceConnected 无障碍服务是否已连接
  * @param masterEnabled 自动化总开关是否开启
  * @param shizukuAvailable 调试通道是否就绪（Shizuku 已运行且已授权本应用）
+ * @param adbAvailable 无线调试是否已配对（W-51 新增的第三级候选）
  */
 fun controlScreenSnapshot(
     serviceConnected: Boolean,
     masterEnabled: Boolean,
-    shizukuAvailable: Boolean
+    shizukuAvailable: Boolean,
+    adbAvailable: Boolean = false
 ): List<BackendAvailability> = listOf(
     // 首选：实时、无需 dump、能拿界面变化事件
     accessibilityBackendAvailability(serviceConnected, masterEnabled),
-    // 兜底：读树靠 uiautomator dump（慢 1~2 秒），其余动作与无障碍等价
-    shellBackendAvailability(TerminalBackend.KEY_SHIZUKU, shizukuAvailable)
+    // 第二级：Shizuku（binder，无连接维持成本，探测微秒级）
+    shellBackendAvailability(TerminalBackend.KEY_SHIZUKU, shizukuAvailable),
+    // 第三级：无线调试直连（不依赖第三方 App，端口变了需重新配对）
+    adbBackendAvailability(adbAvailable)
 )
 
 /**
