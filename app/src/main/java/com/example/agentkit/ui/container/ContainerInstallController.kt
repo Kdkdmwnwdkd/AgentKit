@@ -81,8 +81,13 @@ object ContainerInstallController {
             get() = when {
                 result.ok -> "$label 安装完成。"
                 result.busy -> "$label：同一条命令已在执行，等它结束再点。"
-                okByCapability -> "$label 已就位：包管理器报了错误，但自检通过" +
-                    "（${targets.joinToString("、")} 可执行）。"
+                // 真机 15:07：Alpine 装 nodejs 的退出码是 1，但 `node --version` 是 v20.15.1、
+                // npm 是 10.9.1——报错来自包管理器收尾的 trigger 脚本，跟能不能用无关。
+                // 这时候在卡片上写「已就位：包管理器报了错误」还是让人心里没底，
+                // 改成直接说「安装完成」，把原因放在括号里。
+                okByCapability -> "$label 安装完成。包管理器收尾时报了个错" +
+                    "（多在 trigger 脚本，不影响使用），" +
+                    "${targets.joinToString("、")} 已验证可运行。"
                 else -> {
                     val lines = result.output.trim().lines().filter { it.isNotBlank() }
                     val errors = lines.filter {

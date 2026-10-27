@@ -41,6 +41,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.agentkit.ui.container.ContainerInstallController
@@ -288,10 +289,14 @@ fun ContainerScreen() {
                                         }
                                     )
                                     Spacer(Modifier.height(AgentSpacing.space1))
+                                    // 这段命令有 200 多字符（含社区源前奏），不截断会把卡片撑到
+                                    // 五屏高（真机 15:05 截图），下面的按钮全被挤出视野。
                                     Text(
                                         text = "将在容器内执行：${installCmd ?: "（无法生成命令）"}",
                                         style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 3,
+                                        overflow = TextOverflow.Ellipsis
                                     )
                                 }
 
@@ -394,7 +399,9 @@ fun ContainerScreen() {
                                                     Text(
                                                         text = "将执行：$cmd",
                                                         style = MaterialTheme.typography.bodySmall,
-                                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                        maxLines = 3,
+                                                        overflow = TextOverflow.Ellipsis
                                                     )
                                                     // 版本说明：Debian 官方源没有 node 18 这类分版本包，
                                                     // 用户得知道「可能装不上、或者装到的是默认版」。

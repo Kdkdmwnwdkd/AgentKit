@@ -686,10 +686,15 @@ private fun testShellToolAndBridge() = runBlocking {
         assertEquals("code", "bad_handle", r.code)
     }
 
-    check("不存在的合法句柄 → no_such_session") {
+    check("不存在的合法句柄 → 自动开新会话并说明（W-63）") {
+        // 旧行为：直接 no_such_session 失败。真机 15:16——App 重启后模型沿用历史对话里的
+        // 「b69f」，整轮白跑，用户只看到一张红色失败卡。
+        // 新行为：「句柄没了」等价于「没有会话」，把命令跑起来，但必须在返回里说清
+        // 原句柄已失效、cwd 已重置（静默替换会让模型以为还在老目录，更难查）。
         val r = run.execute(json("command" to "pwd", "session" to "ffff"))
-        assertTrue("not ok", !r.ok)
-        assertEquals("code", "no_such_session", r.code)
+        assertTrue("应成功执行（不再直接失败）", r.ok)
+        assertContains("应点明原句柄失效", r.message, "ffff")
+        assertContains("应说明已换新会话", r.message, "已开辟新会话")
     }
 
     check("缺 command / 空 command → 明确失败") {
