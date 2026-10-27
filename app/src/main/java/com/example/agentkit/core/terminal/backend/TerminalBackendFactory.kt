@@ -90,7 +90,14 @@ class TerminalBackendFactory(
                 TerminalBackend.KEY_USER
             )
         } else {
-            listOf(TerminalBackend.KEY_USER)
+            // W-57：`preferProot=false` 原先是「只给本机 user」——那时还没有 shizuku / adb 后端，
+            // 这个 else 等价于「唯一选项」。现在语义应当是「**别用容器**」，而不是「只能用 App 身份」：
+            // pm / settings / appops 这类命令在容器里永远做不了，跳过容器后仍该优先 uid 2000。
+            listOf(
+                TerminalBackend.KEY_SHIZUKU,
+                TerminalBackend.KEY_ADB,
+                TerminalBackend.KEY_USER
+            )
         }
         return order.mapNotNull { key -> providers.firstOrNull { it.backendKey == key && it.identity == identity } }
     }

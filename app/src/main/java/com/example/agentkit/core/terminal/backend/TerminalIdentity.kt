@@ -22,7 +22,13 @@ enum class TerminalIdentity {
     /** root（su）：首期**只留接口不实现**，后端工厂返回不可用。 */
     Su,
 
-    /** Shizuku（ADB 级权限）：首期**只留接口不实现**，后端工厂返回不可用。 */
+    /**
+     * Shizuku（ADB 级权限）。
+     *
+     * **仍未作为「身份」实现**：池里拿 uid 2000 的方式是「identity 用 User、候选链选到
+     * shizuku / adb 后端」（见 `TerminalBackendFactory.providersFor`），而不是传本值——
+     * 传它会让 `providersFor` 返回空。本值只用于对外语义与日志展示。
+     */
     Shizuku,
 
     /** SSH 远端：首期**只留接口不实现**，后端工厂返回不可用。 */

@@ -276,6 +276,29 @@ private fun testFactoryLinkage() {
         )
     }
 
+    check("W-57：prefer_proot=false 跳过容器，但仍优先 uid 2000（shizuku → adb → user）") {
+        val factory = fakeFactory(
+            prootAvailable = true,
+            userAvailable = true,
+            adbAvailable = true,
+            shizukuAvailable = true
+        )
+        val keys = factory
+            .providersFor(TerminalIdentity.User, preferProot = false)
+            .map { it.backendKey }
+        // 传 false 的语义是「别用容器」，不是「只能用 App 身份」——
+        // pm / settings / appops 在容器里做不了，跳过容器后仍该先试 uid 2000。
+        assertEquals(
+            "no-proot order",
+            listOf(
+                TerminalBackend.KEY_SHIZUKU,
+                TerminalBackend.KEY_ADB,
+                TerminalBackend.KEY_USER
+            ),
+            keys
+        )
+    }
+
     check("W-56：proot 不可用但 Shizuku 可用 → 选中 shizuku（同是 uid 2000，binder 比 TCP 优先）") {
         val factory = fakeFactory(
             prootAvailable = false,

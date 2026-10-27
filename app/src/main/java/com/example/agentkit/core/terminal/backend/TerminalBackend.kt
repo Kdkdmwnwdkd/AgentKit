@@ -52,12 +52,12 @@ interface TerminalBackend {
         const val KEY_SU = "su"
 
         /**
-         * Shizuku 后端键。
+         * Shizuku 后端键（W-56 起**已实现**为
+         * [com.example.agentkit.automation.shizuku.ShizukuTerminalBackend]）。
          *
-         * 仍未实现为 [TerminalBackend]：Shizuku 的 `newProcess` 返回的是**远端进程代理**，
-         * 它的 `waitFor`/流语义与本地 `Process` 不一致（W-36 踩过：定时 waitFor 立刻抛异常，
-         * 「启动失败」被误报成「超时」）。持久 shell + 哨兵这套协议要求稳定的 stdin/stdout 流，
-         * 用 `ShizukuShell.exec` 逐条执行又保不住 cwd。故维持「诊断条目 + 单独工具兜底」现状。
+         * 早先判它是「远端进程代理、流语义不可用」，其实混了两件事：W-36 踩的是**定时 `waitFor`**
+         * （远端代理上立刻抛异常，「启动失败」被误报成「超时」），不是 stdin/stdout 读写。
+         * 改用 `exitValue()` 轮询之后，持久 `sh` 在这条通道上完全可用。
          */
         const val KEY_SHIZUKU = "shizuku"
 

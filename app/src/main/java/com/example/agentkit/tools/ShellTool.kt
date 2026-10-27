@@ -47,13 +47,23 @@ data class PrivilegedShellOut(
 )
 
 /**
- * 纯函数：这条 shell_run 是否应走提权通道（W-13）。
+ * 纯函数：这条 shell_run 是否应走**一次性提权通道**（W-13 的 `sh -c` 路径）。
  *
- * 规则：
+ * ## W-57 起默认不再走它
+ *
+ * 原规则是「identity 未给 → 通道就绪时自动优先」，理由是「uid 2000 能干的活最多」。
+ * 但那条通道一条命令一个进程，`cd` / `export` 不跨调用保持（W-54 只是把它说清楚了）。
+ * W-56 把 Shizuku 做成了**会话池后端**之后，「uid 2000」和「持久 shell」不再二选一——
+ * 所以默认应当进池，由候选链 proot → shizuku → adb → user 自己挑，且 cwd 保有。
+ *
+ * 现在的规则：
  *  - 带了 session 句柄 → **不走**（会话已绑定某个后端，中途换通道会让 cwd/环境变量语义断裂）；
- *  - identity 显式给了 shizuku → 走（若通道不可用则回落，绝不静默假装成功）；
- *  - identity 显式给了别的（user/su/ssh）→ 不走，尊重调用方选择；
- *  - identity 未给 → 通道就绪时**自动优先**（默认走能干的活最多的那条）。
+ *  - identity 显式给了 shizuku → 走（调用方明确表示「就要一条命令、不要开会话」；
+ *    池的 `TerminalIdentity.Shizuku` 首期无后端，只能靠这条通道拿到 uid 2000）；
+ *  - 其余（含 identity 未给）→ 不走，交给会话池。
+ *
+ * 注意：**「要 uid 2000」不必非走这里**——传 `prefer_proot=false` 进池，候选链会跳过容器、
+ * 优先 shizuku / adb，同样是 uid 2000 但**持久**。这条通道只在「不想留会话」时才划算。
  */
 fun shouldUsePrivilegedShell(
     identity: String?,
@@ -61,11 +71,7 @@ fun shouldUsePrivilegedShell(
     privilegedAvailable: Boolean
 ): Boolean {
     if (hasSession || !privilegedAvailable) return false
-    return when (identity) {
-        null -> true
-        "shizuku" -> true
-        else -> false
-    }
+    return identity == "shizuku"
 }
 
 /** 会话池化 shell 的执行器：`am force-stop` 等系统命令经此走真实本机 shell。 */
@@ -97,11 +103,13 @@ class ShellRunTool(
     override val name = "shell_run"
     override val description =
         "在终端会话里执行一条 shell 命令并返回输出与退出码。无 session 时自动开辟一条会话并返回其句柄；" +
-            "复用同一 session 句柄可保持工作目录与环境变量（多轮 cd/export 生效）。identity 取值 " +
-            "user/su/shizuku/ssh；identity=shizuku 走提权通道（uid 2000，可改设置/停应用/读文件，需先配好 Shizuku）——" +
-            "**该通道是一次性执行**：不返回会话句柄，本次的 cd / export 不会保留到下一次调用。" +
-            "需要连续操作请显式传 identity=user 建立会话（走 proot / 无线调试 / 本机 shell），再复用返回的句柄。" +
-            "prefer_proot 是否优先容器（默认 true，不可用回落本机 shell）。" +
+            "复用同一 session 句柄可保持工作目录与环境变量（多轮 cd/export 生效）。" +
+            "**默认就进会话池**：按 proot 容器 → Shizuku（uid 2000）→ 无线调试（uid 2000）→ 本机 shell " +
+            "的顺序试，起不来的自动跳到下一档。" +
+            "要系统权限（pm/settings/appops 等）请传 prefer_proot=false：跳过容器、优先 Shizuku/无线调试，" +
+            "同样是 uid 2000 但 cwd 会保持。" +
+            "identity=shizuku 是**例外**：走一次性提权通道，不返回句柄、cd/export 不跨调用保持——" +
+            "只在「跑一条命令、不想留会话」时用。" +
             "无 PTY/交互支持：不要用需要交互输入的命令（如不带 -y 的 apt、分页器 less），必要时改用非交互参数。" +
             "注意：shell_run 不能用来操控界面——dumpsys、am start、settings put/get、input tap 都会因权限不足失败；" +
             "操控界面请改用 ui_tree/ui_tap/ui_click 等 ui_* 工具。"
@@ -109,20 +117,26 @@ class ShellRunTool(
         "用 shell_run 执行终端命令。首次不带 session 调用会返回一个 4 位十六进制句柄，后续把该句柄作为 " +
             "session 传入即可在同一 shell 里继续操作（cwd 与 export 的环境变量会保持）。不再需要的会话用 " +
             "shell_close 关闭。命令输出过长会被截断（只保留头尾），必要时拆小命令分批查看。" +
-            "提权通道（identity=shizuku）可用时，settings put/get、pm、文件操作都能真正生效；" +
-            "但它是**一次性执行**（一条命令一个进程），cd / export 不跨调用保持——" +
-            "要多步连续操作请先显式传 identity=user 开一个会话、拿句柄再复用。" +
+            "要执行 pm / settings / appops 这类需要系统权限的命令，传 prefer_proot=false：" +
+            "会话池会跳过容器、优先 Shizuku 或无线调试（uid 2000），且 cwd 与环境变量照常保持。" +
+            "identity=shizuku 走的是一次性通道（一条命令一个进程），cd/export 不跨调用保持，" +
+            "只适合跑完就走的单条命令。" +
             "shell_run 只用于文件读写、命令执行、查看本机信息，**不能操控界面**" +
             "（dumpsys/am start/settings put|get 都会因权限不足失败）；操控界面请用 ui_* 工具。"
 
     override val parameters = JsonSchema.objectSchema(
         JsonSchema.prop("command", "string", "要执行的 shell 命令原文（不要预先转义，不要包含命令结尾换行）"),
         JsonSchema.prop(
-            "identity", "string", "执行身份：user/su/shizuku/ssh，默认 user（首期仅 user 有后端）",
+            "identity", "string", "执行身份：user/su/shizuku/ssh，默认走会话池（user 身份）。" +
+                "仅有 shizuku 是特殊值：走一次性提权通道（无句柄、cd 不保持）",
             enum = listOf("user", "su", "shizuku", "ssh")
         ),
         JsonSchema.prop("session", "string", "复用的会话句柄（4 位十六进制），缺省则自动开辟新会话"),
-        JsonSchema.prop("prefer_proot", "boolean", "是否优先 proot 容器，默认 true（不可用自动回落本机 shell）")
+        JsonSchema.prop(
+            "prefer_proot", "boolean",
+            "是否优先 proot 容器，默认 true。传 false 会跳过容器、优先 Shizuku / 无线调试（uid 2000），" +
+                "适合 pm / settings 等系统命令"
+        )
     )
 
     /** 写操作：shell 命令可能改变设备状态，保守走串行批次。 */
