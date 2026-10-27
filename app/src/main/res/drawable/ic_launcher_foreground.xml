@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 北辰 图标前景（W-64）：四角星，落在 108dp 画布的安全区里。
+     纯矢量——launcher 会按 48~192dp 渲染，位图在这个尺度上必糊。 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#D2A85E"
+        android:pathData="M54.00,24.00 L60.36,47.64 L84.00,54.00 L60.36,60.36 L54.00,84.00 L47.64,60.36 L24.00,54.00 L47.64,47.64 Z" />
+</vector>

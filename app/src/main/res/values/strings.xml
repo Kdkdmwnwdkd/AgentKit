@@ -1,4 +1,4 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="agent_accessibility_description">AgentKit 无障碍自动化：允许 Agent 读取当前屏幕界面并代替你执行点击、输入、滑动等操作用于完成任务。请在信任的场景下开启。</string>
+    <string name="agent_accessibility_description">北辰 无障碍自动化：允许 Agent 读取当前屏幕界面并代替你执行点击、输入、滑动等操作用于完成任务。请在信任的场景下开启。</string>
 </resources>
