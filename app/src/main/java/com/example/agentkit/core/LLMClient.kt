@@ -141,6 +141,33 @@ fun parseRetryAfterMs(raw: String?): Long {
     }.getOrDefault(0L)
 }
 
+/**
+ * 从错误响应体里抠出服务端给的「人话原因」（2026-10-27 真机）。
+ *
+ * 429 的真实原因常常不在状态码里。真机 agnes 的响应体是：
+ * ```
+ * {"error":{"code":"","message":"请登录platform进行实名认证以获取更高rpm", ...}}
+ * ```
+ * 这是「去实名认证」就能解决的事。但原来只显示「请求过于频繁（429）」，
+ * 用户看到的是「又限流了」，只能反复重试——重试一百次也还是 429。
+ *
+ * 兼容三种常见形态：`error.message`（OpenAI/Agnes）、`error` 本身是字符串
+ * （部分网关）、`message` / `msg`（国内厂商）。都取不到返回 null，调用方退回
+ * 通用文案，绝不把整段 body 塞给用户（可能夹带 request id / key 片段）。
+ *
+ * 截到 60 字：横幅只有一行，超出部分省略号。纯函数、零 Android 依赖。
+ */
+fun extractServerHint(body: String): String? {
+    if (body.isBlank()) return null
+    val obj = runCatching { Json.parseToJsonElement(body).objOrNull() }.getOrNull() ?: return null
+    val raw = obj["error"]?.objOrNull()?.get("message")
+        ?: obj["error"]
+        ?: obj["message"]
+        ?: obj["msg"]
+    val text = raw.primOrNull()?.contentOrNull?.trim()
+    return text?.takeIf { it.isNotEmpty() }?.let { if (it.length > 60) it.take(60) + "…" else it }
+}
+
 /** 主 Key 在池中的固定槽位 id（备用槽位 id 由 KeyPoolStore 生成）。 */
 private const val PRIMARY_SLOT_ID = "primary"
 

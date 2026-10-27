@@ -299,7 +299,15 @@ class RealAgentLoop(
             val resp = try {
                 callWithRetry { chatOnce(requestMessages, exposure) }
             } catch (e: Throwable) {
-                AgentLogger.e("LLM", "调用失败", e)
+                // 取消不是失败。点「停止」会取消本协程，CancellationException 从这里穿出去；
+                // 原来一律打 ERROR，真机日志就留下「ERROR [LLM] 调用失败
+                // kotlinx.coroutines.JobCancellationException」——用户看到红色 ERROR，
+                // 以为刚才那下停止把 App 搞崩了。
+                if (e is CancellationException) {
+                    AgentLogger.i("LLM", "本次调用已取消（用户点停止）")
+                } else {
+                    AgentLogger.e("LLM", "调用失败", e)
+                }
                 throw e
             }
             AgentLogger.i(
@@ -704,9 +712,16 @@ class RealAgentLoop(
     /**
      * 可重试错误 → 面向用户的一句话原因（横幅「正在恢复（n/N）· 原因」用）。
      * 纯函数：仅依赖异常类型与 HTTP 状态码，**绝不回显**可能夹带 Key 的原始 message。
+     *
+     * 429 额外带上服务端给的原因（`extractServerHint`）：真机 agnes 的 body 里写着
+     * 「请登录platform进行实名认证以获取更高rpm」——这句话才是用户该看的，
+     * 只说「请求过于频繁」等于让人对着墙重试。
      */
     private fun retryReason(e: Throwable): String = when {
-        e is LlmHttpException && e.code == 429 -> "请求过于频繁（429）"
+        e is LlmHttpException && e.code == 429 ->
+            com.example.agentkit.core.extractServerHint(e.serverBody)
+                ?.let { "请求过于频繁（429）· $it" }
+                ?: "请求过于频繁（429）"
         e is LlmHttpException && e.code >= 500 -> "服务端错误（${e.code}）"
         e is LlmHttpException -> "HTTP ${e.code}"
         e is java.net.UnknownHostException -> "网络不可达"
