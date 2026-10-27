@@ -67,7 +67,7 @@ fun AboutScreen() {
             verticalArrangement = Arrangement.spacedBy(AgentSpacing.space4)
         ) {
             // —— 应用标识 ——
-            AkSectionCard(title = "AgentKit", icon = Icons.Outlined.Shield) {
+            AkSectionCard(title = "北辰", icon = Icons.Outlined.Shield) {
                 Text(
                     text = "跑在本机的对话式手机助手：接你自己配置的模型接口，" +
                         "在危险操作前拦一道审批，把日志与记忆都留在本机。",
@@ -137,7 +137,7 @@ fun AboutScreen() {
                 }
                 Spacer(Modifier.width(AgentSpacing.space2))
                 Text(
-                    text = "AgentKit · 视觉规范 v3.1 · UX v1",
+                    text = "北辰 · 设计规范 v3.1 · UX v1",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,

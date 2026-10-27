@@ -500,7 +500,7 @@ fun SettingsScreen(
                     icon = Icons.Outlined.Save,
                     title = "导出备份",
                     description = "选择保存位置，生成 ZIP 备份文件",
-                    onClick = { exportLauncher.launch("agentkit-backup.zip") }
+                    onClick = { exportLauncher.launch("beichen-backup.zip") }
                 )
                 AkDivider(Modifier.padding(start = AgentSpacing.space4))
                 AkListItem(

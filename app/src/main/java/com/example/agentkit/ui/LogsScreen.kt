@@ -170,7 +170,7 @@ fun LogsScreen(vm: ChatViewModel) {
                 onClick = {
                     val text = vm.exportLogs()
                     val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                    cm.setPrimaryClip(ClipData.newPlainText("AgentKit 运行日志", text))
+                    cm.setPrimaryClip(ClipData.newPlainText("北辰 运行日志", text))
                     exportHint = "已复制 ${logs.size} 条日志到剪贴板"
                 }
             )
@@ -349,7 +349,7 @@ private fun CrashSection(
                             icon = Icons.Outlined.ContentCopy,
                             onClick = {
                                 val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                                cm.setPrimaryClip(ClipData.newPlainText("AgentKit 崩溃报告", record.text))
+                                cm.setPrimaryClip(ClipData.newPlainText("北辰 崩溃报告", record.text))
                             }
                         )
                     }
