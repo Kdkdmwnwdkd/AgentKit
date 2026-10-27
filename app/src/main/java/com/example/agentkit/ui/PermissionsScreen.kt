@@ -261,6 +261,12 @@ fun PermissionsScreen(vm: ChatViewModel, onStartGuide: () -> Unit = {}) {
                 }
             }
 
+            // —— W-68：无线调试（ADB）——
+            // Shizuku 与无线调试是同一件事的两条路（都要 uid 2000），原来 Shizuku 在本页、
+            // 无线调试在设置页，用户得在两个页面各看一半再自己拼。本页收齐两种方式：
+            // Shizuku 在权限列表里带授权动作，无线调试在这里配对。
+            AdbChannelSection()
+
             // —— 能力链一次走完（DoD⑤）：预先告诉用户「需要做什么」，而非逐条工具试错 ——
             val plans by vm.capabilityPlans.collectAsStateWithLifecycle()
             if (plans.isNotEmpty()) {

@@ -272,6 +272,7 @@ fun main() {
             "ui/PermissionGuideScreen.kt",
             "ui/PermissionsScreen.kt",
             "ui/SettingsScreen.kt",
+            "ui/AppearanceScreen.kt",
             "ui/ModelConfigScreen.kt"
         ).forEach { rel ->
             val src = read("app/src/main/java/com/example/agentkit/$rel")

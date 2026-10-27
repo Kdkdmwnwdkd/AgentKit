@@ -142,6 +142,8 @@ enum class AppDest(
     PROMPTS("prompts", "提示词库", "提示词库", Icons.Outlined.AutoAwesome),
     BOOKMARKS("bookmarks", "收藏", "收藏", Icons.Outlined.Bookmark),
     SETTINGS("settings", "设置", "设置", Icons.Outlined.Settings),
+    /** W-67：外观子页——壁纸与颜色原来在设置页占掉一整屏，拆成独立页。 */
+    APPEARANCE("appearance", "壁纸与颜色", "壁纸与颜色", Icons.Outlined.Palette),
     ABOUT("about", "关于", "关于", Icons.Outlined.Info);
 
     companion object {
@@ -667,12 +669,17 @@ private fun ScreenHost(
                     AppDest.PROMPTS -> PromptLibraryScreen(vm)
                     AppDest.BOOKMARKS -> BookmarkScreen(vm)
                     AppDest.SETTINGS -> SettingsScreen(
+                        vm = vm,
+                        themeMode = themeMode,
+                        dynamicColor = dynamicColor,
+                        onNavigate = onNavigate
+                    )
+                    AppDest.APPEARANCE -> AppearanceScreen(
                         vm,
                         themeMode,
                         onThemeModeChange,
                         dynamicColor,
-                        onDynamicColorChange,
-                        onNavigate
+                        onDynamicColorChange
                     )
                     AppDest.ABOUT -> AboutScreen(
                         onOpenPermissionGuide = { onNavigate(AppDest.PERMISSION_GUIDE) }

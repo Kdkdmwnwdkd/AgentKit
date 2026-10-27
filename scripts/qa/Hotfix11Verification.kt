@@ -721,7 +721,9 @@ private fun testBackupRestore() {
         assertContains("R8", settings, "title = \"恢复备份\"")
         assertContains("R8", settings, "danger = true")
         assertContains("R8", settings, "importLauncher.launch(arrayOf(\"application/zip\"))")
-        assertContains("R8", settings, "title = \"备份与恢复\"")
+        // W-68：「备份与恢复」不再单独成组，并进「数据」组。断言改查导出入口仍在设置页，
+        // 不锁组标题——分组会随信息架构调整，导出/恢复这两个动作不会消失。
+        assertContains("R8", settings, "title = \"导出备份\"")
     }
 }
 
@@ -976,6 +978,8 @@ private fun testAppearanceEnhancements() {
     val store = readSource("core/ConfigStore.kt")
     val vm = readSource("ui/ChatViewModel.kt")
     val settings = readSource("ui/SettingsScreen.kt")
+    // W-67：动态取色开关从设置页搬到「壁纸与颜色」子页，断言跟着搬
+    val appearance = readSource("ui/AppearanceScreen.kt")
     val scaffold = readSource("ui/AppScaffold.kt")
 
     check("V1 动态取色：默认关 + API 31 门禁 + 只覆盖 M3 标准色角色") {
@@ -1032,8 +1036,8 @@ private fun testAppearanceEnhancements() {
         assertTrue("V6", !regenBlock.contains("CompletionNotifier"))
     }
     check("V7 设置页：动态取色行（API 31 门禁）+ 提醒卡 + 权限按需申请") {
-        assertContains("V7", settings, "if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {")
-        assertContains("V7", settings, "title = \"动态取色\"")
+        assertContains("V7", appearance, "if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {")
+        assertContains("V7", appearance, "title = \"动态取色\"")
         assertContains("V7", settings, "title = \"回答完成提醒\"")
         assertContains("V7", settings, "ActivityResultContracts.RequestPermission()")
         assertContains("V7", settings, "notifyPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)")
@@ -1323,7 +1327,8 @@ private fun testChatBackground() {
     val config = readSource("core/ConfigStore.kt")
     val vm = readSource("ui/ChatViewModel.kt")
     val screen = readSource("ui/ChatScreen.kt")
-    val settings = readSource("ui/SettingsScreen.kt")
+    // W-67：背景图分区从设置页搬到「壁纸与颜色」子页（ChatBackgroundSection → BackgroundSection）
+    val appearance = readSource("ui/AppearanceScreen.kt")
     val loader = File("app/src/main/java/com/example/agentkit/ui/BackgroundLoader.kt").readText()
 
     check("AA1 ConfigStore：URI + 浓度两键（URI 存轻量字符串，位图不占存储）") {
@@ -1357,14 +1362,14 @@ private fun testChatBackground() {
         assertContains("AA4", loader, "MaterialTheme.colorScheme.surface.copy(alpha = 0.25f)")
         assertContains("AA4", loader, "loadChatBackground(context, it, config.screenWidthDp, config.screenHeightDp)")
     }
-    check("AA5 SettingsScreen：SAF 持久化选图 + 换一张/清除 + 浓度滑杆") {
-        assertContains("AA5", settings, "private fun ChatBackgroundSection(vm: ChatViewModel)")
-        assertContains("AA5", settings, "Intent.ACTION_OPEN_DOCUMENT")
-        assertContains("AA5", settings, "FLAG_GRANT_PERSISTABLE_URI_PERMISSION")
-        assertContains("AA5", settings, "takePersistableUriPermission(")
-        assertContains("AA5", settings, "vm.setChatBackground(uri.toString())")
-        assertContains("AA5", settings, "vm.setChatBackground(null)")
-        assertContains("AA5", settings, "valueRange = 0.05f..1.0f")
+    check("AA5 壁纸与颜色页：SAF 持久化选图 + 换一张/清除 + 浓度滑杆") {
+        assertContains("AA5", appearance, "private fun BackgroundSection(vm: ChatViewModel)")
+        assertContains("AA5", appearance, "Intent.ACTION_OPEN_DOCUMENT")
+        assertContains("AA5", appearance, "FLAG_GRANT_PERSISTABLE_URI_PERMISSION")
+        assertContains("AA5", appearance, "takePersistableUriPermission(")
+        assertContains("AA5", appearance, "vm.setChatBackground(uri.toString())")
+        assertContains("AA5", appearance, "vm.setChatBackground(null)")
+        assertContains("AA5", appearance, "valueRange = 0.05f..1.0f")
     }
 }
 
@@ -1387,7 +1392,8 @@ private fun testJsonSafeAndGlobalBackground() {
     val llm = readSource("core/LLMClient.kt")
     val loader = readSource("ui/BackgroundLoader.kt")
     val config = readSource("core/ConfigStore.kt")
-    val settings = readSource("ui/SettingsScreen.kt")
+    // W-67：背景浓度滑杆随背景图分区搬到「壁纸与颜色」子页
+    val appearance = readSource("ui/AppearanceScreen.kt")
     val scaffold = readSource("ui/AppScaffold.kt")
     val chat = readSource("ui/ChatScreen.kt")
 
@@ -1429,8 +1435,8 @@ private fun testJsonSafeAndGlobalBackground() {
     }
     check("AB4 背景浓度：clamp 到 1.0（100%）+ 滑杆 range 同步") {
         assertContains("AB4", config, "alpha.coerceIn(0.05f, 1.0f)")
-        assertContains("AB4", settings, "valueRange = 0.05f..1.0f")
-        assertTrue("AB4", !settings.contains("valueRange = 0.05f..0.60f"))
+        assertContains("AB4", appearance, "valueRange = 0.05f..1.0f")
+        assertTrue("AB4", !appearance.contains("valueRange = 0.05f..0.60f"))
     }
     check("AB5 全局背景：AppBackgroundLayer + 根底色透明切换 + 对话页不再自绘") {
         assertContains("AB5", loader, "fun AppBackgroundLayer(vm: ChatViewModel)")
