@@ -42,6 +42,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.agentkit.ui.container.ContainerInstallController
 import com.example.agentkit.core.AgentLogger
 import com.example.agentkit.core.container.ContainerCommandRunner
 import com.example.agentkit.core.container.ContainerSession
@@ -80,38 +82,40 @@ fun ContainerScreen() {
     val versionInputs = remember { mutableStateMapOf<String, String>() }
 
     /**
-     * 正在执行的安装任务（key = "<发行版id>:<语言id>" 或 "<发行版id>:all"）；null = 空闲。
+     * 安装任务改由应用级 [ContainerInstallController] 持有（W-62）。
      *
-     * 存在的理由（真机 exit 99）：按钮原来没有运行态，连点两下就会起两个 proot
-     * 同时跑 `apk add`，apk 数据库抢锁，第二个必然
-     * `exit 99: Unable to lock database`。底层 [ContainerCommandRunner] 已加串行闸门，
-     * 这一层再把按钮禁用掉——让用户在点下去之前就知道「已经在装了」，而不是等一个
-     * 失败提示才反应过来。
+     * 原来这里是 `var installing by remember` + `rememberCoroutineScope()`：
+     * 切页/进终端会销毁组合 → 协程被取消、状态归零，但 proot 还在跑（阻塞调用不吃取消）。
+     * 结果就是真机 13:56 那一幕：按钮又变回「安装 Java」可点，点了被 EXIT_BUSY 拒，
+     * 20 秒内连拒 6 次，用户以为按钮坏了。
+     *
+     * 现在页面只是**观察者**：页面重建后直接恢复成「正在安装 Java… 120s」。
      */
-    var installing by remember { mutableStateOf<String?>(null) }
+    val running by ContainerInstallController.running.collectAsStateWithLifecycle()
+    val installReport by ContainerInstallController.report.collectAsStateWithLifecycle()
+    val finishedCount by ContainerInstallController.finished.collectAsStateWithLifecycle()
 
     /**
-     * 最近一次安装的结果（内联常驻）。
+     * 已用时的刷新节拍。
      *
-     * 原来只有 Toast：一闪而过，且 `take(80)` 截断会把真正的报错行切掉，
-     * 用户只能截图问「这什么意思」。现在把完整尾段留在卡片里，能看懂也能复制。
+     * 直接按 `startedAtMs` 算差，而不是「每秒 +1」——页面切走再回来时后者会从 0 重新数，
+     * 用户看到「刚开始装」的假象，又一次选择重试。
      */
-    var installResult by remember { mutableStateOf<InstallReport?>(null) }
-
-    /**
-     * 安装已进行的秒数（每 5 秒跳一次）。
-     *
-     * 为什么要它：装 JDK 要下约 200 MB，慢网下要几分钟到十几分钟。原先前端只有一句
-     * 「正在安装」，几分钟不动就没人分得清是「还在下」还是「已经卡死」——真机上用户
-     * 就是这样干等了 15 分钟。数字在跳，至少说明流程还活着。
-     */
-    var installElapsed by remember { mutableStateOf(0) }
-    LaunchedEffect(installing) {
-        installElapsed = 0
-        while (installing != null) {
-            kotlinx.coroutines.delay(5_000)
-            installElapsed += 5
+    var nowMs by remember { mutableStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(running?.startedAtMs) {
+        if (running == null) {
+            nowMs = System.currentTimeMillis()
+            return@LaunchedEffect
         }
+        while (true) {
+            nowMs = System.currentTimeMillis()
+            kotlinx.coroutines.delay(1_000)
+        }
+    }
+
+    // 每完成一次安装就重算探测结果（已装/未装）
+    LaunchedEffect(finishedCount) {
+        if (finishedCount > 0) toolchainTick++
     }
 
     // proot 三件套是**首次使用时**才从 assets 提取的（ensureBinary）。
@@ -185,7 +189,20 @@ fun ContainerScreen() {
                             isBusy = busy == d.id,
                             onClick = {
                                 if (extracted.contains(d.id)) {
-                                    selected = d
+                                    // 真机 13:56：装 Java 的 proot 在跑，用户进终端起了第二个 proot，
+                                    // 系统 LMK 直接把 pty 杀掉（终端 2 秒后 code=137，用户只看到黑屏）。
+                                    // 这里挡住并说清原因，而不是让他撞上去。
+                                    val busyMs = ContainerCommandRunner.busyFor(d.id)
+                                    if (busyMs != null) {
+                                        Toast.makeText(
+                                            context,
+                                            "正在安装运行时（已 ${busyMs / 1000}s）。现在进终端会起第二个 proot、" +
+                                                "把正在装的那个顶掉——等它装完再进。",
+                                            Toast.LENGTH_LONG
+                                        ).show()
+                                    } else {
+                                        selected = d
+                                    }
                                 } else {
                                     busy = d.id
                                     scope.launch(Dispatchers.IO) {
@@ -245,41 +262,26 @@ fun ContainerScreen() {
                                 if (detection.pkgManager != null && missing.isNotEmpty()) {
                                     // 命令先算出来，UI 与执行共用同一份——避免文案与实际执行不一致
                                     val installCmd = ToolchainInstaller.installMissingCommand(detection)
-                                    val allKey = "$id:all"
                                     val allLabel = missing.joinToString("、") { it.displayName }
+                                    // 本发行版此刻正在装什么（跨页面存活，切走再回来仍在）
+                                    val thisRunning = running?.takeIf { it.distroId == id }
                                     Spacer(Modifier.height(AgentSpacing.space2))
                                     AkTextButton(
-                                        text = if (installing == allKey) "正在安装 $allLabel… ${installElapsed}s"
-                                        else "安装 $allLabel",
-                                        enabled = installCmd != null && installing == null,
+                                        text = if (thisRunning != null) {
+                                            "正在安装 ${thisRunning.label}… " +
+                                                "${thisRunning.elapsedSeconds(nowMs)}s"
+                                        } else {
+                                            "安装 $allLabel"
+                                        },
+                                        enabled = installCmd != null && running == null,
                                         onClick = {
                                             val cmd = installCmd
                                             if (cmd == null) {
                                                 Toast.makeText(context, "无法生成安装命令", Toast.LENGTH_SHORT).show()
                                                 return@AkTextButton
                                             }
-                                            // 立刻上锁：从点击这一刻起其它安装按钮全禁用，
-                                            // 不靠「底层会串行」兜底（那会让用户以为点了没反应）
-                                            installing = allKey
-                                            installResult = null
-                                            // 装完刷新探测结果（列表项用 remember(id, toolchainTick) 重算）
-                                            scope.launch(Dispatchers.IO) {
-                                                val (res, verified) = installAndVerify(context, id, cmd, missing)
-                                                withContext(Dispatchers.Main) {
-                                                    installing = null
-                                                    toolchainTick++
-                                                    installResult = InstallReport(
-                                                        id, allLabel, res,
-                                                        targets = missing.map { it.id }.toSet(),
-                                                        verified = verified
-                                                    )
-                                                    val ok = res.ok || verified.containsAll(missing.map { it.id })
-                                                    Toast.makeText(
-                                                        context,
-                                                        if (ok) "安装完成：$allLabel" else "安装失败（exit ${res.exitCode}）",
-                                                        Toast.LENGTH_SHORT
-                                                    ).show()
-                                                }
+                                            if (!ContainerInstallController.start(context, id, allLabel, cmd, missing)) {
+                                                Toast.makeText(context, "已有安装在执行，等它结束", Toast.LENGTH_SHORT).show()
                                             }
                                         }
                                     )
@@ -360,37 +362,29 @@ fun ContainerScreen() {
                                                 )
                                                 if (cmd != null) {
                                                     Spacer(Modifier.height(AgentSpacing.space1))
-                                                    val langKey = "$id:${lang.id}"
                                                     val langLabel = lang.displayName +
                                                         (spec?.let { " ${it.version}" } ?: "")
+                                                    val langRunning = thisRunning
+                                                        ?.takeIf { it.label == langLabel }
                                                     AkTextButton(
-                                                        text = if (installing == langKey) "正在安装 $langLabel… ${installElapsed}s"
-                                                        else if (lang in detection.installed) "重装 $langLabel"
-                                                        else "安装 $langLabel",
-                                                        enabled = installing == null,
+                                                        text = if (langRunning != null) {
+                                                            "正在安装 $langLabel… " +
+                                                                "${langRunning.elapsedSeconds(nowMs)}s"
+                                                        } else if (lang in detection.installed) {
+                                                            "重装 $langLabel"
+                                                        } else {
+                                                            "安装 $langLabel"
+                                                        },
+                                                        enabled = running == null,
                                                         onClick = {
-                                                            // cmd 已被外层 if (cmd != null) 收窄为非空，
-                                                            // 这里不再重复判 null（编译器会报恒真警告）。
-                                                            installing = langKey
-                                                            installResult = null
-                                                            scope.launch(Dispatchers.IO) {
-                                                                val (res, verified) = installAndVerify(context, id, cmd, listOf(lang))
-                                                                withContext(Dispatchers.Main) {
-                                                                    installing = null
-                                                                    toolchainTick++
-                                                                    installResult = InstallReport(
-                                                                        id, langLabel, res,
-                                                                        targets = setOf(lang.id),
-                                                                        verified = verified
-                                                                    )
-                                                                    val ok = res.ok || lang.id in verified
-                                                                    Toast.makeText(
-                                                                        context,
-                                                                        if (ok) "安装完成：$langLabel"
-                                                                        else "安装失败（exit ${res.exitCode}）",
-                                                                        Toast.LENGTH_SHORT
-                                                                    ).show()
-                                                                }
+                                                            if (!ContainerInstallController.start(
+                                                                    context, id, langLabel, cmd, listOf(lang)
+                                                                )
+                                                            ) {
+                                                                Toast.makeText(
+                                                                    context, "已有安装在执行，等它结束",
+                                                                    Toast.LENGTH_SHORT
+                                                                ).show()
                                                             }
                                                         }
                                                     )
@@ -418,7 +412,7 @@ fun ContainerScreen() {
                                 // 安装结果常驻展示：Toast 一闪而过，而 apk/apt 的失败原因
                                 // 几乎都在输出的最后几行——真机上的 exit 99 就是这样被截成半句
                                 // 「ERROR: Unable to lock database: temporary error」，等于没给信息。
-                                installResult?.takeIf { it.distroId == id }?.let { report ->
+                                installReport?.takeIf { it.distroId == id }?.let { report ->
                                     Spacer(Modifier.height(AgentSpacing.space2))
                                     Text(
                                         text = report.summary,
@@ -460,95 +454,6 @@ fun ContainerScreen() {
             )
         }
     }
-}
-
-/**
- * B 批：在容器里执行一条安装命令（同步等退出码）。
- *
- * 走 [ContainerCommandRunner] 的独立进程通道而非 pty 会话——pty 拿不到退出码，
- * 而「装成功没有」只能靠退出码判断。
- */
-private suspend fun runInstallInContainer(
-    context: Context,
-    distroId: String,
-    command: String
-): ContainerCommandRunner.Result = withContext(Dispatchers.IO) {
-    ContainerCommandRunner.run(context, distroId, command)
-}
-
-/**
- * 安装 + 失败后自检。
- *
- * 包管理器的退出码不能代表「能不能用」：真机上 `apk add openjdk17 openjdk17-jdk`
- * 装完 77 个包后报 `1 error`（退出码 1，某个 trigger 脚本在 proot 下失败），
- * 但 `java -version && javac -version` 是正常的。反过来，退出码 0 也不等于
- * `javac` 真在（JRE 包装上了、JDK 包被跳过）。
- *
- * 所以失败时补一次真实自检（一次容器命令，约 2 秒），用**能力**下结论。
- *
- * @return 安装结果 与 自检通过的语言 id 集合
- */
-private suspend fun installAndVerify(
-    context: Context,
-    distroId: String,
-    command: String,
-    targets: List<ToolchainInstaller.Lang>
-): Pair<ContainerCommandRunner.Result, Set<String>> = withContext(Dispatchers.IO) {
-    val res = ContainerCommandRunner.run(context, distroId, command)
-    if (res.ok || res.busy) return@withContext res to emptySet<String>()
-    val script = ToolchainInstaller.verifyScript(targets)
-    if (script.isBlank()) return@withContext res to emptySet<String>()
-    val verify = ContainerCommandRunner.run(context, distroId, script)
-    res to ToolchainInstaller.verifiedLangs(verify.output)
-}
-
-/**
- * 一次安装的结果（内联展示用）。
- *
- * 为什么不用 Toast 汇报失败：Toast 只能容纳两行，且马上消失；而 apk / apt 的失败
- * 原因几乎总在输出的**最后几行**（`ERROR: ...`），前 80 字截断恰好把它们切掉。
- * 真机上用户拿到的就是 `exit 99` 加一句被切一半的话，等于没给信息。
- *
- * @param targets  这次安装想装的语言 id
- * @param verified 安装命令失败后，用 `--version` 自检通过的语言 id
- */
-private data class InstallReport(
-    val distroId: String,
-    val label: String,
-    val result: ContainerCommandRunner.Result,
-    val targets: Set<String> = emptySet(),
-    val verified: Set<String> = emptySet()
-) {
-    /**
-     * 包管理器说失败，但目标运行时全部通过自检。
-     *
-     * 真机实例：`apk add openjdk17 openjdk17-jdk` 装完 77 个包后报 `1 error`（退出码 1，
-     * 某个 trigger 脚本在 proot 下失败），但 `java -version && javac -version` 正常。
-     * 这时候告诉用户「安装失败」是错的——他明明能跑 javac。
-     */
-    val okByCapability: Boolean
-        get() = !result.ok && targets.isNotEmpty() && verified.containsAll(targets)
-
-    /** 最终结论：命令成功，或命令失败但能力已具备。 */
-    val effectiveOk: Boolean get() = result.ok || okByCapability
-
-    /** 失败时保留可诊断的行：错误行优先，再补尾部。 */
-    val summary: String
-        get() = when {
-            result.ok -> "$label 安装完成。"
-            result.busy -> "$label：同一条命令已在执行，等它结束再点。"
-            okByCapability -> "$label 已就位：包管理器报了错误，但自检通过" +
-                "（${targets.joinToString("、")} 可执行）。"
-            else -> {
-                val lines = result.output.trim().lines().filter { it.isNotBlank() }
-                val errors = lines.filter {
-                    it.contains("error", ignoreCase = true) || it.contains("fail", ignoreCase = true)
-                }.takeLast(5)
-                val shown = (errors + lines.takeLast(6)).distinct().takeLast(12).joinToString("\n")
-                "$label 安装失败（exit ${result.exitCode}）：\n" +
-                    shown.ifBlank { "（无输出）" }
-            }
-        }
 }
 
 /** 发行版卡片：图标底座 + 名称 + 状态（已就绪 / 解压中 / 点击解压）+ 整卡点击。 */
