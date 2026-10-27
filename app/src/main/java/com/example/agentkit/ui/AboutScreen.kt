@@ -42,9 +42,12 @@ import kotlinx.coroutines.launch
  *
  * 一级页面：顶栏走 [PageTopBar]（标题「关于」，无右上动作）。
  * 本页纯静态展示，不接 ViewModel——装一次看一次，不值得为它拉一份状态。
+ *
+ * W-65：设置页把「关于」与「权限引导」压成了一行（关于与帮助），所以权限入口搬到这里，
+ * 紧跟应用标识之后——先知道这是什么，再知道要给它什么权限。
  */
 @Composable
-fun AboutScreen() {
+fun AboutScreen(onOpenPermissionGuide: () -> Unit = {}) {
     val ctx = LocalContext.current
     // 版本号从 PackageManager 读：不依赖 BuildConfig 生成开关，AGP 关掉 buildConfig 也不会编译失败
     val versionName = remember(ctx) {
@@ -83,6 +86,19 @@ fun AboutScreen() {
                 Spacer(Modifier.height(AgentSpacing.space2))
                 // 更新入口放在版本号下面：用户想「看看有没有新版」时，视线就在这一行
                 UpdateRow()
+            }
+
+            // —— 权限怎么给（W-65 从设置页并进来的那一半）——
+            AkGroup(
+                title = "帮助",
+                description = "五项设备能力逐项说明「开了能做什么、不开会缺什么」"
+            ) {
+                AkListItem(
+                    icon = Icons.Outlined.Shield,
+                    title = "权限怎么给",
+                    description = "无障碍、Shizuku、悬浮窗、通知与电池优化，逐项引导",
+                    onClick = onOpenPermissionGuide
+                )
             }
 
             // —— 设计规范 ----
