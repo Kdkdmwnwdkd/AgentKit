@@ -103,8 +103,10 @@ class TerminalBackendFactory(
     }
 
     /**
-     * 最高可用后端：proot 可用 → proot；否则回落本机 user。
-     * 仅返回单条实例（供不经过会话池的直接调用点使用）。
+     * 最高可用后端：按 [providersFor] 的顺序取第一个能造出来的（proot → shizuku → 无线调试 → 本机 user）。
+     *
+     * 仅返回单条实例（供不经过会话池的直接调用点使用）。**它不做 start 试探**——
+     * 「能构造」不等于「能启动」，需要带回落的场景请走 `TerminalSessionPool.open()`（W-55）。
      */
     fun getHighestAvailable(): TerminalBackend? =
         obtain(TerminalIdentity.User, preferProot = true)

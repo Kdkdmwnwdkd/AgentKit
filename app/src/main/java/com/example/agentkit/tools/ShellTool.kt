@@ -6,6 +6,7 @@ import com.example.agentkit.core.JsonSchema
 import com.example.agentkit.core.ToolResult
 import com.example.agentkit.core.terminal.TERMINAL_HANDLE_REGEX
 import com.example.agentkit.core.terminal.TerminalSessionPool
+import com.example.agentkit.core.terminal.backend.TerminalBackend
 import com.example.agentkit.core.terminal.backend.TerminalIdentity
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
@@ -196,7 +197,8 @@ class ShellRunTool(
                         message = "提权通道（Shizuku）不可用：$why",
                         hint = "不要重试。依次确认：① Shizuku 里已点「通过无线调试启动」且服务在运行；" +
                             "② 本应用已在 Shizuku 内授权（授权后需回本应用点一次「检测」）；" +
-                            "③ 仍不行就改用 identity=user，普通文件操作不需要提权。",
+                            "③ 仍不行就传 prefer_proot=false 走无线调试（同样是 uid 2000），" +
+                            "或直接用默认参数（普通文件操作不需要提权）。",
                         data = why
                     )
                 }
@@ -206,7 +208,8 @@ class ShellRunTool(
                         return ToolResult.fail(
                             code = "privileged_unavailable",
                             message = "提权通道（Shizuku）无响应（${out.elapsedMs}ms 内即断）。",
-                            hint = "这不是命令慢，是通道没通。不要原样重试，改用 identity=user；" +
+                            hint = "这不是命令慢，是通道没通。不要原样重试——传 prefer_proot=false 改走无线调试" +
+                                "（同为 uid 2000），或直接用默认参数；" +
                                 "需要提权时去「自动化」页按提示重新启动 Shizuku 的无线调试服务。"
                         )
                     }
@@ -224,7 +227,9 @@ class ShellRunTool(
                     return ToolResult.fail(
                         code = "permission_denied",
                         message = "提权通道（Shizuku）退出码 ${out.exitCode}（系统拒绝）",
-                        hint = "该命令即使以 shell 身份也被拒绝（可能需 root 或厂商限制）。不要原样重试，改走无障碍 UI 路径。",
+                        // W-58：本通道已是 uid 2000，被拒只剩「要真 root」一种解释；
+                        // 与池路径共用同一份分档文案，两处不再各自演化
+                        hint = permissionDeniedHint(TerminalBackend.KEY_SHIZUKU),
                         data = output.take(400)
                     )
                 }
@@ -234,7 +239,8 @@ class ShellRunTool(
                 // 同一类问题：不是执行错，是语义被误读。
                 val stateHint = if (mutatesShellState(command)) {
                     "\n\n注意：本通道为一次性执行，本次的 cd / export 只在本次生效，" +
-                        "下一次调用回到默认工作目录。需要连续操作请显式传 identity=user 开一个会话再复用句柄。"
+                        "下一次调用回到默认工作目录。要继续以 uid 2000 连续操作，改用 prefer_proot=false " +
+                        "开一个会话（走 Shizuku / 无线调试，cwd 会保持），再复用返回的句柄。"
                 } else {
                     ""
                 }
@@ -319,9 +325,11 @@ class ShellRunTool(
             return ToolResult.fail(
                 code = "permission_denied",
                 message = header + "（系统拒绝：权限不足）",
-                hint = "该命令需要比 user shell 更高的权限（root/Shizuku 或系统特殊授权），" +
-                    "本机 shell 无法执行。**不要改用 shell 重试同一命令**——改走无障碍 UI 路径：" +
-                    "ui_tree 读界面 → ui_click/ui_tap 点对应设置项。",
+                // W-58：原来一律指向「改走 ui_*」。但 pm / settings / appops 根本没法靠点击替代，
+                // 而 W-57 之后默认进 proot（容器内没有系统服务），这条 hint 会把模型直接劝退。
+                // 现在按当前后端分档：容器 / 本机 user 都先指 prefer_proot=false；已是 uid 2000
+                // 的才说「需要真 root，别重试」——避免死循环。
+                hint = permissionDeniedHint(info?.backendKey),
                 data = result.output.take(400)
             )
         }
@@ -434,4 +442,45 @@ internal fun mutatesShellState(command: String): Boolean {
     // 变量赋值前缀（`FOO=bar cmd` 或 `FOO=bar`）也算改环境
     if (Regex("(^|[;&|]\\s*)[A-Za-z_][A-Za-z0-9_]*=").containsMatchIn(c)) return true
     return false
+}
+
+
+/**
+ * W-58：`permission_denied` 的分档修复指引。
+ *
+ * 为什么需要分档：命令被系统拒绝有**三种完全不同的原因**，混成一句话就会把模型引向错误方向：
+ *
+ * | 当前后端 | 真实原因 | 正确下一步 |
+ * |---|---|---|
+ * | proot | 容器是 fake root，看不到 Android 系统服务（`pm` / `settings` / `appops` 在里面根本不存在） | **`prefer_proot=false` 换 uid 2000** |
+ * | user | App 身份只有 `u0_aXXX`，没有 `android.permission.*` 之外的任何系统权限 | **`prefer_proot=false` 换 uid 2000** |
+ * | shizuku / adb | 已经是 ADB 级（uid 2000），仍被拒 = 要真 root 或系统签名 | 别再重试，走 UI 或让用户手动 |
+ *
+ * 原来一律说「改走 ui_*」：对 `pm` / `settings` 这类命令根本没有等价点击路径，
+ * 模型被劝退后任务就卡住了。而 W-57 让默认路径进 proot 之后，这种情况反而变多了。
+ *
+ * 纯函数：零 Android 依赖，可在 JVM harness 直接断言。
+ *
+ * @param poolKey 当前会话的后端键（`proot` / `user` / `shizuku` / `adb-wireless`；
+ *   null = 会话已消失或查不到，走通用文案）
+ */
+internal fun permissionDeniedHint(poolKey: String?): String = when (poolKey) {
+    TerminalBackend.KEY_SHIZUKU, TerminalBackend.KEY_ADB ->
+        "当前会话**已经是 ADB 级权限**（uid 2000），仍被系统拒绝说明这条操作需要真 root 或系统签名。" +
+            "不要重试同一命令——改走无障碍 UI 路径：ui_tree 读界面 → ui_click/ui_tap 点对应项；" +
+            "也可以如实告知用户「该操作需要手动完成」。"
+
+    TerminalBackend.KEY_PROOT ->
+        "容器内是 fake root，**不等于**宿主 root：容器看不到 Android 系统服务，pm / settings / appops 在里面无效。" +
+            "**先传 prefer_proot=false 重试一次**——会话池会改走 Shizuku / 无线调试（uid 2000），" +
+            "这类命令在那条通道上可行。若返回里仍是 pool=user，说明两条调试通道都没配置，" +
+            "再改走 UI：ui_tree → ui_click/ui_tap。"
+
+    TerminalBackend.KEY_USER ->
+        "本机 App 身份没有系统权限。若已配置 Shizuku 或无线调试，**传 prefer_proot=false 重试一次**" +
+            "（会话池会优先 uid 2000 的通道）；两者都未配置时只能改走 UI：ui_tree → ui_click/ui_tap。"
+
+    else ->
+        "该命令需要比当前身份更高的权限。若已配置 Shizuku / 无线调试，传 prefer_proot=false 重试一次；" +
+            "否则改走 UI：ui_tree → ui_click/ui_tap。"
 }

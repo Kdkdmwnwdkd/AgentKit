@@ -204,9 +204,19 @@ class TerminalSessionPool(
             } else {
                 OpenResult.failure(
                     code = "identity_unsupported",
-                    message = "身份「${identity.wire}」首期未实现，无对应后端。",
-                    hint = "当前仅支持 identity=user：proot 容器、无线调试与本机 shell 都以该身份运行" +
-                        "（前两者在内核侧分别是 fake root / uid 2000）。"
+                    message = "身份「${identity.wire}」没有对应的会话后端。",
+                    // W-58：原本文案说「当前仅支持 identity=user」——在 W-56 把 Shizuku 做成后端
+                    // 之后这句话已经半错：uid 2000 是能拿到的，只是入口不是 identity，而是
+                    // prefer_proot=false 走候选链。传 identity=shizuku 进来的实际情况是
+                    // 「一次性通道没起来」，所以要把两条路都指清楚。
+                    hint = if (identity == TerminalIdentity.Shizuku) {
+                        "identity=shizuku 走的是**一次性提权通道**，需要 Shizuku 服务在运行且已授权本应用。" +
+                            "要 uid 2000 **并且** cwd 保持，改用 prefer_proot=false（会话池会依次试 " +
+                            "Shizuku → 无线调试）；两者状态可到「设置 → 调试通道」查看。"
+                    } else {
+                        "su / ssh 首期无后端。要容器用 prefer_proot=true（默认）；要 uid 2000 用 prefer_proot=false" +
+                            "（Shizuku / 无线调试）；普通文件操作用默认参数即可。"
+                    }
                 )
             }
         }
@@ -272,7 +282,7 @@ class TerminalSessionPool(
             code = "start_failed",
             message = "所有终端后端都启动失败（identity=${identity.wire}，已尝试：${tried.joinToString(" → ")}）。",
             hint = "逐个确认：proot 的 rootfs / proot 三件套是否就绪；无线调试是否仍配对（端口会变）；" +
-                "本机 shell 是否可执行。也可先只用 identity=user。"
+                "本机 shell 是否可执行。通道状态可到「设置 → 调试通道」查看。"
         )
     }
 
