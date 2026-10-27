@@ -48,7 +48,6 @@ import androidx.compose.material.icons.outlined.Notifications
 import androidx.compose.material.icons.outlined.Palette
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Save
-import androidx.compose.material.icons.outlined.Security
 import androidx.compose.material.icons.outlined.Shield
 import androidx.compose.material.icons.outlined.AccountTree
 import androidx.compose.material.icons.outlined.Add
@@ -438,10 +437,10 @@ fun SettingsScreen(
             // 不就行了，我为什么要搞一个副的」。判断成立：同一模型换 key 不如直接换模型直观。
             // BackupKeySection 保留在文件里（KeyPool 仍在工作），只是不再从首页进入。
 
-            // —— 管理与数据：出事时才用的排查型页面 + 关于（同样从抽屉搬来）——
+            // —— 数据：出事时才用的排查型页面 ——
             AkGroup(
-                title = "数据与关于",
-                description = "技能、日志、记忆与版本信息"
+                title = "数据",
+                description = "技能、日志与记忆"
             ) {
                 AkListItem(
                     icon = Icons.Outlined.Extension,
@@ -463,21 +462,15 @@ fun SettingsScreen(
                     description = "跨会话长期记忆",
                     onClick = { onNavigate(AppDest.MEMORY) }
                 )
-                AkDivider(Modifier.padding(start = AgentSpacing.space4))
-                AkListItem(
-                    icon = Icons.Outlined.Info,
-                    title = "关于",
-                    description = "版本、设计规范与开源许可",
-                    onClick = { onNavigate(AppDest.ABOUT) }
-                )
             }
 
             // —— 引导（P2，2026-10-21）：把「第一次怎么用」变成可重放的入口 ——
             // 引导只自动出现一次（权限引导 + 聚光灯各一个标记），跳过的人事后得能找回来，
             // 否则「跳过」等于「永远错过」。
+            // W-65：权限引导原来在这里单占一行，用户要求并进「关于与帮助」，从本组移出。
             AkGroup(
                 title = "帮助",
-                description = "第一次怎么用、每项权限能多做什么，随时可重看"
+                description = "第一次怎么用，随时可重看"
             ) {
                 AkListItem(
                     icon = Icons.Outlined.Refresh,
@@ -491,13 +484,6 @@ fun SettingsScreen(
                         resetSpotlight(ctx)
                         onNavigate(AppDest.CHAT)
                     }
-                )
-                AkDivider(Modifier.padding(start = AgentSpacing.space4))
-                AkListItem(
-                    icon = Icons.Outlined.Security,
-                    title = "权限引导",
-                    description = "五项设备能力逐项开启，说明「开了能做什么、不开会缺什么」",
-                    onClick = { onNavigate(AppDest.PERMISSION_GUIDE) }
                 )
             }
 
@@ -519,6 +505,19 @@ fun SettingsScreen(
                     title = "恢复备份",
                     description = "从 ZIP 备份文件恢复，覆盖当前全部数据",
                     onClick = { confirmRestore = true }
+                )
+            }
+
+            // —— W-65：关于与帮助压成一行，且钉在设置页最底部 ——
+            // 原来「关于」在数据组里、「权限引导」在帮助组里，两行说的都是「有问题去哪看」。
+            // 用户要求合成一条：「介绍整个商品的 + 教你怎么搞权限的，合成一行放在最下面」。
+            // 点进去是 About 页，页尾就是权限引导入口，一次跳转看到两件事。
+            AkGroup(title = "关于") {
+                AkListItem(
+                    icon = Icons.Outlined.Info,
+                    title = "关于与帮助",
+                    description = "产品介绍 · 权限怎么给 · 版本与开源许可",
+                    onClick = { onNavigate(AppDest.ABOUT) }
                 )
             }
         }
