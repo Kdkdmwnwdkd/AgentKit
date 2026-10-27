@@ -2010,7 +2010,7 @@ private fun copyToClipboard(ctx: Context, result: TestResult) {
         if (result.bodyPreview.isNotBlank()) appendLine("响应：${result.bodyPreview}")
         if (result.suggestion.isNotBlank()) appendLine("建议：${result.suggestion}")
     }
-    cm.setPrimaryClip(ClipData.newPlainText("AgentKit 连接诊断", text))
+    cm.setPrimaryClip(ClipData.newPlainText("北辰 连接诊断", text))
 }
 
 /**
