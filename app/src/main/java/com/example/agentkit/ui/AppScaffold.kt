@@ -668,7 +668,9 @@ private fun ScreenHost(
                     onDynamicColorChange,
                     onNavigate
                 )
-                AppDest.ABOUT -> AboutScreen()
+                AppDest.ABOUT -> AboutScreen(
+                    onOpenPermissionGuide = { onNavigate(AppDest.PERMISSION_GUIDE) }
+                )
             }
             if (showSpotlight) {
                 SpotlightGuide(
