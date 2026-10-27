@@ -5,6 +5,7 @@ import com.example.agentkit.core.terminal.backend.TerminalBackend
 import com.example.agentkit.core.terminal.backend.TerminalBackendFactory
 import com.example.agentkit.core.terminal.backend.TerminalBackendSource
 import com.example.agentkit.core.terminal.backend.TerminalIdentity
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -471,7 +472,10 @@ class TerminalSessionPool(
         val sentOk = runCatching {
             entry.backend.send(command.trimEnd('\n', '\r') + "\n") &&
                 entry.backend.send(echoLine + "\n")
-        }.getOrDefault(false)
+        }.onFailure { if (it is CancellationException) throw it }
+            // send 是挂起点：会话被取消时要传播取消，不能落进下面的 send_failed
+            //（那会让调用方以为「写不进去」，而不是「这次执行被取消了」）
+            .getOrDefault(false)
 
         if (!sentOk) {
             collector.cancelAndJoin()

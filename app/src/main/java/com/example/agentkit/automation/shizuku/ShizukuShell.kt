@@ -8,6 +8,7 @@ import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.os.IBinder
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -273,6 +274,9 @@ object ShizukuShell {
                 }
             }.onFailure {
                 pendingBind = null
+                // withContext(Dispatchers.Main) 的取消不能被吞成「绑定失败」——
+                // 否则取消会让 ensureBound 返回 null，调用方误判成通道不可用
+                if (it is CancellationException) throw it
                 return@withLock null
             }
             withTimeoutOrNull(BIND_TIMEOUT_MS) { deferred.await() }.also { bound ->

@@ -3556,7 +3556,10 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
                     URL(url).openStream().use { it.readBytes() }
                 }
                 importRepo.installZip(bytes).getOrThrow()
-            }
+            }.onFailure { if (it is CancellationException) throw it }
+            // onFailure 里重抛取消：`withContext` 是挂起点，ViewModel 销毁/用户离开时抛的是
+            // CancellationException。旧写法把它吞进 result.isFailure，于是「取消」被写成
+            // 「⚠️ 导入失败」，且协程以成功态结束（结构上也不算取消）。
             if (result.isFailure) {
                 _importStatus.value = "⚠️ 导入失败：${result.exceptionOrNull()?.message ?: "未知错误"}"
                 return@launch
@@ -3608,7 +3611,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
                         ?: throw IllegalArgumentException("无法读取所选文件")
                 }
                 importRepo.installZip(bytes).getOrThrow()
-            }
+            }.onFailure { if (it is CancellationException) throw it }
             if (result.isFailure) {
                 _importStatus.value = "⚠️ 导入失败：${result.exceptionOrNull()?.message ?: "未知错误"}"
                 return@launch

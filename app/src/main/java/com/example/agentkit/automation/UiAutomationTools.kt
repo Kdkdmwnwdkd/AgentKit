@@ -6,6 +6,7 @@ import com.example.agentkit.core.AgentLogger
 import com.example.agentkit.core.AgentTool
 import com.example.agentkit.core.JsonSchema
 import com.example.agentkit.core.ToolResult
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonObject
@@ -58,6 +59,11 @@ private suspend fun runOnService(
         if (ok) ToolResult.ok(code = okCode, message = okMsg)
         else shizukuFallback(shizukuCommand, okCode, okMsg)
             ?: ToolResult.fail(code = failCode, message = failMsg, hint = hint)
+    } catch (c: CancellationException) {
+        // 取消绝不是失败：`withContext(Dispatchers.Main)` 是挂起点，用户点「停止」时抛的就是它。
+        // 一旦被下面的 catch (e: Exception) 吞掉，不但会记成「执行异常」，还会**再发一次
+        // shizukuFallback**——取消之后还去动设备，比假失败更糟（见 AppControlTools 的 W-7 F1）。
+        throw c
     } catch (e: Exception) {
         shizukuFallback(shizukuCommand, okCode, okMsg)
             ?: ToolResult.fail(
@@ -164,6 +170,8 @@ class UiTreeTool : AgentTool {
                 }
             }
             ToolResult.ok(code = "ui_tree_ok", message = msg, data = snap.json)
+        } catch (c: CancellationException) {
+            throw c // 同上：withContext(Dispatchers.Main) 的取消不得吞成 ui_tree_error
         } catch (e: Exception) {
             ToolResult.fail(
                 code = "ui_tree_error",
@@ -452,6 +460,8 @@ class UiClickTool : AgentTool {
                         "已做归一化（去空白/全角↔半角/忽略大小写）+ 包含 + 前缀匹配；也可先 ui_tree 确认元素文本/resource-id 的最新值。"
                 )
             }
+        } catch (c: CancellationException) {
+            throw c // 同上
         } catch (e: Exception) {
             ToolResult.fail(
                 code = "exception",
