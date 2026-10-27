@@ -242,6 +242,10 @@ fun ContainerScreen() {
                                 ToolchainInstaller.detect(RootfsManager.rootfsDir(context, id))
                             }
                             val missing = ToolchainInstaller.Lang.entries.filter { it !in detection.installed }
+                            // 本发行版此刻正在装什么（跨页面存活，切走再回来仍在）。
+                            // 必须定义在这里：下面「一键装齐」和「逐语言安装」是两个平级 if 分支，
+                            // 定义在任一分支内，另一个分支都看不到。
+                            val thisRunning = running?.takeIf { it.distroId == id }
                             Column(Modifier.fillMaxWidth()) {
                                 Text(
                                     id,
@@ -263,8 +267,6 @@ fun ContainerScreen() {
                                     // 命令先算出来，UI 与执行共用同一份——避免文案与实际执行不一致
                                     val installCmd = ToolchainInstaller.installMissingCommand(detection)
                                     val allLabel = missing.joinToString("、") { it.displayName }
-                                    // 本发行版此刻正在装什么（跨页面存活，切走再回来仍在）
-                                    val thisRunning = running?.takeIf { it.distroId == id }
                                     Spacer(Modifier.height(AgentSpacing.space2))
                                     AkTextButton(
                                         text = if (thisRunning != null) {
