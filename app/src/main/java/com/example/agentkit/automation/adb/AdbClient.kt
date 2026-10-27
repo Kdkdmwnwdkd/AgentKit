@@ -64,6 +64,9 @@ class AdbClient(
     private lateinit var input: DataInputStream
     private lateinit var output: OutputStream
 
+    /** 保护 [output]：交互式 shell 下写命令与回 CLSE 可能并发（见 [write]）。 */
+    private val writeLock = Any()
+
     /** 建连并完成 AUTH 握手；失败抛异常且不留下半开连接。 */
     fun connect() {
         val s = Socket()
@@ -233,9 +236,13 @@ class AdbClient(
         fun read(timeoutMs: Int): ShellEvent? {
             queue.removeFirstOrNull()?.let { return it }
             if (closed) return null
-            socket.soTimeout = timeoutMs
+            // 只有「等下一帧出现」这一段用短超时；一旦进了帧就由 readPacket 切长超时，
+            // 避免半帧超时把帧同步弄丢（W-59）
+            var awaitingFrame = true
             while (true) {
-                val p = readPacket() ?: run {
+                val p = readPacket(firstByteTimeoutMs = if (awaitingFrame) timeoutMs else -1)
+                awaitingFrame = false
+                if (p == null) {
                     closed = true
                     return null
                 }
@@ -266,30 +273,80 @@ class AdbClient(
 
     // ---- 读写 ----
 
+    /**
+     * 写一个报文。
+     *
+     * **必须加锁**：交互式 shell 下 `writeStdin`（写命令）与 `ShellStream.close` /
+     * `read` 里回 CLSE 可能在不同协程/线程——`BufferedOutputStream` 不是线程安全的，
+     * 两次写交错会让报文长度字段与实际字节错位，对端直接判协议错。
+     */
     private fun write(p: AdbPacket) {
-        output.write(p.encode())
-        output.flush()
+        synchronized(writeLock) {
+            output.write(p.encode())
+            output.flush()
+        }
     }
 
-    /** 读一个完整报文；对端正常关闭 → null。 */
-    private fun readPacket(): AdbPacket? {
+    /**
+     * 读一个完整报文；对端正常关闭 → null。
+     *
+     * ## 两阶段超时（W-59）
+     *
+     * **旧实现只有一个超时，会破坏帧同步**：`readPacket` 在 `input.read` 循环里读 header /
+     * payload，一旦中途超时抛 `SocketTimeoutException`，已消费的字节就丢了——调用方
+     * （交互式 shell 的读循环）按约定把超时当"暂时没输出"继续轮询，于是下一次从**半帧**
+     * 开始读，magic 校验失败、整条 shell 报废。
+     *
+     * 200ms 的读超时对 ADB 通道尤其危险：输出一大块（`dumpsys`、`cat` 大文件）时
+     * 单帧 payload 可能几 KB~256KB，慢速链路或设备繁忙时读不完 200ms 很正常。
+     *
+     * 现在分两段：
+     *  1. **等第一字节**用调用方给的短超时——此时**没有消费任何字节**，超时是安全的（可重试）；
+     *  2. 一旦收到第一字节，说明帧已开始，切到 [readTimeoutMs] 把整帧读完；
+     *     这一段再超时就是连接真坏了，包成 [IOException] 让调用方**停止**而不是继续轮询。
+     *
+     * @param firstByteTimeoutMs 等"下一帧是否存在"的超时；< 0 表示用当前 socket 超时
+     *   （一次性 exec 路径就是这种：它本来就要整段等）
+     */
+    private fun readPacket(firstByteTimeoutMs: Int = -1): AdbPacket? {
+        var first = -1
+        if (firstByteTimeoutMs >= 0) {
+            socket.soTimeout = firstByteTimeoutMs
+            first = input.read() // 超时安全：未消费任何字节
+            if (first < 0) return null
+        }
+
         val header = ByteArray(AdbPacket.HEADER_SIZE)
         var read = 0
-        while (read < header.size) {
-            val n = input.read(header, read, header.size - read)
-            if (n < 0) return if (read == 0) null else throw IOException("adb 报文头不完整")
-            read += n
+        if (first >= 0) {
+            header[0] = first.toByte()
+            read = 1
         }
-        val len = AdbPacket.headerPayloadLength(header)
-        if (len < 0) throw IOException("adb 报文头损坏（magic 不匹配）")
-        val payload = ByteArray(len)
-        var off = 0
-        while (off < len) {
-            val n = input.read(payload, off, len - off)
-            if (n < 0) throw IOException("adb 载荷不完整")
-            off += n
+        // 帧已开始：必须读完，否则帧同步丢失
+        if (first >= 0) socket.soTimeout = readTimeoutMs
+        try {
+            while (read < header.size) {
+                val n = input.read(header, read, header.size - read)
+                if (n < 0) return if (read == 0) null else throw IOException("adb 报文头不完整")
+                read += n
+            }
+            val len = AdbPacket.headerPayloadLength(header)
+            if (len < 0) throw IOException("adb 报文头损坏（magic 不匹配）")
+            val payload = ByteArray(len)
+            var off = 0
+            while (off < len) {
+                val n = input.read(payload, off, len - off)
+                if (n < 0) throw IOException("adb 载荷不完整")
+                off += n
+            }
+            return AdbPacket.decode(header, payload) ?: throw IOException("adb 报文校验失败（CRC）")
+        } catch (e: java.net.SocketTimeoutException) {
+            // 一个字节都没读到（header 阶段 read==0 且非「已拿到首字节」路径）→ 流状态未变，
+            // 超时是安全的，原样抛给调用方（一次性 exec 会把它当成普通读超时）
+            if (read == 0 && first < 0) throw e
+            // 帧已开始却没收完 → 帧同步不可恢复
+            throw IOException("adb 帧读取超时（已开始接收但未收完），连接帧同步已损坏", e)
         }
-        return AdbPacket.decode(header, payload) ?: throw IOException("adb 报文校验失败（CRC）")
     }
 
     override fun close() {

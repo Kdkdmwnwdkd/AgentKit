@@ -62,10 +62,22 @@ internal object AdbDiscovery {
         private val onUpdate: (DiscoveredAdbEndpoint) -> Unit,
         private val onError: (String) -> Unit
     ) {
+        /**
+         * 保护下面所有可变状态。
+         *
+         * NsdManager 的回调跑在 **binder 线程**，而 [stop] 由 UI（主线程）在 `onDispose` 里调——
+         * `pending.addLast` 与 `pending.clear()` 并发会抛 `ConcurrentModificationException`，
+         * 表现为"关掉对话框时偶发崩溃"。原先这几个集合裸奔。
+         */
+        private val stateLock = Any()
+
         private val pairing = mutableListOf<DiscoveredAdbService>()
         private val connect = mutableListOf<DiscoveredAdbService>()
         private val pending = ArrayDeque<Pair<String, NsdServiceInfo>>()
         private val listeners = mutableListOf<NsdManager.DiscoveryListener>()
+
+        /** 服务名 → (类型, 解析结果)：`onServiceLost` 只能靠名字找到要摘哪一条（端口此时可能为 0）。 */
+        private val byName = mutableMapOf<String, Pair<String, DiscoveredAdbService>>()
 
         private var resolving = false
 
@@ -79,11 +91,16 @@ internal object AdbDiscovery {
 
         fun stop() {
             stopped = true
-            pending.clear()
-            listeners.forEach { listener ->
+            val snapshot = synchronized(stateLock) {
+                pending.clear()
+                byName.clear()
+                pairing.clear()
+                connect.clear()
+                listeners.toList().also { listeners.clear() }
+            }
+            snapshot.forEach { listener ->
                 runCatching { nsd.stopServiceDiscovery(listener) }
             }
-            listeners.clear()
         }
 
         private fun startDiscovery(type: String) {
@@ -95,15 +112,39 @@ internal object AdbDiscovery {
                 override fun onServiceFound(service: NsdServiceInfo) {
                     if (stopped) return
                     // 端口必须解析后才可用；serviceInfo.port 在 resolve 前是 0
-                    pending.addLast(type to service)
+                    synchronized(stateLock) { pending.addLast(type to service) }
                     drain()
                 }
 
+                /**
+                 * 端口失效（无线调试重开 / 配对弹窗关闭）：**真的从候选里摘掉**。
+                 *
+                 * 原实现只打了一行日志，注释却写着「从候选里摘掉」——两处不一致。
+                 * 后果是配对弹窗关掉后旧端口仍留在 `pairing` 里，`merge` 继续拿它当配对端口，
+                 * 用户下次配对就得到「配对码正确却解密失败」（那正是 W-51 里最想避免的错误）。
+                 * `merge` 的「取端口最大」只是碰巧缓解，端口更小就错。
+                 */
                 override fun onServiceLost(service: NsdServiceInfo) {
-                    // 端口失效（无线调试重开/配对弹窗关闭）：从候选里摘掉，等新广播
                     if (stopped) return
-                    val name = service.serviceName
-                    AgentLogger.i(TAG, "服务消失：$type / $name")
+                    val merged = synchronized(stateLock) {
+                        val hit = byName.remove(service.serviceName)
+                            // 兜底：resolve 前后 serviceName 可能不同，按端口再找一次
+                            ?: service.port.takeIf { it > 0 }?.let { p ->
+                                byName.entries.firstOrNull { it.value.second.port == p }?.let { e ->
+                                    byName.remove(e.key)
+                                }
+                            }
+                        if (hit == null) return@synchronized null
+                        val (t, svc) = hit
+                        if (t == SERVICE_PAIRING) pairing.remove(svc) else connect.remove(svc)
+                        mergeDiscoveredAdbServices(pairing, connect)
+                    } ?: return
+                    AgentLogger.i(
+                        TAG,
+                        "服务消失：${service.serviceName}（端口 ${service.port}）→ " +
+                            "pair=${merged.pairPort} connect=${merged.connectPort}"
+                    )
+                    onUpdate(merged)
                 }
 
                 override fun onDiscoveryStopped(serviceType: String) = Unit
@@ -115,7 +156,7 @@ internal object AdbDiscovery {
 
                 override fun onStopDiscoveryFailed(serviceType: String, errorCode: Int) = Unit
             }
-            listeners += listener
+            synchronized(stateLock) { listeners += listener }
             runCatching {
                 nsd.discoverServices(type, NsdManager.PROTOCOL_DNS_SD, listener)
             }.onFailure {
@@ -126,26 +167,28 @@ internal object AdbDiscovery {
 
         /** 串行解析：NsdManager 同时只允许一个 resolve 在进行。 */
         private fun drain() {
-            if (resolving || stopped) return
-            val next = pending.pollFirst() ?: return
+            if (stopped) return
+            val next = synchronized(stateLock) {
+                if (resolving) return
+                pending.pollFirst()?.also { resolving = true }
+            } ?: return
             val (type, info) = next
-            resolving = true
             runCatching {
                 nsd.resolveService(info, object : NsdManager.ResolveListener {
                     override fun onResolveFailed(serviceInfo: NsdServiceInfo, errorCode: Int) {
-                        resolving = false
+                        synchronized(stateLock) { resolving = false }
                         AgentLogger.w(TAG, "解析失败（${serviceInfo.serviceName}, code=$errorCode）")
                         drain()
                     }
 
                     override fun onServiceResolved(serviceInfo: NsdServiceInfo) {
-                        resolving = false
+                        synchronized(stateLock) { resolving = false }
                         record(type, serviceInfo)
                         drain()
                     }
                 })
             }.onFailure {
-                resolving = false
+                synchronized(stateLock) { resolving = false }
                 AgentLogger.w(TAG, "resolveService 抛异常：${it.message}")
                 drain()
             }
@@ -156,9 +199,12 @@ internal object AdbDiscovery {
             // 系统偶发解析不出 host（返回 null），退回本机 IPv4——同机广播，地址等价
             val host = hostOf(info) ?: localIpv4(context)
             val service = DiscoveredAdbService(host, info.port)
-            if (type == SERVICE_PAIRING) pairing += service else connect += service
-
-            val merged = mergeDiscoveredAdbServices(pairing, connect)
+            val merged = synchronized(stateLock) {
+                if (stopped) return
+                if (type == SERVICE_PAIRING) pairing += service else connect += service
+                byName[info.serviceName] = type to service
+                mergeDiscoveredAdbServices(pairing, connect)
+            }
             AgentLogger.i(
                 TAG,
                 "发现 $type → ${service.host}:${service.port}；" +

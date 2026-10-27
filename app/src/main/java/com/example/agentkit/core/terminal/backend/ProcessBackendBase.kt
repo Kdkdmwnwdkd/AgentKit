@@ -72,8 +72,13 @@ abstract class ProcessBackendBase(
 
     override suspend fun start(): Boolean {
         if (process != null) return isAlive
+        // openProcess 单独取出来：放在 runCatching 里用 `?: return false` 会**跳过整个日志段**
+        // （非局部返回直接跳出 start），失败时一条日志都没有，排查时只能靠猜。
+        val p = openProcess() ?: run {
+            AgentLogger.w(TAG, "$startFailLog（openProcess 返回 null）")
+            return false
+        }
         val started = runCatching {
-            val p = openProcess() ?: return false
             process = p
 
             readerJob = scope.launch {
@@ -125,8 +130,16 @@ abstract class ProcessBackendBase(
 
     override suspend fun close() {
         val p = process
-        if (p != null) runCatching { p.destroy() }
-        runCatching { p?.outputStream?.close() }
+        if (p != null) {
+            // 先请求终止，再**主动关流**。只 destroy 不够：Shizuku 的远端进程代理对 destroy
+            // 不一定及时生效（W-36 已知它的 waitFor 语义不靠谱），reader 会一直阻塞在
+            // `reader.read()` 上——那是 Dispatchers.IO 的一条线程，泄漏在这里就是真占资源。
+            // 关流让阻塞中的 read 立刻抛异常 → finally 里 channel.close() → reader 收工。
+            runCatching { p.destroy() }
+            runCatching { p.outputStream.close() }
+            runCatching { p.inputStream.close() }
+            runCatching { p.errorStream?.close() }
+        }
         if (!exit.isCompleted) exit.complete(-1)
         runCatching { channel.close() }
         scope.launch {

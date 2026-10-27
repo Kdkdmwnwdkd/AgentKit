@@ -256,11 +256,25 @@ class TerminalSessionPool(
                 runCatching { existing.backend.close() }
             }
 
-            val started = runCatching { candidate.start() }.getOrDefault(false)
+            // W-59：start 加超时。原本是裸调 `runCatching { candidate.start() }`——
+            // Shizuku 的 `newProcess` 走 binder，binder 卡住时**不会**抛异常也不会返回，
+            // 整条工具调用就挂在那里（用户看到的是「点了没反应」，而不是「启动失败」）。
+            // 超时后照常 close + 回落下一档，语义与「启动失败」一致。
+            var startTimedOut = false
+            val started = withTimeoutOrNull(BACKEND_START_TIMEOUT_MS) {
+                runCatching { candidate.start() }.getOrDefault(false)
+            } ?: run {
+                startTimedOut = true
+                false
+            }
             if (!started) {
                 tried += backendKey
                 runCatching { candidate.close() }
-                AgentLogger.w(TAG, "后端启动失败，回落到下一档：$backendKey（identity=${identity.wire}）")
+                AgentLogger.w(
+                    TAG,
+                    (if (startTimedOut) "后端启动超时（>${BACKEND_START_TIMEOUT_MS}ms），" else "后端启动失败，") +
+                        "回落到下一档：$backendKey（identity=${identity.wire}）"
+                )
                 continue
             }
 
@@ -592,6 +606,15 @@ class TerminalSessionPool(
 
     companion object {
         private const val TAG = "TerminalSessionPool"
+
+        /**
+         * 单档后端启动上限（W-59）。
+         *
+         * 取值依据：proot 冷启动 < 5s；Shizuku `newProcess` 秒级；无线调试是
+         * `connect` 5s（AdbClient.connectTimeoutMs）+ 握手 8s（openInteractiveShell 默认）。
+         * 30s 留足余量，同时把「binder 卡死」这类无响应路径收敛成「失败并回落」。
+         */
+        private const val BACKEND_START_TIMEOUT_MS = 30_000L
 
         /** 哨兵标记前缀（公开：harness 的假后端需据协议应答）。 */
         const val SENTINEL_MARKER = "__AGENTKIT_POOL_END__"

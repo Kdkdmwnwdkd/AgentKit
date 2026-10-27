@@ -78,8 +78,13 @@ internal class AdbTerminalBackend : TerminalBackend {
             return@withContext false
         }
 
+        // 局部变量接住连接：`openInteractiveShell` 失败时对象还没赋给字段，
+        // 只调 release() 关不掉它——socket 就漏了。配错端口/配对失效时这条路径会反复走，
+        // 漏的是真 TCP 连接（不是壳对象）。
+        var pending: AdbClient? = null
         val started = runCatching {
             val c = AdbClient(host, port, keyPair)
+            pending = c
             c.connect()
             val s = c.openInteractiveShell()
             client = c
@@ -89,6 +94,7 @@ internal class AdbTerminalBackend : TerminalBackend {
         }.getOrElse { e ->
             AgentLogger.e(TAG, "ADB 交互式 shell 启动失败：${e.javaClass.simpleName}: ${e.message}")
             release()
+            runCatching { pending?.close() }
             false
         }
 
