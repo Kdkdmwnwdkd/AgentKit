@@ -7,6 +7,7 @@ import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 
 /**
@@ -32,6 +33,13 @@ enum class ThemeMode { SYSTEM, LIGHT, DARK }
 fun AgentKitTheme(
     themeMode: ThemeMode = ThemeMode.SYSTEM,
     dynamicColor: Boolean = false,
+    /**
+     * W-64：用户自选强调色（null = 品牌默认）。
+     *
+     * 只覆盖 primary 族，背景/表面/语义色不动——见 [accentColorScheme] 的说明。
+     * 深色主题下会先提亮 30%：`#B7862B` 这种中调色直接放到 `#17110E` 上会糊成一片。
+     */
+    accent: Color? = null,
     content: @Composable () -> Unit
 ) {
     val dark = when (themeMode) {
@@ -41,10 +49,14 @@ fun AgentKitTheme(
     }
     val context = LocalContext.current
     // 动态取色：Android 12+ 且用户开启才生效；低版本静默回退品牌色
-    val colorScheme = if (dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-        if (dark) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
-    } else {
-        if (dark) AgentKitDarkColorScheme else AgentKitLightColorScheme
+    val base = if (dark) AgentKitDarkColorScheme else AgentKitLightColorScheme
+    val colorScheme = when {
+        // 动态取色优先级最高：它本来就是「交给系统决定」，用户再选色会互相打架
+        dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S ->
+            if (dark) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
+        accent != null ->
+            accentColorScheme(base, if (dark) accent.blendTo(Color.White, 0.30f) else accent, dark)
+        else -> base
     }
     MaterialTheme(
         colorScheme = colorScheme,

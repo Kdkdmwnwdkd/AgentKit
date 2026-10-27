@@ -1,9 +1,12 @@
 package com.example.agentkit.ui
 
+import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.compositeOver
+import androidx.compose.ui.graphics.luminance
 
 /**
  * 暖纸 Warm Paper 色板（视觉规范 v3.1 §3.2 / §3.3）。
@@ -230,3 +233,78 @@ internal val DarkAgentKitColors = AgentKitColors(
 
 /** 语义色 CompositionLocal：随明暗主题切换，替代旧静态 AgentColors 对象（规范 §8.1）。 */
 internal val LocalAgentKitColors = staticCompositionLocalOf { LightAgentKitColors }
+
+// =====================================================================================
+// W-64：主题强调色（预设 + 自定义）
+// =====================================================================================
+
+/**
+ * 预设强调色。
+ *
+ * 每个色给 light/dark 两个值：同一个色相在深色底上必须提亮，否则会糊成一片
+ * （`#22406B` 放在 `#17110E` 上几乎看不见）。这是 Material 的 tonal palette 规则，
+ * 手写两个值比运行时算 HSL 更可控。
+ */
+enum class AccentPreset(val label: String, val light: Long, val dark: Long) {
+    /** 默认：夜空蓝底上的星金。北辰的题面。 */
+    NIGHT_GOLD("星金", 0xFFB7862B, 0xFFD2A85E),
+    AZURE("天青", 0xFF22406B, 0xFF7FA8D9),
+    PINE("松绿", 0xFF1E5B47, 0xFF6FC3A2),
+    CLAY("赭石", 0xFF9C4A2F, 0xFFD98F6F),
+    IRIS("青紫", 0xFF4B3F86, 0xFFA99BE0);
+
+    fun color(dark: Boolean): Color = Color(if (dark) this.dark else this.light)
+
+    companion object {
+        fun ofName(name: String?): AccentPreset? = entries.firstOrNull { it.name == name }
+    }
+}
+
+/** 解析 `#RRGGBB` / `RRGGBB` / `#AARRGGBB`；非法返回 null（调用方保留当前色）。 */
+fun parseAccentHex(raw: String?): Color? {
+    val s = raw?.trim()?.removePrefix("#") ?: return null
+    if (s.length != 6 && s.length != 8) return null
+    val v = s.toLongOrNull(16) ?: return null
+    return if (s.length == 6) Color(0xFF000000L or v) else Color(v)
+}
+
+/** 便于 UI 回显：`#RRGGBB`。 */
+fun Color.toHexString(): String {
+    val argb = (this.value shr 32).toInt()
+    return "#%02X%02X%02X".format((argb shr 16) and 0xFF, (argb shr 8) and 0xFF, argb and 0xFF)
+}
+
+internal fun Color.blendTo(target: Color, amount: Float): Color = Color(
+    red = red + (target.red - red) * amount,
+    green = green + (target.green - green) * amount,
+    blue = blue + (target.blue - blue) * amount,
+    alpha = 1f
+)
+
+/**
+ * 把当前 [ColorScheme] 的强调色换成 [accent]，其余角色（背景/表面/描边/语义色）原样保留。
+ *
+ * 为什么只替换 primary 族：全 App 的品牌感由 primary + primaryContainer 承载，
+ * 而可读性由 background/surface/onSurface 决定。只动前者，任何自定义色都不会
+ * 把文字对比度搞坏——用户选了个荧光黄也不会变成不可读的白底白字。
+ */
+internal fun accentColorScheme(base: ColorScheme, accent: Color, dark: Boolean): ColorScheme {
+    // 亮色 accent 上必须压深色字，否则 #D2A85E 上的白字对比度只有 1.9:1
+    val onAccent = if (accent.luminance() > 0.55f) Color(0xFF1A1408) else Color.White
+    val container = accent.copy(alpha = if (dark) 0.26f else 0.14f).compositeOver(base.surface)
+    val onContainer = if (dark) accent.blendTo(Color.White, 0.25f) else accent.blendTo(Color.Black, 0.28f)
+    return base.copy(
+        primary = accent,
+        onPrimary = onAccent,
+        primaryContainer = container,
+        onPrimaryContainer = onContainer,
+        secondary = accent,
+        onSecondary = onAccent,
+        secondaryContainer = container,
+        onSecondaryContainer = onContainer,
+        tertiary = accent,
+        onTertiary = onAccent,
+        tertiaryContainer = container,
+        onTertiaryContainer = onContainer
+    )
+}
