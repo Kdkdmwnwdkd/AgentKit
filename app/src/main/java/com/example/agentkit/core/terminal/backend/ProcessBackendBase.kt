@@ -67,8 +67,20 @@ abstract class ProcessBackendBase(
 
     protected open val startFailLog: String get() = "后端启动失败：$backendKey"
 
+    /**
+     * 进程是否还活着。
+     *
+     * **必须包 runCatching**：Shizuku 的远端进程代理（`ShizukuRemoteProcess`）在"进程还在跑"
+     * 时，内部的 `exitValue()` 抛的是 `IllegalArgumentException: process hasn't exited`，
+     * 而标准 `java.lang.Process` 抛 `IllegalThreadStateException`——它的 `isAlive()` 只捕获后者，
+     * 于是前一种异常会直接穿出来。裸调本属性会在**正常运行时**崩掉进程（真机已复现：
+     * CrashLogger 里 `process hasn't exited` × 2）。
+     *
+     * 拿不到状态时返回 **true**（视为存活）：异常在这个上下文里恰好等于"还在跑"；
+     * 真死了的话 `send` 会失败并由池如实报错，不会静默卡住。
+     */
     override val isAlive: Boolean
-        get() = process?.isAlive == true
+        get() = runCatching { process?.isAlive == true }.getOrDefault(true)
 
     override suspend fun start(): Boolean {
         if (process != null) return isAlive
@@ -91,18 +103,23 @@ abstract class ProcessBackendBase(
                         if (n > 0) channel.send(String(buf, 0, n))
                     }
                 } catch (t: Throwable) {
+                    // 取消不是异常：readerJob 被 cancel 时也会走到这里，别把取消记成"读取异常"
+                    if (t is kotlinx.coroutines.CancellationException) throw t
                     AgentLogger.w(TAG, "读取 $backendKey 输出异常：${t.message}")
                 } finally {
                     channel.close()
+                    // 输出流关闭 ≈ 进程结束。这是 `exitValue()` 不可用时**唯一**可靠的退出信号
+                    // （Shizuku 代理就属于这种），少了它，会话永远不会被判定为已退出。
+                    if (!exit.isCompleted) exit.complete(-1)
                 }
             }
             waiterJob = scope.launch {
                 // 用轮询而不是 waitFor(timeout)：Shizuku 的远端 Process 代理对定时 waitFor
-                // 会立刻抛异常（W-36 真机日志：echo hello 6ms 报 timeout）。exitValue 轮询
-                // 对所有 Process 实现都成立。
-                val code = awaitExitCode(p)
-                if (!exit.isCompleted) exit.complete(code)
-                channel.close()
+                // 会立刻抛异常（W-36 真机日志：echo hello 6ms 报 timeout）。
+                // 拿不到退出码时返回 null —— **不能**用 -1 顶替，那会被池当成「进程已退出」，
+                // 把仍然可用的会话判死（见 awaitExitCode 的注释）。
+                val code = runCatching { awaitExitCode(p) }.getOrNull()
+                if (code != null && !exit.isCompleted) exit.complete(code)
             }
             true
         }.getOrElse { e ->
@@ -117,7 +134,7 @@ abstract class ProcessBackendBase(
 
     override suspend fun send(input: String): Boolean {
         val p = process ?: return false
-        if (!p.isAlive) return false
+        if (!isAlive) return false
         return runCatching {
             p.outputStream.write(input.toByteArray(Charsets.UTF_8))
             p.outputStream.flush()
@@ -151,12 +168,42 @@ abstract class ProcessBackendBase(
 
     override suspend fun awaitExit(): Int = exit.await()
 
-    /** 阻塞直到进程结束（在 IO 协程里跑），带异常保护。 */
-    private suspend fun awaitExitCode(p: Process): Int {
+    /**
+     * 轮询退出码。
+     *
+     * @return 真实退出码；**null = 这条通道拿不到退出码**（此时由 reader 的 EOF 兜底）
+     *
+     * ## 为什么不能笼统地「异常就当失败」
+     *
+     * `exitValue()` 在"进程还在跑"时必然抛异常，但抛的类型因实现而异：
+     *
+     * | 实现 | 抛什么 |
+     * |---|---|
+     * | 标准 `java.lang.Process` | `IllegalThreadStateException` |
+     * | Shizuku 远端代理 | `IllegalArgumentException: process hasn't exited`（经 Parcel 回来） |
+     *
+     * 老代码 `ShizukuShell.exec` 只把前者当"还在跑"、其余当"通道异常"直接放弃——
+     * 对一次性执行没问题，对**持久会话**就不行：放弃等于会话立刻判死。
+     * 所以这里把两种都当"还在跑"，只有真正拿到退出码或确认拿不到时才收工。
+     *
+     * 另外原来的 `if (!p.isAlive && ...)` 是**裸调** `isAlive`——Shizuku 代理在那里会抛，
+     * 而本函数跑在 `scope.launch` 里，异常没人接，直接崩进程（真机复现过 2 次）。
+     */
+    private suspend fun awaitExitCode(p: Process): Int? {
         while (true) {
-            val code = runCatching { p.exitValue() }
-            if (code.isSuccess) return code.getOrDefault(-1)
-            if (!p.isAlive && runCatching { p.exitValue() }.isFailure) return -1
+            val r = runCatching { p.exitValue() }
+            r.getOrNull()?.let { return it }
+            val e = r.exceptionOrNull()
+            val stillRunning = e is IllegalThreadStateException ||
+                (e is IllegalArgumentException && e.message?.contains("hasn't exited") == true)
+            if (!stillRunning) {
+                AgentLogger.w(
+                    TAG,
+                    "取退出码不可用（${e?.javaClass?.simpleName}: ${e?.message}），改由输出流关闭判定退出"
+                )
+                return null
+            }
+            if (exit.isCompleted) return null // reader 已收工（EOF），不必再轮询
             kotlinx.coroutines.delay(EXIT_POLL_MS)
         }
     }

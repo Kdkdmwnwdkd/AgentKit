@@ -226,8 +226,18 @@ fun CapabilityResolution.logTrace() {
         )
     }
     when (this) {
-        is CapabilityResolution.Selected ->
-            AgentLogger.i(TAG, "[${capability.wire}] 选中「${backend.label}」（降级 ${trace.size} 级）")
+        is CapabilityResolution.Selected -> {
+            // W-61：原来是 `降级 ${trace.size} 级`——**off by one**。trace 从首候选一直列到
+            // 选中项，选中首选时 trace.size 已经是 1，于是日志写成「降级 1 级」；选中第 2 档
+            // 写成「降级 2 级」。真机日志里 [run_shell] 明明命中的是首选 Shizuku，却显示
+            // 「降级 1 级」，读日志时会被误导成「有更优候选但没选它」。
+            val degraded = (trace.size - 1).coerceAtLeast(0)
+            AgentLogger.i(
+                TAG,
+                "[${capability.wire}] 选中「${backend.label}」（" +
+                    (if (degraded == 0) "首选" else "降级 $degraded 级") + "）"
+            )
+        }
         is CapabilityResolution.Unavailable ->
             AgentLogger.w(TAG, "[${capability.wire}] 全链不可用：$message")
     }
