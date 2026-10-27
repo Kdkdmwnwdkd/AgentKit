@@ -637,8 +637,8 @@ private fun ModelHeroCard(vm: ChatViewModel, onNavigate: (AppDest) -> Unit) {
     val profiles by vm.profiles.collectAsStateWithLifecycle()
     val activeId by vm.activeProfileId.collectAsStateWithLifecycle()
     val active = profiles.firstOrNull { it.id == activeId }
-    val modelName = active?.config?.model?.takeIf { it.isNotBlank() }
-        ?: active?.name?.takeIf { it.isNotBlank() }
+    val profileName = active?.name?.takeIf { it.isNotBlank() }
+    val modelName = active?.config?.model?.takeIf { it.isNotBlank() } ?: profileName
 
     Surface(
         shape = RoundedCornerShape(22.dp),
@@ -670,10 +670,10 @@ private fun ModelHeroCard(vm: ChatViewModel, onNavigate: (AppDest) -> Unit) {
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
-            if (modelName != null && active?.name?.isNotBlank() == true && active.name != modelName) {
+            if (modelName != null && profileName != null && profileName != modelName) {
                 Spacer(Modifier.height(2.dp))
                 Text(
-                    text = active.name,
+                    text = profileName,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.72f)
                 )
