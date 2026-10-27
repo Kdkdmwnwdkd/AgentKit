@@ -207,7 +207,7 @@ fun SettingsScreen(
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                     AkDivider(Modifier.padding(start = AgentSpacing.space4))
                     AkListItem(
-                        icon = null,
+                        icon = Icons.Outlined.Palette,
                         title = "动态取色",
                         description = if (dynamicColor) {
                             "已开启：界面跟随系统壁纸取色（Android 12+）"
@@ -231,11 +231,11 @@ fun SettingsScreen(
 
             // —— 功能五（P1-10）：提醒 ——
             AkGroup(
-                title = "提醒",
+                title = "通知",
                 description = "回答生成完毕时通知；仅 App 在后台时发送"
             ) {
                 AkListItem(
-                    icon = null,
+                    icon = Icons.Outlined.Notifications,
                     title = "回答完成提醒",
                     description = if (completionNotify) {
                         "已开启：回答完成且 App 在后台时发通知"
@@ -268,11 +268,11 @@ fun SettingsScreen(
 
             // —— 自动化：总开关（与控制台同一开关，这里也留一份；权限中心入口留在这张卡里）——
             AkGroup(
-                title = "自动化",
-                description = "关闭后所有手机操作类工具立即失效"
+                title = "设备能力",
+                description = "关掉后 Agent 只能对话，不能操作手机"
             ) {
                 AkListItem(
-                    icon = null,
+                    icon = Icons.Outlined.Bolt,
                     title = "自动化总开关",
                     description = if (enabled) "已开启，Agent 可操作手机" else "已关闭，Agent 只能对话",
                     trailing = {
@@ -285,7 +285,7 @@ fun SettingsScreen(
                 AkDivider(Modifier.padding(start = AgentSpacing.space4))
                 // 权限中心入口：保留在自动化组内（与管理组不重复——同一页面不放两个相同入口）
                 AkListItem(
-                    icon = null,
+                    icon = Icons.Outlined.Shield,
                     title = "权限中心",
                     description = "无障碍服务、通知与使用情况三项授予状态",
                     onClick = { onNavigate(AppDest.PERMISSIONS) }
@@ -294,7 +294,7 @@ fun SettingsScreen(
                 // 存活自检：给没有电脑、拉不了 adb 的用户一个自测入口。
                 // 判据写在通知里——锁屏回来数字还在涨就是没被冻结。
                 AkListItem(
-                    icon = null,
+                    icon = Icons.Outlined.Refresh,
                     title = "后台存活自检",
                     description = "锁屏 5 分钟，通知里的秒数还在涨说明任务不会被冻结",
                     onClick = {
@@ -313,60 +313,60 @@ fun SettingsScreen(
 
             // —— 工具与创作：从抽屉搬来的常用工具（用户反馈侧边栏拥挤，参照 RikkaHub 收纳）——
             AkGroup(
-                title = "工具与创作",
-                description = "模型、容器、编辑器与创作工坊等常用工具"
+                title = "工具",
+                description = "日常用的入口都在这里"
             ) {
                 AkListItem(
-                    icon = null,
+                    icon = Icons.Outlined.Cloud,
                     title = "模型配置",
                     description = "接口地址、API Key、模型名与系统提示词",
                     onClick = { onNavigate(AppDest.MODEL) }
                 )
                 AkDivider(Modifier.padding(start = AgentSpacing.space4))
                 AkListItem(
-                    icon = null,
+                    icon = Icons.Outlined.Apps,
                     title = "容器",
                     description = "Termux 容器会话与命令执行状态",
                     onClick = { onNavigate(AppDest.CONTAINER) }
                 )
                 AkDivider(Modifier.padding(start = AgentSpacing.space4))
                 AkListItem(
-                    icon = null,
+                    icon = Icons.Outlined.Edit,
                     title = "编辑器",
                     description = "查看与修改工作区内的代码文件",
                     onClick = { onNavigate(AppDest.EDITOR) }
                 )
                 AkDivider(Modifier.padding(start = AgentSpacing.space4))
                 AkListItem(
-                    icon = null,
+                    icon = Icons.Outlined.AutoAwesome,
                     title = "提示词库",
                     description = "输入栏闪电按钮唤起的快捷指令，可新建与编辑",
                     onClick = { onNavigate(AppDest.PROMPTS) }
                 )
                 AkDivider(Modifier.padding(start = AgentSpacing.space4))
                 AkListItem(
-                    icon = null,
+                    icon = Icons.Outlined.Bookmark,
                     title = "收藏",
                     description = "对话里收藏的消息；删会话也不丢",
                     onClick = { onNavigate(AppDest.BOOKMARKS) }
                 )
                 AkDivider(Modifier.padding(start = AgentSpacing.space4))
                 AkListItem(
-                    icon = null,
+                    icon = Icons.Outlined.Extension,
                     title = "MCP",
                     description = "管理外部 MCP 服务器与工具接入",
                     onClick = { onNavigate(AppDest.MCP) }
                 )
                 AkDivider(Modifier.padding(start = AgentSpacing.space4))
                 AkListItem(
-                    icon = null,
+                    icon = Icons.Outlined.Image,
                     title = "创作工坊",
                     description = "生图、视频等多模态创作与结果管理",
                     onClick = { onNavigate(AppDest.MEDIA) }
                 )
                 AkDivider(Modifier.padding(start = AgentSpacing.space4))
                 AkListItem(
-                    icon = null,
+                    icon = Icons.Outlined.Build,
                     title = "构建",
                     description = "推源码到 GitHub、CI 构建并装回本机",
                     onClick = { onNavigate(AppDest.BUILD) }
@@ -376,11 +376,11 @@ fun SettingsScreen(
             // —— 任务模式（W-25）：先计划后执行 / 自动执行 ——
             val planMode by vm.planMode.collectAsStateWithLifecycle()
             AkGroup(
-                title = "任务模式",
+                title = "任务执行",
                 description = "「先计划后执行」多步任务先列计划，批准后才动手；「自动执行」直接做"
             ) {
                 AkListItem(
-                    icon = null,
+                    icon = Icons.Outlined.AccountTree,
                     title = if (planMode) "先计划后执行（PLAN）" else "自动执行（AUTO）",
                     description = if (planMode) {
                         "3 步以上任务会先弹计划卡片等你批准；被拒绝可按你的意见重规划"
@@ -400,11 +400,11 @@ fun SettingsScreen(
             val taskProfileId by vm.taskProfileId.collectAsStateWithLifecycle()
             val profiles by vm.profiles.collectAsStateWithLifecycle()
             AkGroup(
-                title = "任务模型",
+                title = "轻量任务模型",
                 description = "标题生成等轻量任务用哪个模型，默认跟随主配置"
             ) {
                 AkListItem(
-                    icon = null,
+                    icon = Icons.Outlined.Cloud,
                     title = "跟随主配置",
                     description = "与当前聊天模型相同（默认）",
                     selected = taskProfileId.isBlank(),
@@ -422,37 +422,39 @@ fun SettingsScreen(
                 }
             }
 
-            // —— 备用 Key（W-21）：主 Key 被限流时自动换下一把，不再直接断流 ——
-            BackupKeySection(vm)
+            // —— W-64：备用 Key 不再占首页 ——
+            // 用户的原话：「本来我都有这个模型，我不都停在那个主要那里了吗，我换一个模型
+            // 不就行了，我为什么要搞一个副的」。判断成立：同一模型换 key 不如直接换模型直观。
+            // BackupKeySection 保留在文件里（KeyPool 仍在工作），只是不再从首页进入。
 
             // —— 管理与数据：出事时才用的排查型页面 + 关于（同样从抽屉搬来）——
             AkGroup(
-                title = "管理与数据",
+                title = "数据与关于",
                 description = "技能、日志、记忆与版本信息"
             ) {
                 AkListItem(
-                    icon = null,
+                    icon = Icons.Outlined.Extension,
                     title = "技能中心",
-                    description = "已安装技能的启停、导入与信任等级",
+                    description = "启停、导入与信任等级",
                     onClick = { onNavigate(AppDest.SKILLS) }
                 )
                 AkDivider(Modifier.padding(start = AgentSpacing.space4))
                 AkListItem(
-                    icon = null,
+                    icon = Icons.Outlined.Description,
                     title = "运行日志",
                     description = "LLM 请求、工具调用与错误记录",
                     onClick = { onNavigate(AppDest.LOGS) }
                 )
                 AkDivider(Modifier.padding(start = AgentSpacing.space4))
                 AkListItem(
-                    icon = null,
+                    icon = Icons.Outlined.Folder,
                     title = "记忆库",
-                    description = "Agent 的跨会话长期记忆，图谱式浏览",
+                    description = "跨会话长期记忆",
                     onClick = { onNavigate(AppDest.MEMORY) }
                 )
                 AkDivider(Modifier.padding(start = AgentSpacing.space4))
                 AkListItem(
-                    icon = null,
+                    icon = Icons.Outlined.Info,
                     title = "关于",
                     description = "版本、设计规范与开源许可",
                     onClick = { onNavigate(AppDest.ABOUT) }
@@ -463,11 +465,11 @@ fun SettingsScreen(
             // 引导只自动出现一次（权限引导 + 聚光灯各一个标记），跳过的人事后得能找回来，
             // 否则「跳过」等于「永远错过」。
             AkGroup(
-                title = "引导",
+                title = "帮助",
                 description = "第一次怎么用、每项权限能多做什么，随时可重看"
             ) {
                 AkListItem(
-                    icon = null,
+                    icon = Icons.Outlined.Refresh,
                     title = "重看上手引导",
                     description = "回到对话页，重新指出输入框、发送键与抽屉的位置",
                     onClick = {
@@ -481,7 +483,7 @@ fun SettingsScreen(
                 )
                 AkDivider(Modifier.padding(start = AgentSpacing.space4))
                 AkListItem(
-                    icon = null,
+                    icon = Icons.Outlined.Security,
                     title = "权限引导",
                     description = "五项设备能力逐项开启，说明「开了能做什么、不开会缺什么」",
                     onClick = { onNavigate(AppDest.PERMISSION_GUIDE) }
@@ -495,14 +497,14 @@ fun SettingsScreen(
                     "不含 GitHub PAT。恢复会覆盖当前数据。"
             ) {
                 AkListItem(
-                    icon = null,
+                    icon = Icons.Outlined.Save,
                     title = "导出备份",
                     description = "选择保存位置，生成 ZIP 备份文件",
                     onClick = { exportLauncher.launch("agentkit-backup.zip") }
                 )
                 AkDivider(Modifier.padding(start = AgentSpacing.space4))
                 AkListItem(
-                    icon = null,
+                    icon = Icons.Outlined.Folder,
                     title = "恢复备份",
                     description = "从 ZIP 备份文件恢复，覆盖当前全部数据",
                     onClick = { confirmRestore = true }
