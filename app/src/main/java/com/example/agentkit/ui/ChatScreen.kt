@@ -1613,7 +1613,7 @@ private fun OnboardingDialog(
                     )
                     Spacer(Modifier.height(AgentSpacing.space1))
                     Text(
-                        text = "AgentKit 要接一个大模型才能思考。配好就能用。",
+                        text = "北辰要接一个大模型才能思考。配好就能用。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
