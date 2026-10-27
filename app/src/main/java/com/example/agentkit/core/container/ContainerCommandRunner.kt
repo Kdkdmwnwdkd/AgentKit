@@ -105,6 +105,23 @@ object ContainerCommandRunner {
     private val registryLock = ReentrantLock()
 
     /**
+     * 该发行版是否有命令在飞；有则返回到现在已经跑了多少毫秒。
+     *
+     * 存在的理由（2026-10-27 真机 13:56）：装 Java 的 proot 正在跑，用户点进容器终端，
+     * 于是同时有两个 proot。系统内存吃紧触发 LMK，**pty 会话 2 秒后就被 SIGKILL**
+     * （日志 `终端会话已主动结束（code=137）`）。用户在终端里看到的是一闪而过的黑屏。
+     *
+     * 调用方（容器页）用它把「进终端」这一步挡住并说明原因，而不是让用户
+     * 一边装一边进、然后撞上 137。
+     */
+    fun busyFor(distroId: String): Long? = registryLock.withLock {
+        val prefix = "$distroId\u0000"
+        inFlight.entries.firstOrNull { it.key.startsWith(prefix) }?.let {
+            System.currentTimeMillis() - it.value
+        }
+    }
+
+    /**
      * 在容器中执行一条命令并等待结束。
      *
      * @param context 应用上下文
