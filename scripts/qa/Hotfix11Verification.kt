@@ -986,11 +986,15 @@ private fun testAppearanceEnhancements() {
         // 注释即契约：语义色（暖纸品牌色）不跟随壁纸取色
         assertContains("V1", theme, "语义色（LocalAgentKitColors 的暖纸 surface-1/2 等品牌色）")
     }
-    check("V2 根组合：dynamicColor 由 Activity 作用域 rememberSaveable 持有并下发") {
+    check("V2 根组合：外观偏好由 Activity 作用域持有并下发（W-64 起落盘）") {
+        // W-64：明暗 / 取色 / 强调色三项统一交给 AppearanceState 持有并写盘。
+        // 原来用 rememberSaveable 局部变量，进程一死就回默认——自定义强调色等于白设。
+        // 断言查的是「状态在 Activity 作用域、且真的下发到主题与设置页」，不是变量名。
         val main = readSource("MainActivity.kt")
-        assertContains("V2", main, "var dynamicColor by rememberSaveable { mutableStateOf(false) }")
-        assertContains("V2", main, "AgentKitTheme(themeMode = themeMode, dynamicColor = dynamicColor)")
-        assertContains("V2", main, "onDynamicColorChange = { dynamicColor = it }")
+        assertContains("V2", main, "AppearanceState.load(")
+        assertContains("V2", main, "val dynamicColor = AppearanceState.dynamicColor")
+        assertContains("V2", main, "accent = accent")
+        assertContains("V2", main, "onDynamicColorChange = { AppearanceState.setDynamicColor(ctx, it) }")
     }
     check("V3 前台判定：Application ActivityLifecycleCallbacks started/stopped 计数") {
         assertContains("V3", activity, "registerActivityLifecycleCallbacks")
