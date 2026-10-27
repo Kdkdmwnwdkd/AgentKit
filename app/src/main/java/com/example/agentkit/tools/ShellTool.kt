@@ -261,23 +261,28 @@ class ShellRunTool(
 
         val handle: String
         var openedNew = false
-        if (!sessionArg.isNullOrBlank()) {
-            if (!sessionArg.matches(TERMINAL_HANDLE_REGEX)) {
-                return ToolResult.fail(
-                    code = "bad_handle",
-                    message = "会话句柄「$sessionArg」格式非法。",
-                    hint = "句柄恒为 4 位十六进制（如 1a2f）。不要自造句柄——不带 session 调用一次即可获得。"
-                )
-            }
-            if (pool.lookup(sessionArg) == null) {
-                return ToolResult.fail(
-                    code = "no_such_session",
-                    message = "会话句柄「$sessionArg」不存在。",
-                    hint = "会话可能已关闭或被回收；不带 session 重新调用一次以开辟新会话。"
-                )
-            }
-            handle = sessionArg
+        /** 传进来的句柄格式合法但已失效时，记下来在返回里说清楚（不静默替换）。 */
+        var staleHandle: String? = null
+        val arg = sessionArg?.takeIf { it.isNotBlank() }
+        if (arg != null && !arg.matches(TERMINAL_HANDLE_REGEX)) {
+            return ToolResult.fail(
+                code = "bad_handle",
+                message = "会话句柄「$arg」格式非法。",
+                hint = "句柄恒为 4 位十六进制（如 1a2f）。不要自造句柄——不带 session 调用一次即可获得。"
+            )
+        }
+        if (arg != null && pool.lookup(arg) != null) {
+            handle = arg
         } else {
+            // W-63：句柄失效不再直接失败。
+            //
+            // 真机 15:16：App 重启后模型沿用了历史对话里的「b69f」，工具报 no_such_session，
+            // 整轮白跑——用户只看到一张红色失败卡片，还得再发一次。语义上「句柄没了」
+            // 就是「没有会话」，用户要的是把命令跑起来，不是先看一条错误。
+            //
+            // 但**必须说出来**：新会话的 cwd 是默认目录，原来 `cd` 过的位置没了。
+            // 静默替换会让模型以为还在老目录里，后续命令全跑偏（比直接失败更难查）。
+            if (arg != null) staleHandle = arg
             val opened = pool.open(
                 identity = declaredIdentity ?: TerminalIdentity.User,
                 alias = null,
@@ -310,6 +315,10 @@ class ShellRunTool(
             info?.let { append("（身份 ").append(it.identity.wire).append("，池 ").append(it.backendKey).append("）") }
             append(" 退出码 ").append(result.exitCode)
             if (openedNew) append("，已开辟新会话")
+            staleHandle?.let {
+                append("（原句柄 ").append(it)
+                    .append(" 已失效——App 重启或会话被回收，工作目录已重置为默认）")
+            }
             if (result.truncated) append("，输出已截断")
         }
         // 权限拒绝显式化（真机 2026-10-15 19:04 实证：`settings put system font_scale 2.0`
