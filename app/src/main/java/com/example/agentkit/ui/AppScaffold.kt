@@ -1238,7 +1238,7 @@ private fun DrawerHeader(
         Spacer(Modifier.width(AgentSpacing.space3))
         Column {
             Text(
-                text = "AgentKit",
+                text = "北辰",
                 style = MaterialTheme.typography.titleLarge,
                 color = MaterialTheme.colorScheme.onSurface
             )
