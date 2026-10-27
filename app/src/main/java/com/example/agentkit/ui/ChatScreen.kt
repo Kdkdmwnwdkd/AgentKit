@@ -21,6 +21,7 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -108,6 +109,7 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.SolidColor
@@ -2228,7 +2230,8 @@ private fun MessageRow(item: UiItem, streaming: Boolean) {
 /**
  * 消息气泡 + 角色头像（§6.2）。
  *
- * 用户：右对齐，primary 底 + on-primary 文字，右上 4dp 尾角；28dp 头像 surface-1 + 人形图标。
+ * 用户：右对齐，淡主题色渐变底（[userBubbleColors]）+ 0.5dp 玻璃描边，右上 4dp 尾角；
+ *   28dp 头像 surface-1 + 人形图标。W-65 之前是 primary 实色块，一整屏翻下来像几块深色补丁。
  * AI：左对齐，白底 + on-surface 文字，左上 4dp 尾角；28dp 头像 primary-container + 星点图标。
  */
 @Composable
@@ -2260,10 +2263,26 @@ private fun MessageBubble(
         } else {
             RoundedCornerShape(topStart = 4.dp, topEnd = 18.dp, bottomEnd = 18.dp, bottomStart = 18.dp)
         }
+        // W-65：自己的话改成「淡主题色渐变 + 玻璃描边」——面状填充仍是 Surface 的 shape，
+        // 渐变和描边画在 Surface 之前，透明底不会盖住它们。
+        val meColors = userBubbleColors(MaterialTheme.colorScheme)
         Surface(
-            color = if (isUser) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surface,
+            color = if (isUser) Color.Transparent else MaterialTheme.colorScheme.surface,
             shape = shape,
-            modifier = Modifier.widthIn(max = maxWidth)
+            modifier = Modifier
+                .widthIn(max = maxWidth)
+                .then(
+                    if (isUser) {
+                        Modifier
+                            .background(
+                                Brush.linearGradient(listOf(meColors.start, meColors.end)),
+                                shape
+                            )
+                            .border(0.5.dp, meColors.stroke, shape)
+                    } else {
+                        Modifier
+                    }
+                )
         ) {
             SelectionContainer {
                 when {
@@ -2271,7 +2290,7 @@ private fun MessageBubble(
                     isUser -> Text(
                         text = text,
                         style = MaterialTheme.typography.bodyLarge,
-                        color = MaterialTheme.colorScheme.onPrimary,
+                        color = meColors.text,
                         modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)
                     )
                     // 助手气泡：Markdown 渲染；流式时末尾带光标（流式全 App 唯一循环动画，§6.2）
