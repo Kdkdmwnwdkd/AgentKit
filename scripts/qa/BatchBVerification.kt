@@ -453,10 +453,22 @@ fun main() {
 
     check("B4-14 容器页安装按钮有运行态防重入（不能只靠底层串行）") {
         val screen = read("app/src/main/java/com/example/agentkit/ui/ContainerScreen.kt")
-        assertTrue("应有 installing 运行态", "var installing by remember" in screen)
-        assertTrue("按钮应据此禁用", "enabled = installing == null" in screen)
-        assertTrue("结果应内联常驻（Toast 会截断错误尾行）", "InstallReport" in screen)
-        assertTrue("进行中应显示秒数（15 分钟无反馈会被当成卡死）", "installElapsed" in screen)
+        // W-62：运行态不能再是页面 remember 的局部变量。真机 13:55 的教训——
+        // 用户切页后组合销毁、`installing` 归 null，但 ContainerCommandRunner 的阻塞
+        // 调用不吃取消，proot 仍在跑；按钮"复活"成可点，点了被 EXIT_BUSY 拒，
+        // 20 秒内连拒 6 次，用户以为按钮坏了。
+        assertTrue(
+            "运行态必须来自应用级持有者（ContainerInstallController）",
+            "ContainerInstallController.running" in screen
+        )
+        assertTrue("按钮应据此禁用", "enabled = installCmd != null && running == null" in screen)
+        assertTrue("结果应内联常驻（Toast 会截断错误尾行）", "installReport" in screen)
+        assertTrue("进行中应显示秒数（15 分钟无反馈会被当成卡死）", "elapsedSeconds" in screen)
+        // 防回归：不允许安装任务再跑在页面作用域里
+        assertTrue(
+            "安装任务不能跑在 rememberCoroutineScope 里（切页即取消，proot 仍在跑）",
+            "installing = allKey" !in screen
+        )
     }
 
     check("B4-15 执行器必须并发抽干输出（否则管道写满，父子互等到超时）") {
