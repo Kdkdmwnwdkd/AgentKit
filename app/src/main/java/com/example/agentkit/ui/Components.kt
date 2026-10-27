@@ -55,6 +55,7 @@ import androidx.compose.ui.draw.scale
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -428,6 +429,33 @@ private fun AkButtonImpl(
     }
 }
 
+// ———————————————————— W-64：毛玻璃材质 ————————————————————
+
+/**
+ * 磨砂玻璃卡片的填充色。
+ *
+ * 浅色：白 88%（底是暖白，半透明白会微微透出底色，形成"雾面"而不是纯白板）。
+ * 深色：白 6%（几乎只有一层薄雾，靠下面的光晕透上来）。
+ *
+ * 不用 `Modifier.blur()`：它需要 API 31+，且会连文字一起糊。这里用「半透明 + 亮边 +
+ * 内侧高光」三件套——iOS 的 grouped list 也是这么做的，纯色底上一样成立。
+ */
+@Composable
+private fun glassFill(): Color {
+    val surface = MaterialTheme.colorScheme.surface
+    return if (surface.luminance() < 0.5f) Color.White.copy(alpha = 0.06f)
+    else surface.copy(alpha = 0.88f)
+}
+
+/** 玻璃边缘：深色下是白色 12% 的反光，浅色下是一道极淡的描边。 */
+@Composable
+private fun glassBorder(): BorderStroke {
+    val dark = MaterialTheme.colorScheme.surface.luminance() < 0.5f
+    val color = if (dark) Color.White.copy(alpha = 0.12f)
+    else MaterialTheme.colorScheme.outline.copy(alpha = 0.55f)
+    return BorderStroke(1.dp, color)
+}
+
 // ———————————————————— 卡片与列表（§6.1：白卡 20dp + 1dp 分隔线缩进 16dp） ————————————————————
 
 /** 白色分组卡：radius 20dp、0 阴影 0 描边，靠底色差分层（§5.3）。 */
@@ -439,7 +467,8 @@ fun AkGroupCard(
     Surface(
         modifier = modifier.fillMaxWidth(),
         shape = RoundedCornerShape(20.dp),
-        color = MaterialTheme.colorScheme.surface
+        color = glassFill(),
+        border = glassBorder()
     ) {
         Column(content = content)
     }
@@ -590,7 +619,8 @@ fun AkGroup(
         Surface(
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(16.dp),
-            color = MaterialTheme.colorScheme.surface
+            color = glassFill(),
+            border = glassBorder()
         ) {
             Column(
                 if (paddedContent) Modifier.padding(AgentSpacing.space4)

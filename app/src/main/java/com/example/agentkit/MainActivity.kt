@@ -8,11 +8,14 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.agentkit.browser.BrowserHost
 import com.example.agentkit.ui.AgentKitTheme
+import com.example.agentkit.ui.AppearanceState
 import com.example.agentkit.ui.AppScaffold
 import com.example.agentkit.ui.ChatViewModel
 import com.example.agentkit.ui.ThemeMode
@@ -70,8 +73,13 @@ private fun AgentKitApp(
     pendingWorkflowId: String? = null,
     onWorkflowConsumed: () -> Unit = {}
 ) {
-    var themeMode by rememberSaveable { mutableStateOf(ThemeMode.SYSTEM) }
-    var dynamicColor by rememberSaveable { mutableStateOf(false) }
+    // W-64：外观偏好落盘后由 AppearanceState 统一持有。
+    // 这里只在首次组合时读一次盘；之后改值走 setXxx（内部会写盘并触发重组）。
+    val ctx = LocalContext.current
+    remember { AppearanceState.load(ctx.applicationContext); true }
+    val themeMode = AppearanceState.themeMode
+    val dynamicColor = AppearanceState.dynamicColor
+    val accent = AppearanceState.accent
     val vm = viewModel<ChatViewModel>()
     // W-17：点通知进入 → 自动把该任务的 prompt 作为一次对话发送
     LaunchedEffect(pendingWorkflowId) {
@@ -80,13 +88,13 @@ private fun AgentKitApp(
             onWorkflowConsumed()
         }
     }
-    AgentKitTheme(themeMode = themeMode, dynamicColor = dynamicColor) {
+    AgentKitTheme(themeMode = themeMode, dynamicColor = dynamicColor, accent = accent) {
         AppScaffold(
             vm = vm,
             themeMode = themeMode,
-            onThemeModeChange = { themeMode = it },
+            onThemeModeChange = { AppearanceState.setThemeMode(ctx, it) },
             dynamicColor = dynamicColor,
-            onDynamicColorChange = { dynamicColor = it }
+            onDynamicColorChange = { AppearanceState.setDynamicColor(ctx, it) }
         )
     }
 }

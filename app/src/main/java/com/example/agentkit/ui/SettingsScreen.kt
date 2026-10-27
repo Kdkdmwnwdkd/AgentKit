@@ -8,6 +8,14 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.size
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -189,6 +197,11 @@ fun SettingsScreen(
                         onClick = { onThemeModeChange(ThemeMode.DARK) }
                     )
                 }
+                // W-64：强调色（预设 + 自定义）。放在主题三选下面，因为它们回答的是
+                // 同一件事——「界面长什么样」，分开放用户要翻两次。
+                AkDivider(Modifier.padding(start = AgentSpacing.space4))
+                AccentPicker()
+
                 // 功能五（P1-10）：Material You 动态取色——Android 12+ 专属，
                 // 低版本不摆开关（没有系统能力）；与主题三选同纪律：进程内有效不落盘
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -513,6 +526,94 @@ fun SettingsScreen(
     }
 }
 
+/**
+ * 强调色选择（W-64）：五个预设 + 一个自定义。
+ *
+ * 为什么不做色轮：色轮在手机上要占掉一整屏，且用户真正想要的是「接近某个色」，
+ * 而不是调 HSV 三个滑杆。给几个调好的预设 + 一个 HEX 输入，够用且不啰嗦。
+ *
+ * 选中态用「外圈 + 对勾」而不是只放大：色块本身有深浅，只靠尺寸在小屏上分辨不出来。
+ */
+@Composable
+private fun AccentPicker() {
+    val ctx = LocalContext.current
+    val currentHex = AppearanceState.accentHex
+    var custom by remember(currentHex) { mutableStateOf(currentHex ?: "") }
+
+    Column(Modifier.padding(horizontal = AgentSpacing.space4)) {
+        Row(horizontalArrangement = Arrangement.spacedBy(AgentSpacing.space3)) {
+            AccentPreset.entries.forEach { preset ->
+                val hex = preset.color(false).toHexString()
+                val selected = currentHex.equals(hex, ignoreCase = true)
+                Box(
+                    Modifier
+                        .size(34.dp)
+                        .clip(CircleShape)
+                        .background(preset.color(false))
+                        .border(
+                            width = if (selected) 2.dp else 1.dp,
+                            color = if (selected) MaterialTheme.colorScheme.onSurface
+                            else MaterialTheme.colorScheme.outline.copy(alpha = 0.5f),
+                            shape = CircleShape
+                        )
+                        .clickable { AppearanceState.setAccent(ctx, hex) }
+                )
+            }
+            // 「恢复默认」：不选预设也不选自定义就是品牌色
+            Box(
+                Modifier
+                    .size(34.dp)
+                    .clip(CircleShape)
+                    .border(
+                        width = 1.dp,
+                        color = MaterialTheme.colorScheme.outline,
+                        shape = CircleShape
+                    )
+                    .clickable { AppearanceState.setAccent(ctx, null) },
+                contentAlignment = androidx.compose.ui.Alignment.Center
+            ) {
+                Text(
+                    text = "默认",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+        Spacer(Modifier.height(AgentSpacing.space3))
+        Row(
+            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(AgentSpacing.space2)
+        ) {
+            AkTextField(
+                value = custom,
+                onValueChange = { custom = it.take(9) },
+                label = "自定义颜色",
+                placeholder = "#B7862B",
+                modifier = Modifier.weight(1f),
+                machine = true
+            )
+            AkTextButton(
+                text = "应用",
+                onClick = {
+                    val parsed = parseAccentHex(custom)
+                    if (parsed == null) {
+                        Toast.makeText(ctx, "颜色格式是 #RRGGBB，比如 #B7862B", Toast.LENGTH_SHORT).show()
+                    } else {
+                        AppearanceState.setAccent(ctx, custom)
+                    }
+                }
+            )
+        }
+        Text(
+            text = if (currentHex == null) "当前：默认品牌色"
+            else "当前：$currentHex（只改强调色，背景与文字不动）",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = AgentSpacing.space2)
+        )
+    }
+}
+
 /** 主题三选 chip（§6.7 筛选 chip 语汇：选中 primary@12% + on-primary-container）。 */
 /**
  * 备用 Key 管理（W-21）：一个 Key 被限流就自动换下一把。
@@ -600,8 +701,19 @@ private fun BackupKeySection(vm: ChatViewModel) {
             AkTextButton(
                 text = "添加备用 Key",
                 icon = Icons.Outlined.Add,
-                enabled = input.isNotBlank(),
+                // 原来 enabled = input.isNotBlank()：没填 Key 时按钮是灰的、点下去毫无反应。
+                // 真机反馈「这个功能都没用」——用户分不清是「还没填」还是「功能坏了」。
+                // 现在按钮常亮，点了再告诉他缺什么：禁用态不该是唯一的解释渠道。
+                enabled = true,
                 onClick = {
+                    if (input.isBlank()) {
+                        Toast.makeText(
+                            ctx,
+                            "先把 API Key 填进上面的框（sk- 开头那串），再点添加",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                        return@AkTextButton
+                    }
                     vm.addBackupKey(input, label)
                     input = ""
                     label = ""
