@@ -17,20 +17,20 @@ import androidx.compose.ui.graphics.luminance
  */
 
 // —— Light（主设计套）§3.2 ——
-private val LightBg = Color(0xFFF8EFE9)
+private val LightBg = Color(0xFFF4F6F9)
 private val LightSurface = Color(0xFFFFFFFF)
-private val LightSurface1 = Color(0xFFF4E9E2)
-private val LightSurface2 = Color(0xFFEFE2D9)
-private val LightSurfaceVar = Color(0xFFF6EDE7)
-private val LightOnSurface = Color(0xFF2E2620)
-private val LightOnSurfaceVar = Color(0xFF6B5B4E)
-private val LightOnSurfaceTer = Color(0xFF756450)
-private val LightOutline = Color(0xFFE5D6CC)
-private val LightOutlineStrong = Color(0xFF8A7563)
-private val LightPrimary = Color(0xFF0E5D6B)
+private val LightSurface1 = Color(0xFFEEF1F6)
+private val LightSurface2 = Color(0xFFE6EAF2)
+private val LightSurfaceVar = Color(0xFFF0F3F8)
+private val LightOnSurface = Color(0xFF16202E)
+private val LightOnSurfaceVar = Color(0xFF5A6472)
+private val LightOnSurfaceTer = Color(0xFF6E7889)
+private val LightOutline = Color(0xFFE2E6EE)
+private val LightOutlineStrong = Color(0xFF7A8496)
+private val LightPrimary = Color(0xFF22406B)
 private val LightOnPrimary = Color(0xFFFFFFFF)
-private val LightPrimaryContainer = Color(0xFFD2E7E9)
-private val LightOnPrimaryContainer = Color(0xFF093F49)
+private val LightPrimaryContainer = Color(0xFFE2EAF6)
+private val LightOnPrimaryContainer = Color(0xFF16304F)
 private val LightDanger = Color(0xFFB4322A)
 private val LightOnDanger = Color(0xFFFFFFFF)
 private val LightDangerContainer = Color(0xFFF9E2DF)
@@ -50,20 +50,20 @@ private val LightInverseOnSurface = Color(0xFFF8EFE9)
 private val LightScrim = Color(0x661A120D)
 
 // —— Dark（配套平行套，暖黑非冷黑）§3.3 ——
-private val DarkBg = Color(0xFF17110E)
-private val DarkSurface = Color(0xFF1F1815)
-private val DarkSurface1 = Color(0xFF241C18)
-private val DarkSurface2 = Color(0xFF2A211C)
-private val DarkSurfaceVar = Color(0xFF372C25)
-private val DarkOnSurface = Color(0xFFF2EAE3)
-private val DarkOnSurfaceVar = Color(0xFFBBA99B)
-private val DarkOnSurfaceTer = Color(0xFFA89A89)
-private val DarkOutline = Color(0xFF3E332C)
-private val DarkOutlineStrong = Color(0xFF9C8672)
-private val DarkPrimary = Color(0xFF7FC8CE)
-private val DarkOnPrimary = Color(0xFF05292E)
-private val DarkPrimaryContainer = Color(0xFF14494F)
-private val DarkOnPrimaryContainer = Color(0xFFB9E6EA)
+private val DarkBg = Color(0xFF101724)
+private val DarkSurface = Color(0xFF182233)
+private val DarkSurface1 = Color(0xFF1E2A3D)
+private val DarkSurface2 = Color(0xFF243147)
+private val DarkSurfaceVar = Color(0xFF2E3A50)
+private val DarkOnSurface = Color(0xFFEEF2F8)
+private val DarkOnSurfaceVar = Color(0xFFA5B1C4)
+private val DarkOnSurfaceTer = Color(0xFF8E9AAD)
+private val DarkOutline = Color(0xFF26324A)
+private val DarkOutlineStrong = Color(0xFF8B97AC)
+private val DarkPrimary = Color(0xFFD2A85E)
+private val DarkOnPrimary = Color(0xFF1A1408)
+private val DarkPrimaryContainer = Color(0xFF2A3346)
+private val DarkOnPrimaryContainer = Color(0xFFE8C583)
 private val DarkDanger = Color(0xFFFF8D82)
 /** Dark 专用「允许执行」按钮填充：亮珊瑚只做文字/图标，不做大填充（§3.4 注 1）。 */
 private val DarkDangerFill = Color(0xFFC2483A)
@@ -166,7 +166,7 @@ internal val AgentKitDarkColorScheme = darkColorScheme(
  * （§3.4 注 2），文字一律取对应 on-*-container 深色墨迹（§3.5）。
  */
 internal data class AgentKitColors(
-    /** 内嵌块 / 图标底座 / chip 底 / 抽屉底（Light #F4E9E2 / Dark #241C18）。 */
+    /** 内嵌块 / 图标底座 / chip 底 / 抽屉底（Light #EEF1F6 / Dark #1E2A3D）。 */
     val surface1: Color,
     /** 按压态 / 更深内嵌（Light #EFE2D9 / Dark #2A211C）。 */
     val surface2: Color,

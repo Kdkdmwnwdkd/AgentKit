@@ -618,7 +618,7 @@ fun AkGroup(
         }
         Surface(
             modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(16.dp),
+            shape = RoundedCornerShape(20.dp),
             color = glassFill(),
             border = glassBorder()
         ) {
@@ -654,7 +654,7 @@ fun AkListItem(
 ) {
     val rowModifier = modifier
         .fillMaxWidth()
-        .heightIn(min = if (description != null) 64.dp else 56.dp)
+        .heightIn(min = if (description != null) 62.dp else 56.dp)
     val body: @Composable () -> Unit = {
         Row(
             modifier = Modifier.padding(horizontal = AgentSpacing.space4),
@@ -664,13 +664,29 @@ fun AkListItem(
             // 「生成式后台」最典型的 tell）。第二批起支持 icon = null：设置页那些
             // 与分组标题重复的行图标整体去掉，文字直接对齐到 16dp 边距。
             if (icon != null) {
-                Icon(
-                    imageVector = icon,
-                    contentDescription = null,
-                    tint = if (selected) MaterialTheme.colorScheme.primary
-                    else MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(20.dp)
-                )
+                // W-64：裸图标 → 34dp 圆角底座（radii 11）。
+                // 裸图标在长列表里是一列黑色小竖线，眼睛找不到落点；底座给每行一个
+                // 稳定的色块锚，扫视时先看到形状再看字——这是 iOS 分组列表的做法。
+                // 底座用 surface1 而不是 primaryContainer：整页几十个高饱和色块会打架，
+                // 只有「选中」那一行才用强调色。
+                Box(
+                    modifier = Modifier
+                        .size(34.dp)
+                        .clip(RoundedCornerShape(11.dp))
+                        .background(
+                            if (selected) MaterialTheme.colorScheme.primaryContainer
+                            else LocalAkColors.surface1
+                        ),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = icon,
+                        contentDescription = null,
+                        tint = if (selected) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
                 Spacer(Modifier.width(AgentSpacing.space3))
             }
             Column(Modifier.weight(1f)) {
@@ -687,7 +703,7 @@ fun AkListItem(
                         text = description,
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
+                        maxLines = 2,
                         overflow = TextOverflow.Ellipsis
                     )
                 }
