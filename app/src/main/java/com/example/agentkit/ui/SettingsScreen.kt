@@ -16,6 +16,9 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.size
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -76,6 +79,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import android.widget.Toast
@@ -170,6 +174,11 @@ fun SettingsScreen(
                 ),
             verticalArrangement = Arrangement.spacedBy(AgentSpacing.space4)
         ) {
+            // W-64：整页唯一的视觉重心——「你现在用的是什么模型」。
+            // 之前这页从第一行开始就是一串等重的白卡，眼睛没有落点；
+            // 模型又是这页几乎所有设置的前提（没配模型，下面全都没意义）。
+            ModelHeroCard(vm, onNavigate = onNavigate)
+
             // —— 外观：主题三选 ——
             AkGroup(
                 title = "外观",
@@ -613,6 +622,69 @@ private fun AccentPicker() {
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(top = AgentSpacing.space2)
         )
+    }
+}
+
+/**
+ * 顶部 hero 卡（W-64）：当前模型 + 一个「更换」入口。
+ *
+ * 为什么值得单独占一块：这是全页唯一「一眼要知道」的状态。其余设置都是调一次就不动的，
+ * 只有模型会被频繁切换（限流了换一个、任务重了换贵的）。它放在最上面，同时充当整页的
+ * 视觉锚点——下面那些卡片才有「次要信息」的层次。
+ */
+@Composable
+private fun ModelHeroCard(vm: ChatViewModel, onNavigate: (AppDest) -> Unit) {
+    val profiles by vm.profiles.collectAsStateWithLifecycle()
+    val activeId by vm.activeProfileId.collectAsStateWithLifecycle()
+    val active = profiles.firstOrNull { it.id == activeId }
+    val modelName = active?.config?.model?.takeIf { it.isNotBlank() }
+        ?: active?.name?.takeIf { it.isNotBlank() }
+
+    Surface(
+        shape = RoundedCornerShape(22.dp),
+        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f),
+        border = BorderStroke(
+            1.dp,
+            MaterialTheme.colorScheme.primary.copy(alpha = 0.18f)
+        ),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(Modifier.padding(20.dp)) {
+            Text(
+                text = "当前模型",
+                style = MaterialTheme.typography.labelSmall.copy(
+                    fontSize = 11.sp,
+                    letterSpacing = 1.sp,
+                    fontWeight = FontWeight.SemiBold
+                ),
+                color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f)
+            )
+            Spacer(Modifier.height(AgentSpacing.space2))
+            Text(
+                text = modelName ?: "还没配置模型",
+                style = MaterialTheme.typography.titleLarge.copy(
+                    fontSize = 19.sp,
+                    fontWeight = FontWeight.Bold
+                ),
+                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            if (modelName != null && active?.name?.isNotBlank() == true && active.name != modelName) {
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    text = active.name,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.72f)
+                )
+            }
+            Spacer(Modifier.height(AgentSpacing.space4))
+            AkPrimaryButton(
+                text = if (modelName == null) "去配置模型" else "更换模型",
+                modifier = Modifier.fillMaxWidth(),
+                onClick = { onNavigate(AppDest.MODEL) }
+            )
+        }
     }
 }
 
