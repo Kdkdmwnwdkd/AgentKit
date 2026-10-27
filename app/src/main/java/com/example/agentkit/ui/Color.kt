@@ -282,6 +282,42 @@ internal fun Color.blendTo(target: Color, amount: Float): Color = Color(
 )
 
 /**
+ * W-65：我方气泡的「淡色玻璃」四件套。
+ *
+ * 旧实现是 `primary` 实色块 + `onPrimary` 白字：一整屏翻下来，自己的话像四五个深色
+ * 补丁压在正文里，比 AI 的长段回复还重。用户的说法是「淡一点，或者渐变，或者玻璃那种
+ * 透一点，但是要能看出是气泡」——所以这里取 [ColorScheme.surface] 当底，按 9%→28%
+ * （深色 13%→34%）叠主题色：低端几乎融进底色，高端才透出一点点色相，渐变本身就构成边界；
+ * 再补 0.5dp 的 [stroke]（32%/46% 主题色）当玻璃边缘，浅底上不会糊成一片。
+ */
+internal data class UserBubbleColors(
+    /** 渐变起点（靠左下，最淡）。 */
+    val start: Color,
+    /** 渐变终点（靠右上，稍深）。 */
+    val end: Color,
+    /** 正文色：不是纯黑，掺 30% 主题色，压在淡色底上仍 ≥7:1。 */
+    val text: Color,
+    /** 0.5dp 描边：模拟玻璃边缘的那道亮线。 */
+    val stroke: Color
+)
+
+/**
+ * 按当前主题算我方气泡配色。[ColorScheme.surface] 作底而不是 background：
+ * 浅色下聊天页底色比卡片灰，用 surface 才亮得出来；深色下同理，气泡要浮在页面底之上。
+ */
+internal fun userBubbleColors(scheme: ColorScheme): UserBubbleColors {
+    val dark = scheme.surface.luminance() < 0.35f
+    val base = scheme.surface
+    return UserBubbleColors(
+        start = base.blendTo(scheme.primary, if (dark) 0.13f else 0.09f),
+        end = base.blendTo(scheme.primary, if (dark) 0.34f else 0.28f),
+        // 浅色：正文黑掺主题色 → 偏蓝的深字；深色：直接用 onSurface，掺色会压低对比度
+        text = if (dark) scheme.onSurface else scheme.onSurface.blendTo(scheme.primary, 0.30f),
+        stroke = base.blendTo(scheme.primary, if (dark) 0.46f else 0.32f)
+    )
+}
+
+/**
  * 把当前 [ColorScheme] 的强调色换成 [accent]，其余角色（背景/表面/描边/语义色）原样保留。
  *
  * 为什么只替换 primary 族：全 App 的品牌感由 primary + primaryContainer 承载，
