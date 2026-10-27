@@ -15,7 +15,6 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
@@ -107,7 +106,7 @@ fun EditorScreen() {
             Column(
                 Modifier
                     .fillMaxSize()
-                    .verticalScroll(rememberScrollState())
+                    .verticalScroll(rememberPersistentScrollState())
                     .padding(AgentSpacing.space5)
             ) {
                 AkSectionCard(
@@ -610,7 +609,7 @@ private fun BackupDiffDialog(
                             .heightIn(max = 360.dp)
                             .clip(RoundedCornerShape(12.dp))
                             .background(LocalAkColors.surface1)
-                            .verticalScroll(rememberScrollState())
+                            .verticalScroll(rememberPersistentScrollState())
                             .padding(AgentSpacing.space3)
                     ) {
                         shown.forEach { row ->

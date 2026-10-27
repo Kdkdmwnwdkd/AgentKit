@@ -29,7 +29,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.AutoAwesome
@@ -165,7 +164,7 @@ fun SettingsScreen(
         Column(
             Modifier
                 .fillMaxWidth()
-                .verticalScroll(rememberScrollState())
+                .verticalScroll(rememberPersistentScrollState())
                 .navigationBarsPadding()
                 .padding(
                     start = AgentSpacing.space5,
@@ -1101,7 +1100,7 @@ private fun AdbPairDialog(onClose: () -> Unit) {
         onDismissRequest = { if (!busy) onClose() },
         title = { Text("无线调试配对", style = MaterialTheme.typography.titleMedium) },
         text = {
-            Column(Modifier.verticalScroll(rememberScrollState())) {
+            Column(Modifier.verticalScroll(rememberPersistentScrollState())) {
                 Text(
                     "① 手机上：开发者选项 → 无线调试 → 打开开关\n" +
                         "② 点「使用配对码配对设备」，弹窗里有 6 位码\n" +

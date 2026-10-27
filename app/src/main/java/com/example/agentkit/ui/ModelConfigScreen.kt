@@ -31,7 +31,6 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -169,7 +168,7 @@ fun ModelConfigScreen(vm: ChatViewModel, onBack: () -> Unit) {
         Column(
             Modifier
                 .fillMaxWidth()
-                .verticalScroll(rememberScrollState())
+                .verticalScroll(rememberPersistentScrollState())
                 .navigationBarsPadding()
                 .padding(
                     start = AgentSpacing.space5,
@@ -365,7 +364,7 @@ private fun ProfileSwitcher(
     onSelect: (String) -> Unit,
     onAdd: () -> Unit
 ) {
-    val scrollState = rememberScrollState()
+    val scrollState = rememberPersistentScrollState()
     // 用户录屏反馈「点＋新增后根本没有增加，他还是在最开始那个页面，根本就没变」：
     // 新档案 chip 追加在条尾，一屏放不下时被横向滚动条挤到屏幕外，点了跟没点一样。
     // 档案数量变化即平滑滚到最右，让最新档案和「＋」按钮进入可见区（数量没变不滚，
@@ -2099,7 +2098,7 @@ private fun PromptBlock(index: String, title: String, body: String) {
                 .heightIn(max = 140.dp)
                 .clip(RoundedCornerShape(14.dp))
                 .background(LocalAkColors.surface1)
-                .verticalScroll(rememberScrollState())
+                .verticalScroll(rememberPersistentScrollState())
                 .padding(AgentSpacing.space3)
         ) {
             SelectionContainer {

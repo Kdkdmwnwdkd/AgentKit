@@ -6,6 +6,7 @@ import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -45,6 +46,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
@@ -1396,3 +1398,18 @@ fun AkEmptyState(
         }
     }
 }
+
+/**
+ * W-66：能记住位置的滚动状态。
+ *
+ * `rememberScrollState()` 只是 `remember`——页面一离开组合（这个 App 是手写 `when (dest)`
+ * 切页，不是 NavHost），状态就没了，返回时停在顶部。用户的原话是「我点关于与介绍，
+ * 一退出就自动跳到最前面……每次都得重新翻」。
+ *
+ * 换成 `rememberSaveable` + `ScrollState.Saver`，配合 AppScaffold 里的
+ * `rememberSaveableStateHolder()`（按 route 隔离），返回时能落回原来的位置。
+ * 弹窗内部的小滚动也用它，无害——只是多存一个 Int。
+ */
+@Composable
+internal fun rememberPersistentScrollState(): ScrollState =
+    rememberSaveable(saver = ScrollState.Saver) { ScrollState(0) }

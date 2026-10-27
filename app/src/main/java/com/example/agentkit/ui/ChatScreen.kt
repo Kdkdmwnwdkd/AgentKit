@@ -1604,7 +1604,7 @@ private fun OnboardingDialog(
                         // 封顶后：上半区滚动，底部按钮永远贴在卡片底、永远可点。
                         .heightIn(max = 520.dp)
                 ) {
-                  Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState())) {
+                  Column(Modifier.weight(1f, fill = false).verticalScroll(rememberPersistentScrollState())) {
                     Text(
                         text = "三步开始",
                         style = MaterialTheme.typography.titleLarge.copy(
@@ -2660,7 +2660,7 @@ private fun EmbedBlock(label: String, text: String, error: Boolean = false) {
                 .heightIn(max = if (expanded) 320.dp else 140.dp)
                 .clip(RoundedCornerShape(14.dp))
                 .background(LocalAkColors.surface1)
-                .verticalScroll(rememberScrollState())
+                .verticalScroll(rememberPersistentScrollState())
                 .padding(AgentSpacing.space3)
         ) {
             SelectionContainer {
@@ -2806,7 +2806,7 @@ private fun ApprovalDialog(request: ApprovalRequest, visible: Boolean, vm: ChatV
                         Column(
                             Modifier
                                 .weight(1f)
-                                .verticalScroll(rememberScrollState())
+                                .verticalScroll(rememberPersistentScrollState())
                                 .padding(AgentSpacing.space4)
                         ) {
                             Text(
@@ -2990,7 +2990,7 @@ private fun PlanCard(
                 Modifier
                     .fillMaxWidth()
                     .heightIn(max = 180.dp)
-                    .verticalScroll(rememberScrollState())
+                    .verticalScroll(rememberPersistentScrollState())
             ) {
                 plan.steps.forEachIndexed { i, step ->
                     Text(

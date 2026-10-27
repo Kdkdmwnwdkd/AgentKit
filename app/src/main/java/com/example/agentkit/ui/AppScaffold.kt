@@ -35,7 +35,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -75,6 +74,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -623,54 +623,61 @@ private fun ScreenHost(
         if (modelReady && guideSeen(ctx) && !spotlightSeen(ctx)) showSpotlight = true
     }
 
+    // W-66：按路由保存页面状态。本 App 是手写 when 切页（不是 NavHost），页面一离开组合
+    // 就销毁，同槽位的 rememberSaveable 还会被下一个页面顶掉——返回时滚动位置、列表位置
+    // 全部归零。SaveableStateHolder 按 route 各自存一份，返回时原样恢复。
+    val pageStates = rememberSaveableStateHolder()
+
     CompositionLocalProvider(LocalGuideAnchors provides anchors) {
         Box(Modifier.fillMaxSize()) {
-            when (dest) {
-                AppDest.CHAT -> ChatScreen(
-                    vm = vm,
-                    onOpenModel = { onNavigate(AppDest.MODEL) },
-                    onOpenGuide = { onNavigate(AppDest.PERMISSION_GUIDE) },
-                    onOpenContainer = { onNavigate(AppDest.CONTAINER) },
-                    onManagePrompts = { onNavigate(AppDest.PROMPTS) }
-                )
-                // 功能一：模型页不再硬跳对话页——从哪来往哪回（抽屉来的回抽屉关闭态，空态直达的回对话页）
-                AppDest.MODEL -> ModelConfigScreen(vm) { onBack() }
-                AppDest.CONSOLE -> ConsoleScreen(vm, unreadErrors, onNavigate)
-                AppDest.TERMINAL -> TerminalScreen()
-                AppDest.CONTAINER -> ContainerScreen()
-                AppDest.EDITOR -> EditorScreen()
-                AppDest.MCP -> McpScreen()
-                AppDest.MEDIA -> MediaScreen()
-                AppDest.BUILD -> BuildScreen()
-                AppDest.PERMISSIONS -> PermissionsScreen(
-                    vm,
-                    onStartGuide = { onNavigate(AppDest.PERMISSION_GUIDE) }
-                )
-                AppDest.PERMISSION_GUIDE -> PermissionGuideScreen(
-                    vm,
-                    onDone = {
-                        // 引导走完回对话：用户手上真正要做的事是「说一句话试试」，不是看权限表
-                        onNavigate(AppDest.CHAT)
-                    }
-                )
-                AppDest.SKILLS -> SkillsScreen(vm, onOpenMarket = { onNavigate(AppDest.MARKET) })
-                AppDest.MARKET -> SkillMarketScreen(vm)
-                AppDest.WORKFLOW -> WorkflowScreen(vm)
-                AppDest.LOGS -> LogsScreen(vm)
-                AppDest.MEMORY -> MemoryScreen(vm)
-                AppDest.PROMPTS -> PromptLibraryScreen(vm)
-                AppDest.BOOKMARKS -> BookmarkScreen(vm)
-                AppDest.SETTINGS -> SettingsScreen(
-                    vm,
-                    themeMode,
-                    onThemeModeChange,
-                    dynamicColor,
-                    onDynamicColorChange,
-                    onNavigate
-                )
-                AppDest.ABOUT -> AboutScreen(
-                    onOpenPermissionGuide = { onNavigate(AppDest.PERMISSION_GUIDE) }
-                )
+            pageStates.SaveableStateProvider(dest.route) {
+                when (dest) {
+                    AppDest.CHAT -> ChatScreen(
+                        vm = vm,
+                        onOpenModel = { onNavigate(AppDest.MODEL) },
+                        onOpenGuide = { onNavigate(AppDest.PERMISSION_GUIDE) },
+                        onOpenContainer = { onNavigate(AppDest.CONTAINER) },
+                        onManagePrompts = { onNavigate(AppDest.PROMPTS) }
+                    )
+                    // 功能一：模型页不再硬跳对话页——从哪来往哪回（抽屉来的回抽屉关闭态，空态直达的回对话页）
+                    AppDest.MODEL -> ModelConfigScreen(vm) { onBack() }
+                    AppDest.CONSOLE -> ConsoleScreen(vm, unreadErrors, onNavigate)
+                    AppDest.TERMINAL -> TerminalScreen()
+                    AppDest.CONTAINER -> ContainerScreen()
+                    AppDest.EDITOR -> EditorScreen()
+                    AppDest.MCP -> McpScreen()
+                    AppDest.MEDIA -> MediaScreen()
+                    AppDest.BUILD -> BuildScreen()
+                    AppDest.PERMISSIONS -> PermissionsScreen(
+                        vm,
+                        onStartGuide = { onNavigate(AppDest.PERMISSION_GUIDE) }
+                    )
+                    AppDest.PERMISSION_GUIDE -> PermissionGuideScreen(
+                        vm,
+                        onDone = {
+                            // 引导走完回对话：用户手上真正要做的事是「说一句话试试」，不是看权限表
+                            onNavigate(AppDest.CHAT)
+                        }
+                    )
+                    AppDest.SKILLS -> SkillsScreen(vm, onOpenMarket = { onNavigate(AppDest.MARKET) })
+                    AppDest.MARKET -> SkillMarketScreen(vm)
+                    AppDest.WORKFLOW -> WorkflowScreen(vm)
+                    AppDest.LOGS -> LogsScreen(vm)
+                    AppDest.MEMORY -> MemoryScreen(vm)
+                    AppDest.PROMPTS -> PromptLibraryScreen(vm)
+                    AppDest.BOOKMARKS -> BookmarkScreen(vm)
+                    AppDest.SETTINGS -> SettingsScreen(
+                        vm,
+                        themeMode,
+                        onThemeModeChange,
+                        dynamicColor,
+                        onDynamicColorChange,
+                        onNavigate
+                    )
+                    AppDest.ABOUT -> AboutScreen(
+                        onOpenPermissionGuide = { onNavigate(AppDest.PERMISSION_GUIDE) }
+                    )
+                }
             }
             if (showSpotlight) {
                 SpotlightGuide(
@@ -758,7 +765,7 @@ private fun DrawerContent(
             .statusBarsPadding()
             .navigationBarsPadding()
             // 内容高 <740dp 的老旧小屏允许抽屉内部滚动：不加折叠、不加「查看更多」（§6.5.2）
-            .verticalScroll(rememberScrollState())
+            .verticalScroll(rememberPersistentScrollState())
     ) {
         DrawerHeader(
             serviceConnected = serviceConnected,
@@ -1389,7 +1396,7 @@ private fun WorkspaceBindDialog(
                 Column(
                     Modifier
                         .heightIn(max = 320.dp)
-                        .verticalScroll(rememberScrollState())
+                        .verticalScroll(rememberPersistentScrollState())
                 ) {
                     AkListItem(
                         icon = Icons.Outlined.Folder,

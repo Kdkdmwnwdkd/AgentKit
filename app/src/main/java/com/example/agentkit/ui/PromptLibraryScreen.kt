@@ -11,7 +11,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -79,7 +78,7 @@ fun PromptLibraryScreen(vm: ChatViewModel) {
         Column(
             Modifier
                 .fillMaxWidth()
-                .verticalScroll(rememberScrollState())
+                .verticalScroll(rememberPersistentScrollState())
                 .padding(
                     start = AgentSpacing.space5,
                     end = AgentSpacing.space5,
@@ -224,7 +223,7 @@ fun PromptPickerDialog(
                 Column(
                     Modifier
                         .heightIn(max = 360.dp)
-                        .verticalScroll(rememberScrollState()),
+                        .verticalScroll(rememberPersistentScrollState()),
                     verticalArrangement = Arrangement.spacedBy(AgentSpacing.space1)
                 ) {
                     if (prompts.isEmpty()) {

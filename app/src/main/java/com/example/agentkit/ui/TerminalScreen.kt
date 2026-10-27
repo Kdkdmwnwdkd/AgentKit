@@ -15,7 +15,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
@@ -205,7 +204,7 @@ internal fun TerminalContent(
         session?.emulator?.snapshot() ?: TerminalSnapshot.EMPTY
     }
 
-    val scrollState = rememberScrollState()
+    val scrollState = rememberPersistentScrollState()
     var autoFollow by remember { mutableStateOf(true) }
 
     // 用户手势停止时判定是否停在底部：在底部 → 恢复自动跟随；上滑 → 暂停
