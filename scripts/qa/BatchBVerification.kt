@@ -1077,7 +1077,9 @@ fun main() {
     check("E-11 抽屉菜单与设置必须同处一个滚动区（拆开会把菜单挤成 0 高）") {
         val s = read("app/src/main/java/com/example/agentkit/ui/AppScaffold.kt")
         val fn = s.indexOf("private fun DrawerContent(")
-        val scroll = s.indexOf("verticalScroll(rememberScrollState())", fn)
+        // W-66：滚动状态从 rememberScrollState() 换成 rememberSaveable 版，
+        // 断言只锁「抽屉里有垂直滚动、且底部设置在滚动区内」，不锁具体构造。
+        val scroll = s.indexOf("verticalScroll(", fn)
         val bottom = s.indexOf("BottomGroup.forEach", fn)
         assertTrue("抽屉应有滚动区", scroll > fn)
         assertTrue("设置项必须在同一个滚动区内", bottom > scroll)
