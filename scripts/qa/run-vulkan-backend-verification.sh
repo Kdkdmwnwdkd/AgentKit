@@ -118,6 +118,11 @@ hasnt "不把 /usr/include 整个塞进 -I" "$WORKFLOW" 'AK_VULKAN_INCLUDE=/usr/
 has "CI 当场校验 vulkan.hpp 在" "$WORKFLOW" 'test -f "$VKINC/vulkan/vulkan.hpp"'
 has "CMake 缺 Vulkan-Hpp 会 FATAL" "$CMAKELISTS" "缺 Vulkan-Hpp"
 has "CMake 把暂存目录挂到 ggml-vulkan" "$CMAKELISTS" 'target_include_directories(ggml-vulkan BEFORE PRIVATE "${_ak_vkinc}")'
+# bionic 到 API 28 才有 aligned_alloc，minSdk 是 26 —— 不补就是在 ggml-vulkan-buffers.cpp
+# 报「unresolved using declaration」。补的声明必须早于 <cstdlib>，所以只能 -include。
+has "补 aligned_alloc（API < 28）" "$CMAKELISTS" "vulkan-aligned-compat.h"
+has "兼容头按 API 级别自判" "app/src/main/cpp/vulkan-aligned-compat.h" "__ANDROID_API__ < 28"
+has "兼容头用 posix_memalign 实现" "app/src/main/cpp/vulkan-aligned-compat.h" "posix_memalign"
 # 说明里必须写明「为什么不能用 /usr/include」——否则下一个人会「顺手简化」成它。
 has "写明不能直接挂 /usr/include" "$CMAKELISTS" "绝不能直接把 /usr/include 塞进 -I"
 
@@ -263,10 +268,21 @@ fun main() {
     println("SUMMARY $ok $bad")
 }
 KOTLIN
+    # kotlinc 可能是 shim（自己拼 embeddable 编译器），此时它的位置跟 stdlib 毫无关系，
+    # 按 dirname 猜必空。stdlb 不在 classpath 上时编译能过、运行期第一句就
+    # NoClassDefFoundError: kotlin/NoWhenBranchMatchedException —— 断言一条都没跑，
+    # 但脚本照样报绿。所以这里多路找 + 跑不出 SUMMARY 直接判失败。
     STDLIB="${KOTLIN_STDLIB:-}"
     if [ -z "$STDLIB" ]; then
-        GUESS="$(dirname "$(dirname "$KOTLINC")")/lib/kotlin-stdlib.jar"
-        [ -f "$GUESS" ] && STDLIB="$GUESS"
+        for cand in \
+            "$HOME/.sdkman/candidates/kotlin/current/lib/kotlin-stdlib.jar" \
+            "/usr/share/kotlin/lib/kotlin-stdlib.jar" \
+            "/opt/kotlinc/lib/kotlin-stdlib.jar" \
+            "/tmp/khome/lib/kotlin-stdlib.jar" \
+            "$(dirname "$(dirname "$KOTLINC")")/lib/kotlin-stdlib.jar"
+        do
+            [ -f "$cand" ] && STDLIB="$cand" && break
+        done
     fi
     "$KOTLINC" -nowarn "$PROFILE" "$CATALOG" "$WORK/VulkanCheck.kt" -d "$WORK/check.jar" 2>"$WORK/err.txt"
     if [ ! -f "$WORK/check.jar" ]; then
@@ -277,8 +293,15 @@ KOTLIN
         echo "$OUT" | grep -v '^SUMMARY'
         BAD="$(echo "$OUT" | sed -n 's/^SUMMARY \([0-9]*\) \([0-9]*\)$/\2/p')"
         GOOD="$(echo "$OUT" | sed -n 's/^SUMMARY \([0-9]*\) \([0-9]*\)$/\1/p')"
-        PASS=$((PASS + ${GOOD:-0}))
-        FAIL=$((FAIL + ${BAD:-0}))
+        if [ -z "$GOOD" ]; then
+            # 没有 SUMMARY = 断言一条都没执行。这比断言失败更糟：看着是全绿。
+            fail "行为断言没跑起来（无 SUMMARY 输出）"
+            echo "$OUT" | sed -n '1,8p' | sed 's/^/        /'
+            [ -n "$STDLIB" ] || echo "        提示：没找到 kotlin-stdlib.jar，可用 KOTLIN_STDLIB=<path> 指定"
+        else
+            PASS=$((PASS + GOOD))
+            FAIL=$((FAIL + ${BAD:-0}))
+        fi
     fi
     rm -rf "$WORK"
 fi

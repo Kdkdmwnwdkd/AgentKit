@@ -191,6 +191,15 @@ if (TARGET ggml-vulkan)
     if (_ak_vkinc AND EXISTS "${_ak_vkinc}/vulkan/vulkan.hpp")
         target_include_directories(ggml-vulkan BEFORE PRIVATE "${_ak_vkinc}")
     endif()
+    # bionic 到 API 28 才有 aligned_alloc，本项目 minSdk 26。ggml-vulkan-buffers.cpp
+    # 用 std::aligned_alloc，会撞上 libc++ 的 `using ::aligned_alloc _LIBCPP_USING_IF_EXISTS`
+    # （名字不存在 → 引用即「unresolved using declaration」）。
+    #
+    # 补声明必须早于 <cstdlib>（名字查找发生在那一行），所以这里用 -include 塞一个
+    # 兼容头，而不是去改第三方源码——改了下次升级 llama.cpp 就丢。
+    # 头文件自己按 __ANDROID_API__ 判空，API >= 28 时什么也不做。
+    target_compile_options(ggml-vulkan PRIVATE
+        -include "${CMAKE_CURRENT_LIST_DIR}/vulkan-aligned-compat.h")
 endif()
 
 # ---- 我们的 JNI 桥 ----
