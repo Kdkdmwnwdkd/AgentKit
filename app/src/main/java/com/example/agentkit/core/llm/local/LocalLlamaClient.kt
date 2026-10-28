@@ -35,8 +35,8 @@ import java.util.UUID
  * 1. **不走网络**：模型文件在本地，prompt 由 llama.cpp 的 Jinja 对话模板渲染
  *    （Qwen/Llama/Gemma 各自的格式由模型自带，不在这里手拼——这是体验不碎片化的关键）。
  * 2. **工具调用是提示词协议**，不是协议原生：本地小模型对各家模板的 tool_use 支持
- *    参差不齐，统一用「输出 JSON 即调用」的约定（见 [toolProtocolPrompt]），
- *    解析失败一律按普通文本处理，绝不会把模型的闲聊误判成工具调用。
+ *    参差不齐，统一用「整个回复就是一个 JSON」的约定（见 [LocalAgentPrompt]），
+ *    解析则走宽容解析器（见 [LocalToolCallParser]）——3B 写不标准是常态，读得懂才算数。
  * 3. **图片忽略**：本地小模型多为纯文本，多模态消息只取文字部分（截图类工具结果
  *    在 [ToolMessage] 里附了图片，这里也只取文本，UI 层已单独渲染）。
  *
@@ -64,7 +64,7 @@ class LocalLlamaClient(
     ): AssistantMessage = withContext(Dispatchers.IO) {
         ensureModelLoaded()
         val eff = effectivePrompt(messages, tools)
-        val prompt = buildPrompt(eff.messages, eff.tools)
+        val prompt = buildPrompt(eff.messages)
         AgentLogger.llmRequest(currentModelLabel(), eff.messages.size, eff.tools.size)
         val startedAt = System.currentTimeMillis()
         val text = engine.generate(prompt, setting.maxTokens, null)
@@ -107,7 +107,7 @@ class LocalLlamaClient(
         tools: List<AgentTool>
     ): Flow<String> = channelFlow {
         ensureModelLoaded()
-        val prompt = buildPrompt(messages, tools)
+        val prompt = buildPrompt(messages)
         AgentLogger.llmRequest(currentModelLabel(), messages.size, tools.size)
         val startedAt = System.currentTimeMillis()
         val meter = GenMeter()
@@ -157,9 +157,12 @@ class LocalLlamaClient(
         messages: List<ChatMessage>,
         tools: List<AgentTool>
     ): Flow<ChatStreamEvent> = channelFlow {
+        // 基线要在加载**之前**取：首次对话的「nativeInit 成功 / 冷启动预热」属于本轮，
+        // 用户才能在摘要里看到那十几秒花在哪。库还没加载时返回 0，正好等于「全都要」。
+        val roundStartSeq = rememberLogSeq()
         ensureModelLoaded()
         val eff = effectivePrompt(messages, tools)
-        val prompt = buildPrompt(eff.messages, eff.tools)
+        val prompt = buildPrompt(eff.messages)
         AgentLogger.llmRequest(currentModelLabel(), eff.messages.size, eff.tools.size)
         val startedAt = System.currentTimeMillis()
         AgentLogger.i(
@@ -182,7 +185,15 @@ class LocalLlamaClient(
                     acc.append(piece)
                     if (!decided && acc.isNotBlank()) {
                         decided = true
-                        looksLikeToolCall = acc.trimStart().startsWith("{")
+                        // 只认 `{` 是不够的：模型可能套 ```tool 围栏，或用训练时的
+                        // <tool_call> 标签。这些一旦当普通文本上屏，用户先看到的是一屏
+                        // 记号，等解析器认出调用后那段字又会被工具卡片顶掉，视觉上像出了 bug。
+                        val head = acc.trimStart()
+                        looksLikeToolCall = head.startsWith("{") ||
+                            head.startsWith("```") ||
+                            head.startsWith("<tool_call>", ignoreCase = true) ||
+                            head.startsWith("<|tool_call>", ignoreCase = true) ||
+                            head.startsWith("tool_call", ignoreCase = true)
                     }
                     if (decided && !looksLikeToolCall) {
                         trySend(ChatStreamEvent.TextDelta(piece))
@@ -205,7 +216,7 @@ class LocalLlamaClient(
         // 生成线程是阻塞的，主协程不能只 join() 干等：那样 native 的进度全被关在
         // 环形缓冲里，用户中途停止后日志一片空白（真机 500 秒无输出就是这么来的）。
         // 这里改成「边等边把 native 新日志转进运行日志」，并提供卡死看门狗。
-        val tap = NativeProgressTap()
+        val tap = NativeProgressTap(roundStartSeq)
         var stalled = false
         var stalledBudget = 0L
         var cancelled = false
@@ -241,7 +252,8 @@ class LocalLlamaClient(
         tap.drain()
 
         if (stalled) {
-            val tokens = Regex("→ (\\d+) token").find(nativeDiagnostics())?.groupValues?.get(1)
+            val tokens = Regex("→ (\\d+) token").find(thisDiag(roundStartSeq))
+                ?.groupValues?.get(1)
             // 预热耗时是「这台设备跑不跑得动 3B」最直接的证据：1 个 token 就要好几秒，
             // 换更长的 prompt 不可能变好，只能换模型；反之则多半是这一版的引擎问题，
             // 让用户回传日志比让他换模型更有用。
@@ -280,51 +292,140 @@ class LocalLlamaClient(
             )
             throw LocalInferenceException(localFailureReason(diag))
         }
-        AgentLogger.i("LocalLlama", "native 摘要｜${digest(nativeDiagnostics())}")
+        AgentLogger.i("LocalLlama", "native 摘要｜${digest(nativeDiagnostics(), roundStartSeq)}")
 
-        val message = parseAssistant(text, eff.tools)
-        // 判定像工具调用、最终却没解析出 ToolCall（JSON 不合法 / 工具名不在白名单）：
-        // 整段按普通文本补发一次，不让这轮回答凭空消失。
+        var finalText = text
+        var message = parseAssistant(finalText, eff.tools)
+        // 判定「想调工具」却没解析出 ToolCall：静默重试一次。
+        //
+        // 3B 最常见的失败不是不会调，而是 JSON 差一个引号、工具名少个下划线、写一半被
+        // 长度上限截断。直接把这段乱码当回答吐给用户，等于这一轮白跑。重试的成本很低：
+        // 系统提示与历史一个字节都没变（KV 前缀命中），只多算「上一条输出 + 一句纠正」
+        // 这几十个 token；而成功的收益是整轮任务能继续。
+        //
+        // 与参考实现（IRIDIS 的静默重试思路）的差别：那边把纠正提示塞进对话历史由主循环
+        // 判断，我们把它收敛在客户端内部——AgentLoop 看不到这次失败，也就不必为本地模型
+        // 单独改一套控制流。
+        if (looksLikeToolCall && message.toolCalls.isEmpty()) {
+            val reason = LocalToolCallParser.parse(text, eff.tools.map { it.name }.toSet()).error
+            AgentLogger.i("LocalLlama", "工具调用解析失败（${reason.orEmpty()}），静默重试一次")
+            val retryPrompt = buildPrompt(
+                eff.messages + AssistantMessage(finalText.trim()) + UserMessage(TOOL_RETRY_HINT)
+            )
+            val again = generateBounded(retryPrompt, TOOL_RETRY_BUDGET_MS)
+            if (again.isNotBlank()) {
+                val m2 = parseAssistant(again, eff.tools)
+                // 重试后仍然没调工具，但给出了正常文字：这段比原来的半截 JSON 可读得多
+                if (m2.toolCalls.isNotEmpty() || m2.content.isNotBlank()) {
+                    finalText = again
+                    message = m2
+                }
+            }
+        }
+        // 只要这一轮被「憋着没上屏」（判定像工具调用），结束时就补发一次——不论是原输出
+        // 还是重试后的文字，都不该让用户对着空白。
         if (looksLikeToolCall && message.toolCalls.isEmpty() && message.content.isNotEmpty()) {
             send(ChatStreamEvent.TextDelta(message.content))
         }
         AgentLogger.llmResponse(
             currentModelLabel(),
-            text.isNotEmpty(),
+            finalText.isNotEmpty(),
             System.currentTimeMillis() - startedAt,
             "流式生成结束（${if (message.toolCalls.isEmpty()) "文本" else "工具 ${message.toolCalls.size} 个"}）${meter.summary()}"
         )
         send(ChatStreamEvent.Completed(message))
     }.flowOn(Dispatchers.IO)
 
+    /**
+     * 带硬超时的非流式生成——只给「静默重试」用。
+     *
+     * 为什么不复用上面那段流式循环：那段同时承担「边生成边把 native 日志搬到运行日志」
+     * 「看门狗判卡死」「逐 token 上屏」三件事，重试时前两件没意义（同一轮、只补几十个
+     * token），硬套会让控制流变得难以论证。这里只保证一件事：**不会因为重试把用户卡住**
+     * ——到点就 `engine.stop()`，拿已经生成的部分。
+     */
+    private fun generateBounded(prompt: String, timeoutMs: Long): String {
+        val out = StringBuilder()
+        val worker = Thread({
+            runCatching { engine.generate(prompt, setting.maxTokens) { piece -> out.append(piece) } }
+                .onFailure { AgentLogger.w("LocalLlama", "重试生成异常：${it.message}") }
+        }, "local-llama-retry")
+        worker.start()
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (worker.isAlive && System.currentTimeMillis() < deadline) worker.join(POLL_INTERVAL_MS)
+        if (worker.isAlive) {
+            AgentLogger.w("LocalLlama", "工具调用重试超时（${timeoutMs / 1000}s），放弃")
+            engine.stop()
+            worker.join(3000)
+        }
+        return out.toString()
+    }
+
     /** 读 native 诊断（库未加载时返回空串，不能让诊断本身把流程搞崩）。 */
     private fun nativeDiagnostics(): String = runCatching {
         if (LlamaJni.available) LlamaJni.nativeDiagnostics() else ""
     }.getOrDefault("")
 
+    /** 取当前诊断序号（作为「本轮 native 日志」的起点）；库不可用时返回 0。 */
+    private fun rememberLogSeq(): Long = runCatching {
+        if (LlamaJni.available) LlamaJni.nativeLogSeq() else 0L
+    }.getOrDefault(0L)
+
+    /** native 诊断行：`#<seq>|<正文>`。seq 为 -1 表示这行没有序号（兜底保留）。 */
+    private data class DiagLine(val seq: Long, val text: String)
+
+    private fun parseDiag(raw: String): List<DiagLine> = raw.lineSequence()
+        .map { it.trim() }
+        .filter { it.isNotEmpty() }
+        .map { line ->
+            if (line.startsWith("#")) {
+                val bar = line.indexOf('|')
+                val seq = if (bar > 1) line.substring(1, bar).toLongOrNull() else null
+                if (seq != null) DiagLine(seq, line.substring(bar + 1)) else DiagLine(-1L, line)
+            } else {
+                DiagLine(-1L, line)
+            }
+        }
+        .toList()
+
+    /** 只要 seq > [sinceSeq] 的行（= 本轮 native 日志），拼回纯文本。 */
+    private fun thisDiag(sinceSeq: Long): String =
+        parseDiag(nativeDiagnostics()).filter { it.seq < 0 || it.seq > sinceSeq }
+            .joinToString("\n") { it.text }
+
     /** 只挑能判断「卡在哪一步」的行，避免把 80 行全塞进运行日志。 */
-    private fun digest(diag: String): String = diag.lineSequence()
+    private fun digest(diag: String, sinceSeq: Long = 0L): String = parseDiag(diag)
+        .filter { it.seq < 0 || it.seq > sinceSeq }
+        .map { it.text }
         .filter { line ->
             listOf(
-                "nativeInit 成功", "prompt 长度", "prefill 开始", "prefill 完成",
+                "nativeInit 成功", "冷启动预热", "prompt 长度", "prefill 开始", "prefill 完成",
                 "预热", "生成完成", "命中结束符", "生成为空", "tokenize 失败"
             ).any { keyword -> line.contains(keyword) }
         }
         .joinToString(" ｜ ")
 
     /**
-     * 把 native 环形缓冲里的**新**日志转进 App 运行日志。
+     * 把 native 环形缓冲里**本轮新增**的日志转进 App 运行日志。
      *
      * 存在的理由：native 的进度行（prefill 进度 / 生成进度）只在结束时才被上层读到，
      * 用户中途点停止就什么都不剩——真机上表现为「等了 8 分钟、日志里一片空白」。
      * 这里每一小段时间捞一次增量，日志里就能看到「算到第几个 token、多快」。
      *
+     * 「本轮」由 [baseSeq] 界定，而不是「见过没见过的文本」：缓冲在进程级累积，
+     * 用文本去重的话，每轮开始都会把上一轮的几十行全部重打一遍——真机上因此出现过
+     * 「第二轮复读上一轮 13436 ms 预热」的假象，还把看门狗的 warmupMs 污染了。
+     *
      * 只转发进度/失败行：native 一次生成会打几十行，全转会把日志淹掉。
      */
-    private inner class NativeProgressTap {
-        private val seen = LinkedHashSet<String>()
+    private inner class NativeProgressTap(baseSeq: Long) {
+        /** 已消费到的最大序号。缓冲滚动后老行消失，靠它保证不重复也不倒退。 */
+        private var lastSeq = baseSeq
 
-        /** 预热 decode 的 1 token 耗时（-1 = 还没出现在日志里）。 */
+        /** 没有序号的行（理论上不该有）退回文本去重，避免无限重复。 */
+        private val seenText = LinkedHashSet<String>()
+
+        /** 预热 decode 的 1 token 稳态耗时（-1 = 还没出现在日志里）。 */
         var warmupMs: Long = -1L
             private set
 
@@ -337,14 +438,21 @@ class LocalLlamaClient(
             val diag = runCatching { nativeDiagnostics() }.getOrDefault("")
             if (diag.isBlank()) return 0
             var fresh = 0
-            diag.lineSequence().forEach { line ->
-                val t = line.trim()
-                if (t.isEmpty()) return@forEach
-                if (!seen.add(t)) return@forEach
+            parseDiag(diag).forEach { (seq, t) ->
+                if (seq >= 0) {
+                    if (seq <= lastSeq) return@forEach
+                    lastSeq = seq
+                } else if (!seenText.add(t)) {
+                    return@forEach
+                }
                 fresh++
                 // 预热耗时决定看门狗给多少预算：引擎 1 token 只要几百毫秒，
                 // 那 158 token 的 prefill 拖过 45 秒就一定是卡住而不是慢。
-                Regex("预热 decode(?: 重试)?：1 token / (\\d+) ms").find(t)
+                //
+                // 取最后出现的那一条：日志顺序是「冷启动预热 → 预热 decode → 预热复测
+                // → 预热 decode 重试」，越靠后越接近稳态。冷启动那条本来就在基线之前，
+                // 正常情况下根本不会进来。
+                Regex("预热[^：]*：1 token / (\\d+) ms").find(t)
                     ?.let { warmupMs = it.groupValues[1].toLong() }
                 Regex("prefill 进度：(\\d+) /").find(t)
                     ?.let { prefillDone = it.groupValues[1].toInt() }
@@ -355,12 +463,7 @@ class LocalLlamaClient(
                     AgentLogger.i("LocalLlama", t)
                 }
             }
-            // 缓冲每轮都在滚动，集合不能无限长
-            if (seen.size > 600) {
-                val keep = seen.toList().takeLast(200)
-                seen.clear()
-                seen.addAll(keep)
-            }
+            if (seenText.size > 600) seenText.clear()
             return fresh
         }
     }
@@ -427,8 +530,75 @@ class LocalLlamaClient(
         messages: List<ChatMessage>,
         tools: List<AgentTool>
     ): EffectivePrompt =
-        if (setting.agentMode) EffectivePrompt(messages, tools)
+        if (setting.agentMode) EffectivePrompt(compactAgentMessages(messages, tools), tools)
         else EffectivePrompt(lightMessages(messages), emptyList())
+
+    /**
+     * Agent 模式：把「云端用的长系统提示」整条换成本地精简版（[LocalAgentPrompt]）。
+     *
+     * 必须整条替换而不是追加：上游拼进来的系统提示包含
+     * `DEFAULT_SYSTEM_PROMPT`（600 中文字，含一整段界面操作协议）+ 技能 XML 清单
+     * + 记忆摘要 + `MEMORY_USAGE_PROMPT`，实测 1650 字符 ≈ 1086 token。3B 在手机上
+     * 按 16 tok/s 算，光把这段读进去就要 68 秒——用户看到的就是「发出去没反应」。
+     *
+     * 精简版只保留 3B 真正用得上的东西：身份一行、规则四条、调用格式一个例子、
+     * 每个工具一行。技能清单只留名字（描述等它调用 `use_skill` 时再给）。
+     * 目标是 250 token 上下，把 prefill 从 68 秒压到 15 秒以内。
+     *
+     * 云端 provider 完全不受影响——这段逻辑只活在本类。
+     */
+    private fun compactAgentMessages(
+        messages: List<ChatMessage>,
+        tools: List<AgentTool>
+    ): List<ChatMessage> {
+        val compact = LocalAgentPrompt.build(tools, skillNames(tools))
+        // 这行是给「到底还慢不慢」留的证据：上一版 Agent 模式整段 prompt 是 1086 token
+        // （约 1650 字符），瘦身后应当落在 1000 字符上下。用户回传日志时一眼能对。
+        AgentLogger.i("LocalLlama", "Agent 精简提示：${compact.length} 字符 / 工具 ${tools.size} 个")
+        val rest = messages.filterNot { it is SystemMessage }.map { m ->
+            // 「用户当前请求：」前面那段设备上下文（最近通知、前台应用…）是给云端看的：
+            // 本地模型读了既算不动，又每轮都变——一变就把 KV 前缀打断，整段历史重算。
+            if (m is UserMessage) UserMessage(shortenUser(m.content), m.images) else m
+        }
+        // Gemma-2 这类模板没有 system 通道，系统提示只能并进第一条用户消息。
+        // 不处理的话这类模型会一条规则都看不到，表现成「完全不听话」。
+        if (!supportsSystemPrompt()) {
+            val i = rest.indexOfFirst { it is UserMessage }
+            if (i >= 0) {
+                val u = rest[i] as UserMessage
+                return rest.toMutableList().also {
+                    it[i] = UserMessage("$compact\n\n${u.content}", u.images)
+                }
+            }
+            return listOf(UserMessage(compact)) + rest
+        }
+        return listOf(SystemMessage(compact)) + rest
+    }
+
+    /** 当前模型是否支持 system 角色（Gemma-2 为 false，见 [GgufModelStore] 目录）。 */
+    private fun supportsSystemPrompt(): Boolean = modelStore.catalog()
+        .firstOrNull { it.fileName == setting.activeModel }
+        ?.supportsSystemPrompt ?: true
+
+    /**
+     * 从 `use_skill` 工具自带的系统提示里抠出技能名。
+     *
+     * 上游把技能清单以 XML（`<skill><name>…</name><description>…`）塞进工具的
+     * [AgentTool.systemPrompt]，一个技能连同描述约 70 token。本地模型只需要知道
+     * 「有哪几个名字可以调」，名字之外的信息等它真的 `use_skill` 时再给。
+     *
+     * 不从构造函数注入 provider 是有意的：这条链路是纯文本解析、失败就返回空表，
+     * 不会因为技能模块重构而让本地对话崩掉。
+     */
+    private fun skillNames(tools: List<AgentTool>): List<String> {
+        val raw = tools.firstOrNull { it.name == "use_skill" }?.systemPrompt ?: return emptyList()
+        if (raw.isBlank()) return emptyList()
+        return Regex("<name>(.*?)</name>").findAll(raw)
+            .map { it.groupValues[1].trim() }
+            .filter { it.isNotEmpty() }
+            .distinct()
+            .toList()
+    }
 
     /**
      * 轻聊档的消息裁剪：
@@ -462,34 +632,17 @@ class LocalLlamaClient(
     }
 
     /**
-     * 把 ChatMessage 列表渲染成模型 prompt：
-     * 1. 有工具时按提示词协议注入工具说明（不支持系统提示的模型附在首条 user 消息上）；
-     * 2. 交给 llama.cpp 的模型自带 Jinja 模板做角色/特殊 token 渲染。
+     * 把 ChatMessage 列表渲染成模型 prompt。
+     *
+     * 工具说明**不在这里拼**：Agent 模式由 [LocalAgentPrompt] 一次性写进系统提示
+     * （英文、每工具一行），轻聊档根本没有工具表。原来这里还有一份「工具调用模式」的
+     * 中文协议——轻聊档永远不生效（工具为空），Agent 模式又和精简提示重复，等于让 3B
+     * 同时读两套口径。已随 W-79 删除。
      */
-    private fun buildPrompt(messages: List<ChatMessage>, tools: List<AgentTool>): String {
-        val effective = messages.toMutableList()
-        if (tools.isNotEmpty()) {
-            val protocol = toolProtocolPrompt(tools)
-            val first = effective.firstOrNull()
-            val catalogSupportsSystem = modelStore.catalog()
-                .firstOrNull { it.fileName == setting.activeModel }
-                ?.supportsSystemPrompt ?: true
-            effective[0] = when {
-                first is SystemMessage && catalogSupportsSystem ->
-                    SystemMessage("${first.content}\n\n$protocol")
-                first is UserMessage ->
-                    UserMessage("$protocol\n\n${first.content}", first.images)
-                else -> {
-                    // 没有 system/user 打底的对话极少见；直接前置一条 user
-                    effective.add(0, UserMessage(protocol))
-                    effective[0]
-                }
-            }
-        }
-
-        val roles = ArrayList<String>(effective.size)
-        val contents = ArrayList<String>(effective.size)
-        effective.forEach { msg ->
+    private fun buildPrompt(messages: List<ChatMessage>): String {
+        val roles = ArrayList<String>(messages.size)
+        val contents = ArrayList<String>(messages.size)
+        messages.forEach { msg ->
             when (msg) {
                 is SystemMessage -> { roles.add("system"); contents.add(msg.content) }
                 is UserMessage -> { roles.add("user"); contents.add(msg.content) }
@@ -513,7 +666,7 @@ class LocalLlamaClient(
             // 兜底拼装保证不把空 prompt 发给 native。
             AgentLogger.w("LocalLlama", "对话模板为空，使用 ChatML 兜底拼装")
             prompt = buildString {
-                effective.forEachIndexed { i, msg ->
+                messages.forEachIndexed { i, msg ->
                     val role = roles.getOrElse(i) { "user" }
                     append("$role\n${contents.getOrElse(i) { "" }}\n")
                 }
@@ -522,58 +675,24 @@ class LocalLlamaClient(
         return prompt
     }
 
-    /**
-     * 工具调用协议提示词。
-     *
-     * 设计取舍：不依赖任何模型特有的 tool_use 模板语法（Qwen/Llama/Gemma 各不相同），
-     * 用「输出一个 JSON 对象」这一最小公约数。约束写死三条：
-     * 1. 必须是合法 JSON、含 tool 与 arguments 两个键；
-     * 2. 不要包 ```json 代码块（小模型极爱包，明确禁止能显著提高命中率）；
-     * 3. 不需要工具时正常说话——防止模型把所有对话都硬拗成 JSON。
-     */
-    private fun toolProtocolPrompt(tools: List<AgentTool>): String = buildString {
-        appendLine("【工具调用模式】")
-        appendLine("需要调用工具时，整个回复必须且只能是这一个 JSON（不要 ```json 代码块，不要多余文字）：")
-        appendLine("{\"tool\": \"工具名\", \"arguments\": {\"参数名\": \"参数值\"}}")
-        appendLine("不需要工具时直接用自然语言回答。可用工具：")
-        tools.forEach { tool ->
-            // 每个 token 都要花 CPU 算两遍（prefill 一次、生成时 attends 一次），而
-            // 本地模型 3B 的 prefill 只有十几 tok/s。工具描述是 prompt 里最长的一段，
-            // 逐字照搬会把首字延迟顶到分钟级——保留「够模型判断该不该用」的信息即可：
-            // 描述截到 48 字，参数只给名字和类型。
-            val desc = tool.description.replace('\n', ' ').trim().take(48)
-            val params = tool.parameters.properties.entries.joinToString(", ") { (k, p) -> "$k:${p.type}" }
-            appendLine("- ${tool.name}: $desc。参数：$params")
-        }
-    }
-
     // —— 输出解析 ————————————————————————————————————————————————
 
     /**
      * 解析模型输出为 [AssistantMessage]：
-     * 先尝试按工具协议提取 JSON（工具名必须存在于本次可用列表，防误判）；
-     * 失败则整体视为普通文本。
+     * 先按宽容解析器认工具调用（工具名必须存在于本次可用列表，防误判）；
+     * 认不出就整体当普通文本。
+     *
+     * 3B 的输出几乎不会一次写对 JSON（尾逗号、围栏、`<tool_call>` 标签、工具名拼错、
+     * 被长度上限截断……），这些情况**全都是想调工具**。判死当文本，用户看到的就是
+     * 「模型回了一屏乱码」，比不调工具更糟。判定细节见 [LocalToolCallParser]。
      */
     private fun parseAssistant(text: String, tools: List<AgentTool>): AssistantMessage {
         if (text.isBlank()) return AssistantMessage("")
         if (tools.isEmpty()) return AssistantMessage(text.trim())
-        val call = extractToolCall(text, tools.map { it.name }.toSet())
-            ?: return AssistantMessage(text.trim())
+        val parsed = LocalToolCallParser.parse(text, tools.map { it.name }.toSet())
+        val name = parsed.name ?: return AssistantMessage(text.trim())
+        val call = ToolCall("local_${UUID.randomUUID().toString().take(8)}", name, parsed.args)
         return AssistantMessage(text.trim(), listOf(call))
-    }
-
-    /** 从输出中提取工具调用 JSON；工具名不在白名单内一律返回 null（宁可漏判，不可误判）。 */
-    private fun extractToolCall(text: String, validTools: Set<String>): ToolCall? {
-        val start = text.indexOf('{')
-        val end = text.lastIndexOf('}')
-        if (start < 0 || end <= start) return null
-        val obj = runCatching {
-            json.parseToJsonElement(text.substring(start, end + 1)).objOrNull()
-        }.getOrNull() ?: return null
-        val name = obj["tool"]?.primOrNull()?.contentOrNull ?: return null
-        if (name !in validTools) return null
-        val args: JsonObject = runCatching { obj["arguments"]?.objOrNull() }.getOrNull() ?: JsonObject(emptyMap())
-        return ToolCall("local_${UUID.randomUUID().toString().take(8)}", name, args)
     }
 
     private fun currentModelLabel(): String =
@@ -647,6 +766,27 @@ class LocalLlamaClient(
          * 期间界面全空。超过这个量就当普通文本往屏幕上推。
          */
         const val TOOL_JSON_HOLD_MAX_CHARS = 400
+
+        /**
+         * 工具调用写坏后的纠正提示。
+         *
+         * 用英文而不是中文：这句话要占 prompt，而模型的输出语言由系统提示里的
+         * "Answer in Chinese" 决定，纠正提示用哪种语言不影响输出语言。
+         * 内容刻意只讲「错在哪、怎么改」，不复述格式——格式在系统提示里已经有一份，
+         * 这里再说一遍只会让 3B 在两套措辞之间摇摆。
+         */
+        const val TOOL_RETRY_HINT =
+            "That reply was not a readable tool call. Reply again: either ONE tool call in " +
+                "the exact JSON format from the system prompt, or a plain-text answer."
+
+        /**
+         * 重试的硬上限。
+         *
+         * 重试只补算「上一条输出 + 一句提示」，正常几秒；给 45 秒是为了兜住「模型打算
+         * 重新生成一整段 JSON」的情况。超过就放弃，把已经拿到的文字显示出来——
+         * 再等下去就回到了「发出去几分钟没反应」的老问题。
+         */
+        const val TOOL_RETRY_BUDGET_MS = 45_000L
 
         /** 轻聊档保留的历史条数（4 条 = 最近两轮）。 */
         const val LIGHT_HISTORY_MESSAGES = 4

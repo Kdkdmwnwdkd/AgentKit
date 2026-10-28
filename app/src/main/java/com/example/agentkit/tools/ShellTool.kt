@@ -4,6 +4,7 @@ import com.example.agentkit.core.llm.primOrNull
 import com.example.agentkit.core.AgentTool
 import com.example.agentkit.core.JsonSchema
 import com.example.agentkit.core.ToolResult
+import com.example.agentkit.core.agent.ShellCommandRules
 import com.example.agentkit.core.terminal.TERMINAL_HANDLE_REGEX
 import com.example.agentkit.core.terminal.TerminalSessionPool
 import com.example.agentkit.core.terminal.backend.TerminalBackend
@@ -145,6 +146,18 @@ class ShellRunTool(
 
     /** A 批：shell 是最危险的工具之一，执行前必须过人工审批（会话内可按「shell 命令」整组放行）。 */
     override val needsApproval = true
+
+    /**
+     * W-79：审批细化到命令内容。
+     *
+     * `needsApproval = true` 是兜底（规则看不懂的命令一律问）；但 `ls`/`cat`/`grep`/`pwd`
+     * 这类纯读命令**不该**弹窗——每一条都问，用户三天就会形成「见窗就点允许」的习惯，
+     * 真正危险的 `rm -rf` 也就没人看了。判定逻辑见 [ShellCommandRules]（纯函数、有单测）。
+     */
+    override fun needsApprovalFor(args: JsonObject): Boolean {
+        val command = args["command"]?.primOrNull()?.contentOrNull.orEmpty()
+        return ShellCommandRules.needsApproval(command)
+    }
 
     override suspend fun execute(args: JsonObject): ToolResult {
         val command = args["command"]?.primOrNull()?.contentOrNull

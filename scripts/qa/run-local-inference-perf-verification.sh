@@ -156,9 +156,21 @@ echo "[10/10] 引擎自检（把「算得慢」和「卡死」分开）"
 # 一份日志就能定案的事。
 expect "有单 token 预热探针" "$JNI" 'warmupDecode'
 expect "预热超阈值自动降线程重试" "$JNI" 'ms > WARMUP_SLOW_MS && inst->n_threads > 4'
+# 慢一次先复测：真机 13436 ms → 170 ms 的差距就是「一次性成本被当成线程问题」。
+expect "预热慢一次先复测再判定" "$JNI" 'again < ms'
+# 降线程不能重建上下文：重建会清 KV，且要付一次分配。
+expect "降线程用 llama_set_n_threads 就地生效" "$JNI" 'llama_set_n_threads'
 expect "prefill 前留下「开始」痕迹" "$JNI" 'prefill 开始：'
 expect "prefill 分块小于逻辑批（进度不被大块吞掉）" "$JNI" 'std::min\(inst->n_batch, PREFILL_CHUNK\)'
-expect "prefill 线程不再上浮到全部核心" "$JNI" 'cparams.n_threads_batch = nThreads'
+# 冷启动成本（2 GB 权重首次缺页 + 重排）必须在加载阶段付掉，不能落在用户发消息之后。
+expect "冷启动预热放在 nativeInit 内" "$JNI" '冷启动预热完成'
+# mmap 只建映射不读数据，先做一次异步预读能把首次 decode 的缺页摊薄。
+expect "加载前对模型文件做 fadvise 预读" "$JNI" 'POSIX_FADV_WILLNEED'
+# prefill 与生成本来是两种开销结构，不能钉成同一个线程数。
+expect "prefill 线程与生成线程分开设" "$JNI" 'cparams.n_threads_batch = std::min\(hwCores, nThreads \+ 2\)'
+# 进程级诊断缓冲跨请求累积，不加序号就会「复读上一轮」，看门狗还会误判。
+expect "native 日志带全局序号" "$JNI" 'g_diagSeq'
+expect "Kotlin 侧按序号只消费本轮日志" "$CLIENT" 'nativeLogSeq'
 expect "首字预算由预热耗时决定" "$CLIENT" 'warmupMs in 1\.\.WARMUP_SLOW_HINT_MS'
 expect "生成中途卡住也有上限" "$CLIENT" 'GEN_STALL_TIMEOUT_MS'
 # 编译优化级别必须在运行时自报，否则「慢 50 倍」永远只能靠猜

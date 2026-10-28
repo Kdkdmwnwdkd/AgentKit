@@ -27,6 +27,17 @@ interface AgentTool {
     val needsApproval: Boolean get() = false
 
     /**
+     * 按**本次入参**决定要不要审批（W-79）。
+     *
+     * 默认沿用 [needsApproval]，行为与旧版逐字节一致；需要「看参数才知道危不危险」的
+     * 工具覆盖它。目前只有 `shell_run` 用到：`ls`、`cat`、`grep` 这类只读命令没有副作用，
+     * 每次都弹窗只会训练用户闭眼点「允许」，反而让真正危险的 `rm -rf` 失去拦截意义。
+     *
+     * 判定规则见 [com.example.agentkit.core.agent.ShellCommandRules]（纯函数、有单测）。
+     */
+    fun needsApprovalFor(args: JsonObject): Boolean = needsApproval
+
+    /**
      * 是否只读（T03）：true = 无副作用可并行；false = 写操作须串行。
      * 不标注 = false（保守走串行）。
      */

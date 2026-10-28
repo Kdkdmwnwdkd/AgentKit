@@ -9,6 +9,8 @@
 
 #include <jni.h>
 #include <android/log.h>
+#include <fcntl.h>
+#include <unistd.h>
 #include <atomic>
 #include <chrono>
 #include <cstdarg>
@@ -27,15 +29,24 @@
 namespace {
 
 /**
- * 进程内诊断回路：最近 80 条 native 日志。
+ * 进程内诊断回路：最近 80 条 native 日志，每行带一个**进程级单调序号**。
  *
  * 存在的理由很实在——native 的 logcat 用户在手机上看不到，而「本地模型一句话都不回」
  * 这类问题的全部线索（tokenize 成不成功、decode 返回几、prefill 花了多久、首个 token
  * 是什么）都只在这层。把这些行回传给 Kotlin，用户翻「运行日志」就能把原因带给我，
  * 不需要连电脑抓 logcat。
+ *
+ * **为什么必须带序号**：这个环形缓冲是进程级的，跨请求累积。Kotlin 侧每个请求新建
+ * 一个「已读集合」去重，等于第一轮把缓冲里**上一轮**的几十行全当新行又打了一遍 ——
+ * 真机日志里出现过「第二轮 1.5 秒内复读出上一轮 13436ms 的预热行」，用户以为是又卡了
+ * 13 秒；更糟的是看门狗拿这个假的 warmupMs 去算首字预算。序号让「这一轮到底产出了
+ * 哪些行」变成一个确定的事实，而不是靠猜。
  */
 std::mutex diagMu;
-std::deque<std::string> diagLines;
+std::deque<std::pair<long long, std::string>> diagLines;
+
+/** 已写入诊断回路的行数（也从 1 开始，0 表示「还没读过任何行」）。 */
+std::atomic<long long> g_diagSeq{0};
 
 /** 同时写 logcat 与诊断回路（va_list 两个消费者，必须 copy）。 */
 void diagPrintf(int prio, const char* fmt, ...) {
@@ -48,8 +59,10 @@ void diagPrintf(int prio, const char* fmt, ...) {
     const int n = vsnprintf(buf, sizeof(buf), fmt, ap2);
     va_end(ap2);
     if (n <= 0) return;
+    const long long seq = g_diagSeq.fetch_add(1) + 1;
     std::lock_guard<std::mutex> lk(diagMu);
-    diagLines.emplace_back(buf, static_cast<size_t>(n < static_cast<int>(sizeof(buf)) ? n : static_cast<int>(sizeof(buf)) - 1));
+    diagLines.emplace_back(seq, std::string(buf, static_cast<size_t>(
+        n < static_cast<int>(sizeof(buf)) ? n : static_cast<int>(sizeof(buf)) - 1)));
     while (diagLines.size() > 80) diagLines.pop_front();
 }
 
@@ -175,8 +188,26 @@ bool tokenizeAll(const llama_vocab* vocab, const std::string& text, std::vector<
 bool rebuildContext(LlamaInstance* inst);
 bool decodeExplicit(LlamaInstance* inst, const llama_token* toks, int32_t n, llama_pos pos0);
 
-/** prefill 单块上限（token）。见 decodeFrom 里对「为什么是 64」的说明。 */
-constexpr int PREFILL_CHUNK = 64;
+/**
+ * 把 [LlamaInstance::n_threads] 应用到当前 context（运行期生效，不重建）。
+ *
+ * 1.444 那版是「改线程 → 重建 context → 重测」，重建本身要几十毫秒且会清掉 KV。
+ * b4600 提供了 `llama_set_n_threads`，改线程池不需要动 context，代价可以忽略。
+ */
+void applyThreads(LlamaInstance* inst) {
+    if (!inst || !inst->ctx) return;
+    llama_set_n_threads(inst->ctx, inst->n_threads, inst->n_threads);
+}
+
+/**
+ * prefill 单块上限（token）。
+ *
+ * 早先是 64，理由是「进度别太碎、停止能尽快生效」。但真机上一轮轻聊 prompt 只有
+ * 83 token，被切成 64 + 19 两块：第二块只装 19 个 token，却要付一次完整的同步开销，
+ * prefill 16 tok/s 里相当一部分是这个固定成本。现在 abort 回调已能随时中断，
+ * 进度粒度不再是硬约束，改 128 —— 常见 prompt 一次算完，长 prompt 也不会太粗。
+ */
+constexpr int PREFILL_CHUNK = 128;
 
 /** 单 token 预热的判定阈值：超过它就认定「引擎本身慢」，与 prompt 长短无关。 */
 constexpr long long WARMUP_SLOW_MS = 8000;
@@ -191,8 +222,14 @@ constexpr long long WARMUP_SLOW_MS = 8000;
  *   - 1 token 就要 5 秒以上 → 慢在权重布局/线程/内存带宽，跟 prompt 长度无关；
  *   - 1 token 几十毫秒，但整段 prefill 很久 → 慢在批处理，调分块才有意义。
  *
- * 超过阈值且线程还能降时，先怀疑线程争用：8 核上开 8 线程跑极小 batch，同步开销
- * 常常比并行收益还大。降一次线程重建上下文重试，两次都慢就认命，但结论写进日志。
+ * **「慢一次就降线程」是错的（1.446 真机推翻了它）**：日志里同一台机器
+ * 「6 线程 13436 ms → 4 线程 170 ms」，看似线程越多越慢，其实那 13 秒是 2GB 权重
+ * 第一次被触碰的页错误 + Q4_K 重排，是一次性的；第二次无论几线程都是百毫秒级。
+ * 于是这一版改成：
+ *   ① 冷启动成本在 nativeInit 里就付掉（见「冷启动预热」）；
+ *   ② 这里慢一次先复测一次，取较快的那个；
+ *   ③ 两次都慢、且线程还能降，才动线程 —— 而且用 `llama_set_n_threads`
+ *      就地改，不重建 context、不清 KV。
  *
  * @return true 表示 tokens[0] 已进 KV 并记账（调用方应从下标 1 继续）
  */
@@ -215,12 +252,25 @@ bool warmupDecode(LlamaInstance* inst, const std::vector<llama_token>& tokens) {
     LOGI("预热 decode：1 token / %lld ms（%s）", ms,
          ms <= 400 ? "正常" : (ms <= WARMUP_SLOW_MS ? "偏慢" : "异常慢"));
 
+    if (ms > WARMUP_SLOW_MS) {
+        // 后台任务、发热降频、页缓存被回收都可能让单次计时失真。先复测一次，
+        // 用两次里较快的那个判定——真机上 13436 ms 与 170 ms 的差距就是这一条。
+        const long long again = probe();
+        if (again >= 0 && again < ms) {
+            LOGI("预热复测：1 token / %lld ms，取较快的 %lld ms（首次含冷启动成本）", again, again);
+            ms = again;
+        } else if (again >= 0) {
+            LOGI("预热复测：1 token / %lld ms（两次都慢，判定为真实算力）", again);
+        }
+    }
+
     if (ms > WARMUP_SLOW_MS && inst->n_threads > 4) {
         const int lower = std::max(4, inst->n_threads / 2);
-        LOGE("预热 %lld ms 过慢，线程 %d → %d 重建上下文后重试一次",
-             ms, inst->n_threads, lower);
+        LOGE("预热两次都超过 %lld ms，线程 %d → %d 就地重测（不重建上下文）",
+             WARMUP_SLOW_MS, inst->n_threads, lower);
         inst->n_threads = lower;
-        if (!rebuildContext(inst)) return false;
+        applyThreads(inst);
+        LOGI("线程已切到 %d，KV 保留 %zu token", inst->n_threads, inst->kvTokens.size());
         ms = probe();
         if (ms < 0) {
             LOGE("降线程后预热仍失败，本回合放弃");
@@ -298,11 +348,11 @@ bool decodeFrom(LlamaInstance* inst, std::vector<llama_token>& tokens, size_t fr
     LOGI("prefill 开始：从第 %zu 个起，共 %zu token，线程 %d，分块 %d",
          from, tokens.size(), inst->n_threads, std::min(inst->n_batch, PREFILL_CHUNK));
 
-    // 分块上限 64（而不是 n_batch 的 256）。
+    // 分块上限取 PREFILL_CHUNK（现在是 128，理由见它的定义）。
     //
-    // 块大小不影响总吞吐（llama.cpp 内部本来就按 ubatch 分趟），但决定「第一行进度
-    // 多久出现」。256 一块时，慢机上第一块本身就可能要一分钟以上，等于没有反馈，
-    // 用户和日志都只能干等。64 一块让「它在动」在几秒内就成立。
+    // 块大小不影响总吞吐（llama.cpp 内部本来就按 ubatch 分趟），但决定两件事：
+    // 第一行进度多久出现，以及要付几次「同步 + 启动」的固定成本。64 的时候一轮
+    // 83 token 的轻聊 prompt 被切成 64 + 19，第二块只装 19 个 token 却付一次全价。
     const int chunkCap = std::min(inst->n_batch, PREFILL_CHUNK);
 
     for (size_t i = from; i < tokens.size(); i += static_cast<size_t>(chunkCap)) {
@@ -357,7 +407,9 @@ bool rebuildContext(LlamaInstance* inst) {
     llama_context_params cp = llama_context_default_params();
     cp.n_ctx = nCtx;
     cp.n_threads = inst->n_threads;
-    cp.n_threads_batch = inst->n_threads;
+    // 与 nativeInit 同口径：prefill 多给两个核（见那边的说明）。
+    const int hwCores = static_cast<int>(std::thread::hardware_concurrency());
+    cp.n_threads_batch = std::min(hwCores, inst->n_threads + 2);
     cp.n_batch = std::min(inst->n_batch, std::min(nCtx, 256));
     cp.n_ubatch = std::min<uint32_t>(cp.n_batch, 512u);
     cp.no_perf = true;
@@ -419,6 +471,20 @@ Java_com_example_agentkit_core_llm_local_LlamaJni_nativeInit(
 
     auto* inst = new LlamaInstance();
 
+    // 预读提示：让内核在我们解析 GGUF 头部的同时，把权重从闪存拉进 page cache。
+    //
+    // mmap 只是建映射，真正读盘发生在第一次 decode 的页错误里 —— 2GB 权重按 4KB 页
+    // 随机触发，真机上实测 13 秒。POSIX_FADV_WILLNEED 是异步的顺序预读，和 mmap
+    // 共用同一份 page cache，能把这段时间压掉一大截（具体看闪存，UFS 3.x 通常能到
+    // 1 GB/s 以上）。失败了也不影响功能，只是回到「按需缺页」。
+    {
+        const int fd = ::open(path.c_str(), O_RDONLY);
+        if (fd >= 0) {
+            ::posix_fadvise(fd, 0, 0, POSIX_FADV_WILLNEED);
+            ::close(fd);
+        }
+    }
+
     llama_model_params mparams = llama_model_default_params();
     mparams.n_gpu_layers = nGpuLayers;
     mparams.use_mmap = true;    // 内存映射：启动快、峰值可控
@@ -444,13 +510,15 @@ Java_com_example_agentkit_core_llm_local_LlamaJni_nativeInit(
     // 把能用的核都拉上更快。之前两者都钉在 nThreads（大核数），长 prompt 的 prefill
     // 因此被白白拖慢一倍以上。
     const int hwCores = static_cast<int>(std::thread::hardware_concurrency());
-    // prefill 线程数**不再上浮**到全部核心。
+    // prefill 线程数：比生成多 2 个，上限 8。
     //
-    // 之前的写法是 max(nThreads, min(hwCores, 8))：用户设 6 线程，prefill 却跑 8 线程。
-    // 手机 SoC 是 4 大 + 4 小的异构结构，8 线程意味着每一步都要等小核，而且 ggml 的
-    // 线程池在「每线程分到的 token 很少」时几乎全花在同步上。真机上 158 token 的
-    // prefill 卡 180 秒不出来，这个过度并行是必须排除的嫌疑。
-    cparams.n_threads_batch = nThreads;
+    // 上一次把两者钉成同一个值，是为了排除「8 线程把 158 token 的 prefill 卡 180 秒」
+    // 这个嫌疑。现在根因已经查实（-O0 编译，与线程数无关），可以按两者的开销结构分开：
+    //   - 生成：每 token 要读一遍 2GB 权重，瓶颈是内存带宽，线程多了只是互相抢，
+    //     所以严格用用户设的值；
+    //   - prefill：一批 token 共享同一遍权重读取，瓶颈是纯算力，多用两个核是净赚。
+    // 上限 8 是因为手机 SoC 通常 4 大 + 4 小，再往上就全是小核了。
+    cparams.n_threads_batch = std::min(hwCores, nThreads + 2);
     // n_batch = 256：一次 llama_decode 吃进去的 token 上限。
     //
     // 这个值不影响吞吐（llama.cpp 内部本来就按 n_ubatch 分趟算），但它决定两件事：
@@ -490,6 +558,33 @@ Java_com_example_agentkit_core_llm_local_LlamaJni_nativeInit(
          cparams.n_threads, cparams.n_threads_batch,
          llama_vocab_n_tokens(inst->vocab),
          llama_vocab_bos(inst->vocab), llama_vocab_eos(inst->vocab));
+
+    // ---- 冷启动预热：把「权重第一次被触碰」的一次性成本付在加载阶段 ----
+    //
+    // 1.446 真机日志（同一台设备、同一个 3B Q4_K_M）：
+    //   模型加载 2993 ms（mmap 只建映射，没有读数据）
+    //   → 首次 decode 1 token 13436 ms
+    //   → 紧接着再 decode 1 token 170 ms
+    // 这 13 秒是 2GB 权重缺页 + Q4_K 重排，跟线程数、prompt 长度都无关，而且**只付一次**。
+    // 但它付在了用户最难受的位置：发完消息、看着空白的第 13 秒。
+    //
+    // 放到这里之后，用户看到的是「模型就绪，耗时 16 秒」，然后第一句话立刻开始出字。
+    // 顺带把 bos 记进账本：下一轮 prompt 也以 bos 开头，公共前缀正好复用这 1 个 token。
+    {
+        const llama_token bos = llama_vocab_bos(inst->vocab);
+        if (bos >= 0) {
+            const long long t0 = nowMs();
+            if (decodeExplicit(inst, &bos, 1, 0)) {
+                inst->kvTokens.push_back(bos);
+                LOGI("冷启动预热完成：1 token / %lld ms（含权重首次载入与重排，一次性成本）",
+                     nowMs() - t0);
+            } else {
+                LOGE("冷启动预热失败（decode 返回非 0），不影响后续，交由首轮 prefill 处理");
+            }
+        } else {
+            LOGI("模型没有 bos token，跳过冷启动预热");
+        }
+    }
     return reinterpret_cast<jlong>(inst);
 }
 
@@ -516,6 +611,10 @@ Java_com_example_agentkit_core_llm_local_LlamaJni_nativeStop(
 /**
  * 取 native 诊断文本（最近 80 行，含 LOGI/LOGE）。
  *
+ * 每行格式 `#<seq>|<正文>`。seq 让调用方只消费「本轮新产出的行」——不加这个，
+ * 进程级环形缓冲会把上一轮的预热/prefill 行原样复读一遍（见 diagLines 的注释）。
+ * 只要正文的旧解析方式（contains / find 正则）都还不受影响。
+ *
  * Kotlin 在生成结束后无条件读一次写进「运行日志」——native 的 logcat 用户在手机上
  * 看不到，而「本地模型不回话」的全部线索都在这层。这个函数只读取快照，不清空。
  */
@@ -525,12 +624,28 @@ Java_com_example_agentkit_core_llm_local_LlamaJni_nativeDiagnostics(
     std::string out;
     {
         std::lock_guard<std::mutex> lk(diagMu);
-        for (const auto& line : diagLines) {
-            out += line;
+        out.reserve(diagLines.size() * 96);
+        for (const auto& entry : diagLines) {
+            out += '#';
+            out += std::to_string(entry.first);
+            out += '|';
+            out += entry.second;
             out += '\n';
         }
     }
     return env->NewStringUTF(out.c_str());
+}
+
+/**
+ * 当前诊断序号（下一条日志会是 seq+1）。
+ *
+ * 调用方在**开始一轮生成前**取一次，之后只看 seq 更大的行，就等于「本轮 native 日志」。
+ * 返回 0 表示缓冲还没写过任何行（首次加载前）。
+ */
+JNIEXPORT jlong JNICALL
+Java_com_example_agentkit_core_llm_local_LlamaJni_nativeLogSeq(
+    JNIEnv* /*env*/, jobject /*thiz*/) {
+    return static_cast<jlong>(g_diagSeq.load());
 }
 
 /**

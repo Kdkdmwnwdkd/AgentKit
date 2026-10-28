@@ -219,7 +219,9 @@ class RegistryToolExecutor(
             GuardVerdict.Allow -> Unit
         }
 
-        if (tool.needsApproval && approval != null) {
+        // W-79：审批判定从「工具级布尔」细化到「参数级」——shell_run 的 `ls` 不该弹窗，
+        // `rm -rf` 必须弹。默认实现仍返回 needsApproval，其余工具行为不变。
+        if (tool.needsApprovalFor(call.arguments) && approval != null) {
             val approver = approval
             val allowed = try {
                 approver(tool, call.arguments)
