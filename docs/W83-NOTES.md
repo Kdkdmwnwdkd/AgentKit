@@ -124,7 +124,7 @@ GPU 装载失败（驱动拒绝分配设备内存、卸载模型层时报错）�
 所以 `ensureModelLoaded` 里有一条明确的兜底：**带 GPU 装载失败 → 打一行错误 → 用纯 CPU 重试一次**。
 退回一定要留话，否则又变成一次静默降级。
 
-## 6. 两个坑
+## 6. 六个坑
 
 **① 版本解码是位域，不是十进制。**
 `VK_MAKE_VERSION` = `major << 22 | minor << 12 | patch`。按十进制解析会得到
@@ -140,17 +140,74 @@ GPU 装载失败（驱动拒绝分配设备内存、卸载模型层时报错）�
 一开始写在它后面。`combine(...)` 在**属性初始化时**就要求值，此时后者还是 `null` ——
 表现为一进设置页就 NPE。Kotlin 不报编译错，只按声明顺序初始化字段。
 
+**④ NDK 的头是「一半的」Vulkan SDK。**
+`sysroot/usr/include/vulkan` 只有 `vulkan.h`（C 口），没有 `vulkan.hpp`、`spirv.hpp`、
+`vk_video/*`。ggml-vulkan 三样全要。解法是从宿主的 `libvulkan-dev` + `spirv-headers`
+拷到一个暂存目录，`target_include_directories(... BEFORE PRIVATE)` 挂上去；
+`-I` 必须排在 `-isystem` 前，且**绝不能**把 `/usr/include` 整个塞进去——那会让 glibc
+的头在 bionic 之前被找到。
+
+**⑤ bionic 到 API 28 才有 `aligned_alloc`，本项目 minSdk 是 26。**
+libc++ 的 `<cstdlib>` 里有 `using ::aligned_alloc _LIBCPP_USING_IF_EXISTS;`。
+符号不存在时这条 using 声明会「保留但解析不了」，平时没人引用就安静躺着；
+`ggml-vulkan-buffers.cpp` 的 `portable_aligned_malloc` 一引用就是
+`error: reference to unresolved using declaration`。
+
+补声明**必须早于 `<cstdlib>`**（名字查找发生在那一行），所以在源文件里 include 什么都不管用，
+只能 `-include` 一个兼容头；而且不能去改第三方源码——下次升级 llama.cpp 就丢。
+兼容头自己按 `__ANDROID_API__ < 28` 判空，用 `posix_memalign` 实现（API 16 起就有）。
+
+**⑥ Android 的 `libvulkan.so` 按 API 级别裁剪入口点，编译期看不出来。**
+第五次 CI：402 个目标全编过、shader 全生成，最后链接期只差一个符号。
+
+```
+ld.lld: error: undefined symbol: vkGetPhysicalDeviceFeatures2
+>>> did you mean: vkGetPhysicalDeviceFeatures
+>>> defined in: sysroot/usr/lib/aarch64-linux-android/26/libvulkan.so
+```
+
+它是 **Vulkan 1.1** 的核心函数，而 Android 的 loader 从 **API 28（Android 9）** 才导出 1.1 的
+入口点；minSdk 26 链接时取的是 `android26` 的桩，那份桩只有 1.0。`vulkan.h` 是完整头文件
+（1.3 的类型、PFN 全在），所以**编译期一点错都不会有**——错误全部推迟到最后一步。
+
+两条路，选的是后者：
+
+| 做法 | 后果 |
+|---|---|
+| 改去链 API 28 的桩 | 能链过，但 Android 8.x 上 `libvulkan.so` 没这个符号，急绑定会让**整个 .so 加载失败**，连纯 CPU 推理一起废 |
+| 自己定义这个符号，运行时转发 | 任何设备都能加载；有真身就转发，没有就填零 |
+
+`vulkan-entry-shim.cpp` 就是后者：`dlopen` 设备上真实的 loader → `dlsym` 找真身 →
+找到就原样转发，找不到（Android 8.x）就把可选特性按「全不支持」填零。
+填零不会让老机器误判成「能用 GPU」：`ggml_vk_instance_init()` 的 1.2 门槛紧接着就会拒掉它，
+这里只负责**不崩**。
+
+一个必须避开的陷阱：**不能用 `RTLD_DEFAULT` 去查**。本文件定义的符号就在全局作用域里，
+那样查到的会是自己，转发变成无限递归——一进 GPU 初始化就栈溢出。必须对 `dlopen` 的句柄查。
+
 ## 7. 验证
 
-`scripts/qa/run-vulkan-backend-verification.sh`：**79 条断言**。
+`scripts/qa/run-vulkan-backend-verification.sh`：**94 条断言**（APK 在场时 98 条）。
 
-- 静态 37 条：CMake 分支、环境变量、编译期宏、链接、JNI 符号、版本探测、装载路径、CI 四件套与暂存目录；
-- 行为 40 条：真编真跑（`kotlin-compiler-embeddable`）。覆盖「1.1 判不可用」「1.2 刚好够」「版本位域解码」
-  「`Vulkan 1.3` 带前缀也能解析」「Mali 是需验证不是不可用」「强制也不越过版本不够」
-  「包没编时哪怕 Adreno 也是 0 层」「降级链不会空」。
-- 产物 2 条：`readelf` 找 `libvulkan.so`、`strings` 找 `ggml_vulkan:` 前缀（无产物时 SKIP）。
+- 静态 52 条：CMake 分支、环境变量、编译期宏、链接、JNI 符号、版本探测、装载路径、CI 四件套与暂存目录、`aligned_alloc` 兼容层、1.1 入口兜底；
+- 行为 42 条：一部分真编真跑 Kotlin（`kotlin-compiler-embeddable`），覆盖「1.1 判不可用」「1.2 刚好够」
+  「版本位域解码」「`Vulkan 1.3` 带前缀也能解析」「Mali 是需验证不是不可用」「强制也不越过版本不够」
+  「包没编时哪怕 Adreno 也是 0 层」「降级链不会空」；另一部分用**假 loader** 复现 run 459：
+  一个只导出 1.0 符号的 `libvulkan.so` + `-Wl,--no-undefined` 就是那个链接错误，
+  再分别验证「没有真身时填零」「有真身时原样转发」两条分支。
+- 产物 4 条：`readelf` 找 `libvulkan.so`、`strings` 找 `ggml_vulkan:`、`nm -D` 确认
+  `vkGetPhysicalDeviceFeatures2` 在 `.dynsym` 里被**定义**、`strings` 找 1.1 转发的日志前缀。
 
-静态 grep 抓不出「规则反了」，所以行为断言一律真编译真运行。
+静态 grep 抓不出「规则反了」，所以行为断言一律真编译真运行。链接断言还做了负对照：
+去掉兜底源文件，同一套命令必须报 `undefined reference to vkGetPhysicalDeviceFeatures2`——
+测试本身不红，等于没测。
+
+**行为段跑不起来时必须算失败。** 这条规则本身也踩过一次：`kotlinc` 在沙箱里是个
+自己拼 embeddable 编译器的 shim，位置与 stdlib 无关，脚本按 `dirname` 猜 stdlib 猜空，
+`java -cp` 少一个 jar，运行期第一句就 `NoClassDefFoundError`。断言一条都没跑，
+脚本却因为「没解析到 SUMMARY」而按 0 累加，照样报 `PASS=44 FAIL=0`、
+退出码 0 —— 全绿。现在找不到 `SUMMARY` 直接判失败，并把前几行输出打出来。
+**假绿比红更难发现，所以宁可误报红。**
 
 另外 `llama-jni.cpp` 全文件用 v0.7.0 的头做过 `-fsyntax-only` 编译（有无 `AK_HAS_VULKAN` 两种），
 避免出现「CI 编到 800 行才报错」的往返。

@@ -220,6 +220,13 @@ target_link_libraries(agentkit-llama
 # 静态库的 PRIVATE 依赖会以 $<LINK_ONLY:...> 传播，理论上够；显式再写一次是因为
 # 「理论上够」在这类交叉编译里失败过一次就够让人怀疑人生，成本只有一行。
 if (AK_HAS_VULKAN)
+    # 链接期必炸的一个符号：`vkGetPhysicalDeviceFeatures2` 是 Vulkan **1.1** 的核心函数，
+    # 而 Android 的 libvulkan.so 从 **API 28** 才导出 1.1 的入口点；本项目 minSdk 26，
+    # 链接时取的是 .../android26/libvulkan.so 桩，里面只有 1.0 的函数（run 459 的报错）。
+    #
+    # 不能拿 API 28 的桩去链：Android 8.x 机器上根本没这个符号，急绑定会让**整个 .so
+    # 加载失败**——纯 CPU 推理一起废。所以这里自己提供符号、运行时转发（见源文件注释）。
+    target_sources(agentkit-llama PRIVATE vulkan-entry-shim.cpp)
     target_link_libraries(agentkit-llama vulkan)
     # 让 C++ 侧用编译期事实回答「这个包装了 GPU 后端没有」（见 nativeGpuBackend）。
     # 用宏而不是让 Kotlin 写常量：常量要人同步，忘了改就会 UI 显示 GPU 可用、实际只有 CPU。

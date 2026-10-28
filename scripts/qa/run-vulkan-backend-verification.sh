@@ -126,6 +126,39 @@ has "兼容头用 posix_memalign 实现" "app/src/main/cpp/vulkan-aligned-compat
 # 说明里必须写明「为什么不能用 /usr/include」——否则下一个人会「顺手简化」成它。
 has "写明不能直接挂 /usr/include" "$CMAKELISTS" "绝不能直接把 /usr/include 塞进 -I"
 
+echo "== 静态：Vulkan 1.1 入口点要自己补（API 26 的库桩没有） =="
+
+# run 459：402 个目标全编过、shader 全生成，最后死在一个符号上：
+#   ld.lld: error: undefined symbol: vkGetPhysicalDeviceFeatures2
+# 它是 Vulkan **1.1** 的核心函数，Android 的 libvulkan.so 到 **API 28** 才导出；
+# minSdk 是 26，链接时拿的是 android26 的桩，里面只有 1.0。
+has "CMake 编入 1.1 入口兜底" "$CMAKELISTS" "vulkan-entry-shim.cpp"
+# 兜底文件必须落在 `if (AK_HAS_VULKAN)` 里面。写在 if 外面的话，CPU-only 构建
+# （Android Studio 里没有 glslc）会引用一个不存在的 Vulkan 头，本地开发全编不过。
+SHIM_LINE=$(grep -n "vulkan-entry-shim.cpp" "$CMAKELISTS" | head -1 | cut -d: -f1)
+GUARD_LINE=$(grep -n "^if (AK_HAS_VULKAN)" "$CMAKELISTS" |
+    awk -F: -v s="${SHIM_LINE:-0}" '$1 < s {l=$1} END{print l}')
+ENDIF_LINE=$(grep -n "^endif()" "$CMAKELISTS" |
+    awk -F: -v s="${SHIM_LINE:-0}" '$1 > s {print $1; exit}')
+if [ -n "${SHIM_LINE:-}" ] && [ -n "${GUARD_LINE:-}" ] && [ -n "${ENDIF_LINE:-}" ] &&
+    [ "$GUARD_LINE" -lt "$SHIM_LINE" ] && [ "$SHIM_LINE" -lt "$ENDIF_LINE" ]; then
+    pass "兜底只在开 Vulkan 时才编"
+else
+    fail "兜底只在开 Vulkan 时才编（不在 if (AK_HAS_VULKAN) 块里）"
+fi
+has "兜底提供了那个符号" "app/src/main/cpp/vulkan-entry-shim.cpp" "vkGetPhysicalDeviceFeatures2(VkPhysicalDevice physicalDevice"
+# 用 VKAPI_ATTR/VKAPI_CALL：armeabi-v7a 上它们是 pcs("aapcs-vfp")，
+# 手写签名编译能过、32 位设备一调就崩。
+has "兜底用 VKAPI_ATTR 声明" "app/src/main/cpp/vulkan-entry-shim.cpp" "extern \"C\" VKAPI_ATTR void VKAPI_CALL"
+# RTLD_DEFAULT 会查到我们自己 → 无限递归。这里只查代码形式（注释里会提到 RTLD_DEFAULT，
+# 上一版按裸词匹配把自己注释也判成了违规）。
+hasnt "兜底不用 RTLD_DEFAULT（会自递归）" "app/src/main/cpp/vulkan-entry-shim.cpp" "dlsym(RTLD_DEFAULT"
+has "兜底对 libvulkan 句柄 dlsym" "app/src/main/cpp/vulkan-entry-shim.cpp" 'dlsym(h, "vkGetPhysicalDeviceFeatures2")'
+# 老 loader 上没有这个函数：必须给零值而不是空指针，否则设备枚举阶段直接崩。
+has "兜底在无真身时填零" "app/src/main/cpp/vulkan-entry-shim.cpp" "pFeatures->features = VkPhysicalDeviceFeatures{}"
+# 不能拿 API 28 的桩去链——Android 8.x 上急绑定会让整个 .so 加载失败，连 CPU 一起废。
+has "写明不能改链 API 28 的桩" "app/src/main/cpp/vulkan-entry-shim.cpp" "连纯 CPU 推理一起废掉"
+
 echo "== 行为：真编一遍（规则反了静态 grep 抓不出来） =="
 
 KOTLINC=""
@@ -306,6 +339,67 @@ KOTLIN
     rm -rf "$WORK"
 fi
 
+echo "== 行为：1.1 兜底真的能替调用方补上符号 =="
+
+# run 459 的现场：402 个目标全编过，最后死在
+#   ld.lld: error: undefined symbol: vkGetPhysicalDeviceFeatures2
+# 这里用「假 loader」把那个场景搬到本机：一个只导出 1.0 符号的 libvulkan.so
+# （正是 android26 桩的样子），加上 --no-undefined 复现链接失败；
+# 再跑起来验证两条分支——有真身就转发，没有就填零。
+if [ ! -f "${VKINC_CHK:-/usr/include}/vulkan/vulkan.h" ] || ! command -v g++ >/dev/null 2>&1; then
+    echo "  SKIP  本机没有 Vulkan 头或 g++（CI 里装了 libvulkan-dev，会跑这一段）"
+else
+    VKINC_CHK="${VKINC_CHK:-/usr/include}"
+    VKT="$(mktemp -d)"
+
+    # ① 假 loader：只有 1.0（缺 vkGetPhysicalDeviceFeatures2）
+    printf 'void vkGetInstanceProcAddr(void) {}\n' > "$VKT/only10.c"
+    gcc -shared -fPIC -o "$VKT/libvulkan.so" "$VKT/only10.c" 2>/dev/null
+    cat > "$VKT/main.cpp" <<'CPP'
+#include <vulkan/vulkan.h>
+
+extern "C" void vkGetPhysicalDeviceFeatures2(VkPhysicalDevice, VkPhysicalDeviceFeatures2*);
+
+int main() {
+    VkPhysicalDeviceFeatures2 f{};
+    f.features.robustBufferAccess = VK_TRUE;   // 先置真，看兜底会不会按「不支持」清掉
+    vkGetPhysicalDeviceFeatures2(nullptr, &f);
+    return f.features.robustBufferAccess == VK_FALSE ? 0 : 1;
+}
+CPP
+    if g++ -std=c++17 -I"$VKINC_CHK" "$VKT/main.cpp" \
+        app/src/main/cpp/vulkan-entry-shim.cpp \
+        -L"$VKT" -lvulkan -Wl,--no-undefined -o "$VKT/t" 2>"$VKT/err.txt"; then
+        pass "1.1 兜底补上了链接期缺失的符号"
+    else
+        fail "1.1 兜底没补上符号（和 run 459 同一个报错）"
+        sed -n '1,6p' "$VKT/err.txt" | sed 's/^/        /'
+    fi
+    if [ -x "$VKT/t" ] && LD_LIBRARY_PATH="$VKT" "$VKT/t"; then
+        pass "loader 无 1.1 入口点时按「全不支持」填零（不崩）"
+    else
+        fail "loader 无 1.1 入口点时兜底没把特性清掉"
+    fi
+
+    # ② 假 loader 带真身：兜底必须原样转发（不能自己造结论）
+    cat > "$VKT/with11.c" <<'C'
+#include <vulkan/vulkan.h>
+void vkGetPhysicalDeviceFeatures2(VkPhysicalDevice pd, VkPhysicalDeviceFeatures2* f) {
+    (void) pd;
+    f->features.robustBufferAccess = VK_TRUE;   // 只有真身会置真
+}
+C
+    gcc -shared -fPIC -I"$VKINC_CHK" -o "$VKT/libvulkan11.so" "$VKT/with11.c" 2>/dev/null
+    mv "$VKT/libvulkan.so" "$VKT/libvulkan-only10.so" 2>/dev/null
+    cp "$VKT/libvulkan11.so" "$VKT/libvulkan.so"
+    if LD_LIBRARY_PATH="$VKT" "$VKT/t" 2>/dev/null; then
+        fail "有真身时兜底没转发（结果仍是填零）"
+    else
+        pass "loader 有 1.1 入口点时原样转发"
+    fi
+    rm -rf "$VKT"
+fi
+
 echo "== 产物：.so 里真的链上了 libvulkan =="
 
 # 「编了 Vulkan」和「链上了 Vulkan」是两件事。cmake 把 -DGGML_VULKAN=ON 收下、
@@ -337,6 +431,18 @@ else
                 pass "产物含 ggml-vulkan 代码（日志前缀在）"
             else
                 fail "产物里找不到 ggml_vulkan: 前缀，Vulkan 后端可能没被链接进去"
+            fi
+            # 兜底符号必须真的在 .so 里**定义**（而不是留成未定义引用）。
+            # 这条能同时证伪两件事：文件没编进目标、以及「改去链 API 28 的桩」。
+            if nm -D --defined-only "$SO" 2>/dev/null | grep -q " vkGetPhysicalDeviceFeatures2$"; then
+                pass "产物自己定义了 vkGetPhysicalDeviceFeatures2（1.1 兜底在位）"
+            else
+                fail "产物没有定义 vkGetPhysicalDeviceFeatures2，Android 8.x 上可能整库加载失败"
+            fi
+            if strings "$SO" 2>/dev/null | grep -q "Vulkan 1.1 转发"; then
+                pass "产物含 1.1 转发日志（走的是运行时转发而不是硬链）"
+            else
+                fail "产物里没有 1.1 转发日志，兜底可能没编进去"
             fi
         fi
     else
