@@ -135,8 +135,11 @@ jobs:
           # 盖掉 bionic 的，编译能过一阵子然后在莫名其妙的地方炸（或者更糟：链接到 glibc）。
           VKINC="$RUNNER_TEMP/vkinc"
           mkdir -p "$VKINC"
-          ln -sfn /usr/include/vulkan "$VKINC/vulkan"
-          ln -sfn /usr/include/spirv  "$VKINC/spirv"
+          ln -sfn /usr/include/vulkan   "$VKINC/vulkan"
+          ln -sfn /usr/include/spirv    "$VKINC/spirv"
+          # vulkan_core.h 里 include 了 vk_video/*（视频编解码结构体）。NV 的 coop-matrix
+          # 之类都在别处，但这一组是 core 头硬依赖，少一个就直接 fatal。
+          ln -sfn /usr/include/vk_video "$VKINC/vk_video"
 
           echo "glslc      = $GLSLC"
           echo "spirv-dir  = $SPIRV_DIR"
@@ -147,6 +150,7 @@ jobs:
           test -f "$SPIRV_DIR/SPIRV-HeadersConfig.cmake"
           test -f "$VKINC/vulkan/vulkan.hpp"
           test -f "$VKINC/spirv/unified1/spirv.hpp"
+          test -f "$VKINC/vk_video/vulkan_video_codec_h264std.h"
           {
             echo "AK_GLSLC=$GLSLC"
             echo "AK_SPIRV_DIR=$SPIRV_DIR"

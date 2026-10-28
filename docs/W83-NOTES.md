@@ -103,7 +103,9 @@ MIXED / PowerVR POOR）。**没有另写一份家族分支**：两份表早晚�
    所有入口点都走动态派发器，所以宿主头 + NDK 的 `libvulkan.so` 桩可以共存。
    但**不能直接把 `/usr/include` 塞进 `-I`**：`-I` 排在 `-isystem` 之前，
    glibc 的 `stdio.h` / `stdint.h` 会顶掉 bionic 的同名头。做法是把
-   `vulkan/` 与 `spirv/` 两个目录软链进一个空目录，只挂这一个。
+   `vulkan/`、`spirv/`、`vk_video/` 三个目录软链进一个空目录，只挂这一个。
+   第三个是第二次 CI 才发现的：`vulkan_core.h` 里 include 了
+   `vk_video/vulkan_video_codec_h264std.h`，少挂一个就是 fatal。
 
 1. **必须显式喂 `Vulkan_GLSLC_EXECUTABLE`**。交叉编译时 `FindVulkan` 自己 `find_program`
    会撞上 `CMAKE_FIND_ROOT_PATH`（只在 sysroot 里搜），必然失败。

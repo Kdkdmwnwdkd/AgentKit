@@ -112,6 +112,8 @@ has "CI 装 libvulkan-dev（拿 vulkan.hpp）" "$WORKFLOW" "libvulkan-dev"
 # 但不能把 /usr/include 整个挂上去：-I 排在 -isystem 前面，glibc 头会顶掉 bionic 的。
 has "做成只含 vulkan/ 的暂存目录" "$WORKFLOW" 'ln -sfn /usr/include/vulkan'
 has "同时挂 spirv/（spirv.hpp）" "$WORKFLOW" 'ln -sfn /usr/include/spirv'
+# vulkan_core.h 直接 include 了 vk_video/*，少挂一个就是 fatal error（第三次 CI 红的）。
+has "还挂 vk_video/（core 头的硬依赖）" "$WORKFLOW" 'ln -sfn /usr/include/vk_video'
 hasnt "不把 /usr/include 整个塞进 -I" "$WORKFLOW" 'AK_VULKAN_INCLUDE=/usr/include'
 has "CI 当场校验 vulkan.hpp 在" "$WORKFLOW" 'test -f "$VKINC/vulkan/vulkan.hpp"'
 has "CMake 缺 Vulkan-Hpp 会 FATAL" "$CMAKELISTS" "缺 Vulkan-Hpp"
