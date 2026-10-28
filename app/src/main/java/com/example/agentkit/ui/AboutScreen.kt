@@ -33,6 +33,10 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import android.os.Build
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import java.util.TimeZone
 import com.example.agentkit.core.update.UpdateChecker
 import kotlinx.coroutines.launch
 
@@ -52,6 +56,19 @@ fun AboutScreen(onOpenPermissionGuide: () -> Unit = {}) {
     val versionName = remember(ctx) {
         runCatching { ctx.packageManager.getPackageInfo(ctx.packageName, 0).versionName }
             .getOrNull() ?: "—"
+    }
+    // 「这一版是什么时候出的」直接读 APK 的安装时间戳 —— 它就是构建产物写入的时间，
+    // 比在 gradle 里塞 BuildConfig 字段省事，也不会因为 buildConfig 开关被关掉而编译失败。
+    //
+    // 时区显式钉成 Asia/Shanghai：CI 机器跑在 UTC，用默认时区会显示成凌晨四点，
+    // 和用户手机上看到的发布时间差 8 小时。
+    val buildTime = remember(ctx) {
+        runCatching {
+            val ts = ctx.packageManager.getPackageInfo(ctx.packageName, 0).lastUpdateTime
+            SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.CHINA)
+                .apply { timeZone = TimeZone.getTimeZone("Asia/Shanghai") }
+                .format(Date(ts))
+        }.getOrNull() ?: "—"
     }
 
     Column(Modifier.fillMaxWidth()) {
@@ -78,7 +95,7 @@ fun AboutScreen(onOpenPermissionGuide: () -> Unit = {}) {
                 )
                 Spacer(Modifier.height(AgentSpacing.space3))
                 Text(
-                    text = "版本 $versionName",
+                    text = "版本 $versionName  ·  $buildTime（北京时间）",
                     style = machineSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )

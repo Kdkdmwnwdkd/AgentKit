@@ -405,6 +405,16 @@ Java_com_example_agentkit_core_llm_local_LlamaJni_nativeInit(
     std::call_once(infoOnce, [] {
         const char* info = llama_print_system_info();
         if (info && *info) LOGI("后端能力：%s", info);
+        // 编译优化级别要在运行时亲口说出来。
+        //
+        // 「1 个 token 算 24 秒」那次排查绕了很久，就是因为没有任何一行日志能证明
+        // ggml 是按 -O0 编出来的。__OPTIMIZE__ 由编译器在 -O1 及以上时定义，
+        // 它缺失就说明整个 .so 是未优化的，后面所有性能调参都是白费力气。
+#ifdef __OPTIMIZE__
+        LOGI("编译优化：已开启（-O2/-O3 内核）");
+#else
+        LOGE("编译优化：未开启（-O0）！这次推理会慢几十倍，问题在构建参数而不是设备");
+#endif
     });
 
     auto* inst = new LlamaInstance();

@@ -22,6 +22,8 @@ CLIENT="$ROOT/app/src/main/java/com/example/agentkit/core/llm/local/LocalLlamaCl
 LOOP="$ROOT/app/src/main/java/com/example/agentkit/core/agent/RealAgentLoop.kt"
 VM="$ROOT/app/src/main/java/com/example/agentkit/ui/ChatViewModel.kt"
 SETTING="$ROOT/app/src/main/java/com/example/agentkit/core/llm/local/LocalLlamaSetting.kt"
+GRADLE="$ROOT/app/build.gradle.kts"
+ABOUT="$ROOT/app/src/main/java/com/example/agentkit/ui/AboutScreen.kt"
 
 pass=0
 fail=0
@@ -82,6 +84,11 @@ expect "启用 dotprod" "$CMAKE" 'armv8\.2-a\+dotprod'
 # aarch64 repack 把权重懒重排塞进第一次 decode：真机表现是「加载 5 秒正常，
 # 之后 158 token 的 prefill 卡满 180 秒没有任何进度」。宁可少 10% 峰值也不能不出字。
 expect "关掉 aarch64 repack 权重重排" "$CMAKE" 'GGML_CPU_AARCH64 OFF'
+# 真机 1 token 要 24.5 秒的根因：AGP 给 debug 构建传 CMAKE_BUILD_TYPE=Debug，
+# 而 CMake 的 Debug flags 只有 -g（= -O0）。ggml 在 -O0 下点积退化成标量循环。
+expect "Debug 配置也强制 -O3" "$CMAKE" 'CMAKE_\$\{_lang\}_FLAGS_DEBUG "-O3'
+expect "给 ggml 每个 target 追加 -O3" "$CMAKE" 'target_compile_options\(\$\{_t\} PRIVATE -O3\)'
+expect "gradle 显式传 Release" "$GRADLE" 'DCMAKE_BUILD_TYPE=Release'
 reject "不再关掉 CPU 变体" "$CMAKE" 'GGML_CPU_ALL_VARIANTS ON'
 
 echo "[3/10] 加载前 CPU 自检（Kotlin）"
@@ -155,6 +162,10 @@ expect "prefill 分块小于逻辑批（进度不被大块吞掉）" "$JNI" 'std
 expect "prefill 线程不再上浮到全部核心" "$JNI" 'cparams.n_threads_batch = nThreads'
 expect "首字预算由预热耗时决定" "$CLIENT" 'warmupMs in 1\.\.WARMUP_SLOW_HINT_MS'
 expect "生成中途卡住也有上限" "$CLIENT" 'GEN_STALL_TIMEOUT_MS'
+# 编译优化级别必须在运行时自报，否则「慢 50 倍」永远只能靠猜
+expect "运行时自报是否带 -O 优化" "$JNI" '__OPTIMIZE__'
+# 「这一版什么时候出的」要按北京时间显示，不能拿 CI 的 UTC 糊弄
+expect "关于页构建时间固定北京时间" "$ABOUT" 'Asia/Shanghai'
 
 echo
 if [ "$fail" -eq 0 ]; then

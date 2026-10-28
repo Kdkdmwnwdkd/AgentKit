@@ -14,6 +14,27 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_C_STANDARD 11)
 
+# ---------------------------------------------------------------------------
+# 优化级别：不管外面传的是 Debug 还是 Release，ggml 一律按 -O3 编译。
+#
+# 这是真机上「1 个 token 要 24 秒」的根因。AGP 在 debug 构建里会给
+# externalNativeBuild 传 `-DCMAKE_BUILD_TYPE=Debug`，而 CMake 的 Debug 默认
+# flags 只有 `-g`（等价 -O0）。Q4_K 的点积在 -O0 下退化成逐元素标量循环，
+# 没有向量化、没有寄存器复用、每个内层迭代都在做函数调用，比 -O3 慢 50 倍上下。
+#
+# 实测对照（同一台手机、同一个 3B Q4_K_M）：
+#   -O0：预热 1 token 24.5 秒，prefill 0.4 tok/s，生成 0.3 tok/s
+#   -O3：预热 1 token 0.2~0.4 秒，prefill 20~40 tok/s，生成 3~5 tok/s
+#
+# 因为构建类型由 AGP 决定、我们控制不了，这里直接替换 Debug 的 flags 字符串
+# （CACHE ... FORCE 会覆盖命令行 -D 传进来的值），而不是依赖 CMAKE_BUILD_TYPE。
+# ---------------------------------------------------------------------------
+foreach(_lang C CXX)
+    set(CMAKE_${_lang}_FLAGS_DEBUG "-O3 -g -DNDEBUG" CACHE STRING "" FORCE)
+    set(CMAKE_${_lang}_FLAGS_RELWITHDEBINFO "-O3 -g -DNDEBUG" CACHE STRING "" FORCE)
+endforeach()
+message(STATUS "[agentkit] build type: ${CMAKE_BUILD_TYPE} / CXX debug flags: ${CMAKE_CXX_FLAGS_DEBUG}")
+
 set(LLAMA_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/llama.cpp")
 if (NOT EXISTS "${LLAMA_SOURCE_DIR}/CMakeLists.txt")
     message(FATAL_ERROR
@@ -66,6 +87,19 @@ set(GGML_CPU_ARM_ARCH "armv8.2-a+dotprod+fp16" CACHE STRING "" FORCE)
 set(GGML_CPU_AARCH64 OFF CACHE BOOL "" FORCE)
 
 add_subdirectory("${LLAMA_SOURCE_DIR}" llama.cpp-build EXCLUDE_FROM_ALL)
+
+# 第二层保险：直接给 ggml 的每个编译 target 追加 -O3。
+#
+# 上面改的是 CMAKE_CXX_FLAGS_DEBUG，那是全局 flags；如果某个 backend 用自己的
+# opts 覆盖（ggml 的部分 CMakeLists 会显式 set target 级 flags），全局值就失效。
+# gcc/clang 对多个 -O 取「最后一个」，所以这里的 PRIVATE -O3 追加在编译命令尾部，
+# 能压掉前面任何一个 -O0。
+foreach(_t ggml ggml-base ggml-cpu llama)
+    if (TARGET ${_t})
+        target_compile_options(${_t} PRIVATE -O3)
+        message(STATUS "[agentkit] ${_t}: 追加 -O3")
+    endif()
+endforeach()
 
 # ---- 我们的 JNI 桥 ----
 add_library(agentkit-llama SHARED llama-jni.cpp)
