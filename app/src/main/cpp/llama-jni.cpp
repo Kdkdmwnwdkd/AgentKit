@@ -543,6 +543,11 @@ Java_com_example_agentkit_core_llm_local_LlamaJni_nativeGenerate(
 
     const long long prefillStart = nowMs();
     if (!decodeFrom(inst, tokens, common, prefillStart)) {
+        // 用户点了停止 → 这不是失败，别去走三级自愈（那会把「停止」变成「再算两遍」）。
+        if (inst->stop.load()) {
+            LOGI("prefill 被用户停止，本回合直接结束（未产出文本）");
+            return env->NewStringUTF("");
+        }
         // 三级自愈，全部在 native 内完成，用户侧只体现为「这一次慢一点」：
         //   1) KV 已被 decodeFrom 重置 —— 排除账本脏；
         //   2) 分块缩到 512 —— 排除「单批太大被后端拒绝」；
@@ -553,6 +558,10 @@ Java_com_example_agentkit_core_llm_local_LlamaJni_nativeGenerate(
         inst->n_batch = std::min(inst->n_batch, 512);
         const long long retryStart = nowMs();
         if (!decodeFrom(inst, tokens, 0, retryStart)) {
+            if (inst->stop.load()) {
+                LOGI("prefill 重试期间被用户停止，本回合结束");
+                return env->NewStringUTF("");
+            }
             LOGE("小分块仍失败，重建上下文后重试");
             if (!rebuildContext(inst)) {
                 return env->NewStringUTF("");
