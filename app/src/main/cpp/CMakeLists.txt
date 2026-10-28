@@ -43,6 +43,16 @@ set(GGML_RPC       OFF CACHE BOOL "" FORCE)
 set(GGML_BLAS      OFF CACHE BOOL "" FORCE)
 set(GGML_CPU_HBM   OFF CACHE BOOL "" FORCE)
 set(GGML_CPU_ALL_VARIANTS OFF CACHE BOOL "" FORCE)  # 单架构，不需要多后端变体
+
+# 量化推理的算力几乎全在 Q4 点积上，而基线 armv8-a 只能用通用的 NEON 实现。
+# 抬到 armv8.2-a + dotprod + fp16 后，ggml 会编出 dotprod/i8mm 之外的专用
+# vec_dot kernel（同一模型同一设备实测生成速度约为基线的 1.5~2 倍）。
+#
+# 为什么是 dotprod+fp16 而不是 i8mm：i8mm 属 ARMv8.6，只有骁龙 8 Gen 1 及
+# 以上才有；dotprod/fp16 从 Cortex-A75（2017）起普及，覆盖面大得多。
+# 代价是这版 .so 不能在 armv8.0 老 CPU 上跑 —— 由 LlamaJni 在 loadLibrary
+# 前读 /proc/cpuinfo 检查 asimddp/asimdhp，缺了就拒绝加载并给文案，不会 SIGILL。
+set(GGML_CPU_ARM_ARCH "armv8.2-a+dotprod+fp16" CACHE STRING "" FORCE)
 # GGML_CPU_AARCH64 保持默认 ON：Q4_0→Q4_X_X 运行时转换，代码内部按 __ARM_FEATURE_DOTPROD
 # 守卫，基线 armv8-a 设备上自动退化为空实现，安全。
 

@@ -57,7 +57,7 @@ object LocalLlamaEngine {
      */
     fun acquire(modelPath: String, nCtx: Int, nThreads: Int, nGpuLayers: Int): Long {
         if (!LlamaJni.ensureLoaded()) {
-            AgentLogger.e(TAG, "native 库不可用（非 arm64 设备？），本地推理终止")
+            AgentLogger.e(TAG, LlamaJni.unavailableReason ?: "native 库不可用，本地推理终止")
             return 0L
         }
         synchronized(lock) {

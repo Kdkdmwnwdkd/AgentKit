@@ -10,6 +10,7 @@
 #include <jni.h>
 #include <android/log.h>
 #include <atomic>
+#include <chrono>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -30,7 +31,98 @@ struct LlamaInstance {
     const llama_vocab* vocab = nullptr;
     int n_batch = 2048;
     std::atomic<bool> stop{false};
+
+    /**
+     * KV cache（seq 0）当前持有的 token 序列 —— 增量 prefill 的账本。
+     *
+     * 对话每一轮都把「完整 prompt」交给 native（Kotlin 侧无状态：历史是消息列表，
+     * 模板每轮重渲染），若每次都从头 decode，首字延迟随对话长度线性增长：3000
+     * token 的历史在手机 CPU 上要重算好几秒，用户看到的就是「点了没反应」。
+     * 这里记下已进 KV 的 token，下一轮与新 prompt 求最长公共前缀，只补算差异段：
+     * 第二轮起（历史原样保留时）prefill 通常只剩「上一条回复 + 新提问」那几十个 token。
+     *
+     * 只维护一条序列：nativeGenerate 用 llama_batch_get_one，其 seq_id 固定为 0。
+     */
+    std::vector<llama_token> kvTokens;
+
+    /**
+     * 串行化生成：KV 账本是有状态的，两轮同时 decode 会互相踩。
+     * 锁只包住 nativeGenerate 本体（不包括 nativeStop —— 停止必须能随时生效）。
+     */
+    std::mutex genMu;
 };
+
+/** 单调时钟毫秒（只用于打点，不受系统时间调整影响）。 */
+long long nowMs() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+/**
+ * 返回 s 里可安全按 UTF-8 输出的字节数：末尾不完整的多字节序列先攒着。
+ *
+ * 一个汉字常被 BPE 切成 2~3 个 token，逐个 token 直接 NewStringUTF 必然出现
+ * 「半个字符」——Android 上表现为乱码方块，看起来像卡住或渲染坏了。
+ */
+size_t utf8SafeLen(const std::string& s) {
+    const auto* p = reinterpret_cast<const unsigned char*>(s.data());
+    size_t i = 0, safe = 0;
+    while (i < s.size()) {
+        const unsigned char c = p[i];
+        size_t need;
+        if (c < 0x80) need = 1;
+        else if ((c & 0xE0) == 0xC0) need = 2;
+        else if ((c & 0xF0) == 0xE0) need = 3;
+        else if ((c & 0xF8) == 0xF0) need = 4;
+        else { i++; safe = i; continue; }        // 非法首字节：原样吐出去，别卡住
+        if (i + need > s.size()) return i;       // 尾部不完整：留给下一片
+        i += need;
+        safe = i;
+    }
+    return safe;
+}
+
+/** 清空 KV 并同步账本（任何「账本与 KV 可能不一致」的路径都必须走这里）。 */
+void resetKv(LlamaInstance* inst, const char* why) {
+    if (!inst || !inst->ctx) return;
+    llama_kv_cache_clear(inst->ctx);
+    inst->kvTokens.clear();
+    if (why) LOGI("KV 会话重置：%s", why);
+}
+
+/** tokenize 整个 prompt（add_bos=true, parse_special=true）。失败返回 false。 */
+bool tokenizeAll(const llama_vocab* vocab, const std::string& text, std::vector<llama_token>& out) {
+    int n = llama_tokenize(vocab, text.c_str(), static_cast<int32_t>(text.size()),
+                           nullptr, 0, true, true);
+    if (n <= 0) return false;
+    out.resize(static_cast<size_t>(n));
+    n = llama_tokenize(vocab, text.c_str(), static_cast<int32_t>(text.size()),
+                       out.data(), n, true, true);
+    if (n <= 0) return false;
+    out.resize(static_cast<size_t>(n));
+    return true;
+}
+
+/**
+ * 把 tokens[from..] 分块 decode 进 KV，并把吃进去的 token 追加到账本。
+ *
+ * llama_batch_get_one 不带 pos：llama_decode 内部会按「KV 里最大位置 + 1」自动续号，
+ * 所以只要账本与 KV 一致，这里的分块 decode 就天然接在公共前缀之后。
+ */
+bool decodeFrom(LlamaInstance* inst, std::vector<llama_token>& tokens, size_t from) {
+    for (size_t i = from; i < tokens.size(); i += static_cast<size_t>(inst->n_batch)) {
+        size_t chunk = std::min(static_cast<size_t>(inst->n_batch), tokens.size() - i);
+        // get_one 不收 const 指针，但它只读不写
+        llama_batch batch = llama_batch_get_one(tokens.data() + i, static_cast<int32_t>(chunk));
+        if (llama_decode(inst->ctx, batch) != 0) {
+            LOGE("decode 失败（offset=%zu, chunk=%zu）", i, chunk);
+            resetKv(inst, "decode 失败，账本与 KV 已不可信");
+            return false;
+        }
+        inst->kvTokens.insert(inst->kvTokens.end(), tokens.begin() + i, tokens.begin() + i + chunk);
+    }
+    return true;
+}
 
 std::string jstringToStd(JNIEnv* env, jstring js) {
     if (!js) return {};
@@ -82,6 +174,9 @@ Java_com_example_agentkit_core_llm_local_LlamaJni_nativeInit(
     cparams.n_threads = nThreads;
     cparams.n_threads_batch = nThreads;
     cparams.n_batch = std::min(nCtx, 2048);
+    // FlashAttention：CPU 后端同样生效，长上下文（历史越长越明显）省内存也省时间。
+    // 个别 head 维度不受支持时 llama.cpp 会自己退回普通注意力并打 warning，不会崩。
+    cparams.flash_attn = true;
     inst->n_batch = cparams.n_batch;
     inst->ctx = llama_init_from_model(inst->model, cparams);
     if (!inst->ctx) {
@@ -181,6 +276,7 @@ Java_com_example_agentkit_core_llm_local_LlamaJni_nativeGenerate(
     auto* inst = reinterpret_cast<LlamaInstance*>(handle);
     if (!inst || !inst->ctx || !inst->vocab) return env->NewStringUTF("");
 
+    std::lock_guard<std::mutex> genLock(inst->genMu);
     inst->stop.store(false);
 
     // 缓存回调方法（每次调用取一次，开销可忽略）
@@ -195,31 +291,61 @@ Java_com_example_agentkit_core_llm_local_LlamaJni_nativeGenerate(
     std::string text = jstringToStd(env, prompt);
 
     // 1) tokenize（add_bos=true, parse_special=true）
-    int n = llama_tokenize(inst->vocab, text.c_str(), (int32_t) text.size(),
-                           nullptr, 0, true, true);
-    if (n <= 0) {
-        LOGE("tokenize 失败（长度探测=%d）", n);
+    std::vector<llama_token> tokens;
+    if (!tokenizeAll(inst->vocab, text, tokens)) {
+        LOGE("tokenize 失败（输入 %zu 字节）", text.size());
         return env->NewStringUTF("");
     }
-    std::vector<llama_token> tokens(static_cast<size_t>(n));
-    n = llama_tokenize(inst->vocab, text.c_str(), (int32_t) text.size(),
-                       tokens.data(), (int32_t) tokens.size(), true, true);
-    if (n <= 0) {
-        LOGE("tokenize 失败（正式=%d）", n);
-        return env->NewStringUTF("");
-    }
-    tokens.resize(static_cast<size_t>(n));
-    LOGI("prompt token 数: %d", n);
+    LOGI("prompt token 数: %zu", tokens.size());
 
-    // 2) 分块 decode 整个 prompt（超过 n_batch 时分多批，否则 llama_decode 直接报错）
-    for (size_t i = 0; i < tokens.size(); i += static_cast<size_t>(inst->n_batch)) {
-        size_t chunk = std::min(static_cast<size_t>(inst->n_batch), tokens.size() - i);
-        llama_batch batch = llama_batch_get_one(tokens.data() + i, (int32_t) chunk);
-        if (llama_decode(inst->ctx, batch) != 0) {
-            LOGE("prompt decode 失败（offset=%zu）", i);
-            return env->NewStringUTF("");
+    const int nCtx = static_cast<int>(llama_n_ctx(inst->ctx));
+
+    // 2) 超窗保护：历史长到塞满窗口时丢掉最旧的中段（保留首 token 的特殊标记）。
+    //    不这么做 llama_decode 直接失败，用户侧表现是「发了消息毫无反应」。
+    //    截断后前缀必然对不上，强制全量重算。
+    //    预算按「输入留 3/4、生成留 1/4」切，两边都不至于被对方饿死。
+    bool reuseDisabled = false;
+    const int genReserve = std::min(static_cast<int>(maxTokens), std::max(64, nCtx / 4));
+    const int inputCap = nCtx - genReserve - 8;
+    if (inputCap > 0 && static_cast<int>(tokens.size()) > inputCap) {
+        std::vector<llama_token> trimmed;
+        trimmed.reserve(static_cast<size_t>(inputCap));
+        trimmed.push_back(tokens.front());
+        trimmed.insert(trimmed.end(),
+                       tokens.end() - (inputCap - 1), tokens.end());
+        LOGI("prompt 超窗：%zu → %d token（丢弃最旧的中段）", tokens.size(), inputCap);
+        tokens.swap(trimmed);
+        reuseDisabled = true;
+    }
+    // 收下输入后还剩多少窗口，就最多生成多少（不再越过窗口，否则 decode 必失败）
+    const int genBudget = std::max(16, std::min(static_cast<int>(maxTokens),
+                                                nCtx - static_cast<int>(tokens.size()) - 1));
+
+    // 3) 增量 prefill：与上一轮已进 KV 的 token 求最长公共前缀
+    size_t common = 0;
+    if (!reuseDisabled) {
+        const size_t lim = std::min(tokens.size(), inst->kvTokens.size());
+        while (common < lim && tokens[common] == inst->kvTokens[common]) common++;
+    }
+    // 新 prompt 比账本短或在中途岔开：把 KV 回退到公共前缀末尾。
+    // 只删不补（common == kvTokens.size() 时无需动作），p1 < 0 表示删到末尾。
+    if (common < inst->kvTokens.size()) {
+        if (!llama_kv_cache_seq_rm(inst->ctx, 0, static_cast<llama_pos>(common), -1)) {
+            // 个别模型（滑窗/混合注意力）不支持部分删除：整块清掉重来，宁可慢也不能脏
+            LOGE("KV 部分回退失败（common=%zu），改为整块重算", common);
+            resetKv(inst, "部分回退失败");
+            common = 0;
+        } else {
+            inst->kvTokens.resize(common);
         }
     }
+
+    const long long prefillStart = nowMs();
+    if (!decodeFrom(inst, tokens, common)) {
+        return env->NewStringUTF("");
+    }
+    LOGI("prefill 完成：复用 %zu / 共 %zu token，补算 %zu，耗时 %lld ms",
+         common, tokens.size(), tokens.size() - common, nowMs() - prefillStart);
 
     // 3) 采样链：top-p 0.9 → temp 0.7 → dist(seed 1234)
     auto sparams = llama_sampler_chain_default_params();
@@ -228,13 +354,20 @@ Java_com_example_agentkit_core_llm_local_LlamaJni_nativeGenerate(
     llama_sampler_chain_add(smpl, llama_sampler_init_temp(0.7f));
     llama_sampler_chain_add(smpl, llama_sampler_init_dist(1234));
 
-    // 4) 生成循环：每 token 检查停止标志；遇到 EOS 停
+    // 4) 生成循环：每 token 检查停止标志；遇到 EOS 或窗口写满即停
     std::string out;
     out.reserve(1024);
-    char piece[256];
-    for (int i = 0; i < maxTokens; i++) {
+    char piece[512];
+    std::string pending;   // 跨 token 的 UTF-8 残片：凑满一个码点再回调，避免半个汉字变乱码
+    int produced = 0;
+    const long long genStart = nowMs();
+    for (int i = 0; i < genBudget; i++) {
         if (inst->stop.load()) {
             LOGI("生成被用户停止（已产出 %zu 字符）", out.size());
+            break;
+        }
+        if (static_cast<int>(inst->kvTokens.size()) >= nCtx) {
+            LOGI("上下文窗口写满（%d），停止生成", nCtx);
             break;
         }
         llama_token tok = llama_sampler_sample(smpl, inst->ctx, -1);
@@ -242,25 +375,54 @@ Java_com_example_agentkit_core_llm_local_LlamaJni_nativeGenerate(
             LOGI("命中 EOS");
             break;
         }
+
+        // token → 文本片段。缓冲区不够时按返回的所需长度重试一次
+        // （原实现直接 continue，会让该 token 既不进 KV 也不记账）。
         int pn = llama_token_to_piece(inst->vocab, tok, piece, sizeof(piece), 0, true);
-        if (pn <= 0) continue;
-        std::string s(piece, static_cast<size_t>(pn));
+        std::string s;
+        if (pn < 0) {
+            std::vector<char> big(static_cast<size_t>(-pn));
+            pn = llama_token_to_piece(inst->vocab, tok, big.data(), static_cast<int32_t>(big.size()), 0, true);
+            if (pn > 0) s.assign(big.data(), static_cast<size_t>(pn));
+        } else if (pn > 0) {
+            s.assign(piece, static_cast<size_t>(pn));
+        }
         out += s;
-        if (onToken && listener) {
-            jstring js = env->NewStringUTF(s.c_str());
+        pending += s;
+        const size_t safeLen = utf8SafeLen(pending);
+        if (safeLen > 0 && onToken && listener) {
+            std::string chunk = pending.substr(0, safeLen);
+            pending.erase(0, safeLen);
+            jstring js = env->NewStringUTF(chunk.c_str());
+            if (js) {
+                env->CallVoidMethod(listener, onToken, js);
+                env->DeleteLocalRef(js);
+            }
+        }
+        produced++;
+
+        // 下一个 token 的单条 batch；成功后才记入账本
+        llama_batch next = llama_batch_get_one(&tok, 1);
+        if (llama_decode(inst->ctx, next) != 0) {
+            LOGE("decode 失败（第 %d 个 token），重置会话", i);
+            resetKv(inst, "生成中 decode 失败");
+            break;
+        }
+        inst->kvTokens.push_back(tok);
+    }
+    // 收尾：残片不足一个码点时也要吐出去（多半是非法 UTF-8，原样交给上层）
+    if (!pending.empty() && onToken && listener) {
+        jstring js = env->NewStringUTF(pending.c_str());
+        if (js) {
             env->CallVoidMethod(listener, onToken, js);
             env->DeleteLocalRef(js);
         }
-        // 下一个 token 的单条 batch
-        llama_batch next = llama_batch_get_one(&tok, 1);
-        if (llama_decode(inst->ctx, next) != 0) {
-            LOGE("decode 失败（第 %d 个 token）", i);
-            break;
-        }
     }
 
+    const long long genMs = nowMs() - genStart;
     llama_sampler_free(smpl);
-    LOGI("生成完成：%zu 字符", out.size());
+    LOGI("生成完成：%d token / %zu 字符，%lld ms（%.1f tok/s）",
+         produced, out.size(), genMs, genMs > 0 ? produced * 1000.0 / genMs : 0.0);
     return env->NewStringUTF(out.c_str());
 }
 

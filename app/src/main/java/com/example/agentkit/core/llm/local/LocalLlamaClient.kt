@@ -20,6 +20,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
+import com.example.agentkit.core.llm.ChatStreamEvent
 import com.example.agentkit.core.llm.arrOrNull
 import com.example.agentkit.core.llm.objOrNull
 import com.example.agentkit.core.llm.primOrNull
@@ -40,8 +41,8 @@ import java.util.UUID
  *
  * 实例生命周期在 [LocalLlamaEngine]（进程级复用，避免每轮重新加载模型）。
  *
- * 流式（T01）：[LLMClient.streamChat] 暂用默认实现（chat() 整条 + 单条 Completed）；
- * 后续可接 SSE（llama.cpp 的 token 级增量回调转 TextDelta，工具调用仍走提示词协议解析）。
+ * 流式（T01/T02）：[streamText] 与 [streamChat] 都走 native 的 token 级回调，
+ * 边生成边上屏；工具调用因为走「整条 JSON」协议，首字符是 `{` 时改为一憋到底。
  */
 class LocalLlamaClient(
     private val engine: LocalLlamaEngine,
@@ -123,14 +124,72 @@ class LocalLlamaClient(
         )
     }.flowOn(Dispatchers.IO)
 
-    // —— 模型元信息 ————————————————————————————————————————————————
+    /**
+     * 流式对话（T02）：把 native 的 token 级回调做成逐字上屏。
+     *
+     * 与云端 Provider 的最大差异在工具调用：本地用的是「整条回复就是一个 JSON」的
+     * 提示词协议，所以首字符判定为 `{` 时**先憋着不吐**，等生成结束、解析出
+     * [ToolCall] 再整条 commit。否则用户会先看一屏 `{"tool":"shell_run","arg…`
+     * 乱码，再被工具卡替代 —— 比不流式更难看。
+     *
+     * 取消语义同 [streamText]：协程取消 → invokeOnClose → native 停止。
+     */
+    override fun streamChat(
+        messages: List<ChatMessage>,
+        tools: List<AgentTool>
+    ): Flow<ChatStreamEvent> = channelFlow {
+        ensureModelLoaded()
+        val prompt = buildPrompt(messages, tools)
+        AgentLogger.llmRequest(currentModelLabel(), messages.size, tools.size)
+        val startedAt = System.currentTimeMillis()
 
+        val acc = StringBuilder()
+        var decided = false
+        var looksLikeToolCall = false
+
+        val thread = Thread({
+            try {
+                engine.generate(prompt, setting.maxTokens) { piece ->
+                    acc.append(piece)
+                    if (!decided && acc.isNotBlank()) {
+                        decided = true
+                        looksLikeToolCall = acc.trimStart().startsWith("{")
+                    }
+                    if (decided && !looksLikeToolCall) {
+                        trySend(ChatStreamEvent.TextDelta(piece))
+                    }
+                }
+            } catch (t: Throwable) {
+                AgentLogger.e("LocalLlama", "流式生成异常", t)
+            }
+        }, "local-llama-stream")
+        thread.start()
+        invokeOnClose { engine.stop() }
+        thread.join()
+
+        val text = acc.toString()
+        val message = parseAssistant(text, tools)
+        // 判定像工具调用、最终却没解析出 ToolCall（JSON 不合法 / 工具名不在白名单）：
+        // 整段按普通文本补发一次，不让这轮回答凭空消失。
+        if (looksLikeToolCall && message.toolCalls.isEmpty() && message.content.isNotEmpty()) {
+            send(ChatStreamEvent.TextDelta(message.content))
+        }
+        AgentLogger.llmResponse(
+            currentModelLabel(),
+            text.isNotEmpty(),
+            System.currentTimeMillis() - startedAt,
+            "流式生成结束（${if (message.toolCalls.isEmpty()) "文本" else "工具 ${message.toolCalls.size} 个"}）"
+        )
+        send(ChatStreamEvent.Completed(message))
+    }.flowOn(Dispatchers.IO)
+
+    // —— 模型元信息 ————————————————————————————————————————————————
     override suspend fun listModels(): List<ModelInfo> =
         modelStore.catalog().map { ModelInfo(it.fileName, it.displayName, it.approxBytes.toInt()) }
 
     override suspend fun testPing(): PingResult {
         if (!LlamaJni.ensureLoaded()) {
-            return PingResult(0, "native 库不可用：当前设备 ABI 未编入（仅 arm64-v8a）")
+            return PingResult(0, LlamaJni.unavailableReason ?: "native 库不可用（仅 arm64-v8a）")
         }
         val name = setting.activeModel
         if (name.isBlank()) {

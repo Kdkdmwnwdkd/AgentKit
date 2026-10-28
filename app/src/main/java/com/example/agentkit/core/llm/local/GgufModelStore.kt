@@ -64,6 +64,14 @@ class GgufModelStore(private val context: Context) {
     /** 内置目录：按参数量升序，越靠后越吃内存。 */
     fun catalog(): List<GgufCatalogEntry> = listOf(
         GgufCatalogEntry(
+            fileName = "qwen2.5-0.5b-instruct-q4_k_m.gguf",
+            displayName = "Qwen2.5 0.5B Instruct",
+            url = "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf",
+            approxBytes = 398_000_000,
+            paramSize = "0.5B",
+            description = "体积最小、出字最快，闲聊与整理够用；复杂工具调用选 1.5B 起"
+        ),
+        GgufCatalogEntry(
             fileName = "qwen2.5-1.5b-instruct-q4_k_m.gguf",
             displayName = "Qwen2.5 1.5B Instruct",
             url = "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf",
