@@ -133,3 +133,63 @@ GitHub 就按匿名 IP 限流，然后返回 401/403。
    合并时**直接用分支 head 的 tree**。
 5. 中文文件名走 `contents` API 时 shell 里容易被截断/误解析，
    核对远端文件用网页或 raw 路径更稳。
+
+---
+
+## 五、2026-10-28 实测补充（W-79 推送这次）
+
+这一轮把「git push 走不通 → 用 API 造 commit」完整跑了一遍，四条结论值得记住：
+
+### 5.1 `git push` 的表现和判据
+
+```
+git ls-remote origin HEAD      → exit 124（40 秒超时，0 字节）
+curl https://github.com/.../info/refs → 45 秒超时
+TCP github.com:443             → 能连上（三次握手成功）
+```
+
+**TCP 能连、TLS 后无响应**，与 §1 的「DNS 落 198.18.x」是同一件事的两种表现。
+判据不要只看 TCP：`/dev/tcp` 通不代表能用，必须发一个真实 HTTP 请求。
+
+同时 `api.github.com` 正常 200。所以**读写都走 REST，不要碰 git 协议**。
+
+### 5.2 `Authorization` 头两种前缀都能用
+
+本轮 `Authorization: Bearer <PAT>` 请求 `/user`、`/git/trees`、`/actions/runs`
+全部 200。§2.1 记的「必须 `token` 前缀」不成立——两种都可，`Bearer` 更通用。
+遇到 401 先按 §3.1 重试，别急着换令牌。
+
+### 5.3 造 commit 的最小流程（13 个文件，一次成功）
+
+```text
+GET  /repos/{o}/{r}/git/trees/{base}?recursive=1      # 远端 path → blob sha
+本地 git ls-tree -r HEAD（配 -c core.quotepath=false）# 本地 path → blob sha
+差异集 = 本地有、远端 sha 不同或不存在
+POST /git/blobs   逐个上传（base64），得到新 blob sha
+POST /git/trees   { base_tree: base, tree: [{path,mode,type,sha}...] }
+POST /git/commits { message, tree, parents: [base] }
+PATCH /git/refs/heads/main { sha, force: false }
+```
+
+三个细节：
+
+- **必须 `core.quotepath=false`**。默认会把中文路径转成 `\346\211\271...`，
+  与 API 返回的 UTF-8 路径对不上，结果是把已有文档全判成「新增」，
+  再叠加「远端有本地无的不删」，看起来没坏，实际清单已经错了。
+- **只传差异文件，`base_tree` 用远端 head 的 tree**。本地历史落后远端时（本仓库常态），
+  这样能保住远端那些本地没有的文件（本轮 7 个 `core/build/*.kt`）。
+- **`.sh` 用 `100755`，其余 `100644`**。mode 传错会让脚本在 CI 里失去执行位。
+
+### 5.4 推完必须读回
+
+本轮推完做了一次逐文件比对：取新 commit 的 tree，与本地 `git ls-tree` 的 13 个
+blob sha 对照，**13/13 一致**，远端文件数 532 → 538（6 个新增）。
+
+只看 `PATCH ref` 返回 200 不算数——它只说明 ref 动了，不说明 tree 内容对。
+
+### 5.5 CI 与产物的口径
+
+- 本轮 run 447：17 个步骤全 success，`QA gate` 在列。
+- 日志汇总是 `PASS=57 SKIP=0 FAIL=0`，**57 是 QA 脚本个数**（`scripts/qa/run-*.sh`），
+  不是断言条数。对外说「N 条契约」时要么给脚本数，要么给断言数并注明口径。
+- APK 33.87 MB，Release `latest` 已更新，`versionName = 1.<run_number> = 1.447`。
