@@ -172,6 +172,67 @@ bool tokenizeAll(const llama_vocab* vocab, const std::string& text, std::vector<
     return false;
 }
 
+bool rebuildContext(LlamaInstance* inst);
+bool decodeExplicit(LlamaInstance* inst, const llama_token* toks, int32_t n, llama_pos pos0);
+
+/** prefill 单块上限（token）。见 decodeFrom 里对「为什么是 64」的说明。 */
+constexpr int PREFILL_CHUNK = 64;
+
+/** 单 token 预热的判定阈值：超过它就认定「引擎本身慢」，与 prompt 长短无关。 */
+constexpr long long WARMUP_SLOW_MS = 8000;
+
+/**
+ * 单 token 预热探针：把第一个 token 单独 decode 一次并计时。
+ *
+ * 这是把「算得慢」和「卡死」分开的最低成本手段 —— 只花 1 个 token 的代价。
+ * 3B Q4_K_M 在 8 核手机上，1 token 的 forward 正常是 100~400 ms。真机上出现过
+ * 「158 token 的 prefill 180 秒不出第一块」，那种情况下这行日志会直接给出答案：
+ *
+ *   - 1 token 就要 5 秒以上 → 慢在权重布局/线程/内存带宽，跟 prompt 长度无关；
+ *   - 1 token 几十毫秒，但整段 prefill 很久 → 慢在批处理，调分块才有意义。
+ *
+ * 超过阈值且线程还能降时，先怀疑线程争用：8 核上开 8 线程跑极小 batch，同步开销
+ * 常常比并行收益还大。降一次线程重建上下文重试，两次都慢就认命，但结论写进日志。
+ *
+ * @return true 表示 tokens[0] 已进 KV 并记账（调用方应从下标 1 继续）
+ */
+bool warmupDecode(LlamaInstance* inst, const std::vector<llama_token>& tokens) {
+    if (tokens.empty()) return false;
+
+    // 1 token 的 forward 不需要「最后一个 token 要 logits」之外的任何东西，
+    // decodeExplicit 天然满足（n=1 时 i==n-1）。
+    auto probe = [&]() -> long long {
+        const long long t0 = nowMs();
+        if (!decodeExplicit(inst, tokens.data(), 1, 0)) return -1;
+        return nowMs() - t0;
+    };
+
+    long long ms = probe();
+    if (ms < 0) {
+        LOGE("预热失败：连 1 个 token 都 decode 不了，本回合直接放弃（不进入长 prefill）");
+        return false;
+    }
+    LOGI("预热 decode：1 token / %lld ms（%s）", ms,
+         ms <= 400 ? "正常" : (ms <= WARMUP_SLOW_MS ? "偏慢" : "异常慢"));
+
+    if (ms > WARMUP_SLOW_MS && inst->n_threads > 4) {
+        const int lower = std::max(4, inst->n_threads / 2);
+        LOGE("预热 %lld ms 过慢，线程 %d → %d 重建上下文后重试一次",
+             ms, inst->n_threads, lower);
+        inst->n_threads = lower;
+        if (!rebuildContext(inst)) return false;
+        ms = probe();
+        if (ms < 0) {
+            LOGE("降线程后预热仍失败，本回合放弃");
+            return false;
+        }
+        LOGI("预热 decode 重试：1 token / %lld ms（线程 %d）", ms, inst->n_threads);
+    }
+
+    inst->kvTokens.push_back(tokens[0]);
+    return true;
+}
+
 /**
  * 显式构造 batch 并 decode：pos / seq_id / logits 全部手工填。
  *
@@ -229,12 +290,27 @@ bool decodeExplicit(LlamaInstance* inst, const llama_token* toks, int32_t n, lla
  */
 bool decodeFrom(LlamaInstance* inst, std::vector<llama_token>& tokens, size_t from,
                 const long long startedAt) {
-    for (size_t i = from; i < tokens.size(); i += static_cast<size_t>(inst->n_batch)) {
+    // 进门先留一行。之前 158 token 的 prefill 卡了 180 秒，日志里连「进没进 decode」
+    // 都判断不了，只能靠猜；有了这行，下一份日志一眼就能分出三种情况：
+    //   有「预热」但没「开始」 → 卡在 KV 回退/账本；
+    //   有「开始」但没「进度」 → 卡在 llama_decode 内部；
+    //   有进度但很慢         → 才是真的算力不够。
+    LOGI("prefill 开始：从第 %zu 个起，共 %zu token，线程 %d，分块 %d",
+         from, tokens.size(), inst->n_threads, std::min(inst->n_batch, PREFILL_CHUNK));
+
+    // 分块上限 64（而不是 n_batch 的 256）。
+    //
+    // 块大小不影响总吞吐（llama.cpp 内部本来就按 ubatch 分趟），但决定「第一行进度
+    // 多久出现」。256 一块时，慢机上第一块本身就可能要一分钟以上，等于没有反馈，
+    // 用户和日志都只能干等。64 一块让「它在动」在几秒内就成立。
+    const int chunkCap = std::min(inst->n_batch, PREFILL_CHUNK);
+
+    for (size_t i = from; i < tokens.size(); i += static_cast<size_t>(chunkCap)) {
         if (inst->stop.load()) {
             LOGI("prefill 被用户停止（已算 %zu / %zu token）", i, tokens.size());
             return false;
         }
-        const size_t chunk = std::min(static_cast<size_t>(inst->n_batch), tokens.size() - i);
+        const size_t chunk = std::min(static_cast<size_t>(chunkCap), tokens.size() - i);
         if (!decodeExplicit(inst, tokens.data() + i, static_cast<int32_t>(chunk),
                             static_cast<llama_pos>(i))) {
             // 中止：KV 已在 decodeExplicit 里对齐到账本，账本本身没动，可以直接留用。
@@ -281,8 +357,7 @@ bool rebuildContext(LlamaInstance* inst) {
     llama_context_params cp = llama_context_default_params();
     cp.n_ctx = nCtx;
     cp.n_threads = inst->n_threads;
-    cp.n_threads_batch = std::max(inst->n_threads,
-                                  std::min(static_cast<int>(std::thread::hardware_concurrency()), 8));
+    cp.n_threads_batch = inst->n_threads;
     cp.n_batch = std::min(inst->n_batch, std::min(nCtx, 256));
     cp.n_ubatch = std::min<uint32_t>(cp.n_batch, 512u);
     cp.no_perf = true;
@@ -359,7 +434,13 @@ Java_com_example_agentkit_core_llm_local_LlamaJni_nativeInit(
     // 把能用的核都拉上更快。之前两者都钉在 nThreads（大核数），长 prompt 的 prefill
     // 因此被白白拖慢一倍以上。
     const int hwCores = static_cast<int>(std::thread::hardware_concurrency());
-    cparams.n_threads_batch = std::max(nThreads, std::min(hwCores, 8));
+    // prefill 线程数**不再上浮**到全部核心。
+    //
+    // 之前的写法是 max(nThreads, min(hwCores, 8))：用户设 6 线程，prefill 却跑 8 线程。
+    // 手机 SoC 是 4 大 + 4 小的异构结构，8 线程意味着每一步都要等小核，而且 ggml 的
+    // 线程池在「每线程分到的 token 很少」时几乎全花在同步上。真机上 158 token 的
+    // prefill 卡 180 秒不出来，这个过度并行是必须排除的嫌疑。
+    cparams.n_threads_batch = nThreads;
     // n_batch = 256：一次 llama_decode 吃进去的 token 上限。
     //
     // 这个值不影响吞吐（llama.cpp 内部本来就按 n_ubatch 分趟算），但它决定两件事：
@@ -603,8 +684,19 @@ Java_com_example_agentkit_core_llm_local_LlamaJni_nativeGenerate(
         llama_kv_cache_seq_rm(inst->ctx, 0, static_cast<llama_pos>(common), -1);
     }
 
+    // common == 0 表示这一轮要从头算。先花 1 个 token 探一下引擎本身的吞吐，
+    // 把「引擎慢」和「prompt 长」在日志里彻底分开；探针成功时 tokens[0] 已进 KV，
+    // 所以下面的起点顺延一位。（KV 里已有前缀时不做探针，那 1 个 token 会白算。）
+    size_t prefillFrom = common;
+    if (prefillFrom == 0 && tokens.size() > 1) {
+        if (!warmupDecode(inst, tokens)) {
+            return env->NewStringUTF("");
+        }
+        prefillFrom = 1;
+    }
+
     const long long prefillStart = nowMs();
-    if (!decodeFrom(inst, tokens, common, prefillStart)) {
+    if (!decodeFrom(inst, tokens, prefillFrom, prefillStart)) {
         // 用户点了停止 → 这不是失败，别去走三级自愈（那会把「停止」变成「再算两遍」）。
         if (inst->stop.load()) {
             LOGI("prefill 被用户停止，本回合直接结束（未产出文本）");

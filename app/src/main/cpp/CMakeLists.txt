@@ -53,8 +53,17 @@ set(GGML_CPU_ALL_VARIANTS OFF CACHE BOOL "" FORCE)  # 单架构，不需要多�
 # 代价是这版 .so 不能在 armv8.0 老 CPU 上跑 —— 由 LlamaJni 在 loadLibrary
 # 前读 /proc/cpuinfo 检查 asimddp/asimdhp，缺了就拒绝加载并给文案，不会 SIGILL。
 set(GGML_CPU_ARM_ARCH "armv8.2-a+dotprod+fp16" CACHE STRING "" FORCE)
-# GGML_CPU_AARCH64 保持默认 ON：Q4_0→Q4_X_X 运行时转换，代码内部按 __ARM_FEATURE_DOTPROD
-# 守卫，基线 armv8-a 设备上自动退化为空实现，安全。
+# GGML_CPU_AARCH64 = OFF：显式关掉 aarch64 repack 权重布局。
+#
+# 这个开关打开时，模型里的 Q4_0/Q4_K 会在首次 decode 时被重排成 4x4/8x8 交错布局，
+# 换取更长的向量内积。理论上更快，但真机实测的表现是「加载 5 秒正常，第一次
+# decode 就再也不返回」——158 token 的 prefill 卡满 180 秒没有任何进度。
+# 重排是懒执行的，正好落在第一次 decode 里，且 b4600 这条路径在部分 ARM 设备上
+# 会反复重排（没有正确命中缓存），一次 forward 就够把预算烧光。
+#
+# 关掉它意味着走标准 NEON + dotprod 内核。IRIDIS 在同款设备上跑出 4.8 tok/s
+# 走的也是标准路径，说明这条路的绝对速度够用。宁可少 10% 峰值，也不要「不出字」。
+set(GGML_CPU_AARCH64 OFF CACHE BOOL "" FORCE)
 
 add_subdirectory("${LLAMA_SOURCE_DIR}" llama.cpp-build EXCLUDE_FROM_ALL)
 

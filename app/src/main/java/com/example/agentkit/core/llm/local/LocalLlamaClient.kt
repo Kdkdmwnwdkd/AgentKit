@@ -207,6 +207,7 @@ class LocalLlamaClient(
         // 这里改成「边等边把 native 新日志转进运行日志」，并提供卡死看门狗。
         val tap = NativeProgressTap()
         var stalled = false
+        var stalledBudget = 0L
         var cancelled = false
         var lastActivity = startedAt
         while (thread.isAlive) {
@@ -220,12 +221,16 @@ class LocalLlamaClient(
             }
             thread.join(POLL_INTERVAL_MS)
             if (tap.drain() > 0) lastActivity = System.currentTimeMillis()
+            val idleMs = System.currentTimeMillis() - lastActivity
             val noFirstToken = firstPieceAt.get() == 0L
-            if (noFirstToken && System.currentTimeMillis() - lastActivity > IDLE_TIMEOUT_MS) {
+            val budget = if (noFirstToken) firstTokenBudgetMs(tap.warmupMs) else GEN_STALL_TIMEOUT_MS
+            if (idleMs > budget) {
                 stalled = true
+                stalledBudget = budget
                 AgentLogger.e(
                     "LocalLlama",
-                    "本地推理 ${IDLE_TIMEOUT_MS / 1000}s 没有任何进展（未出首字），已中止本回合。" +
+                    "本地推理 ${idleMs / 1000}s 没有任何进展（未出首字=$noFirstToken，" +
+                        "预热 ${tap.warmupMs}ms，prefill 已算 ${tap.prefillDone}），中止本回合。" +
                         "native 诊断：\n${nativeDiagnostics()}"
                 )
                 engine.stop()
@@ -237,10 +242,23 @@ class LocalLlamaClient(
 
         if (stalled) {
             val tokens = Regex("→ (\\d+) token").find(nativeDiagnostics())?.groupValues?.get(1)
+            // 预热耗时是「这台设备跑不跑得动 3B」最直接的证据：1 个 token 就要好几秒，
+            // 换更长的 prompt 不可能变好，只能换模型；反之则多半是这一版的引擎问题，
+            // 让用户回传日志比让他换模型更有用。
+            val engineTooSlow = tap.warmupMs > WARMUP_SLOW_HINT_MS
             throw LocalInferenceException(
-                "本地模型 ${IDLE_TIMEOUT_MS / 1000} 秒没出第一个字" +
-                    (tokens?.let { "（这一轮 prompt 有 $it token，这台设备算不动）" } ?: "") +
-                    "。到「模型配置 → 本地模型」：关掉「Agent 模式」走轻聊档，或改用 qwen2.5-0.5b"
+                buildString {
+                    append("本地模型 ${stalledBudget / 1000} 秒没有任何进展，已中止")
+                    tokens?.let { append("（这一轮 prompt 有 $it token）") }
+                    append("。")
+                    if (engineTooSlow) {
+                        append("引擎光是算 1 个 token 就要 ${tap.warmupMs} ms，这台设备跑 3B 太吃力，")
+                        append("到「模型配置 → 本地模型」换 qwen2.5-0.5b 会顺畅得多。")
+                    } else {
+                        append("详情见「设置 → 数据 → 运行日志」的 LocalLlama 条目")
+                        append("（里面已有预热耗时与 prefill 进度，能直接定位卡在哪一步）。")
+                    }
+                }
             )
         }
         // 用户主动停止不算失败：prefill 阶段被打断时一个字都还没有，
@@ -288,8 +306,8 @@ class LocalLlamaClient(
     private fun digest(diag: String): String = diag.lineSequence()
         .filter { line ->
             listOf(
-                "nativeInit 成功", "prompt 长度", "prefill 完成", "生成完成",
-                "命中结束符", "生成为空"
+                "nativeInit 成功", "prompt 长度", "prefill 开始", "prefill 完成",
+                "预热", "生成完成", "命中结束符", "生成为空", "tokenize 失败"
             ).any { keyword -> line.contains(keyword) }
         }
         .joinToString(" ｜ ")
@@ -306,6 +324,14 @@ class LocalLlamaClient(
     private inner class NativeProgressTap {
         private val seen = LinkedHashSet<String>()
 
+        /** 预热 decode 的 1 token 耗时（-1 = 还没出现在日志里）。 */
+        var warmupMs: Long = -1L
+            private set
+
+        /** 最近一次 prefill 进度里的「已算 token 数」，用于超时文案。 */
+        var prefillDone: Int = 0
+            private set
+
         /** @return 本次是否有新行（用于判断「还在动」） */
         fun drain(): Int {
             val diag = runCatching { nativeDiagnostics() }.getOrDefault("")
@@ -316,7 +342,16 @@ class LocalLlamaClient(
                 if (t.isEmpty()) return@forEach
                 if (!seen.add(t)) return@forEach
                 fresh++
-                if (t.contains("进度") || t.contains("失败") || t.contains("prefill 完成")) {
+                // 预热耗时决定看门狗给多少预算：引擎 1 token 只要几百毫秒，
+                // 那 158 token 的 prefill 拖过 45 秒就一定是卡住而不是慢。
+                Regex("预热 decode(?: 重试)?：1 token / (\\d+) ms").find(t)
+                    ?.let { warmupMs = it.groupValues[1].toLong() }
+                Regex("prefill 进度：(\\d+) /").find(t)
+                    ?.let { prefillDone = it.groupValues[1].toInt() }
+                if (t.contains("进度") || t.contains("失败") ||
+                    t.contains("预热") || t.contains("prefill 开始") ||
+                    t.contains("prefill 完成")
+                ) {
                     AgentLogger.i("LocalLlama", t)
                 }
             }
@@ -579,13 +614,31 @@ class LocalLlamaClient(
         const val POLL_INTERVAL_MS = 1500L
 
         /**
-         * 「一点进展都没有」的容忍上限。
+         * 首字预算：不是固定 180 秒，而是看 native 的「预热 decode」结果。
          *
-         * 3B Q4 在手机 CPU 上 prefill 约 10~20 tok/s，1800 token 的首轮要 1~3 分钟；
-         * 短于这个数的超时会把「慢但正常」误判成卡死。超过它还没出首字，那就是真的
-         * 跑不动（模型过大 / 系统限频），不如明确报错让用户换小模型。
+         * 预热把 1 个 token 单独算一遍并计时，这个数字直接说明「引擎本身跑不跑得动」：
+         *   - 1 token 只要几百毫秒 → 引擎正常，158 token 的 prefill 拖过 45 秒就是卡住，
+         *     再等下去只是让用户干瞪屏幕；
+         *   - 1 token 就要好几秒   → 慢在设备/权重布局，给足 150 秒仍可能白等，
+         *     但至少不该在「它确实在算」的时候误杀；
+         *   - 还没探到              → 首次加载阶段偏慢，给 90 秒。
          */
-        const val IDLE_TIMEOUT_MS = 180_000L
+        fun firstTokenBudgetMs(warmupMs: Long): Long = when {
+            warmupMs in 1..WARMUP_SLOW_HINT_MS -> 45_000L
+            warmupMs > WARMUP_SLOW_HINT_MS -> 150_000L
+            else -> 90_000L
+        }
+
+        /** 预热超过这个数（ms）就认定「引擎对这台设备太重」，文案改推小模型。 */
+        const val WARMUP_SLOW_HINT_MS = 2_000L
+
+        /**
+         * 已经出字之后，两次出字之间的容忍上限。
+         *
+         * 生成阶段每 token 都要过一次全量权重，3B Q4 在手机上是 1~5 tok/s，
+         * 90 秒没有新字已经远超正常抖动，只可能是原地循环或卡在采样。
+         */
+        const val GEN_STALL_TIMEOUT_MS = 90_000L
 
         /**
          * 工具调用 JSON 最多憋多少字符。

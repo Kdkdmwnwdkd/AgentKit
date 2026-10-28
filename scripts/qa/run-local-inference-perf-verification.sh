@@ -63,10 +63,12 @@ reject() {
   fi
 }
 
-echo "[1/9] 增量 prefill（native）"
+echo "[1/10] 增量 prefill（native）"
 expect "KV 账本存在" "$JNI" 'std::vector<llama_token>[[:space:]]+kvTokens'
 expect "按公共前缀回退 KV" "$JNI" 'llama_kv_cache_seq_rm\('
-expect "只补算差异段" "$JNI" 'decodeFrom\(inst, tokens, common,'
+# 起点从公共前缀之后开始（common==0 时预热探针会先吃掉第 0 个 token，
+# 所以用 prefillFrom 承载「这一轮从哪继续」，语义仍是「只补算差异段」）。
+expect "只补算差异段" "$JNI" 'decodeFrom\(inst, tokens, prefillFrom,'
 expect "失败路径重置会话" "$JNI" 'resetKv\(inst,'
 # 断言的是「显式设定」而非「开启」：FA 在 CPU 后端按 head_dim/量化类型分派，
 # 个别组合会让 decode 直接失败（真机表现为一个字不出）。开启与否是调优决定，
@@ -74,28 +76,31 @@ expect "失败路径重置会话" "$JNI" 'resetKv\(inst,'
 expect "FlashAttention 显式设定" "$JNI" 'cparams\.flash_attn[[:space:]]*=[[:space:]]*(true|false)'
 expect "显式 pos 构造 batch（不依赖 get_one 隐式续号）" "$JNI" 'batch\.pos\[i\][[:space:]]*=[[:space:]]*pos0'
 
-echo "[2/9] 编译档位（CMake）"
+echo "[2/10] 编译档位（CMake）"
 expect "ARM 架构档位已显式指定" "$CMAKE" 'GGML_CPU_ARM_ARCH'
 expect "启用 dotprod" "$CMAKE" 'armv8\.2-a\+dotprod'
+# aarch64 repack 把权重懒重排塞进第一次 decode：真机表现是「加载 5 秒正常，
+# 之后 158 token 的 prefill 卡满 180 秒没有任何进度」。宁可少 10% 峰值也不能不出字。
+expect "关掉 aarch64 repack 权重重排" "$CMAKE" 'GGML_CPU_AARCH64 OFF'
 reject "不再关掉 CPU 变体" "$CMAKE" 'GGML_CPU_ALL_VARIANTS ON'
 
-echo "[3/9] 加载前 CPU 自检（Kotlin）"
+echo "[3/10] 加载前 CPU 自检（Kotlin）"
 expect "检测 asimddp" "$LOADER" 'asimddp'
 expect "检测 asimdhp" "$LOADER" 'asimdhp'
 expect "缺指令集时不 dlopen" "$LOADER" 'missingCpuFeatures\(\)\?\.let'
 
-echo "[4/9] 流式与窗口预算"
+echo "[4/10] 流式与窗口预算"
 expect "本地客户端覆盖 streamChat" "$CLIENT" 'override fun streamChat\('
 expect "工具调用 JSON 不逐字外泄" "$CLIENT" 'looksLikeToolCall'
 expect "生成预算受窗口约束" "$JNI" 'genBudget'
 
-echo "[5/9] 失败不许静默（真机「发了消息没反应」）"
+echo "[5/10] 失败不许静默（真机「发了消息没反应」）"
 expect "空输出抛本地推理异常" "$CLIENT" 'LocalInferenceException\('
 expect "空输出前先落 native 诊断" "$CLIENT" 'nativeDiagnostics\(\)'
 expect "本地异常不参与退避重试" "$LOOP" 'LocalInferenceException -> false'
 expect "本地异常不被译成网络提示" "$VM" 'as\? com\.example\.agentkit\.core\.llm\.local\.LocalInferenceException'
 
-echo "[6/9] 分词预算查询（llama_tokenize 返回负数 = 「需要多少」，不是失败）"
+echo "[6/10] 分词预算查询（llama_tokenize 返回负数 = 「需要多少」，不是失败）"
 # 这条是真机上「模型配好了但发不出去」的真凶：第一趟传 nullptr/0 问需求，
 # llama.cpp 装不下时返回 **-所需数**；写成 `n <= 0 → 失败` 会让每一个非空
 # prompt 在分词阶段就判死（加载成功、80ms 报错、一个字不出）。
@@ -103,18 +108,18 @@ expect "负数按「需要多少」转换" "$JNI" 'need = n < 0 \? -n : n'
 expect "第二趟仍不够时按新需求重试" "$JNI" 'need = -got'
 reject "不再把负返回值当分词失败" "$JNI" 'if \(n <= 0\) return false;'
 
-echo "[7/9] 慢要看得见（「等了几分钟还是一片空白」）"
+echo "[7/10] 慢要看得见（「等了几分钟还是一片空白」）"
 # 这一组守的是「过程可见 + 等待有上限」。真机上 3B 模型的 prefill 本来就要几十秒到
 # 几分钟，用户能忍「慢」，不能忍「不知道在不在动」。
 expect "prefill 分块进度可观测" "$JNI" 'prefill 进度：'
 expect "生成过程有进度打点" "$JNI" '生成进度：'
 expect "prefill 可被停止打断" "$JNI" 'prefill 被用户停止'
-expect "取消/卡死有等待上限" "$CLIENT" 'IDLE_TIMEOUT_MS'
+expect "取消/卡死有等待上限" "$CLIENT" 'firstTokenBudgetMs'
 expect "native 进度实时转入运行日志" "$CLIENT" 'NativeProgressTap'
 expect "工具 JSON 不会无限憋着不出字" "$CLIENT" 'TOOL_JSON_HOLD_MAX_CHARS'
 expect "重复惩罚（防原地循环）" "$JNI" 'llama_sampler_init_penalties'
 
-echo "[8/9] 本地轻聊档（prompt 长度决定首字延迟）"
+echo "[8/10] 本地轻聊档（prompt 长度决定首字延迟）"
 # 真机对照：同一台手机同一模型，7 token 的 prompt 首字 4.8 秒，
 # 1086 token 的 prompt 180 秒算不完 prefill。所以「默认发多少」必须锁死。
 expect "Agent 模式默认关" "$SETTING" 'KEY_AGENT_MODE, false'
@@ -123,7 +128,7 @@ expect "轻聊档剥掉设备上下文" "$CLIENT" '用户当前请求：'
 expect "轻聊档截断系统提示" "$CLIENT" 'LIGHT_SYSTEM_MAX_CHARS'
 expect "轻聊档限制历史条数" "$CLIENT" 'LIGHT_HISTORY_MESSAGES'
 
-echo "[9/9] 停止与状态一致性（「点了停止没反应」「答案原样重复一遍」）"
+echo "[9/10] 停止与状态一致性（「点了停止没反应」「答案原样重复一遍」）"
 # 中断回调：只靠「分块之间查 stop」，慢设备上要等一整块（几百 token）才生效。
 expect "decode 内部可中断" "$JNI" 'cparams.abort_callback = &abortCb'
 expect "重建上下文后仍可中断" "$JNI" 'cp.abort_callback = &abortCb'
@@ -138,6 +143,18 @@ expect "min-p 截长尾" "$JNI" 'llama_sampler_init_min_p'
 expect "线程默认随核数上浮" "$SETTING" 'coerceIn\(4, 6\)'
 # 后端能力必须自报，否则「慢」永远只能靠猜。
 expect "后端能力写进诊断" "$JNI" 'llama_print_system_info'
+
+echo "[10/10] 引擎自检（把「算得慢」和「卡死」分开）"
+# 连续三版都是「模型加载成功、然后一句也不出」，而日志里只有结束行，分不清
+# 是没进 decode、卡在 decode 内部、还是真的算得慢。这一组锁住三件让下次
+# 一份日志就能定案的事。
+expect "有单 token 预热探针" "$JNI" 'warmupDecode'
+expect "预热超阈值自动降线程重试" "$JNI" 'ms > WARMUP_SLOW_MS && inst->n_threads > 4'
+expect "prefill 前留下「开始」痕迹" "$JNI" 'prefill 开始：'
+expect "prefill 分块小于逻辑批（进度不被大块吞掉）" "$JNI" 'std::min\(inst->n_batch, PREFILL_CHUNK\)'
+expect "prefill 线程不再上浮到全部核心" "$JNI" 'cparams.n_threads_batch = nThreads'
+expect "首字预算由预热耗时决定" "$CLIENT" 'warmupMs in 1\.\.WARMUP_SLOW_HINT_MS'
+expect "生成中途卡住也有上限" "$CLIENT" 'GEN_STALL_TIMEOUT_MS'
 
 echo
 if [ "$fail" -eq 0 ]; then
