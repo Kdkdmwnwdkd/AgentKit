@@ -74,8 +74,11 @@ private fun testModelQuickSwitch() {
     }
     check("G4 指示条展示当前配置名 + 模型名 + 域名") {
         assertContains("G4", chat, "profileName = activeProfile?.name")
-        assertContains("G4", chat, "modelName = config.model")
-        assertContains("G4", chat, "host = hostOf(config.baseUrl)")
+        assertContains("G4", chat, "hostOf(config.baseUrl)")
+        // W-70：本地模式不再显示上个云端模型的 model 名，改显示模型文件 + 「设备内推理」。
+        // 断言锁「两条分支都存在」，不锁具体写法（原来写死 modelName = config.model 会误报）。
+        assertContains("G4", chat, "设备内推理")
+        assertContains("G4", chat, "config.model")
     }
     check("G5 未配置态点击走引导（onOpenModel），已配置态开切换弹窗") {
         assertContains("G5", chat, "if (modelReady) showModelSwitch = true else onOpenModel()")
