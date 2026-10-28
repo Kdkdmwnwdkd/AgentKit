@@ -1434,7 +1434,7 @@ private fun LocalModelsTab(vm: ChatViewModel) {
                 )
             } else {
                 Text(
-                    text = "先在下面「模型目录」下载一个（建议 1.5B 起步，手机内存紧张就选更小的）。",
+                    text = "先在下面「模型目录」下载一个（配置低先从 0.5B 试，要工具调用稳就 1.5B 起）。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -1497,7 +1497,7 @@ private fun LocalModelsTab(vm: ChatViewModel) {
         Spacer(Modifier.height(AgentSpacing.space3))
         if (models.isEmpty()) {
             Text(
-                text = "还没有模型：可以直接导入手机里已有的 .gguf，或从下方「模型目录」下载一个（建议 1.5B 起步）。",
+                text = "还没有模型：可以直接导入手机里已有的 .gguf，或从下方「模型目录」下载一个（低配先试 0.5B，常用 1.5B）。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -1632,7 +1632,7 @@ private fun LocalModelsTab(vm: ChatViewModel) {
         LocalParamField(
             label = "推理线程数",
             value = threads.toString(),
-            hint = "1 ~ 8，默认取 min(4, 大核数)",
+            hint = "1 ~ 8，默认取大核簇核心数（多数机型 4~6）",
             onValue = { vm.setLocalThreads(it.toIntOrNull() ?: return@LocalParamField) }
         )
         Spacer(Modifier.height(AgentSpacing.space3))
