@@ -150,6 +150,18 @@ fun ModelConfigScreen(vm: ChatViewModel, onBack: () -> Unit) {
         ConfigSanitizer.parseHeaderLines(headersText) != config.customHeaders ||
         bodyText.trim() != config.customBody
 
+    /** 把编辑区写回当前档案并回对话页（底部「保存」与顶部未保存提示条共用）。 */
+    val saveNow: () -> Unit = {
+        // 保存时统一过 ConfigSanitizer：剔除不可见字符、规范化 URL，避免带着 \u00A0 落盘
+        vm.updateConfig(
+            ConfigSanitizer.sanitized(baseUrl, apiKey, model, providerId).copy(
+                customHeaders = ConfigSanitizer.parseHeaderLines(headersText),
+                customBody = bodyText.trim()
+            )
+        )
+        onBack()
+    }
+
     Column(Modifier.fillMaxWidth()) {
         PageTopBar(title = AppDest.MODEL.title)
         // 切换档案会静默丢弃未保存编辑（编辑器随 config 重置）——档案是顶层上下文，
@@ -165,6 +177,29 @@ fun ModelConfigScreen(vm: ChatViewModel, onBack: () -> Unit) {
             selected = tab,
             onSelect = { tab = it }
         )
+        // W-70：供应商、Key、模型名都只存在编辑区，而「保存」按钮只在「模型」页签底部。
+        // 真机（2026-10-28 录屏）就这样：切到「本地模型」页签选好模型文件、测试连接也通过了，
+        // 人以为配好就退出——config 里还是 agnes，消息照旧发到云端。未保存时在任意页签顶部
+        // 留一条提示，不必回到「模型」页签才看得见入口。
+        if (dirty) {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = AgentSpacing.space5, vertical = AgentSpacing.space2)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.10f))
+                    .padding(start = AgentSpacing.space3, end = AgentSpacing.space2),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "改动还没保存，对话仍用旧配置",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.weight(1f)
+                )
+                AkTextButton(text = "保存", onClick = saveNow)
+            }
+        }
         Column(
             Modifier
                 .fillMaxWidth()
@@ -225,25 +260,18 @@ fun ModelConfigScreen(vm: ChatViewModel, onBack: () -> Unit) {
                                 if (model == ProviderDefaults.defaultModel(providerId) || model.isBlank()) {
                                     model = ProviderDefaults.defaultModel(id)
                                 }
-                                // W-23：切到内置模型时清掉残留的 Key/端点，避免"本地还带着 API"的困惑
+                                // W-70：切到内置模型时**只清端点、保留 Key**。W-23 当年连 Key 一起清，
+                                // 结果用户从本地切回云端发现要重填 Key（48 位的 Secret 谁记得住）。
+                                // 端点清空是为了不让「本地还带着 Agnes 地址」；Key 留着只是躺在配置里，
+                                // 本地客户端根本不读，回云端时还能直接用。
                                 if (id == ProviderCatalog.STYLE_LOCAL_LLAMA) {
-                                    apiKey = ""
                                     baseUrl = ""
                                 }
                                 providerId = id
                             }
                         },
                         dirty = dirty,
-                        onSave = {
-                            // 保存时统一过 ConfigSanitizer：剔除不可见字符、规范化 URL，避免带着 \u00A0 落盘
-                            vm.updateConfig(
-                                ConfigSanitizer.sanitized(baseUrl, apiKey, model, providerId).copy(
-                                    customHeaders = ConfigSanitizer.parseHeaderLines(headersText),
-                                    customBody = bodyText.trim()
-                                )
-                            )
-                            onBack()
-                        },
+                        onSave = saveNow,
                         onCancel = onBack
                     )
                 }
@@ -1423,11 +1451,11 @@ private fun LocalModelsTab(vm: ChatViewModel) {
                 AkOutlinedButton(
                     text = "切换为本地模型",
                     onClick = {
+                        // 只切 provider，不清 baseUrl/apiKey：清空后用户切回云端得重填 Key。
+                        // 本地客户端不读这两个字段，留着不影响推理，且切换可逆。
                         vm.updateConfig(
                             config.copy(
-                                providerId = com.example.agentkit.core.llm.ProviderCatalog.STYLE_LOCAL_LLAMA,
-                                baseUrl = "",
-                                apiKey = ""
+                                providerId = com.example.agentkit.core.llm.ProviderCatalog.STYLE_LOCAL_LLAMA
                             )
                         )
                     }

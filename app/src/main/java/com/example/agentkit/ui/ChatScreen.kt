@@ -131,6 +131,7 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.agentkit.core.ModelProfile
 import com.example.agentkit.core.TokenUsage
+import com.example.agentkit.core.llm.ProviderCatalog
 import java.util.Locale
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -199,8 +200,12 @@ fun ChatScreen(
     val sessionUsage by vm.sessionUsage.collectAsStateWithLifecycle()
     val listState = rememberLazyListState()
 
-    val modelReady =
-        config.baseUrl.isNotBlank() && config.apiKey.isNotBlank() && config.model.isNotBlank()
+    // W-70：本地推理不填 Base URL / Key，「三要素齐全」的判定会把本地模式误判成未配置，
+    // 于是顶栏显示「模型未配置」、点一下还把人送去配置页——真机反馈「切了本地像没用」。
+    // 就绪判定统一由 ChatViewModel.modelReady 给出（本地看模型文件、云端看三要素）。
+    val isLocalProvider = config.providerId == ProviderCatalog.STYLE_LOCAL_LLAMA
+    val localModelName by vm.localActive.collectAsStateWithLifecycle()
+    val modelReady by vm.modelReady.collectAsStateWithLifecycle()
 
     // v6：首次启动只弹一次引导。关掉即落盘，之后从对话页不再出现；
     // 模型配好后 modelReady 为真，也不会再弹（所以不需要额外的"已完成"标记）。
@@ -393,8 +398,12 @@ fun ChatScreen(
         // 未配置时整条变引导态（点此去配置），与空态「去配置模型」同语义。
         ModelIndicatorBar(
             profileName = activeProfile?.name,
-            modelName = config.model,
-            host = hostOf(config.baseUrl),
+            modelName = if (isLocalProvider) {
+                localModelName.ifBlank { "未选本地模型" }
+            } else {
+                config.model
+            },
+            host = if (isLocalProvider) "设备内推理" else hostOf(config.baseUrl),
             ready = modelReady,
             onClick = {
                 if (modelReady) showModelSwitch = true else onOpenModel()

@@ -257,12 +257,12 @@ fun AppScaffold(
 
     // P0（2026-10-21）：模型配好后的首次进入，自动带一次权限引导。
     // 「跳过 / 完成」会落 guide_seen，所以只可能打扰一次；之后入口留在权限中心，不再自动弹。
-    val config by vm.config.collectAsStateWithLifecycle()
+    // W-70：就绪判定必须走 VM 的单一口径，否则本地模式（Base URL/Key 本就为空）
+    // 会被当成「没配模型」，权限引导与聚光灯引导在这类用户身上永不触发。
+    val modelReady by vm.modelReady.collectAsStateWithLifecycle()
     var autoGuideChecked by remember { mutableStateOf(false) }
-    LaunchedEffect(route, config.baseUrl, config.apiKey, config.model) {
+    LaunchedEffect(route, modelReady) {
         if (autoGuideChecked) return@LaunchedEffect
-        val modelReady = config.baseUrl.isNotBlank() &&
-            config.apiKey.isNotBlank() && config.model.isNotBlank()
         if (!modelReady || route != AppDest.CHAT.route || guideSeen(ctx)) return@LaunchedEffect
         autoGuideChecked = true
         // 走正常的压栈路径：引导页按返回能回到对话，不会把用户困住
@@ -613,15 +613,13 @@ private fun ScreenHost(
     val ctx = LocalContext.current
     val anchors = remember { GuideAnchorRegistry() }
     var showSpotlight by remember { mutableStateOf(false) }
-    val config by vm.config.collectAsStateWithLifecycle()
+    val modelReady by vm.modelReady.collectAsStateWithLifecycle()
     LaunchedEffect(dest) {
         // 离开对话页必须收起：覆盖层是页面内的，不跟着路由走。只在进对话页时重新判断。
         if (dest != AppDest.CHAT) {
             showSpotlight = false
             return@LaunchedEffect
         }
-        val modelReady = config.baseUrl.isNotBlank() &&
-            config.apiKey.isNotBlank() && config.model.isNotBlank()
         if (modelReady && guideSeen(ctx) && !spotlightSeen(ctx)) showSpotlight = true
     }
 

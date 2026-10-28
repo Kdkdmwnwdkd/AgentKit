@@ -205,6 +205,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.Dispatchers
@@ -682,10 +683,26 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     private fun LocalLlamaEngineIsLoaded(): Boolean =
         LocalLlamaEngine.isLoaded
 
-    /** 选用某个已下载模型（立即生效；下次对话时引擎按参数加载/复用）。 */
+    /**
+     * 选用某个已下载模型（立即生效；下次对话时引擎按参数加载/复用）。
+     *
+     * W-70：**选模型 = 要用它对话**，所以这里同时把当前档案的 provider 切成 local。
+     * 真机反馈（2026-10-28 录屏 + 日志）：用户在配置页把供应商标成群「本地模型（内置）」、
+     * 测试连接显示「连接正常」，但那是编辑区的临时值——没点「保存」就没写进 config，
+     * 发消息时照旧打到 api.agnes-ai.cn，本地引擎一次都没启动。用户看到的是「配好了但用不了」。
+     *
+     * 这里**只改 providerId，不清 baseUrl/apiKey**：清空会让用户切回云端时得重填 Key
+     * （W-23 的清理是编辑态行为，不该落到已保存配置上）。本地客户端不读这两个字段，
+     * 留着无害，且让「本地 ⇄ 云端」切换可逆。
+     */
     fun setActiveLocalModel(fileName: String) {
         localSetting.activeModel = fileName
         _localActive.value = fileName
+        val current = _config.value
+        if (current.providerId != ProviderCatalog.STYLE_LOCAL_LLAMA) {
+            updateConfig(current.copy(providerId = ProviderCatalog.STYLE_LOCAL_LLAMA))
+            AgentLogger.i("Chat", "选中本地模型 $fileName → 当前档案切到本地推理")
+        }
     }
 
     /** 删除本地模型文件（正在加载的会先卸载）。 */
@@ -1229,6 +1246,31 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     /** 当前模型配置（已落盘，UI 直接消费）；= 当前生效 profile 的 config。 */
     private val _config = MutableStateFlow(ensureActiveConfig())
     val config: StateFlow<ModelConfig> = _config.asStateFlow()
+
+    /**
+     * 「当前配置足以开始对话」——**唯一真源**。
+     *
+     * W-70：原先三处各写一遍 `baseUrl && apiKey && model` 都非空（对话页指示条、
+     * 首启权限引导、聚焦提示），而本地模式这三项本来就该是空的：用户切到本地后
+     * 顶栏立刻显示「模型未配置」，点一下还把人送回配置页——这就是「切了像没用」。
+     *
+     * 云端看三要素，本地看有没有选模型文件。以后再加判断点请复用这里，不要再内联。
+     * 初值同步算一次（不走默认 false），否则首帧会闪一下「模型未配置」。
+     */
+    val modelReady: StateFlow<Boolean> =
+        combine(_config, _localActive) { cfg, local -> readyOf(cfg, local) }
+            .stateIn(
+                viewModelScope,
+                SharingStarted.Eagerly,
+                readyOf(_config.value, _localActive.value)
+            )
+
+    private fun readyOf(cfg: ModelConfig, localModel: String): Boolean =
+        if (cfg.providerId == ProviderCatalog.STYLE_LOCAL_LLAMA) {
+            localModel.isNotBlank()
+        } else {
+            cfg.baseUrl.isNotBlank() && cfg.apiKey.isNotBlank() && cfg.model.isNotBlank()
+        }
 
     /** 全部模型配置档案（配置页切换条消费）。 */
     val profiles: StateFlow<List<ModelProfile>> = _profiles.asStateFlow()
@@ -1836,6 +1878,14 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
      */
     private fun buildMainClient(): LLMClient {
         val c = _config.value
+        // W-70：把「这一次到底走谁」写进日志。真机排查「明明切了本地却还在跑云端」时，
+        // 这是唯一能自证的一行——provider 是不是 local-llama、baseUrl 还残留着哪家。
+        AgentLogger.i(
+            "Chat",
+            "主客户端 provider=${c.providerId.ifBlank { "—" }} " +
+                "model=${c.model.ifBlank { "—" }} " +
+                "base=${c.baseUrl.ifBlank { "—" }}"
+        )
         // W-21：每次取 client 前刷新备用 Key 池（增删/换档案即时生效）
         refreshKeyPool()
         return providerManager.create(
