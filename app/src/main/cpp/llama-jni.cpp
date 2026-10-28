@@ -284,7 +284,7 @@ bool rebuildContext(LlamaInstance* inst) {
     cp.n_threads_batch = std::max(inst->n_threads,
                                   std::min(static_cast<int>(std::thread::hardware_concurrency()), 8));
     cp.n_batch = std::min(inst->n_batch, std::min(nCtx, 256));
-    cp.n_ubatch = std::min(cp.n_batch, 512);
+    cp.n_ubatch = std::min<uint32_t>(cp.n_batch, 512u);
     cp.no_perf = true;
     cp.abort_callback = &abortCb;
     cp.abort_callback_data = inst;
@@ -369,7 +369,7 @@ Java_com_example_agentkit_core_llm_local_LlamaJni_nativeInit(
     cparams.n_batch = std::min(nCtx, 256);
     // 物理批固定 512 以内：ggml 的 kernel 在这个量级上缓存局部性最好，再大只是多占
     // 计算缓冲。逻辑批（n_batch）可以大于物理批，内部会分趟。
-    cparams.n_ubatch = std::min(cparams.n_batch, 512);
+    cparams.n_ubatch = std::min<uint32_t>(cparams.n_batch, 512u);
     // 关掉自带的性能计时：它每次都读时钟计数，纯 CPU 上这部分开销白付。
     cparams.no_perf = true;
     // 中断回调：让 decode 内部（而不只是分块边界）能立刻停下。
