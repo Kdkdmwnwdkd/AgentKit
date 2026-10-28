@@ -163,7 +163,9 @@ echo "== 行为：真编一遍（规则反了静态 grep 抓不出来） =="
 
 KOTLINC=""
 if command -v kotlinc >/dev/null 2>&1; then
-    KOTLINC="kotlinc"
+    # 解析成绝对路径。留在 PATH 里的裸命令名会让下面按 dirname 猜 stdlib 时
+    # 退化成 "./lib/kotlin-stdlib.jar"——CI 的 shim 在 /tmp/kotlinc/bin，猜出来必空。
+    KOTLINC="$(command -v kotlinc)"
 elif [ -x "$HOME/.sdkman/candidates/kotlin/current/bin/kotlinc" ]; then
     KOTLINC="$HOME/.sdkman/candidates/kotlin/current/bin/kotlinc"
 elif [ -x /opt/kotlinc/bin/kotlinc ]; then
@@ -308,6 +310,7 @@ KOTLIN
     STDLIB="${KOTLIN_STDLIB:-}"
     if [ -z "$STDLIB" ]; then
         for cand in \
+            "/tmp/kotlinc/lib/kotlin-stdlib.jar" \
             "$HOME/.sdkman/candidates/kotlin/current/lib/kotlin-stdlib.jar" \
             "/usr/share/kotlin/lib/kotlin-stdlib.jar" \
             "/opt/kotlinc/lib/kotlin-stdlib.jar" \
@@ -434,15 +437,19 @@ else
             fi
             # 兜底符号必须真的在 .so 里**定义**（而不是留成未定义引用）。
             # 这条能同时证伪两件事：文件没编进目标、以及「改去链 API 28 的桩」。
-            if nm -D --defined-only "$SO" 2>/dev/null | grep -q " vkGetPhysicalDeviceFeatures2$"; then
+            if ! command -v nm >/dev/null 2>&1; then
+                echo "  SKIP  没有 nm，跳过分组符号检查"
+            elif nm -D --defined-only "$SO" 2>/dev/null | grep -q " vkGetPhysicalDeviceFeatures2$"; then
                 pass "产物自己定义了 vkGetPhysicalDeviceFeatures2（1.1 兜底在位）"
             else
                 fail "产物没有定义 vkGetPhysicalDeviceFeatures2，Android 8.x 上可能整库加载失败"
             fi
-            if strings "$SO" 2>/dev/null | grep -q "Vulkan 1.1 转发"; then
+            # 日志串在 .so 里只能用纯 ASCII 找：strings 不认 UTF-8，中文一个字节都取不出来。
+            # 上一版拿中文串 grep，把「兜底其实编进去了」判成「没编进去」，白红一次。
+            if strings "$SO" 2>/dev/null | grep -q "vk11-shim"; then
                 pass "产物含 1.1 转发日志（走的是运行时转发而不是硬链）"
             else
-                fail "产物里没有 1.1 转发日志，兜底可能没编进去"
+                fail "产物里没有 vk11-shim 日志前缀，兜底可能没编进去"
             fi
         fi
     else

@@ -202,6 +202,10 @@ ld.lld: error: undefined symbol: vkGetPhysicalDeviceFeatures2
 去掉兜底源文件，同一套命令必须报 `undefined reference to vkGetPhysicalDeviceFeatures2`——
 测试本身不红，等于没测。
 
+产物里找日志串时只能用 ASCII：`strings` 不认 UTF-8，中文一个字节都取不出来。
+run 460 就因为拿中文串去 grep，把「兜底其实已经编进 .so」判成「没编进去」，
+在自己写的校验上白红一次。现在日志带 `vk11-shim:` 前缀，专供这条断言。
+
 **行为段跑不起来时必须算失败。** 这条规则本身也踩过一次：`kotlinc` 在沙箱里是个
 自己拼 embeddable 编译器的 shim，位置与 stdlib 无关，脚本按 `dirname` 猜 stdlib 猜空，
 `java -cp` 少一个 jar，运行期第一句就 `NoClassDefFoundError`。断言一条都没跑，

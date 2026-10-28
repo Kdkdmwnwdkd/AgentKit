@@ -56,6 +56,10 @@
 
 #if defined(__ANDROID__)
 #include <android/log.h>
+// 每条日志都带 `vk11-shim:` 这个纯 ASCII 前缀。不是为了好看：
+// 校验脚本要在 .so 里用 `strings` 找它，而 strings 只认 ASCII 可打印串，
+// 中文（UTF-8）一个字节都取不出来——上一版就是拿中文串去 grep，把「兜底明明编进去了」
+// 误判成「没编进去」，白红一次。
 #define AK_VK_LOGE(...) __android_log_print(ANDROID_LOG_ERROR, "AgentKitVk", __VA_ARGS__)
 #define AK_VK_LOGI(...) __android_log_print(ANDROID_LOG_INFO, "AgentKitVk", __VA_ARGS__)
 #else
@@ -73,13 +77,13 @@ using Features2Fn = PFN_vkGetPhysicalDeviceFeatures2;
 Features2Fn resolveReal() {
     void* h = ::dlopen("libvulkan.so", RTLD_NOW | RTLD_LOCAL);
     if (h == nullptr) {
-        AK_VK_LOGE("Vulkan 1.1 转发：dlopen libvulkan.so 失败（%s）", ::dlerror());
+        AK_VK_LOGE("vk11-shim: Vulkan 1.1 转发：dlopen libvulkan.so 失败（%s）", ::dlerror());
         return nullptr;
     }
     auto fn = reinterpret_cast<Features2Fn>(::dlsym(h, "vkGetPhysicalDeviceFeatures2"));
     // 句柄不 dlclose：这个指针会被长期持有，关掉句柄等于把代码段也交回去。
     if (fn == nullptr) {
-        AK_VK_LOGI("Vulkan 1.1 转发：本机 loader 无 vkGetPhysicalDeviceFeatures2（Android 9 以前）");
+        AK_VK_LOGI("vk11-shim: Vulkan 1.1 转发：本机 loader 无 vkGetPhysicalDeviceFeatures2（Android 9 以前）");
     }
     return fn;
 }
@@ -106,6 +110,6 @@ vkGetPhysicalDeviceFeatures2(VkPhysicalDevice physicalDevice, VkPhysicalDeviceFe
     static bool warned = false;
     if (!warned) {
         warned = true;
-        AK_VK_LOGE("Vulkan 1.1 转发：无 vkGetPhysicalDeviceFeatures2，可选特性按「全不支持」处理");
+        AK_VK_LOGE("vk11-shim: Vulkan 1.1 转发：无 vkGetPhysicalDeviceFeatures2，可选特性按「全不支持」处理");
     }
 }
