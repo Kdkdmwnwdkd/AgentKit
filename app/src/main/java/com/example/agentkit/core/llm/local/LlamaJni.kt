@@ -116,6 +116,21 @@ object LlamaJni {
     external fun nativeGpuProbe(): String
 
     /**
+     * 系统的 Vulkan 实例版本（VK_MAKE_VERSION 打包值，如 1.3.275 → 4206875），0 = 没有。
+     *
+     * 由 native 直接 `dlopen("libvulkan.so")` + `vkEnumerateInstanceVersion` 拿到，
+     * 与 ggml-vulkan 自己的判据是同一个量——不会出现「我们判可用、它一进初始化就抛」。
+     * 用 PackageManager 的 FeatureInfo.version 走过一次弯路：那个字段是 Int，
+     * 且各版本 Android 对它的编码不统一。
+     */
+    val vulkanApiVersion: Int by lazy {
+        if (!ensureLoaded()) return@lazy 0
+        runCatching { nativeVulkanVersion() }.getOrDefault(0)
+    }
+
+    external fun nativeVulkanVersion(): Int
+
+    /**
      * 原生层最近 80 条日志（tokenize 长度、prefill 复用/补算、decode 返回码、
      * 首个 token、空输出原因…），每行格式 `#<seq>|<正文>`。
      *

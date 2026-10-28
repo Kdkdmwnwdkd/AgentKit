@@ -300,6 +300,21 @@ object LocalDeviceRules {
      * 再判版本的话，会出现「骁龙 888 + Adreno 660 判定为可用，实际一开就抛」——
      * 这正是「看起来支持其实不支持」的典型错法。
      */
+    /**
+     * 把 `VK_MAKE_VERSION` 的打包值转成 `"1.3"` / `"1.1"`，0 或异常值返回 null。
+     *
+     * Vulkan 的版本编码是 `major << 22 | minor << 12 | patch`，不是十进制拼接。
+     * 按十进制去解析会得到天文数字，然后被判成「版本足够高」——正好反了。
+     */
+    fun formatVulkanVersion(packed: Int): String? {
+        if (packed <= 0) return null
+        val major = packed ushr 22
+        val minor = (packed ushr 12) and 0x3FF
+        // major 大于 10 的打包值不可能来自真实 loader，视为脏数据（防止把 -1 之类当成高版本）。
+        if (major <= 0 || major > 10) return null
+        return "$major.$minor"
+    }
+
     fun vulkanPath(profile: LocalDeviceProfile): Pair<GpuPath, String?> {
         val (gpu, _) = gpuOf(profile.glRenderer)
         if (gpu == GpuFamily.UNKNOWN) {

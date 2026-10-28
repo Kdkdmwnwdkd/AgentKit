@@ -24,9 +24,15 @@ if (api_version < VK_API_VERSION_1_2) {
    是**根本进不来**。
 2. 判定顺序必须是**先看版本、再看 GPU 家族**。反过来的话，骁龙 888 + Adreno 660 会被
    判成「可用」，用户点开之后静默退回 CPU——这正是「看起来支持、其实不支持」。
-3. 版本号不能靠猜，要从系统拿：`PackageManager.FEATURE_VULKAN_HARDWARE_VERSION`
-   自带版本串（`systemAvailableFeatures[].version`），不需要自己 `dlopen` 或建
-   `VkInstance`，零崩溃风险。
+3. 版本号必须问 loader 自己：`dlopen("libvulkan.so")` → `vkEnumerateInstanceVersion`。
+   这恰好是 ggml 自己的判据（`ggml_vk_instance_init` 第一件事就是调它），
+   所以我们预测的结果与它实际的行为是同一个量。
+
+   *走过的弯路*：第一版读 `PackageManager.FEATURE_VULKAN_HARDWARE_VERSION` 的
+   `FeatureInfo.version`。那个字段是 **Int**（按 String 读 CI 当场编不过：
+   `Type mismatch: inferred type is Int? but String? was expected`），而且不同
+   Android 版本对它的编码不统一。就算编过了，也只是把一个不确定的量当成了版本号。
+   只 `dlopen` + 调一个返回常量的函数，同样不建 instance、不碰 device。
 
 ## 2. 失败是静默的，所以判据必须有三道
 
@@ -118,21 +124,26 @@ GPU 装载失败（驱动拒绝分配设备内存、卸载模型层时报错）�
 
 ## 6. 两个坑
 
-**① `GGML_BACKEND_DEVICE_TYPE_IGPU` 也是 GPU。**
+**① 版本解码是位域，不是十进制。**
+`VK_MAKE_VERSION` = `major << 22 | minor << 12 | patch`。按十进制解析会得到
+天文数字，然后被判成「版本足够高」——正好反了。断言里专门喂了 `10003`（十进制
+编码的 1.3）确认它被判为脏值而不是「可用」。
+
+**② `GGML_BACKEND_DEVICE_TYPE_IGPU` 也是 GPU。**
 第一版只统计 `TYPE_GPU`，集显设备会被报成「GPU 0」。手机上的 Vulkan 设备恒为 `GPU` 类型，
 但漏算的后果是「明明有显卡却说没有」，所以两个都算。
 
-**② Kotlin 属性初始化顺序。**
+**③ Kotlin 属性初始化顺序。**
 `localGpuSummary` 用 `combine(_localGpuMode, _localGpuDevices)`，而 `_localGpuDevices`
 一开始写在它后面。`combine(...)` 在**属性初始化时**就要求值，此时后者还是 `null` ——
 表现为一进设置页就 NPE。Kotlin 不报编译错，只按声明顺序初始化字段。
 
 ## 7. 验证
 
-`scripts/qa/run-vulkan-backend-verification.sh`：**70 条断言**。
+`scripts/qa/run-vulkan-backend-verification.sh`：**79 条断言**。
 
-- 静态 34 条：CMake 分支、环境变量、编译期宏、链接、JNI 符号、装载路径、CI 四件套与暂存目录；
-- 行为 34 条：真编真跑（`kotlin-compiler-embeddable`）。覆盖「1.1 判不可用」「1.2 刚好够」
+- 静态 37 条：CMake 分支、环境变量、编译期宏、链接、JNI 符号、版本探测、装载路径、CI 四件套与暂存目录；
+- 行为 40 条：真编真跑（`kotlin-compiler-embeddable`）。覆盖「1.1 判不可用」「1.2 刚好够」「版本位域解码」
   「`Vulkan 1.3` 带前缀也能解析」「Mali 是需验证不是不可用」「强制也不越过版本不够」
   「包没编时哪怕 Adreno 也是 0 层」「降级链不会空」。
 - 产物 2 条：`readelf` 找 `libvulkan.so`、`strings` 找 `ggml_vulkan:` 前缀（无产物时 SKIP）。

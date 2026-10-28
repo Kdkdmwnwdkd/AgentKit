@@ -2,7 +2,6 @@ package com.example.agentkit.core.llm.local
 
 import android.app.ActivityManager
 import android.content.Context
-import android.content.pm.PackageManager
 import android.opengl.EGL14
 import android.opengl.EGLConfig
 import android.opengl.EGLContext
@@ -66,32 +65,25 @@ object AndroidDeviceProbe {
             glRenderer = queryGlRenderer(),
             sdkInt = Build.VERSION.SDK_INT,
             totalRamMb = totalRamMb(context),
-            vulkanVersion = readVulkanVersion(context),
+            vulkanVersion = readVulkanVersion(),
         )
     }
 
     /**
-     * 系统报告的 Vulkan 版本（"1.3" / "1.2" / "1.1"/ null = 不支持）。
+     * 系统报告的 Vulkan 版本（"1.3" / "1.2" / "1.1" / null = 不支持）。
      *
-     * 走 PackageManager 的特性字符串，不需要自己 dlopen libvulkan、也不需要
-     * 创建 VkInstance —— 只是查一条系统预先登记的事实，零崩溃风险。
+     * 取法：native 里 `dlopen("libvulkan.so")` + `vkEnumerateInstanceVersion`，
+     * 拿到的是 VK_MAKE_VERSION 打包值，这里只做解码。
      *
-     * 这个字段不是「参考信息」：ggml-vulkan 硬要求 1.2（源码里 1.2 以下直接抛），
-     * 而 Android 10/11 那批设备大量只给 1.1。判错了就是「用户点了 GPU，一开就退回」。
+     * 为什么不用 `PackageManager.FEATURE_VULKAN_HARDWARE_VERSION`：那个
+     * `FeatureInfo.version` 是 Int，且不同 Android 版本对它的编码不统一（打包值 /
+     * 十进制 / 主次拼数都出现过）。按字符串读会编不过，按某一种编码读会静默错判——
+     * 而错判的后果是「判成可用，点开一进初始化就抛」。
+     *
+     * 直接问 loader 还有一个好处：它与 ggml-vulkan 内部的判据是同一个量。
      */
-    private fun readVulkanVersion(context: Context): String? = try {
-        if (!context.packageManager.hasSystemFeature(PackageManager.FEATURE_VULKAN_HARDWARE_VERSION)) {
-            null
-        } else {
-            // 该特性在支持时自带版本号（"1.1" 起）。老 ROM 上可能只给 "1.0" 或空串。
-            context.packageManager.systemAvailableFeatures
-                .firstOrNull { it.name == PackageManager.FEATURE_VULKAN_HARDWARE_VERSION }
-                ?.version
-                ?.takeIf { it.isNotBlank() && it != "0" }
-        }
-    } catch (t: Throwable) {
-        null
-    }
+    private fun readVulkanVersion(): String? =
+        LocalDeviceRules.formatVulkanVersion(LlamaJni.vulkanApiVersion)
 
     /**
      * `SOC_MODEL` / `SOC_MANUFACTURER` 这两个 Build 字段是 API 31 才加的。

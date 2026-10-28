@@ -9,6 +9,7 @@
 
 #include <jni.h>
 #include <android/log.h>
+#include <dlfcn.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <atomic>
@@ -798,6 +799,46 @@ Java_com_example_agentkit_core_llm_local_LlamaJni_nativeGpuProbe(
     const std::string s = gpuDeviceSummary();
     LOGI("GPU 探测：%s", s.c_str());
     return env->NewStringUTF(s.c_str());
+}
+
+/**
+ * 系统的 Vulkan 实例版本（VK_MAKE_VERSION 打包值，如 1.3.275 → 4206875），0 = 没有 loader。
+ *
+ * 为什么不用 PackageManager 的 FEATURE_VULKAN_HARDWARE_VERSION：
+ * 那个 FeatureInfo.version 是 **int**，而不同 Android 版本对它的编码并不统一
+ * （打包值 / 十进制 / 主次版本拼数三种写法都出现过）。第一版按字符串读，CI 直接
+ * 编译不过（Type mismatch: Int? vs String?）——那其实是好事，它拦下了一次静默错判。
+ *
+ * 这里换成「问 loader 自己」：dlopen libvulkan.so → vkEnumerateInstanceVersion。
+ * 这恰好也是 ggml-vulkan 自己的判据（ggml_vk_instance_init 里就是
+ * `vk::enumerateInstanceVersion() < VK_API_VERSION_1_2 → throw`），
+ * 所以我们预测的结果与它实际的行为是同一个量，不会出现「我们判可用、它抛异常」。
+ *
+ * 只 dlopen + 调一个返回常量的函数，不建 instance、不碰 device，零崩溃风险。
+ */
+JNIEXPORT jint JNICALL
+Java_com_example_agentkit_core_llm_local_LlamaJni_nativeVulkanVersion(
+    JNIEnv* /*env*/, jobject /*thiz*/) {
+    void* h = ::dlopen("libvulkan.so", RTLD_NOW | RTLD_LOCAL);
+    if (!h) {
+        LOGI("Vulkan 探测：dlopen libvulkan.so 失败，按无 Vulkan 处理");
+        return 0;
+    }
+    using EnumerateVersionFn = uint32_t (*)(uint32_t*);
+    uint32_t version = 0;
+    // vkEnumerateInstanceVersion 是 1.1 才有的入口；1.0 的 loader 上 dlsym 拿不到，
+    // 那种情况按 1.0 处理（ggml 也同样把 nullptr 当成「1.0，不够」）。
+    auto fn = reinterpret_cast<EnumerateVersionFn>(::dlsym(h, "vkEnumerateInstanceVersion"));
+    if (fn != nullptr) {
+        const uint32_t ok = fn(&version);   // 返回 VkResult，VK_SUCCESS = 0
+        if (ok != 0) version = 0;
+    } else {
+        version = (1u << 22);               // VK_MAKE_VERSION(1, 0, 0)
+    }
+    ::dlclose(h);
+    LOGI("Vulkan 探测：实例版本打包值=%u（%u.%u.%u）",
+         version, version >> 22, (version >> 12) & 0x3FFu, version & 0xFFFu);
+    return static_cast<jint>(version);
 }
 
 /**

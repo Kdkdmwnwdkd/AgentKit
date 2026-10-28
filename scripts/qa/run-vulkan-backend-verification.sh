@@ -19,6 +19,7 @@ cd "$(dirname "$0")/../.." || exit 1
 DIR="app/src/main/java/com/example/agentkit/core/llm/local"
 PROFILE="$DIR/LocalDeviceProfile.kt"
 CATALOG="$DIR/LocalBackendCatalog.kt"
+PROBE="$DIR/AndroidDeviceProbe.kt"
 JNI="app/src/main/java/com/example/agentkit/core/llm/local/LlamaJni.kt"
 CLIENT="$DIR/LocalLlamaClient.kt"
 CMAKELISTS="app/src/main/cpp/CMakeLists.txt"
@@ -73,6 +74,12 @@ has "设备枚举走 ggml 注册表" "$CPP" "ggml_backend_dev_count()"
 has "对外暴露设备清单" "$CPP" "Java_com_example_agentkit_core_llm_local_LlamaJni_nativeGpuProbe"
 # 请求了 GPU 却一个 GPU 设备都没有，必须当场报错——这是「以为在用 GPU」的唯一防线。
 has "请求 GPU 但无 GPU 设备时报警" "$CPP" "但没有任何 GPU 后端可用"
+# Vulkan 版本必须问 loader 自己，不能读 PackageManager 的 FeatureInfo.version：
+# 那个字段是 Int 且各版本编码不统一（第一版按 String 读，CI 直接编不过）。
+has "版本从 loader 问" "$CPP" 'dlopen("libvulkan.so"'
+has "调 vkEnumerateInstanceVersion" "$CPP" '"vkEnumerateInstanceVersion"'
+# 注释里可以提（解释为什么不那么做），但不能真的去读它。
+hasnt "不再从 PackageManager 读版本" "$PROBE" "packageManager.systemAvailableFeatures"
 # IGPU 也是 GPU。漏算的结果是「明明有显卡却说没有」。
 has "集显也计入 GPU" "$CPP" "GGML_BACKEND_DEVICE_TYPE_IGPU"
 
@@ -166,6 +173,21 @@ fun main() {
     check("没报版本按不支持", noVer.first == GpuPath.NONE && noVer.second!!.contains("未报告"), noVer.toString())
     val noGpu = LocalDeviceRules.vulkanPath(p(null, "1.3"))
     check("没 GPU 型号按不支持", noGpu.first == GpuPath.NONE, noGpu.toString())
+
+    // ---- 版本解码：VK_MAKE_VERSION 是位域，不是十进制 ----
+    fun mk(major: Int, minor: Int, patch: Int) = (major shl 22) or (minor shl 12) or patch
+    check("1.3.275 解码为 1.3", LocalDeviceRules.formatVulkanVersion(mk(1, 3, 275)) == "1.3")
+    check("1.1.0 解码为 1.1", LocalDeviceRules.formatVulkanVersion(mk(1, 1, 0)) == "1.1")
+    check("1.2.0 解码为 1.2", LocalDeviceRules.formatVulkanVersion(mk(1, 2, 0)) == "1.2")
+    check("0（没有 loader）为 null", LocalDeviceRules.formatVulkanVersion(0) == null)
+    // 十进制编码（1.3 → 10003）如果被误当成打包值，major 会是 0 → 必须被判为 null，
+    // 而不是「1.0 以下所以可用」。这条挡的是「用错编码却看起来正常」。
+    check("脏值不会变成高版本", LocalDeviceRules.formatVulkanVersion(10003) == null,
+        LocalDeviceRules.formatVulkanVersion(10003) ?: "null")
+
+    // loader 报 1.0（老机器 / 老 ROM）→ 不可用，且原因要说版本
+    val v10 = LocalDeviceRules.vulkanPath(p("Adreno (TM) 640", "1.0"))
+    check("Vulkan 1.0 不可用", v10.first == GpuPath.NONE && v10.second!!.contains("1.2"), v10.toString())
 
     // ---- resolveGpu：两个前提缺一不可 ----
     val stable = advice("Adreno (TM) 750", "1.3")
