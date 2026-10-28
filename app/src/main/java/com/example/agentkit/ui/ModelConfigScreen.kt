@@ -1456,7 +1456,14 @@ private fun LocalModelsTab(vm: ChatViewModel) {
             )
             Spacer(Modifier.width(7.dp))
             Text(
-                text = if (nativeOk) "推理引擎就绪（arm64）" else "推理引擎不可用（当前设备 ABI 不支持）",
+                // 不可用时优先说清「为什么」：ABI 不符与「CPU 缺指令集」是两种完全不同的
+                // 处置方式（换设备 vs 等双 .so），一句「ABI 不支持」会把用户引到错方向。
+                text = if (nativeOk) {
+                    "推理引擎就绪（arm64）"
+                } else {
+                    com.example.agentkit.core.llm.local.LlamaJni.unavailableReason
+                        ?: "推理引擎不可用（当前设备 ABI 不支持）"
+                },
                 style = MaterialTheme.typography.labelLarge,
                 color = if (nativeOk) LocalAkColors.success else MaterialTheme.colorScheme.error
             )
