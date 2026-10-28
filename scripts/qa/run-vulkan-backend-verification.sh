@@ -423,14 +423,24 @@ else
         if [ ! -f "$SO" ]; then
             fail "APK 里没有 libagentkit-llama.so"
         else
-            if readelf -d "$SO" 2>/dev/null | grep -q "libvulkan.so"; then
+            # 先把三份输出落盘，再各自 grep。
+            #
+            # 不能写成 `strings "$SO" | grep -q ...`：脚本开着 pipefail，
+            # grep -q 一旦匹配就退出，strings 收到 SIGPIPE（141），整条管道判成失败——
+            # 明明符号在里面，却报「没找到」。这个假红跟机器快慢有关，本机必红、CI 偶尔绿，
+            # 是最难查的那一类。落盘之后再 grep，管道里就没有提前退出的进程了。
+            readelf -d "$SO" > "$TMP/dyn.txt" 2>/dev/null
+            strings "$SO" > "$TMP/str.txt" 2>/dev/null
+            nm -D --defined-only "$SO" > "$TMP/sym.txt" 2>/dev/null
+
+            if grep -q "libvulkan.so" "$TMP/dyn.txt"; then
                 pass "产物依赖 libvulkan.so"
             else
                 fail "产物没有链上 libvulkan.so（GGML_VULKAN 开了但后端被链接器丢掉）"
             fi
             # ggml-vulkan.cpp 里的日志前缀。它只可能来自那个翻译单元，
             # 比找 "Vulkan" 这种随处可见的词可靠得多（llama.cpp 自己的报错里也有 Vulkan）。
-            if strings "$SO" 2>/dev/null | grep -q "ggml_vulkan:"; then
+            if grep -q "ggml_vulkan:" "$TMP/str.txt"; then
                 pass "产物含 ggml-vulkan 代码（日志前缀在）"
             else
                 fail "产物里找不到 ggml_vulkan: 前缀，Vulkan 后端可能没被链接进去"
@@ -439,14 +449,14 @@ else
             # 这条能同时证伪两件事：文件没编进目标、以及「改去链 API 28 的桩」。
             if ! command -v nm >/dev/null 2>&1; then
                 echo "  SKIP  没有 nm，跳过分组符号检查"
-            elif nm -D --defined-only "$SO" 2>/dev/null | grep -q " vkGetPhysicalDeviceFeatures2$"; then
+            elif grep -q " vkGetPhysicalDeviceFeatures2$" "$TMP/sym.txt"; then
                 pass "产物自己定义了 vkGetPhysicalDeviceFeatures2（1.1 兜底在位）"
             else
                 fail "产物没有定义 vkGetPhysicalDeviceFeatures2，Android 8.x 上可能整库加载失败"
             fi
             # 日志串在 .so 里只能用纯 ASCII 找：strings 不认 UTF-8，中文一个字节都取不出来。
             # 上一版拿中文串 grep，把「兜底其实编进去了」判成「没编进去」，白红一次。
-            if strings "$SO" 2>/dev/null | grep -q "vk11-shim"; then
+            if grep -q "vk11-shim" "$TMP/str.txt"; then
                 pass "产物含 1.1 转发日志（走的是运行时转发而不是硬链）"
             else
                 fail "产物里没有 vk11-shim 日志前缀，兜底可能没编进去"
