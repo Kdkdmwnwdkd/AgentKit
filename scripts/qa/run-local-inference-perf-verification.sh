@@ -84,8 +84,9 @@ expect "生成预算受窗口约束" "$JNI" 'genBudget'
 
 echo
 if [ "$fail" -eq 0 ]; then
-  echo "RESULT PASS ($pass 断言)"
+  # 汇总行要带 FAIL=0：run-all.sh 用它识别「跑完且全过」（RESULT PASS 不认）
+  echo "RESULT: PASS=$pass FAIL=0"
   exit 0
 fi
-echo "RESULT FAIL ($fail 失败 / $pass 通过)$failed"
+echo "RESULT: PASS=$pass FAIL=$fail$failed"
 exit 1
