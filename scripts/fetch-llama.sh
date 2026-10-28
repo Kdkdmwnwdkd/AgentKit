@@ -1,5 +1,5 @@
 #!/bin/bash
-# 拉取 llama.cpp 固定 tag b4600 源码到 app/src/main/cpp/llama.cpp/。
+# 拉取 llama.cpp 固定 tag v0.7.0 源码到 app/src/main/cpp/llama.cpp/。
 #
 # 两种模式：
 #   git 模式（默认，CI 用）：shallow clone。GitHub Actions 网络可达 github.com，最稳。
@@ -10,16 +10,16 @@ set -euo pipefail
 
 MODE="${1:-git}"
 DEST="${2:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/app/src/main/cpp/llama.cpp}"
-TAG="b4600"
+TAG="v0.7.0"
 REPO="https://github.com/ggml-org/llama.cpp.git"
 
-# b4600 对应的**确切 commit**。
+# v0.7.0 对应的**确切 commit**。
 #
 # 为什么要钉死 commit 而不只钉 tag：git tag 是可以被上游移动的（force-push / 重打 tag），
-# 一旦移动，同一份 `--branch b4600` 在不同时间 clone 出来的源码就不是同一份了——
+# 一旦移动，同一份 `--branch v0.7.0` 在不同时间 clone 出来的源码就不是同一份了——
 # 构建产物不可复现，而且这种漂移**完全静默**（不报错，只是行为变了）。
 # 钉死 commit 后，任何漂移都会当场被下面的校验抓住。
-EXPECTED_COMMIT="553f1e46e9e864514bbd6bf4009146db66be0541"
+EXPECTED_COMMIT="757cad021b357f417065ddbc41a6e8f87c1f8136"
 
 mkdir -p "$DEST"
 

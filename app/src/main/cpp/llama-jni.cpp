@@ -4,7 +4,7 @@
 // 停止标志。协议细节（消息→模板→采样）都在 Kotlin 侧 LocalLlamaClient 编排。
 //
 // llama.cpp 本体为 MIT 许可证（ggml-org/llama.cpp），源码在构建时由脚本拉取固定
-// tag b4600 到本目录的 llama.cpp/ 子目录，不进 git 仓库（见 CMakeLists.txt 注释）。
+// tag v0.7.0 到本目录的 llama.cpp/ 子目录，不进 git 仓库（见 CMakeLists.txt 注释）。
 // MIT 许可全文随仓库提交于 llama.cpp-LICENSE.txt。
 
 #include <jni.h>
@@ -23,6 +23,64 @@
 #include <algorithm>
 
 #include "llama.h"
+
+// ---------------------------------------------------------------------------
+// llama.cpp API 兼容层：b4600（2025-01）↔ v0.7.0（2026-10）
+//
+// 上游在 2025 年中做了一次接口收敛，把 KV 缓存提升为通用「memory」抽象，三处
+// 我们直接用到的 API 因此变了名/变了类型：
+//
+//   b4600                                   v0.7.0
+//   llama_kv_cache_clear(ctx)           →   llama_memory_clear(llama_get_memory(ctx), true)
+//   llama_kv_cache_seq_rm(ctx, ...)     →   llama_memory_seq_rm(llama_get_memory(ctx), ...)
+//   cp.flash_attn = false               →   cp.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_DISABLED
+//   mparams.use_mmap = true             →   mparams.load_mode = LLAMA_LOAD_MODE_MMAP
+//
+// 判据用 LLAMA_SESSION_VERSION（b4600 是 9，v0.7.0 是 11）：上游没提供 API 版本宏，
+// 这个值是随 API 变更一起 bumped 的，比 `__has_include` 或嗅探函数声明都可靠。
+// 保留双向分支的理由是回退成本——万一新版在真机上出现无法快速定位的回归，把
+// fetch-llama.sh 的 tag 改回 b4600 就能立刻编出可用包，不用再改一遍 C++。
+// ---------------------------------------------------------------------------
+#if LLAMA_SESSION_VERSION >= 10
+#define AK_LLAMA_MEMORY_API 1
+#else
+#define AK_LLAMA_MEMORY_API 0
+#endif
+
+namespace {
+#if AK_LLAMA_MEMORY_API
+/** 清空整块 KV（含数据缓冲）。ctx 无 memory 模块时静默返回，不抛。 */
+inline void akKvClear(llama_context* ctx) {
+    if (llama_memory_t mem = llama_get_memory(ctx)) llama_memory_clear(mem, true);
+}
+/** 删除 [p0, p1) 区间；p1 < 0 表示删到末尾。返回 false 表示该模型不支持部分删除。 */
+inline bool akKvSeqRm(llama_context* ctx, llama_seq_id seq, llama_pos p0, llama_pos p1) {
+    llama_memory_t mem = llama_get_memory(ctx);
+    if (!mem) return false;   // 当作「不支持」，交给调用方走整块重算
+    return llama_memory_seq_rm(mem, seq, p0, p1);
+}
+#else
+inline void akKvClear(llama_context* ctx) { llama_kv_cache_clear(ctx); }
+inline bool akKvSeqRm(llama_context* ctx, llama_seq_id seq, llama_pos p0, llama_pos p1) {
+    return llama_kv_cache_seq_rm(ctx, seq, p0, p1);
+}
+#endif
+
+/**
+ * 重复惩罚采样器。v0.7.0 起需要在构造时显式给 n_vocab（内部按词表大小预分配
+ * 惩罚环），b4600 不需要。其余四个参数含义、量纲完全一致，所以这个包装只是
+ * 把「多出来的那个参数」在旧版路径上咽掉，不改变任何采样行为。
+ */
+inline llama_sampler* akSamplerPenalties(const llama_vocab* vocab, int32_t last_n,
+                                         float repeat, float freq, float present) {
+#if AK_LLAMA_MEMORY_API
+    return llama_sampler_init_penalties(llama_vocab_n_tokens(vocab), last_n, repeat, freq, present);
+#else
+    (void) vocab;
+    return llama_sampler_init_penalties(last_n, repeat, freq, present);
+#endif
+}
+}  // namespace
 
 #define LOG_TAG "llama-jni"
 
@@ -145,7 +203,7 @@ size_t utf8SafeLen(const std::string& s) {
 /** 清空 KV 并同步账本（任何「账本与 KV 可能不一致」的路径都必须走这里）。 */
 void resetKv(LlamaInstance* inst, const char* why) {
     if (!inst || !inst->ctx) return;
-    llama_kv_cache_clear(inst->ctx);
+    akKvClear(inst->ctx);
     inst->kvTokens.clear();
     if (why) LOGI("KV 会话重置：%s", why);
 }
@@ -315,7 +373,7 @@ bool decodeExplicit(LlamaInstance* inst, const llama_token* toks, int32_t n, lla
             // 中止不是故障：llama_decode 可能已经写入了前面若干个 ubatch 才返回非 0。
             // 此时账本没动（成功才记账），所以把 KV 回退到账本长度就能对齐——
             // **不要清空**，前面算好的几千 token 下一轮还能复用。
-            llama_kv_cache_seq_rm(inst->ctx, 0, static_cast<llama_pos>(inst->kvTokens.size()), -1);
+            akKvSeqRm(inst->ctx, 0, static_cast<llama_pos>(inst->kvTokens.size()), -1);
             LOGI("decode 被用户中止（rc=%d, n=%d, 账本 %zu token，KV 已对齐）",
                  rc, n, inst->kvTokens.size());
             return false;
@@ -415,7 +473,11 @@ bool rebuildContext(LlamaInstance* inst) {
     cp.no_perf = true;
     cp.abort_callback = &abortCb;
     cp.abort_callback_data = inst;
+#if AK_LLAMA_MEMORY_API
+    cp.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_DISABLED;
+#else
     cp.flash_attn = false;
+#endif
     inst->ctx = llama_init_from_model(inst->model, cp);
     if (!inst->ctx) {
         LOGE("重建上下文失败（n_ctx=%d）", nCtx);
@@ -487,7 +549,19 @@ Java_com_example_agentkit_core_llm_local_LlamaJni_nativeInit(
 
     llama_model_params mparams = llama_model_default_params();
     mparams.n_gpu_layers = nGpuLayers;
-    mparams.use_mmap = true;    // 内存映射：启动快、峰值可控
+    // 内存映射：启动快、峰值可控。
+    //
+    // v0.7.0 把 use_mmap/use_mlock 两个布尔合并成 load_mode 枚举，并额外引入
+    // lazy_mode（按需读 tensor 的行，而非整块缺页）。lazy_mode 正是我们那个
+    // 「冷启动 13.4 秒」问题的对口开关，但它把缺页成本从加载阶段推到了首次
+    // decode 阶段——首字延迟会变难看。先保持 OFF（=旧行为，一次读全），
+    // 等新版基线数据出来再单独评估，不要和新版本一起上，否则回归了分不清是谁的锅。
+#if AK_LLAMA_MEMORY_API
+    mparams.load_mode = LLAMA_LOAD_MODE_MMAP;
+    mparams.lazy_mode = LLAMA_LAZY_MODE_OFF;
+#else
+    mparams.use_mmap = true;
+#endif
     inst->model = llama_model_load_from_file(path.c_str(), mparams);
     if (!inst->model) {
         LOGE("llama_model_load_from_file 失败: %s", path.c_str());
@@ -536,11 +610,18 @@ Java_com_example_agentkit_core_llm_local_LlamaJni_nativeInit(
     cparams.abort_callback_data = inst;
     // FlashAttention 先关掉。
     //
-    // 理由不是「不好」，而是「先隔离变量」：b4600 的 CPU FA 路径按 head_dim 与
+    // 理由不是「不好」，而是「先隔离变量」：旧版（b4600）的 CPU FA 路径按 head_dim 与
     // 量化类型分派，个别组合会退回普通注意力（只打 warning），个别组合直接
     // 让 decode 返回非 0 —— 后者在用户侧的表现就是「一个字都不出」。
     // 先把「能稳定出字」做实，等真机数据说明生成速度确实是瓶颈，再按机型开。
+    //
+    // v0.7.0 把布尔开关换成了三态枚举（AUTO/DISABLED/ENABLED），这里显式选 DISABLED
+    // 而不是留 AUTO：AUTO 会按设备能力自作主张，回归时变量就多了一个。
+#if AK_LLAMA_MEMORY_API
+    cparams.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_DISABLED;
+#else
     cparams.flash_attn = false;
+#endif
     inst->n_batch = cparams.n_batch;
     inst->n_threads = nThreads;
     inst->ctx = llama_init_from_model(inst->model, cparams);
@@ -787,7 +868,7 @@ Java_com_example_agentkit_core_llm_local_LlamaJni_nativeGenerate(
     // 新 prompt 比账本短或在中途岔开：把 KV 回退到公共前缀末尾。
     // 只删不补（common == kvTokens.size() 时无需动作），p1 < 0 表示删到末尾。
     if (common < inst->kvTokens.size()) {
-        if (!llama_kv_cache_seq_rm(inst->ctx, 0, static_cast<llama_pos>(common), -1)) {
+        if (!akKvSeqRm(inst->ctx, 0, static_cast<llama_pos>(common), -1)) {
             // 个别模型（滑窗/混合注意力）不支持部分删除：整块清掉重来，宁可慢也不能脏
             LOGE("KV 部分回退失败（common=%zu），改为整块重算", common);
             resetKv(inst, "部分回退失败");
@@ -806,7 +887,7 @@ Java_com_example_agentkit_core_llm_local_LlamaJni_nativeGenerate(
         common--;
         // 账本与 KV 同步回退，不留「账本比 KV 少一个但那里的位置仍有旧值」的歧义。
         inst->kvTokens.resize(common);
-        llama_kv_cache_seq_rm(inst->ctx, 0, static_cast<llama_pos>(common), -1);
+        akKvSeqRm(inst->ctx, 0, static_cast<llama_pos>(common), -1);
     }
 
     // common == 0 表示这一轮要从头算。先花 1 个 token 探一下引擎本身的吞吐，
@@ -869,7 +950,7 @@ Java_com_example_agentkit_core_llm_local_LlamaJni_nativeGenerate(
     //     300 token 的长尾上仍可能累计到 10%，小模型最容易在这些位置翻车。
     auto sparams = llama_sampler_chain_default_params();
     llama_sampler* smpl = llama_sampler_chain_init(sparams);
-    llama_sampler_chain_add(smpl, llama_sampler_init_penalties(64, 1.15f, 0.0f, 0.0f));
+    llama_sampler_chain_add(smpl, akSamplerPenalties(inst->vocab, 64, 1.15f, 0.0f, 0.0f));
     llama_sampler_chain_add(smpl, llama_sampler_init_top_k(40));
     llama_sampler_chain_add(smpl, llama_sampler_init_top_p(0.9f, 1));
     llama_sampler_chain_add(smpl, llama_sampler_init_min_p(0.05f, 1));

@@ -6,7 +6,7 @@
 # 「实现还在」——防止后续重构把增量 prefill 悄悄改回全量、把编译档位改回基线。
 #
 # 断言只锁契约，不锁写法：
-#   1. 增量 prefill：KV 有账本（kvTokens）+ 能按公共前缀回退（llama_kv_cache_seq_rm）
+#   1. 增量 prefill：KV 有账本（kvTokens）+ 能按公共前缀回退（akKvSeqRm 兼容层）
 #   2. 编译档位：GGML_CPU_ARM_ARCH 含 dotprod（基线 armv8-a 会让 Q4 点积退化）
 #   3. 加载前自检：缺 asimddp/asimdhp 时必须拦在 dlopen 之前（否则 SIGILL 崩溃）
 #   4. 本地推理必须走流式：LocalLlamaClient 覆盖 streamChat，否则整段憋完才上屏
@@ -66,7 +66,10 @@ reject() {
 
 echo "[1/10] 增量 prefill（native）"
 expect "KV 账本存在" "$JNI" 'std::vector<llama_token>[[:space:]]+kvTokens'
-expect "按公共前缀回退 KV" "$JNI" 'llama_kv_cache_seq_rm\('
+expect "按公共前缀回退 KV" "$JNI" 'akKvSeqRm\('
+# v0.7.0 起 KV 接口并进 memory 抽象；两个名字都得在（新版走前者，回退分支走后者）。
+expect "KV 回退走 memory 新接口" "$JNI" 'llama_memory_seq_rm\('
+expect "KV 回退保留旧接口分支" "$JNI" 'llama_kv_cache_seq_rm\('
 # 起点从公共前缀之后开始（common==0 时预热探针会先吃掉第 0 个 token，
 # 所以用 prefillFrom 承载「这一轮从哪继续」，语义仍是「只补算差异段」）。
 expect "只补算差异段" "$JNI" 'decodeFrom\(inst, tokens, prefillFrom,'
@@ -82,7 +85,10 @@ expect "ARM 架构档位已显式指定" "$CMAKE" 'GGML_CPU_ARM_ARCH'
 expect "启用 dotprod" "$CMAKE" 'armv8\.2-a\+dotprod'
 # aarch64 repack 把权重懒重排塞进第一次 decode：真机表现是「加载 5 秒正常，
 # 之后 158 token 的 prefill 卡满 180 秒没有任何进度」。宁可少 10% 峰值也不能不出字。
-expect "关掉 aarch64 repack 权重重排" "$CMAKE" 'GGML_CPU_AARCH64 OFF'
+# repack 在 v0.7.0 改了名（GGML_CPU_AARCH64 → GGML_CPU_REPACK），默认值都是 ON，
+# 必须显式关；两个名字都留着，回退 tag 时不用再改 CMake。
+expect "关掉权重重排（新版开关名）" "$CMAKE" 'GGML_CPU_REPACK[[:space:]]+OFF'
+expect "关掉权重重排（旧版开关名）" "$CMAKE" 'GGML_CPU_AARCH64[[:space:]]+OFF'
 # 真机 1 token 要 24.5 秒的根因：AGP 给 debug 构建传 CMAKE_BUILD_TYPE=Debug，
 # 而 CMake 的 Debug flags 只有 -g（= -O0）。ggml 在 -O0 下点积退化成标量循环。
 expect "Debug 配置也强制 -O3" "$CMAKE" 'CMAKE_\$\{_lang\}_FLAGS_DEBUG "-O3'

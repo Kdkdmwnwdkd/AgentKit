@@ -2,7 +2,7 @@
 #
 # 结构：
 #   llama-jni.cpp          —— 自研 JNI 桥（本仓库提交）
-#   llama.cpp/             —— llama.cpp b4600 源码（构建前由 scripts/fetch-llama.sh 拉取，不进 git）
+#   llama.cpp/             —— llama.cpp v0.7.0 源码（构建前由 scripts/fetch-llama.sh 拉取，不进 git）
 #
 # 只编 arm64-v8a 的纯 CPU 版：GPU 后端（Vulkan/OpenCL）留待后续迭代，
 # 先把「能跑」做扎实。关闭一切用不到的组件，APK 体积和编译时间都受益。
@@ -42,7 +42,7 @@ message(STATUS "[agentkit] build type: ${CMAKE_BUILD_TYPE} / CXX debug flags: ${
 set(LLAMA_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/llama.cpp")
 if (NOT EXISTS "${LLAMA_SOURCE_DIR}/CMakeLists.txt")
     message(FATAL_ERROR
-        "llama.cpp 源码缺失：请先运行 scripts/fetch-llama.sh 拉取固定 tag b4600。")
+        "llama.cpp 源码缺失：请先运行 scripts/fetch-llama.sh 拉取固定 tag v0.7.0。")
 endif()
 
 # ---- llama.cpp 裁剪：Android 单架构 CPU 版 ----
@@ -78,17 +78,30 @@ set(GGML_CPU_ALL_VARIANTS OFF CACHE BOOL "" FORCE)  # 单架构，不需要多�
 # 代价是这版 .so 不能在 armv8.0 老 CPU 上跑 —— 由 LlamaJni 在 loadLibrary
 # 前读 /proc/cpuinfo 检查 asimddp/asimdhp，缺了就拒绝加载并给文案，不会 SIGILL。
 set(GGML_CPU_ARM_ARCH "armv8.2-a+dotprod+fp16" CACHE STRING "" FORCE)
-# GGML_CPU_AARCH64 = OFF：显式关掉 aarch64 repack 权重布局。
+# 权重重排（repack）= OFF：显式关掉运行时把 Q4_0/Q4_K 重排成 4x4/8x8 交错布局。
 #
-# 这个开关打开时，模型里的 Q4_0/Q4_K 会在首次 decode 时被重排成 4x4/8x8 交错布局，
-# 换取更长的向量内积。理论上更快，但真机实测的表现是「加载 5 秒正常，第一次
-# decode 就再也不返回」——158 token 的 prefill 卡满 180 秒没有任何进度。
-# 重排是懒执行的，正好落在第一次 decode 里，且 b4600 这条路径在部分 ARM 设备上
-# 会反复重排（没有正确命中缓存），一次 forward 就够把预算烧光。
+# 这个开关打开时，模型里的量化权重会在首次 decode 时被重排，换取更长的向量内积。
+# 理论上更快，但真机实测的表现是「加载 5 秒正常，第一次 decode 就再也不返回」
+# ——158 token 的 prefill 卡满 180 秒没有任何进度。重排是懒执行的，正好落在第一次
+# decode 里，且 b4600 这条路径在部分 ARM 设备上会反复重排（没有正确命中缓存），
+# 一次 forward 就够把预算烧光。
 #
 # 关掉它意味着走标准 NEON + dotprod 内核。IRIDIS 在同款设备上跑出 4.8 tok/s
 # 走的也是标准路径，说明这条路的绝对速度够用。宁可少 10% 峰值，也不要「不出字」。
-set(GGML_CPU_AARCH64 OFF CACHE BOOL "" FORCE)
+#
+# v0.7.0 把开关改了名（GGML_CPU_AARCH64 → GGML_CPU_REPACK），语义也从「aarch64 专用」
+# 泛化成「Q4_0 运行时转换」，**默认值仍是 ON**。两个名字都显式设 OFF：
+#   - 新名对 v0.7.0 生效，这条是必需的（不设就会吃到默认 ON，旧问题原样复现）；
+#   - 旧名对 b4600 生效，留着是为了 tag 回退时不用再改一遍 CMake。
+# 未使用的 cache 变量在 CMake 里只是躺在那儿，不报错。
+set(GGML_CPU_REPACK   OFF CACHE BOOL "" FORCE)
+set(GGML_CPU_AARCH64  OFF CACHE BOOL "" FORCE)
+# KleidiAI（ARM 官方微内核库）= OFF。
+#
+# v0.7.0 新增，默认关。它会给 k-quant matmul 换上手写汇编（SME2/i8mm 路径），
+# 对 arm64 是实打实的加速；但构建时要额外从 GitHub Release 下 ARM 的源码包，
+# 在 CI 里是一处新的网络依赖。等版本本身在真机跑稳了再单独开，一次只动一个变量。
+set(GGML_CPU_KLEIDIAI OFF CACHE BOOL "" FORCE)
 
 add_subdirectory("${LLAMA_SOURCE_DIR}" llama.cpp-build EXCLUDE_FROM_ALL)
 

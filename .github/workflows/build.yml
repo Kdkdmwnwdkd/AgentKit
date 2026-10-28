@@ -56,7 +56,7 @@ jobs:
       # 缓存 llama.cpp 源码（~50MB，每次 clone 几分钟）与 CMake 产物。
       #
       # 为什么要缓存：`assembleDebug` 在 CI 上约 5 分钟，其中 lama.cpp 的
-      # 拉取 + NDK 编译占大头。源码按固定 tag（b4600）拉取，内容稳定，天然适合缓存。
+      # 拉取 + NDK 编译占大头。源码按固定 tag（v0.7.0）拉取，内容稳定，天然适合缓存。
       # key 里带 tag：换版本时自动失效，不会拿到旧源码。
       #
       # 注意：**只缓存源码，不缓存 .so**。缓存二进制会让"改了 C++ 却没重编"变成
@@ -65,14 +65,14 @@ jobs:
         uses: actions/cache@v4
         with:
           path: app/src/main/cpp/llama.cpp
-          key: llama-src-b4600-${{ runner.os }}
+          key: llama-src-v070-${{ runner.os }}
           restore-keys: |
-            llama-src-b4600-
+            llama-src-v070-
 
       - name: Point local.properties to SDK
         run: echo "sdk.dir=$ANDROID_HOME" > local.properties
 
-      - name: Fetch llama.cpp b4600 (构建时拉取，不进仓库)
+      - name: Fetch llama.cpp v0.7.0 (构建时拉取，不进仓库)
         run: ./scripts/fetch-llama.sh git
 
       - name: Fetch Shizuku APK (内置一键安装用，构建时拉取，不进仓库)

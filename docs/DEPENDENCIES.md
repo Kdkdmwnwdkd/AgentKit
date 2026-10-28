@@ -44,13 +44,13 @@
 | 项 | 值 |
 |---|---|
 | 上游 | `ggml-org/llama.cpp`（MIT） |
-| 版本 | tag `b4600`，钉死 commit `553f1e46e9e864514bbd6bf4009146db66be0541` |
+| 版本 | tag `v0.7.0`（2026-10-15），钉死 commit `757cad021b357f417065ddbc41a6e8f87c1f8136` |
 | 获取方式 | `scripts/fetch-llama.sh`（git 浅克隆；受限网络可走 CDN 逐文件拉） |
 | 校验 | 克隆后 `git rev-parse HEAD` 必须等于上面的 commit，否则**构建失败** |
-| 编译选项 | 只编 CPU 后端；`GGML_CPU_ARM_ARCH=armv8.2-a+dotprod+fp16`；关闭 OpenCL/Vulkan/CUDA/SYCL/OpenMP |
+| 编译选项 | 只编 CPU 后端；`GGML_CPU_ARM_ARCH=armv8.2-a+dotprod+fp16`；`GGML_CPU_REPACK=OFF`；`GGML_CPU_KLEIDIAI=OFF`；关闭 OpenCL/Vulkan/CUDA/SYCL/OpenMP |
 
 为什么钉 commit 而不只钉 tag：tag 可以被上游移动（force-push / 重打），漂移是**静默**的——
-同一份 `--branch b4600` 在不同时间会编出不同产物。钉 commit 让漂移当场失败。
+同一份 `--branch v0.7.0` 在不同时间会编出不同产物。钉 commit 让漂移当场失败。
 
 为什么不开 i8mm：属 ARMv8.6，只有骁龙 8 Gen 1 及以后才有；dotprod/fp16 从 Cortex-A75
 （2017）起普及，覆盖面大得多。缺失时 `LlamaJni` 在读 `/proc/cpuinfo` 阶段就拒绝加载
@@ -87,10 +87,13 @@ GPL-2.0 合规措施：
 
 ## 6. 已知缺口与下一步
 
-1. **llama.cpp 版本偏旧（b4600，2025 年初）**。
-   上游在 2025 年给 CPU 后端加了 repacking、KleidiAI 内核与新的 threadpool；同模型
-   同设备上 prefill 有可观提升。升级到 `v0.6.0` 系列需要改三处 API（`llama_kv_cache_*`
-   → `llama_memory_*`、`flash_attn` → `flash_attn_type`），属于独立一次改动，单独出包验证。
+1. ~~llama.cpp 版本偏旧（b4600，2025 年初）~~ → **已升级到 v0.7.0（2026-10-15）**。
+   实测需要改的 API 只有三处（`llama_kv_cache_clear/seq_rm` → `llama_memory_*`、
+   `flash_attn` → `flash_attn_type`、`use_mmap` → `load_mode`），外加
+   `llama_sampler_init_penalties` 多了一个 `n_vocab` 首参。已在 `llama-jni.cpp`
+   顶部做成 `#if AK_LLAMA_MEMORY_API` 双向兼容层，tag 回退到 b4600 也不用改 C++。
+   仍未启用的新能力：`lazy_mode`（按需读权重，对口冷启动）、`GGML_CPU_KLEIDIAI`
+   （ARM 手写 matmul 内核）。这两项各自单独验证，不和新版本一起上。
 
 2. **proot 三件套没有版本锁定脚本**。
    现在是手工放置的二进制，没有 SHA-256 记录。若要升级，先补校验再换文件。
