@@ -1660,7 +1660,7 @@ private fun LocalModelsTab(vm: ChatViewModel) {
     // （约 40 token）。手机 CPU 上这就是「180 秒算不完」和「5 秒出字」的差别。
     AkGroup(
         title = "本地对话模式",
-        description = "轻聊档只发你这句话，出字最快；Agent 模式会附带工具清单与完整人设，prompt 长约 20 倍，首次回复会明显变慢",
+        description = "轻聊档只发你这句话，出字最快；Agent 模式会附带工具清单与完整行为规则，prompt 长约 20 倍，首次回复会明显变慢",
         paddedContent = true
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -2081,7 +2081,7 @@ private fun copyToClipboard(ctx: Context, result: TestResult) {
 /**
  * 「提示词」Tab：透明展示每轮发往模型的系统提示拼装顺序（只读）。
  *
- * 提示词由内核按「基础人设 → 工具自带提示 → 记忆摘要 → 记忆使用引导」拼装
+ * 提示词由内核按「基础规则 → 工具自带提示 → 记忆摘要 → 记忆使用引导」拼装
  * （core/AgentLoop.buildSystemPrompt），当前版本不提供手动编辑——改措辞属于内核行为。
  */
 @Composable
@@ -2093,7 +2093,7 @@ private fun PromptTab(config: com.example.agentkit.skill.ModelConfig) {
     ) {
         PromptBlock(
             index = "1",
-            title = "基础人设",
+            title = "基础规则",
             body = DEFAULT_SYSTEM_PROMPT
         )
         Spacer(Modifier.height(AgentSpacing.space3))

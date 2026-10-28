@@ -44,7 +44,7 @@ class LocalLlamaSetting(context: Context) {
      *
      * 同一台手机、同一个 `qwen2.5-3b-instruct-q4_k_m.gguf`：
      *   - 只带用户那句话（7 token）→ 首字 4.8 秒、生成 4.8 tok/s；
-     *   - 带上工具协议 + 人格 + 设备上下文（1086 token）→ 180 秒还没算完 prefill。
+     *   - 带上工具协议 + 系统提示 + 设备上下文（1086 token）→ 180 秒还没算完 prefill。
      *
      * 手机 CPU 的算力是固定的，prompt 长 150 倍就是慢 150 倍。所以「本地能聊天」
      * 和「本地能调工具」必须是两个档位，而不是一个默认值：
