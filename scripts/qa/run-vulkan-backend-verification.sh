@@ -97,6 +97,21 @@ has "CI 导出 AK_GLSLC" "$WORKFLOW" "AK_GLSLC="
 has "CI 导出 AK_SPIRV_DIR" "$WORKFLOW" "AK_SPIRV_DIR="
 has "CI 要求必须开 Vulkan" "$WORKFLOW" "AK_REQUIRE_VULKAN=1"
 
+echo "== 静态：NDK 不带 vulkan.hpp，要用宿主头但不能污染 bionic =="
+
+# ggml-vulkan-types.h 第一行就 include <vulkan/vulkan.hpp>，NDK sysroot 里没有这个文件。
+# 第一次 CI 就是死在这里（fatal error: 'vulkan/vulkan.hpp' file not found）。
+has "CI 装 libvulkan-dev（拿 vulkan.hpp）" "$WORKFLOW" "libvulkan-dev"
+# 但不能把 /usr/include 整个挂上去：-I 排在 -isystem 前面，glibc 头会顶掉 bionic 的。
+has "做成只含 vulkan/ 的暂存目录" "$WORKFLOW" 'ln -sfn /usr/include/vulkan'
+has "同时挂 spirv/（spirv.hpp）" "$WORKFLOW" 'ln -sfn /usr/include/spirv'
+hasnt "不把 /usr/include 整个塞进 -I" "$WORKFLOW" 'AK_VULKAN_INCLUDE=/usr/include'
+has "CI 当场校验 vulkan.hpp 在" "$WORKFLOW" 'test -f "$VKINC/vulkan/vulkan.hpp"'
+has "CMake 缺 Vulkan-Hpp 会 FATAL" "$CMAKELISTS" "缺 Vulkan-Hpp"
+has "CMake 把暂存目录挂到 ggml-vulkan" "$CMAKELISTS" 'target_include_directories(ggml-vulkan BEFORE PRIVATE "${_ak_vkinc}")'
+# 说明里必须写明「为什么不能用 /usr/include」——否则下一个人会「顺手简化」成它。
+has "写明不能直接挂 /usr/include" "$CMAKELISTS" "绝不能直接把 /usr/include 塞进 -I"
+
 echo "== 行为：真编一遍（规则反了静态 grep 抓不出来） =="
 
 KOTLINC=""

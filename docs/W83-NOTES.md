@@ -87,8 +87,17 @@ MIXED / PowerVR POOR）。**没有另写一份家族分支**：两份表早晚�
 | `glslc` | 把 `.comp` 编成 SPIR-V | CI: `apt-get install glslc` |
 | `SPIRV-Headers` | `find_package(SPIRV-Headers CONFIG REQUIRED)` 要它 | CI: `apt-get install spirv-headers` |
 | `vulkan.h` + `libvulkan.so` | 编译与链接 | NDK sysroot 自带 |
+| `vulkan.hpp` + `spirv.hpp` | `ggml-vulkan-types.h` 直接 include | CI: `libvulkan-dev` + 暂存目录 |
 
-两个细节，都是踩过的：
+四个细节，都是踩过的：
+
+0. **NDK 不带 `vulkan.hpp`**。第一次 CI 就死在这：
+   `ggml-vulkan-types.h:26: fatal error: 'vulkan/vulkan.hpp' file not found`。
+   `ggml-vulkan-types.h` 里 `#define VULKAN_HPP_DISPATCH_LOADER_DYNAMIC 1`，
+   所有入口点都走动态派发器，所以宿主头 + NDK 的 `libvulkan.so` 桩可以共存。
+   但**不能直接把 `/usr/include` 塞进 `-I`**：`-I` 排在 `-isystem` 之前，
+   glibc 的 `stdio.h` / `stdint.h` 会顶掉 bionic 的同名头。做法是把
+   `vulkan/` 与 `spirv/` 两个目录软链进一个空目录，只挂这一个。
 
 1. **必须显式喂 `Vulkan_GLSLC_EXECUTABLE`**。交叉编译时 `FindVulkan` 自己 `find_program`
    会撞上 `CMAKE_FIND_ROOT_PATH`（只在 sysroot 里搜），必然失败。
@@ -120,9 +129,9 @@ GPU 装载失败（驱动拒绝分配设备内存、卸载模型层时报错）�
 
 ## 7. 验证
 
-`scripts/qa/run-vulkan-backend-verification.sh`：**62 条断言**。
+`scripts/qa/run-vulkan-backend-verification.sh`：**70 条断言**。
 
-- 静态 26 条：CMake 分支、环境变量、编译期宏、链接、JNI 符号、装载路径、CI 三件套；
+- 静态 34 条：CMake 分支、环境变量、编译期宏、链接、JNI 符号、装载路径、CI 四件套与暂存目录；
 - 行为 34 条：真编真跑（`kotlin-compiler-embeddable`）。覆盖「1.1 判不可用」「1.2 刚好够」
   「`Vulkan 1.3` 带前缀也能解析」「Mali 是需验证不是不可用」「强制也不越过版本不够」
   「包没编时哪怕 Adreno 也是 0 层」「降级链不会空」。

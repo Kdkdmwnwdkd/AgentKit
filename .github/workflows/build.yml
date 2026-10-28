@@ -109,31 +109,48 @@ jobs:
       - name: Make gradlew executable
         run: chmod +x ./gradlew
 
-      # Vulkan（GPU）后端要三样东西，缺一样都编不出来：
-      #   1. glslc                —— 把 .comp 编成 SPIR-V（host 侧可执行）
+      # Vulkan（GPU）后端要四样东西，缺一样都编不出来：
+      #   1. glslc                    —— 把 .comp 编成 SPIR-V（host 侧可执行）
       #   2. SPIRV-Headers 的 CMake 包 —— ggml-vulkan 里是 find_package(... CONFIG REQUIRED)
-      #   3. vulkan.h + libvulkan.so —— NDK sysroot 自带，不用装
+      #   3. vulkan.h + libvulkan.so   —— NDK sysroot 自带
+      #   4. vulkan.hpp + spirv.hpp    —— NDK **不带**，要从宿主的 libvulkan-dev 拿
       #
       # 为什么在 CI 装而不是让 CMake 自己下：交叉编译时 find_package 会撞上
       # CMAKE_FIND_ROOT_PATH（只在 sysroot 里搜），首轮必然失败；而下载这件事本来
       # 就属于 CI，不该混进构建脚本——本地开发者没这套工具时应当静默退回 CPU-only。
       #
       # 装完当场验证路径，而不是等 CMake 报错：这一段的失败信息比 CMake 的清楚得多。
-      - name: Install Vulkan shader toolchain (glslc + SPIRV-Headers)
+      - name: Install Vulkan shader toolchain (glslc + SPIRV-Headers + Vulkan-Hpp)
         run: |
           set -euo pipefail
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends glslc spirv-headers
+          sudo apt-get install -y --no-install-recommends glslc spirv-headers libvulkan-dev
           GLSLC="$(command -v glslc)"
           SPIRV_DIR="$(dirname "$(dpkg -L spirv-headers | grep -E 'SPIRV-HeadersConfig\.cmake$' | head -1)")"
+
+          # 只把 vulkan/ 与 spirv/ 两个目录挂进一个空目录，给 NDK 编译用。
+          #
+          # 为什么不能直接 -I/usr/include：-I 排在 -isystem 之前，而 NDK 的 bionic 头
+          # 在 -isystem 里。整个 /usr/include 一挂上去，glibc 的 stdio.h / stdint.h 就会
+          # 盖掉 bionic 的，编译能过一阵子然后在莫名其妙的地方炸（或者更糟：链接到 glibc）。
+          VKINC="$RUNNER_TEMP/vkinc"
+          mkdir -p "$VKINC"
+          ln -sfn /usr/include/vulkan "$VKINC/vulkan"
+          ln -sfn /usr/include/spirv  "$VKINC/spirv"
+
           echo "glslc      = $GLSLC"
           echo "spirv-dir  = $SPIRV_DIR"
+          echo "vkinc      = $VKINC"
           glslc --version | head -3
+          ls -l "$VKINC"
           test -x "$GLSLC"
           test -f "$SPIRV_DIR/SPIRV-HeadersConfig.cmake"
+          test -f "$VKINC/vulkan/vulkan.hpp"
+          test -f "$VKINC/spirv/unified1/spirv.hpp"
           {
             echo "AK_GLSLC=$GLSLC"
             echo "AK_SPIRV_DIR=$SPIRV_DIR"
+            echo "AK_VULKAN_INCLUDE=$VKINC"
             # CI 里必须失败而不是静默降级：否则「以为开了 GPU，出的包其实只有 CPU」，
             # 而这种包在真机上不会报任何错，只是慢。
             echo "AK_REQUIRE_VULKAN=1"

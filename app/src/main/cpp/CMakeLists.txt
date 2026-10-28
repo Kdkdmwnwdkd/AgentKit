@@ -94,6 +94,8 @@ set(GGML_CPU_ALL_VARIANTS OFF CACHE BOOL "" FORCE)  # 单架构，不需要多�
 set(AK_HAS_VULKAN OFF)
 set(_ak_glslc "$ENV{AK_GLSLC}")
 set(_ak_spirv "$ENV{AK_SPIRV_DIR}")
+# Vulkan-Hpp（vulkan.hpp）与 spirv.hpp 的暂存目录，见下方说明。
+set(_ak_vkinc "$ENV{AK_VULKAN_INCLUDE}")
 
 if (_ak_glslc AND EXISTS "${_ak_glslc}" AND _ak_spirv AND EXISTS "${_ak_spirv}")
     # FindVulkan 的变量名不是 AK_*：写成 cache 变量让它跳过搜索，直接认我们给的。
@@ -103,6 +105,22 @@ if (_ak_glslc AND EXISTS "${_ak_glslc}" AND _ak_spirv AND EXISTS "${_ak_spirv}")
     set(GGML_VULKAN ON CACHE BOOL "" FORCE)
     set(AK_HAS_VULKAN ON)
     message(STATUS "[agentkit] Vulkan: ON（glslc=${_ak_glslc}，spirv=${_ak_spirv}）")
+
+    # NDK 的 sysroot 里只有 C 头 vulkan.h，**没有 Vulkan-Hpp（vulkan.hpp）**，
+    # 而 ggml-vulkan-types.h 第一行就 include 它；同理 spirv.hpp 也只有宿主包里有。
+    # 两者都是纯头文件、与架构无关，用宿主的同一份即可。
+    #
+    # 但**绝不能直接把 /usr/include 塞进 -I**：那会把 glibc 的 stdio.h 等一起暴露给
+    # NDK 编译（-I 排在 -isystem 前面），bionic 的头会被顶掉，报一堆莫名其妙的错。
+    # 所以约定一个「只含 vulkan/ 与 spirv/ 两个符号链接」的暂存目录，由 CI 准备。
+    if (_ak_vkinc AND EXISTS "${_ak_vkinc}/vulkan/vulkan.hpp")
+        message(STATUS "[agentkit] Vulkan-Hpp: ${_ak_vkinc}")
+    elseif (DEFINED ENV{AK_REQUIRE_VULKAN})
+        message(FATAL_ERROR
+            "[agentkit] Vulkan: 缺 Vulkan-Hpp（AK_VULKAN_INCLUDE=${_ak_vkinc}）。"
+            "NDK sysroot 不带 vulkan.hpp，需要 libvulkan-dev 的头，并做成只含 "
+            "vulkan/ 与 spirv/ 的暂存目录（不要把 /usr/include 整个塞进 -I）。")
+    endif()
 else()
     set(GGML_VULKAN OFF CACHE BOOL "" FORCE)
     if (DEFINED ENV{AK_REQUIRE_VULKAN})
@@ -167,6 +185,12 @@ endforeach()
 if (TARGET ggml-vulkan)
     target_compile_options(ggml-vulkan PRIVATE -O3)
     message(STATUS "[agentkit] ggml-vulkan: 追加 -O3")
+    # BEFORE：宿主的 vulkan/ 与 spirv/ 必须排在 NDK sysroot 之前才能被找到
+    # （sysroot 里没有这两个目录，其实谁先都行；写 BEFORE 是为了让意图明确，
+    # 也防止将来某个 NDK 版本开始带一份老 vulkan.hpp 时被悄悄用上）。
+    if (_ak_vkinc AND EXISTS "${_ak_vkinc}/vulkan/vulkan.hpp")
+        target_include_directories(ggml-vulkan BEFORE PRIVATE "${_ak_vkinc}")
+    endif()
 endif()
 
 # ---- 我们的 JNI 桥 ----
