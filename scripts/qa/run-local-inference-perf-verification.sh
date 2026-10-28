@@ -94,6 +94,14 @@ expect "空输出前先落 native 诊断" "$CLIENT" 'nativeDiagnostics\(\)'
 expect "本地异常不参与退避重试" "$LOOP" 'LocalInferenceException -> false'
 expect "本地异常不被译成网络提示" "$VM" 'as\? com\.example\.agentkit\.core\.llm\.local\.LocalInferenceException'
 
+echo "[6/6] 分词预算查询（llama_tokenize 返回负数 = 「需要多少」，不是失败）"
+# 这条是真机上「模型配好了但发不出去」的真凶：第一趟传 nullptr/0 问需求，
+# llama.cpp 装不下时返回 **-所需数**；写成 `n <= 0 → 失败` 会让每一个非空
+# prompt 在分词阶段就判死（加载成功、80ms 报错、一个字不出）。
+expect "负数按「需要多少」转换" "$JNI" 'need = n < 0 \? -n : n'
+expect "第二趟仍不够时按新需求重试" "$JNI" 'need = -got'
+reject "不再把负返回值当分词失败" "$JNI" 'if \(n <= 0\) return false;'
+
 echo
 if [ "$fail" -eq 0 ]; then
   # 汇总行要带 FAIL=0：run-all.sh 用它识别「跑完且全过」（RESULT PASS 不认）

@@ -122,17 +122,39 @@ void resetKv(LlamaInstance* inst, const char* why) {
     if (why) LOGI("KV 会话重置：%s", why);
 }
 
-/** tokenize 整个 prompt（add_bos=true, parse_special=true）。失败返回 false。 */
+/**
+ * tokenize 整个 prompt（add_special=true, parse_special=true）。失败返回 false。
+ *
+ * **llama_tokenize 的返回值约定（踩过的坑，别再改回去）**：
+ *   - n_tokens_max 装得下 → 返回实际 token 数（正数）
+ *   - 装不下            → 返回 **负数**，绝对值是「需要多少」
+ *
+ * 所以「传 nullptr/0 先问需要多大」这一趟**正常就返回负数**。早期把 `n <= 0`
+ * 一律当失败，等于每一个非空 prompt 都判死：模型能加载、80ms 就报错、一个字不出，
+ * 而且报的还是「分词失败」这种听起来像词表不兼容的文案 —— 真机上看起来就像
+ * 「模型配好了但发不出去」。分词器本身对这种输入毫无问题。
+ */
 bool tokenizeAll(const llama_vocab* vocab, const std::string& text, std::vector<llama_token>& out) {
-    int n = llama_tokenize(vocab, text.c_str(), static_cast<int32_t>(text.size()),
-                           nullptr, 0, true, true);
-    if (n <= 0) return false;
-    out.resize(static_cast<size_t>(n));
-    n = llama_tokenize(vocab, text.c_str(), static_cast<int32_t>(text.size()),
-                       out.data(), n, true, true);
-    if (n <= 0) return false;
-    out.resize(static_cast<size_t>(n));
-    return true;
+    const int32_t len = static_cast<int32_t>(text.size());
+    if (len <= 0) return false;
+
+    int32_t n = llama_tokenize(vocab, text.c_str(), len, nullptr, 0, true, true);
+    int32_t need = n < 0 ? -n : n;   // 负数是「需要多少」，不是错误
+    if (need <= 0) return false;
+
+    // 两趟之间词表不会变，正常一趟就够；留重试是因为个别版本在
+    // parse_special 合并相邻特殊 token 时，第二趟仍会报「还差一点」。
+    for (int attempt = 0; attempt < 3; attempt++) {
+        out.resize(static_cast<size_t>(need));
+        const int32_t got = llama_tokenize(vocab, text.c_str(), len, out.data(), need, true, true);
+        if (got > 0) {
+            out.resize(static_cast<size_t>(got));
+            return true;
+        }
+        if (got == 0) return false;     // 真空输入，无法继续
+        need = -got;                    // 仍不够：按新需求再来一趟
+    }
+    return false;
 }
 
 /**
@@ -428,7 +450,13 @@ Java_com_example_agentkit_core_llm_local_LlamaJni_nativeGenerate(
     // 1) tokenize（add_bos=true, parse_special=true）
     std::vector<llama_token> tokens;
     if (!tokenizeAll(inst->vocab, text, tokens)) {
-        LOGE("tokenize 失败（输入 %zu 字节，开头：%.80s）", text.size(), text.c_str());
+        // 真失败才走到这里。顺手把「需要多少 token」探出来一起打：负数返回值
+        // 与真正失败的区分全靠这一行，否则下次又要从头猜。
+        const int32_t probe = llama_tokenize(inst->vocab, text.c_str(),
+                                             static_cast<int32_t>(text.size()),
+                                             nullptr, 0, true, true);
+        LOGE("tokenize 失败（输入 %zu 字节，所需 token 探测=%d，开头：%.80s）",
+             text.size(), probe, text.c_str());
         return env->NewStringUTF("");
     }
     LOGI("prompt 长度：%zu 字节 → %zu token", text.size(), tokens.size());
