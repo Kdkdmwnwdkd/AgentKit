@@ -234,7 +234,8 @@ create("full") { versionNameSuffix = "-full"; ... -DIRIS_MNN=ON }
 ### 6.2 三步走，不要一次全上
 
 **S1（本轮已做）：后端目录表**
-`core/llm/local/LocalBackendCatalog.kt` + 41 条断言。纯逻辑、零运行时依赖、不被现有链路调用。
+`core/llm/local/LocalBackendCatalog.kt` + 56 条断言（20 条静态 + 36 条真编真跑）。
+纯逻辑、零运行时依赖、不被现有链路调用。
 它把「哪个模型能在哪个后端跑、为什么不能」写死成可测的表。
 
 **S2：接 MNN（建议先做）**

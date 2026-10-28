@@ -13,6 +13,7 @@ set -uo pipefail
 cd "$(dirname "$0")/../.." || exit 1
 
 CATALOG="app/src/main/java/com/example/agentkit/core/llm/local/LocalBackendCatalog.kt"
+PROFILE="app/src/main/java/com/example/agentkit/core/llm/local/LocalDeviceProfile.kt"
 
 PASS=0
 FAIL=0
@@ -199,7 +200,9 @@ KOTLIN
         GUESS="$(dirname "$(dirname "$KOTLINC")")/lib/kotlin-stdlib.jar"
         [ -f "$GUESS" ] && STDLIB="$GUESS"
     fi
-    "$KOTLINC" -nowarn "$CATALOG" "$WORK/CatalogCheck.kt" -d "$WORK/check.jar" 2>"$WORK/err.txt"
+    # 后端目录现在会引用设备画像（「本机是什么 GPU」要写进不可用原因），
+    # 所以两个纯逻辑文件一起编。
+    "$KOTLINC" -nowarn "$CATALOG" "$PROFILE" "$WORK/CatalogCheck.kt" -d "$WORK/check.jar" 2>"$WORK/err.txt"
     if [ ! -f "$WORK/check.jar" ]; then
         fail "Kotlin 编译失败"
         sed -n '1,15p' "$WORK/err.txt" | sed 's/^/        /'

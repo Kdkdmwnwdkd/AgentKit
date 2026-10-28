@@ -69,6 +69,11 @@ data class LocalEngineEnvironment(
     val socModel: String? = null,
     /** 高通 NPU 运行库/QNN 是否已在应用目录里就绪。 */
     val npuRuntimeInstalled: Boolean = false,
+    /**
+     * 设备画像（可选）。给了就把「本机是什么 GPU」写进不可用原因里，而不是让用户猜。
+     * null 时行为与之前完全一致——这一层是增量，不是改造。
+     */
+    val device: LocalDeviceProfile? = null,
 )
 
 /** 一个后端对这个模型「能不能用」，不能用时必须给出给人看的原因。 */
@@ -163,6 +168,33 @@ object LocalEngineCatalog {
 
     // ---------------------------------------------------------------- 后端可用性
 
+    /**
+     * 「GPU 为什么是灰的」要说人话。
+     *
+     * 只写「当前构建未启用」是实话，但对用户没用——他还想知道「开了之后我这台能不能用」。
+     * 有设备画像时把本机 GPU 一起报出来，并给出「开了之后怎么样」的判断：
+     * Adreno 直接可用、Mali 需验证、PowerVR 劝退。这三档的判断在 [LocalDeviceRules] 里，
+     * 这里只负责拼句子，不重复写规则。
+     */
+    private fun gpuUnavailableReason(env: LocalEngineEnvironment): String {
+        val base = if (env.llamaGpuEnabled) {
+            "本机没有可用的 OpenCL 驱动"
+        } else {
+            "当前构建的 llama.cpp 只编了 CPU 后端（Vulkan / OpenCL 未启用）"
+        }
+        val device = env.device ?: return base
+        val advice = LocalDeviceRules.advise(device)
+        val gpu = advice.gpuModel ?: advice.gpu.label
+        return when (advice.gpu) {
+            GpuFamily.ADRENO -> "$base；本机 $gpu，开启 Vulkan 后可直接用"
+            GpuFamily.MALI, GpuFamily.IMMORTALIS ->
+                "$base；本机 $gpu（${advice.vendor.label}），Vulkan 需按机型验证"
+            GpuFamily.POWERVR -> "$base；本机 $gpu，驱动老旧不建议开 GPU"
+            GpuFamily.XCLIPSE -> "$base；本机 $gpu，算子覆盖不全不建议开 GPU"
+            GpuFamily.UNKNOWN -> base
+        }
+    }
+
     fun options(
         format: LocalModelFormat,
         fileName: String,
@@ -175,8 +207,7 @@ object LocalEngineCatalog {
             } else {
                 LocalBackendOption(
                     LocalBackend.GPU, false,
-                    reason = if (env.llamaGpuEnabled) "本机没有可用的 OpenCL 驱动"
-                    else "当前构建的 llama.cpp 只编了 CPU 后端（Vulkan / OpenCL 未启用）",
+                    reason = gpuUnavailableReason(env),
                 )
             },
             LocalBackendOption(

@@ -7,6 +7,7 @@ import com.example.agentkit.automation.adb.AdbSession
 import com.example.agentkit.automation.shizuku.ShizukuShell
 import com.example.agentkit.core.AgentLogger
 import com.example.agentkit.core.CrashLogger
+import com.example.agentkit.core.llm.local.AndroidDeviceProbe
 
 /**
  * 应用入口（Application 子类，Manifest 已通过 `android:name` 声明）。
@@ -52,6 +53,18 @@ class AgentKitApplication : Application() {
         // 不发网络包也不生成密钥——首次配对时才生成 RSA（见 AdbCredentials.keyPair）。
         // 失败（存储不可用）不影响启动，只是该通道会如实返回「密钥不可用」。
         runCatching { AdbSession.init(this) }
+        // W-82：设备画像（芯片 / GPU / 内存 → 这台机器该走 NPU / GPU / CPU 哪条路）。
+        //
+        // 为什么放后台线程：画像要起一个 1x1 的 EGL 上下文问 GL_RENDERER（几毫秒到几十毫秒），
+        // 而 onCreate 是启动最敏感的路径——这里等它等于给冷启动加一截。
+        // 为什么失败可以接受：画像只用于「把判断写进日志 + 后续在设置页展示」，
+        // 探测失败就退到 CPU 路线，不影响任何功能。内部全程 runCatching。
+        //
+        // 这一行让真机日志直接带上设备判定，省掉「你这台是什么芯片」的往返：
+        //   DeviceProbe: 设备画像：高通骁龙 · Adreno 660 · 中高端（8GB 级） → 首选 GPU，建议 1.5B~3B
+        Thread {
+            runCatching { AndroidDeviceProbe.profile(this) }
+        }.apply { isDaemon = true; name = "device-probe" }.start()
         // 功能五（P1-10）：前台 Activity 计数——「回答完成提醒」只在 App 退到后台时
         // 发通知（用户正盯着聊天界面时提醒是噪音）。用 ActivityLifecycleCallbacks
         // 而不是 ProcessLifecycleOwner：不引 lifecycle-process 新依赖，计数语义也够用。
