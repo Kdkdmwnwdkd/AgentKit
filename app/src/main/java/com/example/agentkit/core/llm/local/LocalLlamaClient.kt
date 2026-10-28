@@ -16,6 +16,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -159,16 +160,22 @@ class LocalLlamaClient(
         val prompt = buildPrompt(messages, tools)
         AgentLogger.llmRequest(currentModelLabel(), messages.size, tools.size)
         val startedAt = System.currentTimeMillis()
+        AgentLogger.i(
+            "LocalLlama",
+            "开始生成：prompt ${prompt.length} 字符，上限 ${setting.maxTokens} token，线程 ${setting.nThreads}"
+        )
 
         val acc = StringBuilder()
         var decided = false
         var looksLikeToolCall = false
+        val firstPieceAt = java.util.concurrent.atomic.AtomicLong(0L)
         val meter = GenMeter()
 
         val thread = Thread({
             try {
                 engine.generate(prompt, setting.maxTokens) { piece ->
                     meter.onPiece(piece)
+                    firstPieceAt.compareAndSet(0L, System.currentTimeMillis())
                     acc.append(piece)
                     if (!decided && acc.isNotBlank()) {
                         decided = true
@@ -176,6 +183,13 @@ class LocalLlamaClient(
                     }
                     if (decided && !looksLikeToolCall) {
                         trySend(ChatStreamEvent.TextDelta(piece))
+                    } else if (looksLikeToolCall && acc.length >= TOOL_JSON_HOLD_MAX_CHARS) {
+                        // 工具调用原本要「整条 JSON 憋到结束再解析」。问题是这个上限由
+                        // 模型决定：它会慢吞吞吐几百 token 的 JSON，期间界面一个字都没有。
+                        // 憋到 400 字符还看不出结束的，就当普通文本放行——宁可视觉上出现
+                        // 半截 JSON，也不能让用户对着空白等几分钟。
+                        looksLikeToolCall = false
+                        trySend(ChatStreamEvent.TextDelta(acc.toString()))
                     }
                 }
             } catch (t: Throwable) {
@@ -184,7 +198,52 @@ class LocalLlamaClient(
         }, "local-llama-stream")
         thread.start()
         invokeOnClose { engine.stop() }
-        thread.join()
+
+        // 生成线程是阻塞的，主协程不能只 join() 干等：那样 native 的进度全被关在
+        // 环形缓冲里，用户中途停止后日志一片空白（真机 500 秒无输出就是这么来的）。
+        // 这里改成「边等边把 native 新日志转进运行日志」，并提供卡死看门狗。
+        val tap = NativeProgressTap()
+        var stalled = false
+        var cancelled = false
+        var lastActivity = startedAt
+        while (thread.isAlive) {
+            // join(timeout) 不是挂起点：协程被取消时这里不会自己抛异常，
+            // 必须显式收手，否则「离开对话页」后还会白等一个轮询周期。
+            if (!isActive) {
+                cancelled = true
+                engine.stop()
+                thread.join(3000)
+                break
+            }
+            thread.join(POLL_INTERVAL_MS)
+            if (tap.drain() > 0) lastActivity = System.currentTimeMillis()
+            val noFirstToken = firstPieceAt.get() == 0L
+            if (noFirstToken && System.currentTimeMillis() - lastActivity > IDLE_TIMEOUT_MS) {
+                stalled = true
+                AgentLogger.e(
+                    "LocalLlama",
+                    "本地推理 ${IDLE_TIMEOUT_MS / 1000}s 没有任何进展（未出首字），已中止本回合。" +
+                        "native 诊断：\n${nativeDiagnostics()}"
+                )
+                engine.stop()
+                thread.join(3000)
+                break
+            }
+        }
+        tap.drain()
+
+        if (stalled) {
+            throw LocalInferenceException(
+                "本地模型 ${IDLE_TIMEOUT_MS / 1000} 秒没动过（连首字都没出）。这个模型对当前设备太重，" +
+                    "建议到「模型配置 → 本地模型」换 qwen2.5-0.5b 或 1.5b 再试。详情见运行日志"
+            )
+        }
+        // 用户主动停止不算失败：prefill 阶段被打断时一个字都还没有，
+        // 按「空文本」去抛异常会让「我点了停止」变成一条红色报错。
+        if (cancelled && acc.isEmpty()) {
+            AgentLogger.i("LocalLlama", "用户停止（首字前），本回合不产出内容")
+            return@channelFlow
+        }
 
         val text = acc.toString()
         // 空文本 = 用户侧「发了消息毫无反应」。这不可能是「模型说完了」：
@@ -223,10 +282,48 @@ class LocalLlamaClient(
     /** 只挑能判断「卡在哪一步」的行，避免把 80 行全塞进运行日志。 */
     private fun digest(diag: String): String = diag.lineSequence()
         .filter { line ->
-            listOf("nativeInit 成功", "prompt 长度", "prefill 完成", "生成完成", "命中结束符", "生成为空")
-                .any { keyword -> line.contains(keyword) }
+            listOf(
+                "nativeInit 成功", "prompt 长度", "prefill 完成", "生成完成",
+                "命中结束符", "生成为空"
+            ).any { keyword -> line.contains(keyword) }
         }
         .joinToString(" ｜ ")
+
+    /**
+     * 把 native 环形缓冲里的**新**日志转进 App 运行日志。
+     *
+     * 存在的理由：native 的进度行（prefill 进度 / 生成进度）只在结束时才被上层读到，
+     * 用户中途点停止就什么都不剩——真机上表现为「等了 8 分钟、日志里一片空白」。
+     * 这里每一小段时间捞一次增量，日志里就能看到「算到第几个 token、多快」。
+     *
+     * 只转发进度/失败行：native 一次生成会打几十行，全转会把日志淹掉。
+     */
+    private inner class NativeProgressTap {
+        private val seen = LinkedHashSet<String>()
+
+        /** @return 本次是否有新行（用于判断「还在动」） */
+        fun drain(): Int {
+            val diag = runCatching { nativeDiagnostics() }.getOrDefault("")
+            if (diag.isBlank()) return 0
+            var fresh = 0
+            diag.lineSequence().forEach { line ->
+                val t = line.trim()
+                if (t.isEmpty()) return@forEach
+                if (!seen.add(t)) return@forEach
+                fresh++
+                if (t.contains("进度") || t.contains("失败") || t.contains("prefill 完成")) {
+                    AgentLogger.i("LocalLlama", t)
+                }
+            }
+            // 缓冲每轮都在滚动，集合不能无限长
+            if (seen.size > 600) {
+                val keep = seen.toList().takeLast(200)
+                seen.clear()
+                seen.addAll(keep)
+            }
+            return fresh
+        }
+    }
 
     /**
      * 把 native 诊断翻译成一句用户能看懂、且能直接转述给开发者的话。
@@ -345,14 +442,17 @@ class LocalLlamaClient(
      */
     private fun toolProtocolPrompt(tools: List<AgentTool>): String = buildString {
         appendLine("【工具调用模式】")
-        appendLine("你可以使用以下工具。需要调用时，你的整个回复必须且只能是这一个 JSON 对象（不要使用 ```json 代码块，不要输出任何其他文字）：")
+        appendLine("需要调用工具时，整个回复必须且只能是这一个 JSON（不要 ```json 代码块，不要多余文字）：")
         appendLine("{\"tool\": \"工具名\", \"arguments\": {\"参数名\": \"参数值\"}}")
-        appendLine("不需要工具时，直接用自然语言回答。可用工具：")
+        appendLine("不需要工具时直接用自然语言回答。可用工具：")
         tools.forEach { tool ->
-            val params = tool.parameters.properties.entries.joinToString(", ") { (k, p) ->
-                "$k(${p.type}${if (p.description.isNotBlank()) ": ${p.description}" else ""})"
-            }
-            appendLine("- ${tool.name}: ${tool.description}。参数：$params")
+            // 每个 token 都要花 CPU 算两遍（prefill 一次、生成时 attends 一次），而
+            // 本地模型 3B 的 prefill 只有十几 tok/s。工具描述是 prompt 里最长的一段，
+            // 逐字照搬会把首字延迟顶到分钟级——保留「够模型判断该不该用」的信息即可：
+            // 描述截到 48 字，参数只给名字和类型。
+            val desc = tool.description.replace('\n', ' ').trim().take(48)
+            val params = tool.parameters.properties.entries.joinToString(", ") { (k, p) -> "$k:${p.type}" }
+            appendLine("- ${tool.name}: $desc。参数：$params")
         }
     }
 
@@ -416,5 +516,27 @@ class LocalLlamaClient(
                 Locale.US, "%s / %d 字 / 共 %dms（%.1f 字每秒）", head, chars, total, cps
             )
         }
+    }
+
+    private companion object {
+        /** 生成线程的轮询间隔：够细能看到进度，又不至于把 CPU 抢去读日志。 */
+        const val POLL_INTERVAL_MS = 1500L
+
+        /**
+         * 「一点进展都没有」的容忍上限。
+         *
+         * 3B Q4 在手机 CPU 上 prefill 约 10~20 tok/s，1800 token 的首轮要 1~3 分钟；
+         * 短于这个数的超时会把「慢但正常」误判成卡死。超过它还没出首字，那就是真的
+         * 跑不动（模型过大 / 系统限频），不如明确报错让用户换小模型。
+         */
+        const val IDLE_TIMEOUT_MS = 180_000L
+
+        /**
+         * 工具调用 JSON 最多憋多少字符。
+         *
+         * 本地小模型输出 JSON 的速度是每秒几个 token，一条 300 字符的 JSON 要一分多钟，
+         * 期间界面全空。超过这个量就当普通文本往屏幕上推。
+         */
+        const val TOOL_JSON_HOLD_MAX_CHARS = 400
     }
 }

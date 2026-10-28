@@ -16,6 +16,7 @@
 #include <deque>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 #include <algorithm>
 
@@ -60,7 +61,7 @@ struct LlamaInstance {
     llama_model* model = nullptr;
     llama_context* ctx = nullptr;
     const llama_vocab* vocab = nullptr;
-    int n_batch = 2048;
+    int n_batch = 512;   // 与 n_ubatch 同量级：进度可分块上报、停止能尽快生效
     int n_threads = 4;
     std::atomic<bool> stop{false};
 
@@ -197,16 +198,35 @@ bool decodeExplicit(LlamaInstance* inst, const llama_token* toks, int32_t n, lla
  * 把 tokens[from..] 分块 decode 进 KV，并把吃进去的 token 追加到账本。
  *
  * 位置由账本长度推出：账本里已有的 token 就占着 0..from-1，故本块从 from 开始。
+ *
+ * 每块都打一行进度（token 数 / 累计毫秒 / tok/s），并且**每块都检查停止标志**——
+ * 之前 prefill 是不可中断的，用户点「停止」要等到整段算完才生效，看起来像没反应。
+ *
+ * @param startedAt prefill 起点（毫秒），用于算累计速率；重试时传新的起点
  */
-bool decodeFrom(LlamaInstance* inst, std::vector<llama_token>& tokens, size_t from) {
+bool decodeFrom(LlamaInstance* inst, std::vector<llama_token>& tokens, size_t from,
+                const long long startedAt) {
     for (size_t i = from; i < tokens.size(); i += static_cast<size_t>(inst->n_batch)) {
-        size_t chunk = std::min(static_cast<size_t>(inst->n_batch), tokens.size() - i);
+        if (inst->stop.load()) {
+            LOGI("prefill 被用户停止（已算 %zu / %zu token）", i, tokens.size());
+            return false;
+        }
+        const size_t chunk = std::min(static_cast<size_t>(inst->n_batch), tokens.size() - i);
         if (!decodeExplicit(inst, tokens.data() + i, static_cast<int32_t>(chunk),
                             static_cast<llama_pos>(i))) {
             resetKv(inst, "prefill decode 失败");
             return false;
         }
         inst->kvTokens.insert(inst->kvTokens.end(), tokens.begin() + i, tokens.begin() + i + chunk);
+
+        // 每个分块打一行进度。**这是真机上唯一能看见「它到底在干嘛」的地方**：
+        // 之前只有一行结束日志，用户等到 500 秒仍是空白，分不清是「在算」还是「卡死」。
+        // 同时给 tok/s —— 3B Q4 在手机 CPU 上 prefill 十几 tok/s 属正常，个位数就是异常。
+        const long long spent = nowMs() - startedAt;
+        const size_t done = i + chunk;
+        LOGI("prefill 进度：%zu / %zu token，%lld ms（%.1f tok/s）",
+             done, tokens.size(), spent,
+             spent > 0 ? done * 1000.0 / static_cast<double>(spent) : 0.0);
     }
     return true;
 }
@@ -236,7 +256,8 @@ bool rebuildContext(LlamaInstance* inst) {
     llama_context_params cp = llama_context_default_params();
     cp.n_ctx = nCtx;
     cp.n_threads = inst->n_threads;
-    cp.n_threads_batch = inst->n_threads;
+    cp.n_threads_batch = std::max(inst->n_threads,
+                                  std::min(static_cast<int>(std::thread::hardware_concurrency()), 8));
     cp.n_batch = std::min(inst->n_batch, std::min(nCtx, 2048));
     cp.flash_attn = false;
     inst->ctx = llama_init_from_model(inst->model, cp);
@@ -293,8 +314,17 @@ Java_com_example_agentkit_core_llm_local_LlamaJni_nativeInit(
     llama_context_params cparams = llama_context_default_params();
     cparams.n_ctx = nCtx;
     cparams.n_threads = nThreads;
-    cparams.n_threads_batch = nThreads;
-    cparams.n_batch = std::min(nCtx, 2048);
+    // prefill（batch）与逐 token 生成的开销结构不同：生成是「读 2GB 权重出 1 个 token」，
+    // 内存带宽受限于大核，堆线程只会抢带宽；prefill 是「读一遍权重算一批」，纯算力，
+    // 把能用的核都拉上更快。之前两者都钉在 nThreads（大核数），长 prompt 的 prefill
+    // 因此被白白拖慢一倍以上。
+    const int hwCores = static_cast<int>(std::thread::hardware_concurrency());
+    cparams.n_threads_batch = std::max(nThreads, std::min(hwCores, 8));
+    // n_batch = 512：llama_decode 内部本来就按 n_ubatch（默认 512）切成若干趟算，
+    // 把 n_batch 调到 2048 只是把同样的活装进一次调用，速度不变，但会让「一次
+    // prefill 就是一个不可打断的黑盒」——进度看不见、点停止也要等它算完。
+    // 512 是「同样的吞吐 + 每 512 token 一行进度 + 停止最迟 512 token 后生效」。
+    cparams.n_batch = std::min(nCtx, 512);
     // FlashAttention 先关掉。
     //
     // 理由不是「不好」，而是「先隔离变量」：b4600 的 CPU FA 路径按 head_dim 与
@@ -314,8 +344,9 @@ Java_com_example_agentkit_core_llm_local_LlamaJni_nativeInit(
 
     char desc[256] = {0};
     llama_model_desc(inst->model, desc, sizeof(desc));
-    LOGI("nativeInit 成功: %s (n_ctx=%d, n_batch=%d, n_vocab=%d, bos=%d, eos=%d)",
+    LOGI("nativeInit 成功: %s (n_ctx=%d, n_batch=%d, threads=%d/%d, n_vocab=%d, bos=%d, eos=%d)",
          desc, static_cast<int>(llama_n_ctx(inst->ctx)), inst->n_batch,
+         cparams.n_threads, cparams.n_threads_batch,
          llama_vocab_n_tokens(inst->vocab),
          llama_vocab_bos(inst->vocab), llama_vocab_eos(inst->vocab));
     return reinterpret_cast<jlong>(inst);
@@ -511,7 +542,7 @@ Java_com_example_agentkit_core_llm_local_LlamaJni_nativeGenerate(
     }
 
     const long long prefillStart = nowMs();
-    if (!decodeFrom(inst, tokens, common)) {
+    if (!decodeFrom(inst, tokens, common, prefillStart)) {
         // 三级自愈，全部在 native 内完成，用户侧只体现为「这一次慢一点」：
         //   1) KV 已被 decodeFrom 重置 —— 排除账本脏；
         //   2) 分块缩到 512 —— 排除「单批太大被后端拒绝」；
@@ -520,12 +551,13 @@ Java_com_example_agentkit_core_llm_local_LlamaJni_nativeGenerate(
         // 明确日志，而不是让 UI 空着。
         LOGE("prefill 失败，降级重试：分块缩到 512");
         inst->n_batch = std::min(inst->n_batch, 512);
-        if (!decodeFrom(inst, tokens, 0)) {
+        const long long retryStart = nowMs();
+        if (!decodeFrom(inst, tokens, 0, retryStart)) {
             LOGE("小分块仍失败，重建上下文后重试");
             if (!rebuildContext(inst)) {
                 return env->NewStringUTF("");
             }
-            if (!decodeFrom(inst, tokens, 0)) {
+            if (!decodeFrom(inst, tokens, 0, nowMs())) {
                 LOGE("prefill 三次尝试均失败，本回合无法生成");
                 return env->NewStringUTF("");
             }
@@ -533,12 +565,18 @@ Java_com_example_agentkit_core_llm_local_LlamaJni_nativeGenerate(
         common = 0;
     }
     const long long prefillMs = nowMs() - prefillStart;
-    LOGI("prefill 完成：复用 %zu / 共 %zu token，补算 %zu，耗时 %lld ms",
-         common, tokens.size(), tokens.size() - common, prefillMs);
+    LOGI("prefill 完成：复用 %zu / 共 %zu token，补算 %zu，耗时 %lld ms（%.1f tok/s）",
+         common, tokens.size(), tokens.size() - common, prefillMs,
+         prefillMs > 0 ? (tokens.size() - common) * 1000.0 / static_cast<double>(prefillMs) : 0.0);
 
-    // 3) 采样链：top-p 0.9 → temp 0.7 → dist(seed 1234)
+    // 3) 采样链：重复惩罚 → top-p 0.9 → temp 0.7 → dist(seed 1234)
+    //
+    // 重复惩罚是「一直重复一句」的解药：小模型（尤其 3B 以下）在中文短对话里极易
+    // 落进「同一句循环输出」的坑，除了内容难看，还会一直不吐结束符——用户侧就是
+    // 「等到超时都不停」。penalty_last_n=64 只看最近 64 token，不会压制正常的长回答。
     auto sparams = llama_sampler_chain_default_params();
     llama_sampler* smpl = llama_sampler_chain_init(sparams);
+    llama_sampler_chain_add(smpl, llama_sampler_init_penalties(64, 1.15f, 0.0f, 0.0f));
     llama_sampler_chain_add(smpl, llama_sampler_init_top_p(0.9f, 1));
     llama_sampler_chain_add(smpl, llama_sampler_init_temp(0.7f));
     llama_sampler_chain_add(smpl, llama_sampler_init_dist(1234));
@@ -594,6 +632,14 @@ Java_com_example_agentkit_core_llm_local_LlamaJni_nativeGenerate(
             }
         }
         produced++;
+
+        // 每 32 token 打一行：长回答（本地模型常常要吐几百 token）在中途就能看见
+        // 「在动、多快」，而不是只有结束时那行汇总。用户中途点停止也有据可查。
+        if (produced % 32 == 0) {
+            const long long el = nowMs() - genStart;
+            LOGI("生成进度：%d token / %zu 字符，%lld ms（%.1f tok/s）",
+                 produced, out.size(), el, el > 0 ? produced * 1000.0 / el : 0.0);
+        }
 
         // 下一个 token：显式 pos（账本长度即下一位），成功后才记入账本
         if (!decodeExplicit(inst, &tok, 1, static_cast<llama_pos>(inst->kvTokens.size()))) {

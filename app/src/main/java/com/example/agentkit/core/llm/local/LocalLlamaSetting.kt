@@ -69,7 +69,16 @@ class LocalLlamaSetting(context: Context) {
         private const val KEY_N_THREADS = "n_threads"
         private const val KEY_MAX_TOKENS = "max_tokens"
         const val DEFAULT_N_CTX = 4096
-        const val DEFAULT_MAX_TOKENS = 2048
+
+        /**
+         * 单次生成长度上限。
+         *
+         * 曾经是 2048 —— 那个值对云端 API 无所谓，对本地是「一张 8 分钟的空头支票」：
+         * 3B Q4 在手机 CPU 上约 3~5 tok/s，模型一旦不吐结束符（小模型常见），用户就要
+         * 对着空白等到 2048 token 全部吐完。512 够一段完整回答，最坏情况也被压在
+         * 两三分钟内；要长文由用户自己在设置里调。
+         */
+        const val DEFAULT_MAX_TOKENS = 512
 
         /** 模型文件统一存放目录（App 私有空间，卸载 App 即清理）。 */
         fun modelsDir(context: Context): java.io.File =

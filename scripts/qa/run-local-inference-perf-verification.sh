@@ -65,7 +65,7 @@ reject() {
 echo "[1/4] 增量 prefill（native）"
 expect "KV 账本存在" "$JNI" 'std::vector<llama_token>[[:space:]]+kvTokens'
 expect "按公共前缀回退 KV" "$JNI" 'llama_kv_cache_seq_rm\('
-expect "只补算差异段" "$JNI" 'decodeFrom\(inst, tokens, common\)'
+expect "只补算差异段" "$JNI" 'decodeFrom\(inst, tokens, common,'
 expect "失败路径重置会话" "$JNI" 'resetKv\(inst,'
 # 断言的是「显式设定」而非「开启」：FA 在 CPU 后端按 head_dim/量化类型分派，
 # 个别组合会让 decode 直接失败（真机表现为一个字不出）。开启与否是调优决定，
@@ -101,6 +101,17 @@ echo "[6/6] 分词预算查询（llama_tokenize 返回负数 = 「需要多少�
 expect "负数按「需要多少」转换" "$JNI" 'need = n < 0 \? -n : n'
 expect "第二趟仍不够时按新需求重试" "$JNI" 'need = -got'
 reject "不再把负返回值当分词失败" "$JNI" 'if \(n <= 0\) return false;'
+
+echo "[7/7] 慢要看得见（「等了几分钟还是一片空白」）"
+# 这一组守的是「过程可见 + 等待有上限」。真机上 3B 模型的 prefill 本来就要几十秒到
+# 几分钟，用户能忍「慢」，不能忍「不知道在不在动」。
+expect "prefill 分块进度可观测" "$JNI" 'prefill 进度：'
+expect "生成过程有进度打点" "$JNI" '生成进度：'
+expect "prefill 可被停止打断" "$JNI" 'prefill 被用户停止'
+expect "取消/卡死有等待上限" "$CLIENT" 'IDLE_TIMEOUT_MS'
+expect "native 进度实时转入运行日志" "$CLIENT" 'NativeProgressTap'
+expect "工具 JSON 不会无限憋着不出字" "$CLIENT" 'TOOL_JSON_HOLD_MAX_CHARS'
+expect "重复惩罚（防原地循环）" "$JNI" 'llama_sampler_init_penalties'
 
 echo
 if [ "$fail" -eq 0 ]; then
