@@ -85,6 +85,20 @@ struct LlamaInstance {
     std::mutex genMu;
 };
 
+/**
+ * ggml 的中断回调：llama_decode 内部每算完一个 ubatch 就调一次，**返回 true = 立刻收手**。
+ *
+ * 与「每块 token 之间查一次 stop」不是一回事：后者只能在 n_batch（几百 token）的边界
+ * 生效，而慢设备上几百 token 可能要几十秒——用户点了停止，界面还能再转半分钟，
+ * 主观感受就是「停止键没用」。注册进 context 后，decode 内部任何时刻都能中断。
+ *
+ * 只对 CPU 后端有效（llama.h 明确写了 currently works only with CPU execution），
+ * 北辰目前就是纯 CPU，正好。
+ */
+bool abortCb(void* data) {
+    return static_cast<LlamaInstance*>(data)->stop.load(std::memory_order_relaxed);
+}
+
 /** 单调时钟毫秒（只用于打点，不受系统时间调整影响）。 */
 long long nowMs() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -186,6 +200,15 @@ bool decodeExplicit(LlamaInstance* inst, const llama_token* toks, int32_t n, lla
     const int rc = llama_decode(inst->ctx, batch);
     llama_batch_free(batch);
     if (rc != 0) {
+        if (inst->stop.load()) {
+            // 中止不是故障：llama_decode 可能已经写入了前面若干个 ubatch 才返回非 0。
+            // 此时账本没动（成功才记账），所以把 KV 回退到账本长度就能对齐——
+            // **不要清空**，前面算好的几千 token 下一轮还能复用。
+            llama_kv_cache_seq_rm(inst->ctx, 0, static_cast<llama_pos>(inst->kvTokens.size()), -1);
+            LOGI("decode 被用户中止（rc=%d, n=%d, 账本 %zu token，KV 已对齐）",
+                 rc, n, inst->kvTokens.size());
+            return false;
+        }
         LOGE("llama_decode 失败 rc=%d（n=%d, pos0=%d, KV 已占用=%zu, n_ctx=%d）",
              rc, n, static_cast<int>(pos0), inst->kvTokens.size(),
              static_cast<int>(llama_n_ctx(inst->ctx)));
@@ -214,7 +237,9 @@ bool decodeFrom(LlamaInstance* inst, std::vector<llama_token>& tokens, size_t fr
         const size_t chunk = std::min(static_cast<size_t>(inst->n_batch), tokens.size() - i);
         if (!decodeExplicit(inst, tokens.data() + i, static_cast<int32_t>(chunk),
                             static_cast<llama_pos>(i))) {
-            resetKv(inst, "prefill decode 失败");
+            // 中止：KV 已在 decodeExplicit 里对齐到账本，账本本身没动，可以直接留用。
+            // 真失败：账本与 KV 的关系不再可信，必须整块清掉。
+            if (!inst->stop.load()) resetKv(inst, "prefill decode 失败");
             return false;
         }
         inst->kvTokens.insert(inst->kvTokens.end(), tokens.begin() + i, tokens.begin() + i + chunk);
@@ -258,7 +283,11 @@ bool rebuildContext(LlamaInstance* inst) {
     cp.n_threads = inst->n_threads;
     cp.n_threads_batch = std::max(inst->n_threads,
                                   std::min(static_cast<int>(std::thread::hardware_concurrency()), 8));
-    cp.n_batch = std::min(inst->n_batch, std::min(nCtx, 2048));
+    cp.n_batch = std::min(inst->n_batch, std::min(nCtx, 256));
+    cp.n_ubatch = std::min(cp.n_batch, 512);
+    cp.no_perf = true;
+    cp.abort_callback = &abortCb;
+    cp.abort_callback_data = inst;
     cp.flash_attn = false;
     inst->ctx = llama_init_from_model(inst->model, cp);
     if (!inst->ctx) {
@@ -292,6 +321,17 @@ Java_com_example_agentkit_core_llm_local_LlamaJni_nativeInit(
     static std::once_flag backendOnce;
     std::call_once(backendOnce, [] { llama_backend_init(); });
 
+    // 打印后端自报的能力清单（CPU 特性、向量宽度、启用的 kernel 家族）。
+    //
+    // 这行是「prefill 慢到底是算法还是编译」的唯一证据：同样的 Q4_K_M，走 dotprod
+    // 内核和走通用 NEON 能差 3~5 倍。真机上如果这里只写着 scalar / 没有 dotprod，
+    // 那再怎么调线程数、批大小都没用——问题在构建参数，不在推理参数。
+    static std::once_flag infoOnce;
+    std::call_once(infoOnce, [] {
+        const char* info = llama_print_system_info();
+        if (info && *info) LOGI("后端能力：%s", info);
+    });
+
     auto* inst = new LlamaInstance();
 
     llama_model_params mparams = llama_model_default_params();
@@ -320,11 +360,21 @@ Java_com_example_agentkit_core_llm_local_LlamaJni_nativeInit(
     // 因此被白白拖慢一倍以上。
     const int hwCores = static_cast<int>(std::thread::hardware_concurrency());
     cparams.n_threads_batch = std::max(nThreads, std::min(hwCores, 8));
-    // n_batch = 512：llama_decode 内部本来就按 n_ubatch（默认 512）切成若干趟算，
-    // 把 n_batch 调到 2048 只是把同样的活装进一次调用，速度不变，但会让「一次
-    // prefill 就是一个不可打断的黑盒」——进度看不见、点停止也要等它算完。
-    // 512 是「同样的吞吐 + 每 512 token 一行进度 + 停止最迟 512 token 后生效」。
-    cparams.n_batch = std::min(nCtx, 512);
+    // n_batch = 256：一次 llama_decode 吃进去的 token 上限。
+    //
+    // 这个值不影响吞吐（llama.cpp 内部本来就按 n_ubatch 分趟算），但它决定两件事：
+    //   1) 进度粒度 —— 慢设备上 512 token 可能要半分钟，用户盯着空白无从判断死活；
+    //   2) 中断粒度 —— 配合 abort 回调后，停止最迟在一个 ubatch 内生效。
+    // 256 在「每行日志别太碎」与「别让用户干等」之间取的折中。
+    cparams.n_batch = std::min(nCtx, 256);
+    // 物理批固定 512 以内：ggml 的 kernel 在这个量级上缓存局部性最好，再大只是多占
+    // 计算缓冲。逻辑批（n_batch）可以大于物理批，内部会分趟。
+    cparams.n_ubatch = std::min(cparams.n_batch, 512);
+    // 关掉自带的性能计时：它每次都读时钟计数，纯 CPU 上这部分开销白付。
+    cparams.no_perf = true;
+    // 中断回调：让 decode 内部（而不只是分块边界）能立刻停下。
+    cparams.abort_callback = &abortCb;
+    cparams.abort_callback_data = inst;
     // FlashAttention 先关掉。
     //
     // 理由不是「不好」，而是「先隔离变量」：b4600 的 CPU FA 路径按 head_dim 与
@@ -540,6 +590,18 @@ Java_com_example_agentkit_core_llm_local_LlamaJni_nativeGenerate(
             inst->kvTokens.resize(common);
         }
     }
+    // 「新 prompt 恰好是 KV 的严格前缀」——用户重发同一条、或只是重进了同一个会话。
+    //
+    // 此时 common == tokens.size()，下面的 decodeFrom 一个 token 都不会 decode，
+    // 采样器读到的是上一轮留在内存里的旧 logits：界面会把上一轮那句话再吐一遍。
+    // 这种「内容对、但来源错」的 bug 极难查（日志里 prefill 用时 0ms、复用 100%）。
+    // 回退一个 token 让模型真正算一次，代价是一个 token，换来「状态只由 KV 决定」。
+    if (common == tokens.size() && common > 0) {
+        common--;
+        // 账本与 KV 同步回退，不留「账本比 KV 少一个但那里的位置仍有旧值」的歧义。
+        inst->kvTokens.resize(common);
+        llama_kv_cache_seq_rm(inst->ctx, 0, static_cast<llama_pos>(common), -1);
+    }
 
     const long long prefillStart = nowMs();
     if (!decodeFrom(inst, tokens, common, prefillStart)) {
@@ -578,15 +640,22 @@ Java_com_example_agentkit_core_llm_local_LlamaJni_nativeGenerate(
          common, tokens.size(), tokens.size() - common, prefillMs,
          prefillMs > 0 ? (tokens.size() - common) * 1000.0 / static_cast<double>(prefillMs) : 0.0);
 
-    // 3) 采样链：重复惩罚 → top-p 0.9 → temp 0.7 → dist(seed 1234)
+    // 3) 采样链：重复惩罚 → top-k 40 → top-p 0.9 → min-p 0.05 → 温度 0.7 → 随机抽取
     //
-    // 重复惩罚是「一直重复一句」的解药：小模型（尤其 3B 以下）在中文短对话里极易
-    // 落进「同一句循环输出」的坑，除了内容难看，还会一直不吐结束符——用户侧就是
-    // 「等到超时都不停」。penalty_last_n=64 只看最近 64 token，不会压制正常的长回答。
+    // 顺序有讲究，不是随手排的：惩罚必须先于截断，否则被压过的 logits 再参与概率
+    // 排序，等于没罚；温度必须放最后，否则前面的阈值是按未缩放的概率算的。
+    //
+    // 两道「别让 3B 跑飞」的保险：
+    //   - penalties(1.15)：小模型中文短对话极易复读同一句，且复读时不吐结束符，
+    //     用户侧就是「一直重复一句」+「永远不结束」；
+    //   - top-k 40 / min-p 0.05：把长尾的胡话切掉。只开 top-p 时，概率分布在
+    //     300 token 的长尾上仍可能累计到 10%，小模型最容易在这些位置翻车。
     auto sparams = llama_sampler_chain_default_params();
     llama_sampler* smpl = llama_sampler_chain_init(sparams);
     llama_sampler_chain_add(smpl, llama_sampler_init_penalties(64, 1.15f, 0.0f, 0.0f));
+    llama_sampler_chain_add(smpl, llama_sampler_init_top_k(40));
     llama_sampler_chain_add(smpl, llama_sampler_init_top_p(0.9f, 1));
+    llama_sampler_chain_add(smpl, llama_sampler_init_min_p(0.05f, 1));
     llama_sampler_chain_add(smpl, llama_sampler_init_temp(0.7f));
     llama_sampler_chain_add(smpl, llama_sampler_init_dist(1234));
 

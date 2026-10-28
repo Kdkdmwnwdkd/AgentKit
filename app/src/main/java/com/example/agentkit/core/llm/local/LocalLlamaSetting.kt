@@ -29,8 +29,32 @@ class LocalLlamaSetting(context: Context) {
 
     /** 推理线程数。 */
     var nThreads: Int
-        get() = sp.getInt(KEY_N_THREADS, defaultThreads())
-        set(value) = sp.edit().putInt(KEY_N_THREADS, value.coerceIn(1, 8)).apply()
+        get() {
+            migrateThreadDefaultOnce()
+            return sp.getInt(KEY_N_THREADS, defaultThreads())
+        }
+        set(value) = sp.edit()
+            .putInt(KEY_N_THREADS, value.coerceIn(1, 8))
+            .putInt(KEY_THREADS_VERSION, THREADS_VERSION)
+            .apply()
+
+    /**
+     * 一次性迁移：让「线程数默认值」的修正对老用户也生效。
+     *
+     * 老版本把「大核数」（8 核机 = 4）写进了 SharedPreferences，而新的默认是「核数 − 2」
+     * （= 6）。不清掉旧值的话，改默认值只对新装用户有效——老用户看到的现象是
+     * 「更新了但一点没变快」，而这恰恰是最需要变快的那批人。
+     *
+     * 代价：手动调过线程数的用户会被重置一次。可接受——线程数就在设置页里，
+     * 而「默认值永远不生效」是更坏的 bug。
+     */
+    private fun migrateThreadDefaultOnce() {
+        if (sp.getInt(KEY_THREADS_VERSION, 0) >= THREADS_VERSION) return
+        sp.edit()
+            .remove(KEY_N_THREADS)
+            .putInt(KEY_THREADS_VERSION, THREADS_VERSION)
+            .apply()
+    }
 
     /** 单次生成上限（token）。 */
     var maxTokens: Int
@@ -55,28 +79,24 @@ class LocalLlamaSetting(context: Context) {
         set(value) = sp.edit().putBoolean(KEY_AGENT_MODE, value).apply()
 
     /**
-     * 默认线程数 = 最高频簇（大核）的核心数，clamp 到 2..6。
+     * 默认推理线程数。
      *
-     * 手机 SoC 是大小核异构：开满 8 线程时每一步都要等最慢的小核，实际比 4 线程
-     * 更慢更烫；llama.cpp 官方建议也是「物理大核数」。读不到 cpufreq 时退回
-     * 「可用核心数上限 4」的保守值。
+     * 早先取「最高频簇的核心数」（8 核机 → 4），理由是「大小核混跑要等最慢的小核」。
+     * 真机日志推翻了这条：3B Q4_K_M 在 8 核机上只有 2~3 tok/s 的 prefill，比同机型
+     * 上别的本地推理 App 低一个数量级——瓶颈不是「小核拖后腿」，而是线程太少，
+     * 内存访问的延迟盖不住。
+     *
+     * 现在的口径：**核数 − 2，夹在 4~6**。
+     *   - 减 2 是给渲染线程与系统留出余量，否则生成时界面掉帧、点停止都要等；
+     *   - 上限 6 是因为手机 SoC 上 7~8 线程的边际收益为负（内存带宽争抢 + 发热降频）；
+     *   - 下限 4 保证 4 核老机型也能吃满。
+     *
+     * 这是「默认值」，不是「最优值」：不同 SoC 的最优点差 1~2 个线程，用户可在
+     * 「模型配置 → 本地模型 → 推理参数」里自己调，调完立刻生效（下次加载）。
      */
     private fun defaultThreads(): Int {
-        val bigCores = runCatching {
-            val cpuDirs = java.io.File("/sys/devices/system/cpu")
-                .listFiles { f -> f.isDirectory && Regex("cpu\\d+").matches(f.name) }
-                ?: return@runCatching 0
-            val freqs = cpuDirs.mapNotNull { dir ->
-                runCatching {
-                    java.io.File(dir, "cpufreq/cpuinfo_max_freq").readText().trim().toLong()
-                }.getOrNull()
-            }
-            if (freqs.isEmpty()) return@runCatching 0
-            val top = freqs.maxOrNull() ?: return@runCatching 0
-            freqs.count { it >= top * 9 / 10 }   // 同簇频率相近，±10% 视为同一簇
-        }.getOrDefault(0)
-        if (bigCores in 2..8) return bigCores.coerceAtMost(6)
-        return Runtime.getRuntime().availableProcessors().coerceAtMost(4).coerceAtLeast(2)
+        val cores = Runtime.getRuntime().availableProcessors()
+        return (cores - 2).coerceIn(4, 6)
     }
 
     companion object {
@@ -84,6 +104,10 @@ class LocalLlamaSetting(context: Context) {
         private const val KEY_ACTIVE_MODEL = "active_model"
         private const val KEY_N_CTX = "n_ctx"
         private const val KEY_N_THREADS = "n_threads"
+        private const val KEY_THREADS_VERSION = "threads_default_version"
+
+        /** 线程默认值口径的版本号。改默认策略时 +1，老配置会被重置一次。 */
+        private const val THREADS_VERSION = 2
         private const val KEY_MAX_TOKENS = "max_tokens"
         private const val KEY_AGENT_MODE = "agent_mode"
         const val DEFAULT_N_CTX = 4096
