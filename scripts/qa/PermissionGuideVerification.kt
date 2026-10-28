@@ -230,7 +230,9 @@ fun main() {
     check("聚光灯触发条件：模型就绪 + 权限引导已走过 + 自己没被跳过") {
         val src = read("app/src/main/java/com/example/agentkit/ui/AppScaffold.kt")
         assertTrue("缺少 guideSeen 条件", src.contains("guideSeen(ctx) && !spotlightSeen(ctx)"))
-        assertTrue("缺少模型就绪判定", src.contains("val modelReady = config.baseUrl.isNotBlank()"))
+        // W-70：就绪判定收敛到 ChatViewModel.modelReady 单一口径（本地模式三要素本就为空，
+        // 内联判定会把本地用户永远挡在引导外）。这里断言「走了那个口径」，不锁内联写法。
+        assertTrue("模型就绪判定未走 vm.modelReady 单一口径", src.contains("vm.modelReady"))
         assertTrue(
             "只在对话页触发，且离开时收起覆盖层",
             src.contains("if (dest != AppDest.CHAT) {") && src.contains("showSpotlight = false")
@@ -294,9 +296,11 @@ fun main() {
 
     check("自动进权限引导的 effect 以 route 为 key（否则保存后回对话页不触发）") {
         val src = read("app/src/main/java/com/example/agentkit/ui/AppScaffold.kt")
+        // 断言「某个 LaunchedEffect 的 key 里含 route」，不锁同行的其它 key——
+        // W-70 把 config 三要素换成了 modelReady，写死整行就会误报。
         assertTrue(
             "LaunchedEffect 未包含 route",
-            src.contains("LaunchedEffect(route, config.baseUrl, config.apiKey, config.model)")
+            Regex("""LaunchedEffect\([^)]*\broute\b[^)]*\)""").containsMatchIn(src)
         )
     }
 
