@@ -25,6 +25,7 @@ import com.example.agentkit.core.llm.arrOrNull
 import com.example.agentkit.core.llm.objOrNull
 import com.example.agentkit.core.llm.primOrNull
 import java.io.IOException
+import java.util.Locale
 import java.util.UUID
 
 /**
@@ -100,11 +101,13 @@ class LocalLlamaClient(
         val prompt = buildPrompt(messages, tools)
         AgentLogger.llmRequest(currentModelLabel(), messages.size, tools.size)
         val startedAt = System.currentTimeMillis()
+        val meter = GenMeter()
         // 原生回调在生成线程逐 token 触发，经 channel 中转给 Flow 收集方；
         // 协程取消（离开对话页等）时 invokeOnClose 通知 native 停止，线程自然收尾。
         val thread = Thread({
             try {
                 engine.generate(prompt, setting.maxTokens) { piece ->
+                    meter.onPiece(piece)
                     trySend(piece)   // 通道满/已关时静默丢弃：宁可丢 token 不可卡死 native
                 }
             } catch (t: Throwable) {
@@ -120,7 +123,7 @@ class LocalLlamaClient(
             currentModelLabel(),
             true,
             System.currentTimeMillis() - startedAt,
-            "流式生成结束"
+            "流式生成结束 ${meter.summary()}"
         )
     }.flowOn(Dispatchers.IO)
 
@@ -146,10 +149,12 @@ class LocalLlamaClient(
         val acc = StringBuilder()
         var decided = false
         var looksLikeToolCall = false
+        val meter = GenMeter()
 
         val thread = Thread({
             try {
                 engine.generate(prompt, setting.maxTokens) { piece ->
+                    meter.onPiece(piece)
                     acc.append(piece)
                     if (!decided && acc.isNotBlank()) {
                         decided = true
@@ -178,7 +183,7 @@ class LocalLlamaClient(
             currentModelLabel(),
             text.isNotEmpty(),
             System.currentTimeMillis() - startedAt,
-            "流式生成结束（${if (message.toolCalls.isEmpty()) "文本" else "工具 ${message.toolCalls.size} 个"}）"
+            "流式生成结束（${if (message.toolCalls.isEmpty()) "文本" else "工具 ${message.toolCalls.size} 个"}）${meter.summary()}"
         )
         send(ChatStreamEvent.Completed(message))
     }.flowOn(Dispatchers.IO)
@@ -324,4 +329,34 @@ class LocalLlamaClient(
 
     private fun currentModelLabel(): String =
         setting.activeModel.ifBlank { config.model.ifBlank { "local-llama" } }
+
+    /**
+     * 一次本地生成的计时账：首字延迟（TTFT）+ 字符吞吐。
+     *
+     * 存在的理由：真机自测时用户手边未必有电脑，`adb logcat -s llama-jni` 里的
+     * prefill 耗时、tok/s 全在 native 侧，进不了 App 内「运行日志」页。而「回得快
+     * 不快」在体感上只由两个数决定 —— 第一字多久出来、之后每秒出多少字。这里在
+     * Kotlin 侧独立计一遍，写进 LLM 响应日志，手机上翻日志就能对比改前改后。
+     */
+    private class GenMeter {
+        private val startAt = System.currentTimeMillis()
+        private var firstAt = 0L
+        private var chars = 0
+
+        /** 每收到一个 token 片段调用一次（native 线程，只做整数累加）。 */
+        fun onPiece(piece: String) {
+            if (firstAt == 0L) firstAt = System.currentTimeMillis()
+            chars += piece.length
+        }
+
+        fun summary(): String {
+            val total = System.currentTimeMillis() - startAt
+            val ttft = if (firstAt == 0L) -1L else firstAt - startAt
+            val cps = if (total > 0) chars * 1000.0 / total else 0.0
+            val head = if (ttft < 0) "首字 —" else "首字 ${ttft}ms"
+            return String.format(
+                Locale.US, "%s / %d 字 / 共 %dms（%.1f 字每秒）", head, chars, total, cps
+            )
+        }
+    }
 }
