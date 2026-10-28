@@ -2970,6 +2970,11 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     }
 
     private fun friendlyMessage(e: Throwable): String {
+        // 本地推理失败：必须先于下面「IOException = 网络问题」的分支。
+        // 本地模型根本不出网，把它翻译成「检查网络连接」只会让人往错方向排查。
+        (e as? com.example.agentkit.core.llm.local.LocalInferenceException)?.let {
+            return "🧠 ${it.message ?: "本地模型没有返回内容"}"
+        }
         // LlmHttpException 也是 IOException，必须先于网络分支判断
         val http = e as? LlmHttpException
         if (http != null) {

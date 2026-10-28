@@ -84,4 +84,13 @@ object LlamaJni {
     external fun nativeStop(handle: Long)
     external fun nativeChatTemplate(handle: Long, roles: Array<String>, contents: Array<String>): String
     external fun nativeGenerate(handle: Long, prompt: String, maxTokens: Int, listener: TokenListener?): String
+
+    /**
+     * 原生层最近 80 条日志（tokenize 长度、prefill 复用/补算、decode 返回码、
+     * 首个 token、空输出原因…）。
+     *
+     * 为什么要这个通道：这些线索原本只在 logcat 里，而用户在手机上排查时没有电脑。
+     * 生成结束后无条件读一次写进「运行日志」，用户复制一段文本就能把现场带回来。
+     */
+    external fun nativeDiagnostics(): String
 }

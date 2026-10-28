@@ -19,6 +19,8 @@ JNI="$ROOT/app/src/main/cpp/llama-jni.cpp"
 CMAKE="$ROOT/app/src/main/cpp/CMakeLists.txt"
 LOADER="$ROOT/app/src/main/java/com/example/agentkit/core/llm/local/LlamaJni.kt"
 CLIENT="$ROOT/app/src/main/java/com/example/agentkit/core/llm/local/LocalLlamaClient.kt"
+LOOP="$ROOT/app/src/main/java/com/example/agentkit/core/agent/RealAgentLoop.kt"
+VM="$ROOT/app/src/main/java/com/example/agentkit/ui/ChatViewModel.kt"
 
 pass=0
 fail=0
@@ -65,7 +67,11 @@ expect "KV 账本存在" "$JNI" 'std::vector<llama_token>[[:space:]]+kvTokens'
 expect "按公共前缀回退 KV" "$JNI" 'llama_kv_cache_seq_rm\('
 expect "只补算差异段" "$JNI" 'decodeFrom\(inst, tokens, common\)'
 expect "失败路径重置会话" "$JNI" 'resetKv\(inst,'
-expect "FlashAttention 已开启" "$JNI" 'cparams\.flash_attn[[:space:]]*=[[:space:]]*true'
+# 断言的是「显式设定」而非「开启」：FA 在 CPU 后端按 head_dim/量化类型分派，
+# 个别组合会让 decode 直接失败（真机表现为一个字不出）。开启与否是调优决定，
+# 契约是「不能依赖默认值、必须写明」。
+expect "FlashAttention 显式设定" "$JNI" 'cparams\.flash_attn[[:space:]]*=[[:space:]]*(true|false)'
+expect "显式 pos 构造 batch（不依赖 get_one 隐式续号）" "$JNI" 'batch\.pos\[i\][[:space:]]*=[[:space:]]*pos0'
 
 echo "[2/4] 编译档位（CMake）"
 expect "ARM 架构档位已显式指定" "$CMAKE" 'GGML_CPU_ARM_ARCH'
@@ -81,6 +87,12 @@ echo "[4/4] 流式与窗口预算"
 expect "本地客户端覆盖 streamChat" "$CLIENT" 'override fun streamChat\('
 expect "工具调用 JSON 不逐字外泄" "$CLIENT" 'looksLikeToolCall'
 expect "生成预算受窗口约束" "$JNI" 'genBudget'
+
+echo "[5/5] 失败不许静默（真机「发了消息没反应」）"
+expect "空输出抛本地推理异常" "$CLIENT" 'LocalInferenceException\('
+expect "空输出前先落 native 诊断" "$CLIENT" 'nativeDiagnostics\(\)'
+expect "本地异常不参与退避重试" "$LOOP" 'LocalInferenceException -> false'
+expect "本地异常不被译成网络提示" "$VM" 'as\? com\.example\.agentkit\.core\.llm\.local\.LocalInferenceException'
 
 echo
 if [ "$fail" -eq 0 ]; then

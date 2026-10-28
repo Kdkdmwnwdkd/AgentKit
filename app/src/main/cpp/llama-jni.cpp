@@ -11,6 +11,9 @@
 #include <android/log.h>
 #include <atomic>
 #include <chrono>
+#include <cstdarg>
+#include <cstdio>
+#include <deque>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -19,10 +22,38 @@
 #include "llama.h"
 
 #define LOG_TAG "llama-jni"
-#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
-#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
 namespace {
+
+/**
+ * 进程内诊断回路：最近 80 条 native 日志。
+ *
+ * 存在的理由很实在——native 的 logcat 用户在手机上看不到，而「本地模型一句话都不回」
+ * 这类问题的全部线索（tokenize 成不成功、decode 返回几、prefill 花了多久、首个 token
+ * 是什么）都只在这层。把这些行回传给 Kotlin，用户翻「运行日志」就能把原因带给我，
+ * 不需要连电脑抓 logcat。
+ */
+std::mutex diagMu;
+std::deque<std::string> diagLines;
+
+/** 同时写 logcat 与诊断回路（va_list 两个消费者，必须 copy）。 */
+void diagPrintf(int prio, const char* fmt, ...) {
+    va_list ap, ap2;
+    va_start(ap, fmt);
+    va_copy(ap2, ap);
+    __android_log_vprint(prio, LOG_TAG, fmt, ap);
+    va_end(ap);
+    char buf[1024];
+    const int n = vsnprintf(buf, sizeof(buf), fmt, ap2);
+    va_end(ap2);
+    if (n <= 0) return;
+    std::lock_guard<std::mutex> lk(diagMu);
+    diagLines.emplace_back(buf, static_cast<size_t>(n < static_cast<int>(sizeof(buf)) ? n : static_cast<int>(sizeof(buf)) - 1));
+    while (diagLines.size() > 80) diagLines.pop_front();
+}
+
+#define LOGI(...) diagPrintf(ANDROID_LOG_INFO, __VA_ARGS__)
+#define LOGE(...) diagPrintf(ANDROID_LOG_ERROR, __VA_ARGS__)
 
 /** 一个已加载的本地模型实例。句柄以 jlong 传给 Kotlin。 */
 struct LlamaInstance {
@@ -30,6 +61,7 @@ struct LlamaInstance {
     llama_context* ctx = nullptr;
     const llama_vocab* vocab = nullptr;
     int n_batch = 2048;
+    int n_threads = 4;
     std::atomic<bool> stop{false};
 
     /**
@@ -104,19 +136,52 @@ bool tokenizeAll(const llama_vocab* vocab, const std::string& text, std::vector<
 }
 
 /**
+ * 显式构造 batch 并 decode：pos / seq_id / logits 全部手工填。
+ *
+ * **不用 llama_batch_get_one 的原因**：它靠 pos=nullptr 让 llama.cpp 内部按
+ * 「KV 里该序列的最大位置 + 1」自动续号。这条隐式规则在增量 prefill 下是致命的
+ * —— 上一轮我们主动删过 KV（`llama_kv_cache_seq_rm`），内部 max_pos 是否回落到
+ * 删除点取决于版本实现；一旦它没回落，新 prompt 就被写到后面去，位置全错。
+ * 更糟的是这种错位不一定报错，只表现为「回答离谱」或「立刻 EOS、一个字不出」。
+ *
+ * 因此这里自己记 pos（调用方传 pos0），不向 llama.cpp 猜任何东西。
+ *
+ * @param pos0 第一个 token 的位置（= 该序列已进 KV 的 token 数）
+ */
+bool decodeExplicit(LlamaInstance* inst, const llama_token* toks, int32_t n, llama_pos pos0) {
+    llama_batch batch = llama_batch_init(n, 0, 1);
+    for (int32_t i = 0; i < n; i++) {
+        batch.token[i] = toks[i];
+        batch.pos[i] = pos0 + i;
+        batch.n_seq_id[i] = 1;
+        batch.seq_id[i][0] = 0;
+        // 只要最后一个 token 的 logits（采样用 idx=-1）；全算会让长 prompt 的
+        // 输出层开销翻几十倍 —— 这也是「首字要等好几秒」的一个隐性来源。
+        batch.logits[i] = (i == n - 1) ? 1 : 0;
+    }
+    batch.n_tokens = n;
+    const int rc = llama_decode(inst->ctx, batch);
+    llama_batch_free(batch);
+    if (rc != 0) {
+        LOGE("llama_decode 失败 rc=%d（n=%d, pos0=%d, KV 已占用=%zu, n_ctx=%d）",
+             rc, n, static_cast<int>(pos0), inst->kvTokens.size(),
+             static_cast<int>(llama_n_ctx(inst->ctx)));
+        return false;
+    }
+    return true;
+}
+
+/**
  * 把 tokens[from..] 分块 decode 进 KV，并把吃进去的 token 追加到账本。
  *
- * llama_batch_get_one 不带 pos：llama_decode 内部会按「KV 里最大位置 + 1」自动续号，
- * 所以只要账本与 KV 一致，这里的分块 decode 就天然接在公共前缀之后。
+ * 位置由账本长度推出：账本里已有的 token 就占着 0..from-1，故本块从 from 开始。
  */
 bool decodeFrom(LlamaInstance* inst, std::vector<llama_token>& tokens, size_t from) {
     for (size_t i = from; i < tokens.size(); i += static_cast<size_t>(inst->n_batch)) {
         size_t chunk = std::min(static_cast<size_t>(inst->n_batch), tokens.size() - i);
-        // get_one 不收 const 指针，但它只读不写
-        llama_batch batch = llama_batch_get_one(tokens.data() + i, static_cast<int32_t>(chunk));
-        if (llama_decode(inst->ctx, batch) != 0) {
-            LOGE("decode 失败（offset=%zu, chunk=%zu）", i, chunk);
-            resetKv(inst, "decode 失败，账本与 KV 已不可信");
+        if (!decodeExplicit(inst, tokens.data() + i, static_cast<int32_t>(chunk),
+                            static_cast<llama_pos>(i))) {
+            resetKv(inst, "prefill decode 失败");
             return false;
         }
         inst->kvTokens.insert(inst->kvTokens.end(), tokens.begin() + i, tokens.begin() + i + chunk);
@@ -130,6 +195,34 @@ std::string jstringToStd(JNIEnv* env, jstring js) {
     std::string out(chars ? chars : "");
     if (chars) env->ReleaseStringUTFChars(js, chars);
     return out;
+}
+
+/**
+ * 重建推理上下文（保留模型）。
+ *
+ * 兜底用：KV 状态一旦被写坏（decode 中途失败、账本与 KV 不一致），只清 KV 未必
+ * 能救回来。重建是最后一个「不用重启 App」的自愈手段，代价是几毫秒的分配。
+ */
+bool rebuildContext(LlamaInstance* inst) {
+    if (!inst || !inst->model) return false;
+    const int nCtx = inst->ctx ? static_cast<int>(llama_n_ctx(inst->ctx)) : 4096;
+    if (inst->ctx) {
+        llama_free(inst->ctx);
+        inst->ctx = nullptr;
+    }
+    inst->kvTokens.clear();
+    llama_context_params cp = llama_context_default_params();
+    cp.n_ctx = nCtx;
+    cp.n_threads = inst->n_threads;
+    cp.n_threads_batch = inst->n_threads;
+    cp.n_batch = std::min(inst->n_batch, std::min(nCtx, 2048));
+    cp.flash_attn = false;
+    inst->ctx = llama_init_from_model(inst->model, cp);
+    if (!inst->ctx) {
+        LOGE("重建上下文失败（n_ctx=%d）", nCtx);
+        return false;
+    }
+    return true;
 }
 
 }  // namespace
@@ -168,16 +261,27 @@ Java_com_example_agentkit_core_llm_local_LlamaJni_nativeInit(
         return 0;
     }
     inst->vocab = llama_model_get_vocab(inst->model);
+    if (!inst->vocab) {
+        LOGE("llama_model_get_vocab 返回空，模型词表不可用: %s", path.c_str());
+        llama_model_free(inst->model);
+        delete inst;
+        return 0;
+    }
 
     llama_context_params cparams = llama_context_default_params();
     cparams.n_ctx = nCtx;
     cparams.n_threads = nThreads;
     cparams.n_threads_batch = nThreads;
     cparams.n_batch = std::min(nCtx, 2048);
-    // FlashAttention：CPU 后端同样生效，长上下文（历史越长越明显）省内存也省时间。
-    // 个别 head 维度不受支持时 llama.cpp 会自己退回普通注意力并打 warning，不会崩。
-    cparams.flash_attn = true;
+    // FlashAttention 先关掉。
+    //
+    // 理由不是「不好」，而是「先隔离变量」：b4600 的 CPU FA 路径按 head_dim 与
+    // 量化类型分派，个别组合会退回普通注意力（只打 warning），个别组合直接
+    // 让 decode 返回非 0 —— 后者在用户侧的表现就是「一个字都不出」。
+    // 先把「能稳定出字」做实，等真机数据说明生成速度确实是瓶颈，再按机型开。
+    cparams.flash_attn = false;
     inst->n_batch = cparams.n_batch;
+    inst->n_threads = nThreads;
     inst->ctx = llama_init_from_model(inst->model, cparams);
     if (!inst->ctx) {
         LOGE("llama_init_from_model 失败");
@@ -188,7 +292,10 @@ Java_com_example_agentkit_core_llm_local_LlamaJni_nativeInit(
 
     char desc[256] = {0};
     llama_model_desc(inst->model, desc, sizeof(desc));
-    LOGI("nativeInit 成功: %s (n_ctx=%d)", desc, llama_n_ctx(inst->ctx));
+    LOGI("nativeInit 成功: %s (n_ctx=%d, n_batch=%d, n_vocab=%d, bos=%d, eos=%d)",
+         desc, static_cast<int>(llama_n_ctx(inst->ctx)), inst->n_batch,
+         llama_vocab_n_tokens(inst->vocab),
+         llama_vocab_bos(inst->vocab), llama_vocab_eos(inst->vocab));
     return reinterpret_cast<jlong>(inst);
 }
 
@@ -210,6 +317,26 @@ Java_com_example_agentkit_core_llm_local_LlamaJni_nativeStop(
     JNIEnv* /*env*/, jobject /*thiz*/, jlong handle) {
     auto* inst = reinterpret_cast<LlamaInstance*>(handle);
     if (inst) inst->stop.store(true);
+}
+
+/**
+ * 取 native 诊断文本（最近 80 行，含 LOGI/LOGE）。
+ *
+ * Kotlin 在生成结束后无条件读一次写进「运行日志」——native 的 logcat 用户在手机上
+ * 看不到，而「本地模型不回话」的全部线索都在这层。这个函数只读取快照，不清空。
+ */
+JNIEXPORT jstring JNICALL
+Java_com_example_agentkit_core_llm_local_LlamaJni_nativeDiagnostics(
+    JNIEnv* env, jobject /*thiz*/) {
+    std::string out;
+    {
+        std::lock_guard<std::mutex> lk(diagMu);
+        for (const auto& line : diagLines) {
+            out += line;
+            out += '\n';
+        }
+    }
+    return env->NewStringUTF(out.c_str());
 }
 
 /**
@@ -274,7 +401,15 @@ Java_com_example_agentkit_core_llm_local_LlamaJni_nativeGenerate(
     JNIEnv* env, jobject /*thiz*/, jlong handle, jstring prompt,
     jint maxTokens, jobject listener) {
     auto* inst = reinterpret_cast<LlamaInstance*>(handle);
-    if (!inst || !inst->ctx || !inst->vocab) return env->NewStringUTF("");
+    if (!inst || !inst->ctx || !inst->vocab) {
+        // 句柄还在但上下文没了（重建失败 / 已被释放）：必须留一行，否则上层只看到
+        // 「0 字」而完全不知道原因。
+        LOGE("nativeGenerate 被调用但实例不可用（inst=%p ctx=%p vocab=%p）",
+             static_cast<void*>(inst),
+             inst ? static_cast<void*>(inst->ctx) : nullptr,
+             inst ? static_cast<const void*>(inst->vocab) : nullptr);
+        return env->NewStringUTF("");
+    }
 
     std::lock_guard<std::mutex> genLock(inst->genMu);
     inst->stop.store(false);
@@ -293,10 +428,16 @@ Java_com_example_agentkit_core_llm_local_LlamaJni_nativeGenerate(
     // 1) tokenize（add_bos=true, parse_special=true）
     std::vector<llama_token> tokens;
     if (!tokenizeAll(inst->vocab, text, tokens)) {
-        LOGE("tokenize 失败（输入 %zu 字节）", text.size());
+        LOGE("tokenize 失败（输入 %zu 字节，开头：%.80s）", text.size(), text.c_str());
         return env->NewStringUTF("");
     }
-    LOGI("prompt token 数: %zu", tokens.size());
+    LOGI("prompt 长度：%zu 字节 → %zu token", text.size(), tokens.size());
+    if (tokens.size() < 2) {
+        // 模板渲染出空/极短 prompt：位置、logits、采样全都还成立，但模型看到的
+        // 是一个「没有内容的对话」，通常立刻吐结束符 —— 用户侧就是「一个字不出」。
+        LOGE("prompt 异常地短（%zu token），对话模板可能没渲染出内容：%.120s",
+             tokens.size(), text.c_str());
+    }
 
     const int nCtx = static_cast<int>(llama_n_ctx(inst->ctx));
 
@@ -317,8 +458,9 @@ Java_com_example_agentkit_core_llm_local_LlamaJni_nativeGenerate(
         tokens.swap(trimmed);
         reuseDisabled = true;
     }
-    // 收下输入后还剩多少窗口，就最多生成多少（不再越过窗口，否则 decode 必失败）
-    const int genBudget = std::max(16, std::min(static_cast<int>(maxTokens),
+    // 收下输入后还剩多少窗口，就最多生成多少（不再越过窗口，否则 decode 必失败）。
+    // 至少留 1：早期写成 max(16, …)，窗口吃满时硬生成 16 个 token 反而必然 decode 失败。
+    const int genBudget = std::max(1, std::min(static_cast<int>(maxTokens),
                                                 nCtx - static_cast<int>(tokens.size()) - 1));
 
     // 3) 增量 prefill：与上一轮已进 KV 的 token 求最长公共前缀
@@ -342,10 +484,29 @@ Java_com_example_agentkit_core_llm_local_LlamaJni_nativeGenerate(
 
     const long long prefillStart = nowMs();
     if (!decodeFrom(inst, tokens, common)) {
-        return env->NewStringUTF("");
+        // 三级自愈，全部在 native 内完成，用户侧只体现为「这一次慢一点」：
+        //   1) KV 已被 decodeFrom 重置 —— 排除账本脏；
+        //   2) 分块缩到 512 —— 排除「单批太大被后端拒绝」；
+        //   3) 重建上下文 —— 排除 KV/后端状态损坏。
+        // 真机上「一个字都不出」大多是 1 或 2 能救回来的情况；救不回来也要留下
+        // 明确日志，而不是让 UI 空着。
+        LOGE("prefill 失败，降级重试：分块缩到 512");
+        inst->n_batch = std::min(inst->n_batch, 512);
+        if (!decodeFrom(inst, tokens, 0)) {
+            LOGE("小分块仍失败，重建上下文后重试");
+            if (!rebuildContext(inst)) {
+                return env->NewStringUTF("");
+            }
+            if (!decodeFrom(inst, tokens, 0)) {
+                LOGE("prefill 三次尝试均失败，本回合无法生成");
+                return env->NewStringUTF("");
+            }
+        }
+        common = 0;
     }
+    const long long prefillMs = nowMs() - prefillStart;
     LOGI("prefill 完成：复用 %zu / 共 %zu token，补算 %zu，耗时 %lld ms",
-         common, tokens.size(), tokens.size() - common, nowMs() - prefillStart);
+         common, tokens.size(), tokens.size() - common, prefillMs);
 
     // 3) 采样链：top-p 0.9 → temp 0.7 → dist(seed 1234)
     auto sparams = llama_sampler_chain_default_params();
@@ -360,6 +521,7 @@ Java_com_example_agentkit_core_llm_local_LlamaJni_nativeGenerate(
     char piece[512];
     std::string pending;   // 跨 token 的 UTF-8 残片：凑满一个码点再回调，避免半个汉字变乱码
     int produced = 0;
+    int firstTok = -1;
     const long long genStart = nowMs();
     for (int i = 0; i < genBudget; i++) {
         if (inst->stop.load()) {
@@ -371,8 +533,12 @@ Java_com_example_agentkit_core_llm_local_LlamaJni_nativeGenerate(
             break;
         }
         llama_token tok = llama_sampler_sample(smpl, inst->ctx, -1);
-        if (tok == llama_vocab_eos(inst->vocab)) {
-            LOGI("命中 EOS");
+        if (firstTok < 0) firstTok = tok;
+        // 用 is_eog 而不是 `== llama_vocab_eos`：Qwen2.5 这类模型有多个结束符
+        // （<|endoftext|> 与 <|im_end|>），只比 eos 会漏掉其中一个，漏了就一直
+        // 往下吐 padding 或重复开头，看起来像「模型在原地打转」。
+        if (llama_vocab_is_eog(inst->vocab, tok)) {
+            LOGI("命中结束符 token=%d（第 %d 步）", tok, i);
             break;
         }
 
@@ -401,10 +567,8 @@ Java_com_example_agentkit_core_llm_local_LlamaJni_nativeGenerate(
         }
         produced++;
 
-        // 下一个 token 的单条 batch；成功后才记入账本
-        llama_batch next = llama_batch_get_one(&tok, 1);
-        if (llama_decode(inst->ctx, next) != 0) {
-            LOGE("decode 失败（第 %d 个 token），重置会话", i);
+        // 下一个 token：显式 pos（账本长度即下一位），成功后才记入账本
+        if (!decodeExplicit(inst, &tok, 1, static_cast<llama_pos>(inst->kvTokens.size()))) {
             resetKv(inst, "生成中 decode 失败");
             break;
         }
@@ -423,6 +587,13 @@ Java_com_example_agentkit_core_llm_local_LlamaJni_nativeGenerate(
     llama_sampler_free(smpl);
     LOGI("生成完成：%d token / %zu 字符，%lld ms（%.1f tok/s）",
          produced, out.size(), genMs, genMs > 0 ? produced * 1000.0 / genMs : 0.0);
+    // 空输出是「界面没反应」的唯一来源，必须留下可判读的原因：
+    // 首个 token 就是结束符 → 模板/prompt 问题；produced>0 但 0 字符 → token 全被
+    // 当成特殊 token 丢掉了（词表不匹配）；produced=0 且没命中结束符 → 循环没进。
+    if (out.empty()) {
+        LOGE("生成为空：produced=%d 首个token=%d 预算=%d promptTokens=%zu 已复用=%zu prefill=%lldms",
+             produced, firstTok, genBudget, tokens.size(), common, prefillMs);
+    }
     return env->NewStringUTF(out.c_str());
 }
 

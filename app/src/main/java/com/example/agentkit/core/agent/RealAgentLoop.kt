@@ -735,8 +735,13 @@ class RealAgentLoop(
      * 是否值得重试：[LlmHttpException] 自身决定（429/5xx 可重试，401/403/400 不可），
      * 其余（超时、DNS、连接中断等网络 IO 异常）一律视为可重试。
      */
-    private fun isRetryable(e: Throwable): Boolean =
-        (e as? LlmHttpException)?.retryable ?: true
+    private fun isRetryable(e: Throwable): Boolean = when (e) {
+        // 本地推理失败是确定性的：同一段 prompt + 同一个 native 库，重试只是再失败一次。
+        // 走退避重试会让用户干等 3s+10s 才看到一句「出错了」。
+        is com.example.agentkit.core.llm.local.LocalInferenceException -> false
+        is LlmHttpException -> e.retryable
+        else -> true
+    }
 
     /**
      * 每批工具执行前取一次 executor（默认按**当前**字段构造，update(registry) 即时生效）。

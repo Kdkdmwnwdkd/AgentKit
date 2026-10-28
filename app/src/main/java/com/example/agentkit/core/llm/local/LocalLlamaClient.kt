@@ -24,7 +24,6 @@ import com.example.agentkit.core.llm.ChatStreamEvent
 import com.example.agentkit.core.llm.arrOrNull
 import com.example.agentkit.core.llm.objOrNull
 import com.example.agentkit.core.llm.primOrNull
-import java.io.IOException
 import java.util.Locale
 import java.util.UUID
 
@@ -68,6 +67,11 @@ class LocalLlamaClient(
         val startedAt = System.currentTimeMillis()
         val text = engine.generate(prompt, setting.maxTokens, null)
         val elapsed = System.currentTimeMillis() - startedAt
+        if (text.isEmpty()) {
+            val diag = nativeDiagnostics()
+            AgentLogger.e("LocalLlama", "本地生成返回空文本（prompt ${prompt.length} 字符）。native 诊断：\n$diag")
+            throw LocalInferenceException(localFailureReason(diag))
+        }
         AgentLogger.llmResponse(currentModelLabel(), text.isNotEmpty(), elapsed, "生成长度=${text.length}")
         parseAssistant(text, tools)
     }
@@ -75,21 +79,24 @@ class LocalLlamaClient(
     /**
      * 确保模型已加载（必要时加载，秒级）。
      *
-     * 三个失败分支都必须抛 [IOException] 而不是返回空文本——空文本会让 AgentLoop
-     * 以为「模型说完了」，用户侧表现为毫无反应的静默失败，是最难排查的一类 bug。
+     * 三个失败分支都必须抛异常而不是返回空文本——空文本会让 AgentLoop 以为
+     * 「模型说完了」，用户侧表现为毫无反应的静默失败，是最难排查的一类 bug。
+     *
+     * 用 [LocalInferenceException] 而非 `IOException`：上层把 IOException 一律当成
+     * 网络问题，而这里每一条都是「本地配置/文件」问题，提示不能往网络上引。
      */
     private fun ensureModelLoaded() {
         val name = setting.activeModel
         if (name.isBlank()) {
-            throw IOException("尚未选择本地模型：请到「模型配置 → 本地模型」下载并选用")
+            throw LocalInferenceException("尚未选择本地模型：请到「模型配置 → 本地模型」下载并选用")
         }
         val file = modelStore.modelFile(name)
         if (!file.isFile) {
-            throw IOException("本地模型文件缺失：$name（可能已被删除，请重新下载）")
+            throw LocalInferenceException("本地模型文件缺失：$name（可能已被删除，请重新下载）")
         }
         val handle = engine.acquire(file.absolutePath, setting.nCtx, setting.nThreads, 0)
         if (handle == 0L) {
-            throw IOException("本地模型加载失败：${file.name}（详见「日志」页 llama-jni 标签）")
+            throw LocalInferenceException("本地模型加载失败：${file.name}（详见「运行日志」里的 llama-jni 记录）")
         }
     }
 
@@ -102,12 +109,14 @@ class LocalLlamaClient(
         AgentLogger.llmRequest(currentModelLabel(), messages.size, tools.size)
         val startedAt = System.currentTimeMillis()
         val meter = GenMeter()
+        val acc = StringBuilder()
         // 原生回调在生成线程逐 token 触发，经 channel 中转给 Flow 收集方；
         // 协程取消（离开对话页等）时 invokeOnClose 通知 native 停止，线程自然收尾。
         val thread = Thread({
             try {
                 engine.generate(prompt, setting.maxTokens) { piece ->
                     meter.onPiece(piece)
+                    acc.append(piece)
                     trySend(piece)   // 通道满/已关时静默丢弃：宁可丢 token 不可卡死 native
                 }
             } catch (t: Throwable) {
@@ -119,6 +128,11 @@ class LocalLlamaClient(
         thread.start()
         invokeOnClose { engine.stop() }
         thread.join()
+        if (acc.isEmpty()) {
+            val diag = nativeDiagnostics()
+            AgentLogger.e("LocalLlama", "本地生成返回空文本（prompt ${prompt.length} 字符）。native 诊断：\n$diag")
+            throw LocalInferenceException(localFailureReason(diag))
+        }
         AgentLogger.llmResponse(
             currentModelLabel(),
             true,
@@ -173,6 +187,19 @@ class LocalLlamaClient(
         thread.join()
 
         val text = acc.toString()
+        // 空文本 = 用户侧「发了消息毫无反应」。这不可能是「模型说完了」：
+        // 结束符不该在一句话都没吐的时候命中。把 native 现场搬进日志并明确失败，
+        // 否则这个回合会静默落一条空助手消息，看起来就像卡住/重复上一句。
+        if (text.isEmpty()) {
+            val diag = nativeDiagnostics()
+            AgentLogger.e(
+                "LocalLlama",
+                "本地生成返回空文本（prompt ${prompt.length} 字符）。native 诊断：\n$diag"
+            )
+            throw LocalInferenceException(localFailureReason(diag))
+        }
+        AgentLogger.i("LocalLlama", "native 摘要｜${digest(nativeDiagnostics())}")
+
         val message = parseAssistant(text, tools)
         // 判定像工具调用、最终却没解析出 ToolCall（JSON 不合法 / 工具名不在白名单）：
         // 整段按普通文本补发一次，不让这轮回答凭空消失。
@@ -187,6 +214,37 @@ class LocalLlamaClient(
         )
         send(ChatStreamEvent.Completed(message))
     }.flowOn(Dispatchers.IO)
+
+    /** 读 native 诊断（库未加载时返回空串，不能让诊断本身把流程搞崩）。 */
+    private fun nativeDiagnostics(): String = runCatching {
+        if (LlamaJni.available) LlamaJni.nativeDiagnostics() else ""
+    }.getOrDefault("")
+
+    /** 只挑能判断「卡在哪一步」的行，避免把 80 行全塞进运行日志。 */
+    private fun digest(diag: String): String = diag.lineSequence()
+        .filter { line ->
+            listOf("nativeInit 成功", "prompt 长度", "prefill 完成", "生成完成", "命中结束符", "生成为空")
+                .any { keyword -> line.contains(keyword) }
+        }
+        .joinToString(" ｜ ")
+
+    /**
+     * 把 native 诊断翻译成一句用户能看懂、且能直接转述给开发者的话。
+     *
+     * 分支顺序按「从日志里能确定的最具体原因」排，取不到就退回让用户导出日志。
+     */
+    private fun localFailureReason(diag: String): String = when {
+        diag.contains("tokenize 失败") ->
+            "本地模型读不懂这段输入（分词失败），已记录到运行日志"
+        diag.contains("llama_decode 失败") ->
+            "本地推理的计算核拒绝执行（decode 失败），多半是该模型与当前 native 库不兼容，已记录到运行日志"
+        diag.contains("prompt 异常地短") ->
+            "对话模板没有渲染出内容（prompt 过短），模型无话可说，已记录到运行日志"
+        diag.contains("生成为空") ->
+            "模型一个字都没生成（首个 token 就是结束符），已记录到运行日志"
+        else ->
+            "本地模型没有返回内容，详情见「设置 → 数据 → 运行日志」的 LocalLlama 条目"
+    }
 
     // —— 模型元信息 ————————————————————————————————————————————————
     override suspend fun listModels(): List<ModelInfo> =
