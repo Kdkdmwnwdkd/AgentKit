@@ -22,7 +22,6 @@ CLIENT="$ROOT/app/src/main/java/com/example/agentkit/core/llm/local/LocalLlamaCl
 LOOP="$ROOT/app/src/main/java/com/example/agentkit/core/agent/RealAgentLoop.kt"
 VM="$ROOT/app/src/main/java/com/example/agentkit/ui/ChatViewModel.kt"
 SETTING="$ROOT/app/src/main/java/com/example/agentkit/core/llm/local/LocalLlamaSetting.kt"
-GRADLE="$ROOT/app/build.gradle.kts"
 ABOUT="$ROOT/app/src/main/java/com/example/agentkit/ui/AboutScreen.kt"
 
 pass=0
@@ -88,7 +87,7 @@ expect "关掉 aarch64 repack 权重重排" "$CMAKE" 'GGML_CPU_AARCH64 OFF'
 # 而 CMake 的 Debug flags 只有 -g（= -O0）。ggml 在 -O0 下点积退化成标量循环。
 expect "Debug 配置也强制 -O3" "$CMAKE" 'CMAKE_\$\{_lang\}_FLAGS_DEBUG "-O3'
 expect "给 ggml 每个 target 追加 -O3" "$CMAKE" 'target_compile_options\(\$\{_t\} PRIVATE -O3\)'
-expect "gradle 显式传 Release" "$GRADLE" 'DCMAKE_BUILD_TYPE=Release'
+expect "build type 强制 Release" "$CMAKE" 'set\(CMAKE_BUILD_TYPE "Release" CACHE STRING "" FORCE\)'
 reject "不再关掉 CPU 变体" "$CMAKE" 'GGML_CPU_ALL_VARIANTS ON'
 
 echo "[3/10] 加载前 CPU 自检（Kotlin）"

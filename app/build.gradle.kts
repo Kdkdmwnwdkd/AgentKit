@@ -95,12 +95,11 @@ android {
             cmake {
                 path = file("src/main/cpp/CMakeLists.txt")
                 version = "3.22.1"
-                // AGP 在 debug 构建里默认给 externalNativeBuild 传
-                // -DCMAKE_BUILD_TYPE=Debug，CMake 的 Debug flags 只有 -g（即 -O0）。
-                // ggml 在 -O0 下点积退化成标量循环：真机实测 1 个 token 要 24 秒。
-                // 这里显式改成 Release；CMakeLists 里还有一层 FORCE 兜底（AGP 可能
-                // 在用户参数之后再追加自己的 -D，最后一个生效）。
-                arguments += "-DCMAKE_BUILD_TYPE=Release"
+                // 注意：这里**不能**写 arguments —— 顶层 android.externalNativeBuild
+                // 的 Cmake DSL 在 AGP 8.5 里没有暴露这个属性（编译报 Unresolved reference）。
+                // AGP 在 debug 构建里会传 -DCMAKE_BUILD_TYPE=Debug，而 CMake 的 Debug
+                // flags 只有 -g（即 -O0），ggml 在 -O0 下 1 个 token 要 24 秒。
+                // 这件事统一由 CMakeLists.txt 里三层 FORCE 处理（见那里注释）。
             }
         }
     }

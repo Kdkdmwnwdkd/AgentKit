@@ -53,13 +53,16 @@ CMakeLists.txt 也没碰过 build type。所以**从第一版起，ggml 就一�
 ## 三、修法：三层保险
 
 ```cmake
-# ① 直接替换 Debug 的 flags 字符串（CACHE FORCE 会压掉命令行 -D 传进来的值）
+# ① 直接把 build type 改成 Release（FORCE 能压掉命令行 -D 传进来的值）
+set(CMAKE_BUILD_TYPE "Release" CACHE STRING "" FORCE)
+
+# ② 把 Debug 的 flags 字符串整个替换成 -O3（万一 ① 被 AGP 又改回去）
 foreach(_lang C CXX)
     set(CMAKE_${_lang}_FLAGS_DEBUG "-O3 -g -DNDEBUG" CACHE STRING "" FORCE)
     set(CMAKE_${_lang}_FLAGS_RELWITHDEBINFO "-O3 -g -DNDEBUG" CACHE STRING "" FORCE)
 endforeach()
 
-# ② 给 ggml 的每个编译 target 追加 -O3（gcc/clang 对多个 -O 取最后一个）
+# ③ 给 ggml 的每个编译 target 追加 -O3（gcc 对多个 -O 取最后一个，能压掉任何 -O0）
 foreach(_t ggml ggml-base ggml-cpu llama)
     if (TARGET ${_t})
         target_compile_options(${_t} PRIVATE -O3)
@@ -67,10 +70,10 @@ foreach(_t ggml ggml-base ggml-cpu llama)
 endforeach()
 ```
 
-```kotlin
-// ③ gradle 显式传 Release（AGP 可能用自己的 -D 覆盖，所以只作辅助）
-arguments += "-DCMAKE_BUILD_TYPE=Release"
-```
+**为什么不在 `build.gradle.kts` 里写 `arguments += "-DCMAKE_BUILD_TYPE=Release"`**：
+AGP 8.5 的顶层 `android.externalNativeBuild.cmake` 没有暴露 `arguments` 属性，
+写上去直接 `Unresolved reference`（run 445 就是这么失败的）。build type 的事
+只能在 CMakeLists 里解决。
 
 再加一条**运行时自证**：
 
@@ -115,7 +118,7 @@ arguments += "-DCMAKE_BUILD_TYPE=Release"
 ```
 PASS  Debug 配置也强制 -O3
 PASS  给 ggml 每个 target 追加 -O3
-PASS  gradle 显式传 Release
+PASS  build type 强制 Release
 PASS  运行时自报是否带 -O 优化
 PASS  关于页构建时间固定北京时间
 ```

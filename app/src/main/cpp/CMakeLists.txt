@@ -22,13 +22,17 @@ set(CMAKE_C_STANDARD 11)
 # flags 只有 `-g`（等价 -O0）。Q4_K 的点积在 -O0 下退化成逐元素标量循环，
 # 没有向量化、没有寄存器复用、每个内层迭代都在做函数调用，比 -O3 慢 50 倍上下。
 #
-# 实测对照（同一台手机、同一个 3B Q4_K_M）：
-#   -O0：预热 1 token 24.5 秒，prefill 0.4 tok/s，生成 0.3 tok/s
-#   -O3：预热 1 token 0.2~0.4 秒，prefill 20~40 tok/s，生成 3~5 tok/s
+# 实测对照（同一台手机、同一个 3B Q4_K_M，1.444 出字那版）：
+#   -O0：预热 1 token 24.5 秒，prefill 0.4 tok/s，生成 0.3 tok/s，首字 220 秒
+#   -O3：预期 1 token 0.2~0.4 秒，prefill 20~40 tok/s，生成 3~5 tok/s
 #
-# 因为构建类型由 AGP 决定、我们控制不了，这里直接替换 Debug 的 flags 字符串
-# （CACHE ... FORCE 会覆盖命令行 -D 传进来的值），而不是依赖 CMAKE_BUILD_TYPE。
+# 三层保险，任意一层单独成立就够：
+#   ① 直接把 build type 改成 Release（FORCE 能压掉命令行 -D 传进来的值）
+#   ② 把 Debug 的 flags 字符串整个替换成 -O3（万一 ① 被 AGP 又改回去）
+#   ③ 给每个 ggml target 追加 PRIVATE -O3（万一是 target 级 flags 覆盖了全局）
 # ---------------------------------------------------------------------------
+set(CMAKE_BUILD_TYPE "Release" CACHE STRING "" FORCE)
+
 foreach(_lang C CXX)
     set(CMAKE_${_lang}_FLAGS_DEBUG "-O3 -g -DNDEBUG" CACHE STRING "" FORCE)
     set(CMAKE_${_lang}_FLAGS_RELWITHDEBINFO "-O3 -g -DNDEBUG" CACHE STRING "" FORCE)
