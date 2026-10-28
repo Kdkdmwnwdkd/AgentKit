@@ -49,7 +49,9 @@ echo "== 静态：不让模型跑在不支持它的后端上 =="
 # llama.cpp 没有高通 NPU 后端。这条写成「false + 原因」，不能是「true + 空 detail」。
 has "GGUF 的 NPU 明写不可用" "$CATALOG" "llama.cpp 没有高通 NPU 后端"
 # GPU 是否可用必须由构建能力决定，而不是默认可用——我们现在的 CMake 只编了 CPU 后端。
-has "GGUF 的 GPU 受构建开关约束" "$CATALOG" "env.llamaGpuEnabled && env.hasOpenCl"
+# W-83 起 GPU 的三道判据搬进了 gpuOption（构建开关 × 设备能不能跑 × 用户意愿），
+# 这里只锁第一条：包没编 Vulkan 就一定不给 GPU，与设备强弱无关。
+has "GGUF 的 GPU 受构建开关约束" "$CATALOG" "if (!env.llamaGpuEnabled) {"
 has "构建开关默认关闭" "$CATALOG" "val llamaGpuEnabled: Boolean = false"
 # LiteRT 的 AOT 模型（文件名带 SoC）只能跑同型号 NPU。
 has "识别 NPU 专用编译的模型" "$CATALOG" "npuTarget"
@@ -135,7 +137,7 @@ fun main() {
     // 打开构建开关 + 有 OpenCL 后，GPU 才可用。这条防的是「表里写死 true」。
     val ggufGpu = LocalEngineCatalog.options(
         LocalModelFormat.GGUF, "a.gguf",
-        LocalEngineEnvironment(llamaGpuEnabled = true, hasOpenCl = true),
+        LocalEngineEnvironment(llamaGpuEnabled = true, hasVulkan = true),
     )
     check("开了 Vulkan 后 GPU 才可用", ggufGpu.first { it.backend == LocalBackend.GPU }.available)
 

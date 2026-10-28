@@ -62,6 +62,16 @@ class LocalLlamaSetting(context: Context) {
         set(value) = sp.edit().putInt(KEY_MAX_TOKENS, value.coerceIn(64, 8192)).apply()
 
     /**
+     * GPU（Vulkan）卸载策略。默认 [GpuMode.AUTO]：由设备规则决定，不在这里猜。
+     *
+     * 存字符串而不是布尔，是为了以后能加档（比如「只用 GPU 跑 prefill」）而不破坏老配置；
+     * 解析失败一律回 AUTO —— 配置被写坏时宁可退回自动判断，也不要让本地推理直接不可用。
+     */
+    var gpuMode: GpuMode
+        get() = GpuMode.parse(sp.getString(KEY_GPU_MODE, null))
+        set(value) = sp.edit().putString(KEY_GPU_MODE, value.name).apply()
+
+    /**
      * 本地 Agent 模式：是否把工具协议、完整系统提示、历史一并塞进 prompt。
      *
      * **默认关**，这是 W-74 的核心结论。
@@ -110,6 +120,7 @@ class LocalLlamaSetting(context: Context) {
         private const val THREADS_VERSION = 2
         private const val KEY_MAX_TOKENS = "max_tokens"
         private const val KEY_AGENT_MODE = "agent_mode"
+        private const val KEY_GPU_MODE = "gpu_mode"
         const val DEFAULT_N_CTX = 4096
 
         /**

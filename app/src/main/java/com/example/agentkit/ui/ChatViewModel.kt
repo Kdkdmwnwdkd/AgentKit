@@ -82,9 +82,13 @@ import com.example.agentkit.core.TokenUsage
 import com.example.agentkit.core.UserMessage
 import com.example.agentkit.core.toMsgRecord
 import com.example.agentkit.core.toUiItems
+import com.example.agentkit.core.llm.local.AndroidDeviceProbe
 import com.example.agentkit.core.llm.local.DownloadedModel
 import com.example.agentkit.core.llm.local.GgufCatalogEntry
 import com.example.agentkit.core.llm.local.GgufModelStore
+import com.example.agentkit.core.llm.local.GpuMode
+import com.example.agentkit.core.llm.local.LlamaJni
+import com.example.agentkit.core.llm.local.LocalDeviceRules
 import com.example.agentkit.core.llm.local.LocalLlamaClient
 import com.example.agentkit.core.llm.local.LocalLlamaEngine
 import com.example.agentkit.core.llm.local.LocalLlamaSetting
@@ -678,10 +682,41 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     private val _localAgentMode = MutableStateFlow(localSetting.agentMode)
     val localAgentMode: StateFlow<Boolean> = _localAgentMode.asStateFlow()
 
+    /** GPU 卸载策略（自动 / 强制 / 关闭）。 */
+    private val _localGpuMode = MutableStateFlow(localSetting.gpuMode)
+    val localGpuMode: StateFlow<GpuMode> = _localGpuMode.asStateFlow()
+
+    // 必须声明在 localGpuSummary 之前：combine(...) 在属性初始化时就会读到它，
+    // 放在后面的话拿到的是 null（Kotlin 按声明顺序初始化字段），表现为一进页面就 NPE。
+    /** 设备画像（启动时后台采一次；页面打开时通常已就绪）。 */
+    private val _localGpuDevices = MutableStateFlow(AndroidDeviceProbe.cachedProfile)
+
+    /**
+     * 「这台机器上 GPU 到底怎么样」的一行结论，给设置页当副标题。
+     *
+     * 组合了三个来源：包里有没有编 Vulkan、设备画像怎么说、用户选了什么模式。
+     * 三者任一变了这句就变——所以它不能是一个缓存的常量。
+     */
+    val localGpuSummary: StateFlow<String> = combine(_localGpuMode, _localGpuDevices) { mode, dev ->
+        val compiled = LlamaJni.gpuBackendAvailable
+        if (!compiled) return@combine "当前安装包未编入 Vulkan 后端，本地推理只用 CPU"
+        val advice = dev?.let { LocalDeviceRules.advise(it) }
+            ?: return@combine "设备信息还没采集完，暂时只用 CPU"
+        val plan = LocalDeviceRules.resolveGpu(advice, compiled, mode)
+        val gpu = advice.gpuModel ?: advice.gpu.label
+        if (plan.usingGpu) {
+            "已启用：$gpu（Vulkan ${advice.vulkanVersion ?: "?"}），模型层会卸载到显卡"
+        } else {
+            "$gpu · Vulkan ${advice.vulkanVersion ?: "?"}｜${plan.reason}"
+        }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), "正在读取设备信息…")
+
     /** 刷新本地模型清单（页签 onResume / 下载完成后调用）。 */
     fun refreshLocalModels() {
         _localModels.value = modelStore.listDownloaded()
         _localLoaded.value = LocalLlamaEngineIsLoaded()
+        // 画像在启动时后台采一次，这里补一次读取：用户可能进得太快，创建 VM 时还是 null。
+        _localGpuDevices.value = AndroidDeviceProbe.cachedProfile
     }
 
     private fun LocalLlamaEngineIsLoaded(): Boolean =
@@ -796,6 +831,12 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
             if (on) "本地切到 Agent 模式（会注入工具协议，prompt 变长、首字变慢）"
             else "本地切到轻聊档（只发系统提示前几行 + 最近两轮，首字最快）"
         )
+    }
+
+    fun setLocalGpuMode(mode: GpuMode) {
+        localSetting.gpuMode = mode
+        _localGpuMode.value = mode
+        AgentLogger.i("LocalLlama", "GPU 策略改为「${mode.label}」，下次加载模型生效")
     }
 
     /** L8 最近日志（格式化后的文本，最新的在前），供自动化页「运行日志」卡片展示。 */

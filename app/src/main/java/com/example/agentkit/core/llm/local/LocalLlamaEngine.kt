@@ -86,13 +86,21 @@ object LocalLlamaEngine {
         val gen = generation.incrementAndGet()
         AgentLogger.i(
             TAG,
-            "加载模型 ${file.name}（${file.length() / 1024 / 1024} MB, ctx=$nCtx, threads=$nThreads）…"
+            "加载模型 ${file.name}（${file.length() / 1024 / 1024} MB, ctx=$nCtx, threads=$nThreads" +
+                (if (nGpuLayers > 0) ", gpu=$nGpuLayers 层" else ", 纯 CPU") + "）…"
         )
         val startedAt = System.currentTimeMillis()
         val handle = LlamaJni.nativeInit(modelPath, nCtx, nThreads, nGpuLayers)
         if (handle == 0L) {
             AgentLogger.e(TAG, "nativeInit 失败（详见 logcat llama-jni）: ${file.name}")
             return 0L
+        }
+        if (nGpuLayers > 0) {
+            // 请求了 GPU 就把「ggml 到底认出了哪些设备」记下来。
+            // Vulkan 初始化失败是静默的：加载照样成功、只是全程跑在 CPU 上。
+            // 没有这一行，用户报「开了 GPU 还是很慢」时我们只能猜。
+            val probe = LlamaJni.gpuProbe()
+            if (probe.isNotBlank()) AgentLogger.i(TAG, "后端设备：$probe")
         }
         synchronized(lock) {
             current = Loaded(handle, modelPath, nCtx, nThreads, nGpuLayers)

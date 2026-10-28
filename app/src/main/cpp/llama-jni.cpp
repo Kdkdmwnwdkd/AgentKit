@@ -23,6 +23,10 @@
 #include <algorithm>
 
 #include "llama.h"
+// 设备枚举（ggml_backend_dev_count / dev_name / dev_type）。llama.h 只带 ggml.h，
+// 设备注册表这层在 ggml-backend.h 里——「有没有认出 GPU」只能从这里回答。
+// CPU-only 构建下这个头照样能编（注册表里只有 CPU 一个设备），不需要条件编译。
+#include "ggml-backend.h"
 
 // ---------------------------------------------------------------------------
 // llama.cpp API 兼容层：b4600（2025-01）↔ v0.7.0（2026-10）
@@ -488,6 +492,61 @@ bool rebuildContext(LlamaInstance* inst) {
 
 }  // namespace
 
+/**
+ * 把 ggml 认得的后端设备列成一行，如：
+ *   `GPU 1 / 共 2：GPU:Vulkan0(Adreno (TM) 750) | CPU:NEON`
+ *
+ * 为什么这件事值得单独一个函数：用户点开 GPU 之后，唯一能回答「到底上没上」的证据
+ * 就是这个列表。没有它，「GPU 开了但还是很慢」只能靠猜——而猜错的方向通常是去调
+ * 线程数，白费一轮。
+ *
+ * 注意：这个调用会**首次初始化设备注册表**，Vulkan 后端在 reg_init 里创建 VkInstance
+ * （源码里 try/catch，失败返回 nullptr 并跳过该后端，不会把异常抛到我们这边）。
+ * 所以第一次调用可能要几百毫秒，不要在 UI 线程上调。
+ */
+struct GpuDevices {
+    int gpus = 0;
+    size_t total = 0;
+    std::string list;
+};
+
+static GpuDevices enumerateDevices() {
+    GpuDevices out;
+    out.total = ggml_backend_dev_count();
+    for (size_t i = 0; i < out.total; ++i) {
+        ggml_backend_dev_t dev = ggml_backend_dev_get(i);
+        if (!dev) continue;
+        const enum ggml_backend_dev_type type = ggml_backend_dev_type(dev);
+        const char* name = ggml_backend_dev_name(dev);
+        const char* desc = ggml_backend_dev_description(dev);
+        // IGPU 也是 GPU（集显，用系统内存）。手机上的 Vulkan 设备恒为 GPU 类型，
+        // 但把 IGPU 一起算进来是为了不误报——漏算的结果是「明明有显卡却说没有」。
+        const bool isGpu = type == GGML_BACKEND_DEVICE_TYPE_GPU ||
+                           type == GGML_BACKEND_DEVICE_TYPE_IGPU;
+        const char* kind = type == GGML_BACKEND_DEVICE_TYPE_GPU     ? "GPU"
+                         : type == GGML_BACKEND_DEVICE_TYPE_IGPU    ? "IGPU"
+                         : type == GGML_BACKEND_DEVICE_TYPE_ACCEL   ? "ACCEL"
+                                                                   : "CPU";
+        if (isGpu) ++out.gpus;
+        if (!out.list.empty()) out.list += " | ";
+        out.list += kind;
+        out.list += ":";
+        out.list += (name && *name) ? name : "?";
+        if (desc && *desc) {
+            out.list += "(";
+            out.list += desc;
+            out.list += ")";
+        }
+    }
+    return out;
+}
+
+static std::string gpuDeviceSummary() {
+    const GpuDevices d = enumerateDevices();
+    return "GPU " + std::to_string(d.gpus) + " / 共 " + std::to_string(d.total) +
+           (d.list.empty() ? "（注册表为空）" : "：" + d.list);
+}
+
 extern "C" {
 
 /**
@@ -530,6 +589,22 @@ Java_com_example_agentkit_core_llm_local_LlamaJni_nativeInit(
         LOGE("编译优化：未开启（-O0）！这次推理会慢几十倍，问题在构建参数而不是设备");
 #endif
     });
+
+    // 请求了 GPU，就先报一次「这台机器到底有几个 GPU 设备」。
+    //
+    // 这是「用户以为在用 GPU、其实一直在 CPU 上」的唯一防线。Vulkan 后端初始化失败
+    // 是**静默**的（源码里 try/catch 后返回 nullptr，注册表直接跳过），所以如果只看
+    // 「加载成功」，一台驱动不支持的机器会安静地退回 CPU 跑上几周。这里当场说清楚。
+    if (nGpuLayers > 0) {
+        const GpuDevices devs = enumerateDevices();
+        if (devs.gpus == 0) {
+            LOGE("请求 GPU %d 层，但没有任何 GPU 后端可用（%s）——本次将按 CPU 运行",
+                 nGpuLayers, devs.list.empty() ? "注册表为空" : devs.list.c_str());
+        } else {
+            LOGI("请求 GPU %d 层，可用设备：%s", nGpuLayers,
+                 devs.list.empty() ? "（空）" : devs.list.c_str());
+        }
+    }
 
     auto* inst = new LlamaInstance();
 
@@ -687,6 +762,42 @@ Java_com_example_agentkit_core_llm_local_LlamaJni_nativeStop(
     JNIEnv* /*env*/, jobject /*thiz*/, jlong handle) {
     auto* inst = reinterpret_cast<LlamaInstance*>(handle);
     if (inst) inst->stop.store(true);
+}
+
+/**
+ * 这个 APK 有没有编进 GPU（Vulkan）后端。
+ *
+ * 为什么由 native 回答而不是 Kotlin 里写个常量：常量需要人手动同步。一旦 CMake 里
+ * 关掉了 Vulkan 而常量忘了改，界面就会显示「GPU 可用」、点下去转三分钟再退回 CPU。
+ * 这里由编译器决定，改不动，也不会忘。
+ *
+ * 注意它回答的是「编进去了没有」，不是「这台设备能不能用」——后者要看设备的
+ * Vulkan 版本（ggml-vulkan 要求 1.2）与 GPU 家族，判定在 LocalDeviceRules 里。
+ */
+JNIEXPORT jboolean JNICALL
+Java_com_example_agentkit_core_llm_local_LlamaJni_nativeGpuBackend(
+    JNIEnv* /*env*/, jobject /*thiz*/) {
+#ifdef AK_HAS_VULKAN
+    return JNI_TRUE;
+#else
+    return JNI_FALSE;
+#endif
+}
+
+
+/**
+ * 这台机器上 ggml 认得的后端设备清单（给「运行日志」用，也是 GPU 排查的唯一入口）。
+ *
+ * 返回空串表示注册表初始化失败（连 CPU 都没有，属于不可能发生的情况）。
+ */
+JNIEXPORT jstring JNICALL
+Java_com_example_agentkit_core_llm_local_LlamaJni_nativeGpuProbe(
+    JNIEnv* env, jobject /*thiz*/) {
+    static std::once_flag backendOnce;
+    std::call_once(backendOnce, [] { llama_backend_init(); });
+    const std::string s = gpuDeviceSummary();
+    LOGI("GPU 探测：%s", s.c_str());
+    return env->NewStringUTF(s.c_str());
 }
 
 /**

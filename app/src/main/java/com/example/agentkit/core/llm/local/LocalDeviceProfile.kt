@@ -55,11 +55,46 @@ enum class DeviceTier(val label: String) {
 }
 
 /**
+ * GPU 这条路的三态。
+ *
+ * 为什么不是布尔：Mali 的 Vulkan 驱动在中文 ROM 上「能跑但会在长时间推理后
+ * VK_ERROR_DEVICE_LOST」，布尔表达不了这种状态。三态才能让策略是
+ * 「Adreno 默认开 / Mali 默认关但可手开 / PowerVR 直接不给开后门」。
+ */
+enum class GpuPath(val label: String) {
+    STABLE("可用"),
+    RISKY("可用但需按机型验证"),
+    NONE("不可用"),
+}
+
+/**
+ * 用户的 GPU 意愿。三档而不是布尔，因为「默认」与「我要关」是两件事：
+ *
+ *  - [AUTO]：交给规则判。Adreno + Vulkan 1.2 才上，Mali 之类一律 CPU。
+ *  - [FORCE]：明知有风险也用。这是用户看过提示之后的显式选择，我们只负责记进
+ *    崩溃记忆，不再替他拦。
+ *  - [OFF]：永远不用。有些机型 GPU 能跑但更费电/更热，用户有权拒绝。
+ */
+enum class GpuMode(val label: String) {
+    AUTO("自动"),
+    FORCE("强制开启"),
+    OFF("关闭");
+
+    companion object {
+        fun parse(text: String?): GpuMode =
+            values().firstOrNull { it.name.equals(text?.trim(), ignoreCase = true) } ?: AUTO
+    }
+}
+
+/**
  * 设备快照。字段全部允许为 null：Android 12 以下拿不到 SOC_MODEL，
  * 部分厂商 ROM 会把 SOC_MANUFACTURER 填成空串。取不到时按 GPU 与内存兜底。
  *
  * @param glRenderer GL_RENDERER 原始串，如 "Adreno (TM) 740" / "Mali-G77 MC9"。
  *   这是所有 Android 设备都能拿到的，比 SOC_MODEL 可靠得多。
+ * @param vulkanVersion 系统报告的 Vulkan 版本，如 "1.3" / "1.1"。
+ *   ggml-vulkan 的硬门槛是 **1.2**（源码里 api_version < VK_API_VERSION_1_2 直接抛），
+ *   所以这个字段不是「参考信息」，是「能不能开 GPU」的决定项。
  */
 data class LocalDeviceProfile(
     val socModel: String? = null,
@@ -68,6 +103,7 @@ data class LocalDeviceProfile(
     val glRenderer: String? = null,
     val sdkInt: Int = 0,
     val totalRamMb: Int = 0,
+    val vulkanVersion: String? = null,
 )
 
 /** 一台设备最终该走哪条路，以及为什么。 */
@@ -77,6 +113,12 @@ data class DeviceAdvice(
     val gpu: GpuFamily,
     /** 归一化后的 GPU 名，如 "Adreno 740" / "Mali-G77"；取不到为 null。 */
     val gpuModel: String?,
+    /** GPU 这条路的三态（STABLE / RISKY / NONE），比 preferredPath 更细。 */
+    val gpuPath: GpuPath,
+    /** 为什么是这三态之一；STABLE 时为 null。这句话会直接进用户能看到的日志。 */
+    val gpuPathReason: String?,
+    /** 系统报告的 Vulkan 版本；null = 未报告。 */
+    val vulkanVersion: String?,
     /** NPU 是否真的能用（不是「有没有 NPU」——天玑也有 APU，但我们的构建用不了）。 */
     val npuUsable: Boolean,
     val npuReason: String?,
@@ -249,12 +291,89 @@ object LocalDeviceRules {
     // ---------------------------------------------------------------- 推荐路径
 
     /**
+     * GPU（Vulkan）这条路到底能不能走，以及为什么。
+     *
+     * 判定顺序是刻意的：**先看版本，再看家族**。
+     *
+     * ggml-vulkan 的源码里写死了 `if (api_version < VK_API_VERSION_1_2) throw`，
+     * 也就是 Android 10/11 那些只给 Vulkan 1.1 的驱动连初始化都过不去。先判家族
+     * 再判版本的话，会出现「骁龙 888 + Adreno 660 判定为可用，实际一开就抛」——
+     * 这正是「看起来支持其实不支持」的典型错法。
+     */
+    fun vulkanPath(profile: LocalDeviceProfile): Pair<GpuPath, String?> {
+        val (gpu, _) = gpuOf(profile.glRenderer)
+        if (gpu == GpuFamily.UNKNOWN) {
+            return GpuPath.NONE to "取不到 GPU 型号，无法判断驱动支持情况"
+        }
+        val raw = profile.vulkanVersion?.trim()
+        if (raw.isNullOrBlank()) {
+            return GpuPath.NONE to "系统未报告 Vulkan 版本，按不支持处理"
+        }
+        val ver = raw.removePrefix("Vulkan ").trim()
+        val major = ver.substringBefore('.').toIntOrNull()
+            ?: return GpuPath.NONE to "Vulkan 版本无法解析：$raw"
+        val minor = ver.substringAfter('.', "0").takeWhile { it.isDigit() }.toIntOrNull() ?: 0
+        if (major < 1 || (major == 1 && minor < 2)) {
+            return GpuPath.NONE to "本机 Vulkan $ver，ggml-vulkan 要求 1.2"
+        }
+        return when (gpu.maturity) {
+            // 成熟度表已经按家族填好了（Adreno GOOD / Mali·Immortalis·Xclipse MIXED /
+            // PowerVR POOR），这里只做「成熟度 → 三态」的翻译。
+            // 不在这里另写一份家族分支：两份表早晚会不一致，而且不一致时没人会注意到。
+            VulkanMaturity.GOOD -> GpuPath.STABLE to null
+            VulkanMaturity.MIXED -> GpuPath.RISKY to null
+            VulkanMaturity.POOR -> GpuPath.NONE to
+                "${gpu.label} 驱动长期不更新，长时间推理容易中断"
+            VulkanMaturity.UNKNOWN -> GpuPath.NONE to "取不到 GPU 型号"
+        }
+    }
+
+    /**
+     * 一次装载里 GPU 到底用不用、用几层、为什么不用。
+     *
+     * [layers] = 0 表示纯 CPU；[reason] 非 null 时一定要打日志——「用户以为在用 GPU，
+     * 其实一直跑在 CPU 上」是这类应用最隐蔽也最招人恨的故障。
+     */
+    data class GpuPlan(val layers: Int, val reason: String?) {
+        val usingGpu: Boolean get() = layers > 0
+    }
+
+    /**
+     * 决定要不要把层卸载到 GPU。
+     *
+     * 三档 [GpuMode] 而不是一个布尔开关，是因为「默认」必须能区分「我不想用」和
+     * 「我不知道该不该用」：前者是用户的决定，后者该由规则替他判断。
+     *
+     * 注意 [compiled] 是「安装包里有没有 Vulkan 后端」，来自 native 的编译期宏；
+     * [advice] 是「这台设备能不能跑」。两个条件互不替代——一个都不能少。
+     */
+    fun resolveGpu(advice: DeviceAdvice, compiled: Boolean, mode: GpuMode): GpuPlan {
+        if (mode == GpuMode.OFF) return GpuPlan(0, "已在设置里关闭 GPU")
+        if (!compiled) return GpuPlan(0, "当前安装包未编入 Vulkan 后端（只用 CPU）")
+        when (advice.gpuPath) {
+            GpuPath.NONE -> return GpuPlan(0, "GPU 不可用：${advice.gpuPathReason ?: "原因未知"}")
+            GpuPath.RISKY -> if (mode != GpuMode.FORCE) {
+                return GpuPlan(0, "GPU 需按机型验证（${advice.gpuPathReason ?: advice.gpu.label}）；自动模式只用 CPU")
+            }
+            GpuPath.STABLE -> Unit
+        }
+        return GpuPlan(GPU_MAX_LAYERS, null)
+    }
+
+    /**
+     * 卸载层数上限。99 是 llama.cpp 的惯用值，含义是「能卸的全卸」
+     * （模型层数远小于它，等于 all layers）。写具体层数没有意义：
+     * 不同模型的层数不同，而 llama.cpp 会按 min(n_layers, 上限) 处理。
+     */
+    const val GPU_MAX_LAYERS = 99
+
+    /**
      * 综合判断：这台机器该先试哪条路。
      *
-     * 规则刻意保守——GPU 默认只对 Adreno 打开，Mali 一律先给 CPU。
+     * 规则刻意保守——GPU 默认只对「Vulkan 1.2+ 且 Adreno」打开，Mali 一律先给 CPU。
      * 理由不是 Mali 慢，是 Mali 的 Vulkan 驱动在中文 ROM 上常出现长时间推理后
      * `VK_ERROR_DEVICE_LOST`；而我们的场景恰恰是「挂着 Agent 跑几十分钟」。
-     * 用户仍可手动切到 GPU，那时 we 会带上「可能中断」的提示，并落进崩溃记忆。
+     * 用户仍可手动切到 GPU，那时会带上「可能中断」的提示，并落进崩溃记忆。
      */
     fun advise(profile: LocalDeviceProfile): DeviceAdvice {
         val vendor = vendorOf(profile)
@@ -262,12 +381,13 @@ object LocalDeviceRules {
         val tier = tierOf(profile, vendor)
         val (budgetText, budgetMb) = modelBudget(tier)
         val (npuOk, npuReason) = npuUsable(profile)
-        val notes = ArrayList<String>(3)
+        val (path, pathReason) = vulkanPath(profile)
+        val notes = ArrayList<String>(4)
 
         val preferred = when {
             npuOk -> LocalBackend.NPU
-            gpu == GpuFamily.ADRENO -> LocalBackend.GPU
-            gpu == GpuFamily.MALI || gpu == GpuFamily.IMMORTALIS -> {
+            path == GpuPath.STABLE -> LocalBackend.GPU
+            path == GpuPath.RISKY -> {
                 notes += if (tier == DeviceTier.ENTRY || tier == DeviceTier.LOW) {
                     "${gpu.label} 在入门/中低端机上跑大模型容易内存不足，先用 CPU"
                 } else {
@@ -275,15 +395,11 @@ object LocalDeviceRules {
                 }
                 LocalBackend.CPU
             }
-            gpu == GpuFamily.XCLIPSE -> {
-                notes += "Exynos 的 Xclipse 驱动对 ggml 算子覆盖不全，先用 CPU"
+            else -> {
+                // 版本不够 / 家族劝退：把原因说出来。用户最想知道的是「我这台为什么不行」。
+                if (gpu != GpuFamily.UNKNOWN && pathReason != null) notes += "GPU：$pathReason"
                 LocalBackend.CPU
             }
-            gpu == GpuFamily.POWERVR -> {
-                notes += "PowerVR 驱动长期不更新，跑大模型容易中断，先用 CPU"
-                LocalBackend.CPU
-            }
-            else -> LocalBackend.CPU
         }
 
         if (!npuOk && npuReason != null) notes += "NPU：$npuReason"
@@ -299,6 +415,9 @@ object LocalDeviceRules {
             vendor = vendor,
             gpu = gpu,
             gpuModel = gpuModel,
+            gpuPath = path,
+            gpuPathReason = pathReason,
+            vulkanVersion = profile.vulkanVersion,
             npuUsable = npuOk,
             npuReason = npuReason,
             preferredPath = preferred,
@@ -317,6 +436,7 @@ object LocalDeviceRules {
             append(advice.vendor.label)
             append(" · ")
             append(gpu)
+            advice.vulkanVersion?.let { append(" · Vulkan ").append(it) }
             append(" · ")
             append(advice.tier.label)
             append(" → 首选 ")

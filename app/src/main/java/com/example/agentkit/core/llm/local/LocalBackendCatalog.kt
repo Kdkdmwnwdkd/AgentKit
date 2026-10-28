@@ -55,8 +55,9 @@ enum class LocalModelFormat(val label: String) {
  * 设备能力快照。采集一次、进程内复用（采集本身要读文件系统与 Build 字段，不该每轮问一次）。
  *
  * 两个默认值是有意的「保守」：
- *  - [llamaGpuEnabled] 默认 false —— 我们的 llama.cpp 目前只编 CPU 后端。哪天 CMake 打开
- *    了 Vulkan，必须同时把这里改成 true，否则模型设置里 GPU 永远是灰的（宁可灰，不可假）。
+ *  - [llamaGpuEnabled] 默认 false —— 这一位必须由调用方用 native 的编译期事实来填
+ *    （`LlamaJni.gpuBackendAvailable`），不能在 Kotlin 里写死：写死就会和 CMake 脱节，
+ *    结果是界面显示「GPU 可用」、点下去转三分钟再退回 CPU。宁可灰，不可假。
  *  - [hasMnn] / [hasLitert] 默认 false —— 运行时库随构建形态变化，由调用方按 build 配置传入。
  */
 data class LocalEngineEnvironment(
@@ -74,6 +75,14 @@ data class LocalEngineEnvironment(
      * null 时行为与之前完全一致——这一层是增量，不是改造。
      */
     val device: LocalDeviceProfile? = null,
+    /**
+     * 设备侧是否存在可用的 Vulkan 1.2+ 驱动。
+     *
+     * 和 [llamaGpuEnabled] 是**两件事**：那个问「包里编没编」，这个问「这台机器能不能跑」。
+     * 只在拿不到设备画像时用作兜底判断；有画像时以 [LocalDeviceProfile.vulkanVersion]
+     * 为准（画像给得出具体版本号，能解释「为什么不行」）。
+     */
+    val hasVulkan: Boolean = false,
 )
 
 /** 一个后端对这个模型「能不能用」，不能用时必须给出给人看的原因。 */
@@ -169,29 +178,60 @@ object LocalEngineCatalog {
     // ---------------------------------------------------------------- 后端可用性
 
     /**
-     * 「GPU 为什么是灰的」要说人话。
+     * 「包里没编 Vulkan」时，再补一句「你这台机器开了能不能用」。
      *
-     * 只写「当前构建未启用」是实话，但对用户没用——他还想知道「开了之后我这台能不能用」。
-     * 有设备画像时把本机 GPU 一起报出来，并给出「开了之后怎么样」的判断：
-     * Adreno 直接可用、Mali 需验证、PowerVR 劝退。这三档的判断在 [LocalDeviceRules] 里，
-     * 这里只负责拼句子，不重复写规则。
+     * 只写「当前构建未启用」是实话，但对用户没用——他还想知道值不值得等一个能开 GPU 的版本。
+     * 判定复用 [LocalDeviceRules]，这里只拼句子，不重复写规则。
      */
-    private fun gpuUnavailableReason(env: LocalEngineEnvironment): String {
-        val base = if (env.llamaGpuEnabled) {
-            "本机没有可用的 OpenCL 驱动"
-        } else {
-            "当前构建的 llama.cpp 只编了 CPU 后端（Vulkan / OpenCL 未启用）"
-        }
-        val device = env.device ?: return base
-        val advice = LocalDeviceRules.advise(device)
+    private fun buildOffHint(advice: DeviceAdvice): String {
         val gpu = advice.gpuModel ?: advice.gpu.label
-        return when (advice.gpu) {
-            GpuFamily.ADRENO -> "$base；本机 $gpu，开启 Vulkan 后可直接用"
-            GpuFamily.MALI, GpuFamily.IMMORTALIS ->
-                "$base；本机 $gpu（${advice.vendor.label}），Vulkan 需按机型验证"
-            GpuFamily.POWERVR -> "$base；本机 $gpu，驱动老旧不建议开 GPU"
-            GpuFamily.XCLIPSE -> "$base；本机 $gpu，算子覆盖不全不建议开 GPU"
-            GpuFamily.UNKNOWN -> base
+        return when (advice.gpuPath) {
+            GpuPath.STABLE -> "本机 $gpu，开启 Vulkan 后可直接用"
+            GpuPath.RISKY -> "本机 $gpu（${advice.vendor.label}），Vulkan 需按机型验证"
+            GpuPath.NONE -> "本机 $gpu：${advice.gpuPathReason ?: "GPU 不可用"}"
+        }
+    }
+
+    /**
+     * GPU 这个选项到底给不给。
+     *
+     * 三个前提依次成立才算可用，任一不成立都要说清楚是哪一条：
+     *  1. **包里编了 Vulkan**（[LocalEngineEnvironment.llamaGpuEnabled]，编译期事实）；
+     *  2. **这台机器能跑**（Vulkan ≥ 1.2 且不是被劝退的 GPU 家族，见 `LocalDeviceRules.vulkanPath`）；
+     *  3. 用户没在设置里关掉（这一条由调用方在装载时判，选项表只回答「能不能」）。
+     */
+    private fun gpuOption(env: LocalEngineEnvironment): LocalBackendOption {
+        val advice = env.device?.let { LocalDeviceRules.advise(it) }
+        if (!env.llamaGpuEnabled) {
+            val base = "当前构建的 llama.cpp 只编了 CPU 后端（Vulkan / OpenCL 未启用）"
+            return LocalBackendOption(
+                LocalBackend.GPU, false,
+                reason = advice?.let { "$base；${buildOffHint(it)}" } ?: base,
+            )
+        }
+        if (advice == null) {
+            // 没有画像时只能靠调用方给的布尔兜底。文案要说清这是「没探测到」，不是「不支持」。
+            return if (env.hasVulkan) {
+                LocalBackendOption(LocalBackend.GPU, true, detail = "Vulkan（未取得 GPU 型号）")
+            } else {
+                LocalBackendOption(LocalBackend.GPU, false, reason = "未探测到 Vulkan 1.2+ 驱动，本机只能用 CPU")
+            }
+        }
+        val gpu = advice.gpuModel ?: advice.gpu.label
+        val ver = advice.vulkanVersion ?: "?"
+        return when (advice.gpuPath) {
+            GpuPath.STABLE -> LocalBackendOption(
+                LocalBackend.GPU, true, detail = "$gpu · Vulkan $ver",
+            )
+            GpuPath.RISKY -> LocalBackendOption(
+                LocalBackend.GPU, false,
+                reason = "$gpu · Vulkan $ver 能跑，但驱动在长时间推理后可能中断；" +
+                    "需要的话可在「推理参数 › GPU 加速」里选「强制开启」",
+            )
+            GpuPath.NONE -> LocalBackendOption(
+                LocalBackend.GPU, false,
+                reason = "$gpu：${advice.gpuPathReason ?: "GPU 不可用"}",
+            )
         }
     }
 
@@ -202,14 +242,7 @@ object LocalEngineCatalog {
     ): List<LocalBackendOption> = when (format) {
         LocalModelFormat.GGUF -> listOf(
             LocalBackendOption(LocalBackend.CPU, true, detail = "llama.cpp · NEON + dotprod"),
-            if (env.llamaGpuEnabled && env.hasOpenCl) {
-                LocalBackendOption(LocalBackend.GPU, true, detail = "Adreno · OpenCL")
-            } else {
-                LocalBackendOption(
-                    LocalBackend.GPU, false,
-                    reason = gpuUnavailableReason(env),
-                )
-            },
+            gpuOption(env),
             LocalBackendOption(
                 LocalBackend.NPU, false,
                 reason = "llama.cpp 没有高通 NPU 后端；NPU 需要按芯片编译的 .litertlm 模型",

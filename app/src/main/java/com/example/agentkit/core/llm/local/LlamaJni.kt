@@ -86,6 +86,36 @@ object LlamaJni {
     external fun nativeGenerate(handle: Long, prompt: String, maxTokens: Int, listener: TokenListener?): String
 
     /**
+     * 这个 APK 是否编入了 GPU（Vulkan）后端。由 C++ 编译期宏回答，不是 Kotlin 常量。
+     *
+     * 先走 [ensureLoaded]：x86 模拟器上库根本不会加载，靠抛 UnsatisfiedLinkError 再吞掉
+     * 也能得到 false，但那是「用异常表达正常分支」，日志会很难看，也没法区分
+     * 「没编 Vulkan」和「库都没加载」。
+     */
+    val gpuBackendAvailable: Boolean by lazy {
+        if (!ensureLoaded()) return@lazy false
+        runCatching { nativeGpuBackend() }.getOrDefault(false)
+    }
+
+    external fun nativeGpuBackend(): Boolean
+
+    /**
+     * ggml 认得的后端设备清单，如 `GPU 1 / 共 2：GPU:Vulkan0(Adreno (TM) 750) | CPU:NEON`。
+     *
+     * 这一行是「GPU 到底上没上」的唯一直接证据：Vulkan 初始化失败时 ggml 是**静默**
+     * 跳过该后端的（reg_init 里 try/catch 后返回 nullptr），加载仍会成功、只是全程 CPU。
+     * 所以它必须能被用户复制出来，而不是只躺在 logcat 里。
+     *
+     * 首次调用会初始化设备注册表（创建 VkInstance），可能几百毫秒——只在加载模型之后调。
+     */
+    fun gpuProbe(): String {
+        if (!ensureLoaded()) return ""
+        return runCatching { nativeGpuProbe() }.getOrDefault("")
+    }
+
+    external fun nativeGpuProbe(): String
+
+    /**
      * 原生层最近 80 条日志（tokenize 长度、prefill 复用/补算、decode 返回码、
      * 首个 token、空输出原因…），每行格式 `#<seq>|<正文>`。
      *

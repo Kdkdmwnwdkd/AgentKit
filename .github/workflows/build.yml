@@ -109,6 +109,36 @@ jobs:
       - name: Make gradlew executable
         run: chmod +x ./gradlew
 
+      # Vulkan（GPU）后端要三样东西，缺一样都编不出来：
+      #   1. glslc                —— 把 .comp 编成 SPIR-V（host 侧可执行）
+      #   2. SPIRV-Headers 的 CMake 包 —— ggml-vulkan 里是 find_package(... CONFIG REQUIRED)
+      #   3. vulkan.h + libvulkan.so —— NDK sysroot 自带，不用装
+      #
+      # 为什么在 CI 装而不是让 CMake 自己下：交叉编译时 find_package 会撞上
+      # CMAKE_FIND_ROOT_PATH（只在 sysroot 里搜），首轮必然失败；而下载这件事本来
+      # 就属于 CI，不该混进构建脚本——本地开发者没这套工具时应当静默退回 CPU-only。
+      #
+      # 装完当场验证路径，而不是等 CMake 报错：这一段的失败信息比 CMake 的清楚得多。
+      - name: Install Vulkan shader toolchain (glslc + SPIRV-Headers)
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends glslc spirv-headers
+          GLSLC="$(command -v glslc)"
+          SPIRV_DIR="$(dirname "$(dpkg -L spirv-headers | grep -E 'SPIRV-HeadersConfig\.cmake$' | head -1)")"
+          echo "glslc      = $GLSLC"
+          echo "spirv-dir  = $SPIRV_DIR"
+          glslc --version | head -3
+          test -x "$GLSLC"
+          test -f "$SPIRV_DIR/SPIRV-HeadersConfig.cmake"
+          {
+            echo "AK_GLSLC=$GLSLC"
+            echo "AK_SPIRV_DIR=$SPIRV_DIR"
+            # CI 里必须失败而不是静默降级：否则「以为开了 GPU，出的包其实只有 CPU」，
+            # 而这种包在真机上不会报任何错，只是慢。
+            echo "AK_REQUIRE_VULKAN=1"
+          } >> "$GITHUB_ENV"
+
       - name: Build debug APK
         run: ./gradlew assembleDebug --no-daemon --stacktrace
 

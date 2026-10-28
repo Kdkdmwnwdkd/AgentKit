@@ -101,9 +101,12 @@ private fun check(name: String, cond: Boolean, hint: String = "") {
     else { bad++; println("  FAIL  $name${if (hint.isEmpty()) "" else "（$hint）"}") }
 }
 
+// vk 默认给 "1.3"：绝大多数想验证的场景都是「这台机 Vulkan 够新，只是家族/版本另说」。
+// 要验「Vulkan 版本不够」的机型显式传 "1.1"。
 private fun p(soc: String? = null, manu: String? = null, hw: String? = null,
-              gl: String? = null, ram: Int = 8192): LocalDeviceProfile =
-    LocalDeviceProfile(socModel = soc, socManufacturer = manu, hardware = hw, glRenderer = gl, totalRamMb = ram)
+              gl: String? = null, ram: Int = 8192, vk: String? = "1.3"): LocalDeviceProfile =
+    LocalDeviceProfile(socModel = soc, socManufacturer = manu, hardware = hw, glRenderer = gl,
+                       totalRamMb = ram, vulkanVersion = vk)
 
 fun main() {
     // ---- GPU 字符串解析（各厂商写法不统一）----

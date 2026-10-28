@@ -55,6 +55,9 @@ class LocalLlamaClient(
     override val id: String = "local-llama"
 
     private val json = Json { ignoreUnknownKeys = true; isLenient = true }
+    /** 上一次打过的 GPU 结论，用来去重（见 resolveGpuPlan）。 */
+    @Volatile
+    private var lastGpuLogLine: String? = null
 
     // —— 对话主路径 ————————————————————————————————————————————————
 
@@ -96,11 +99,58 @@ class LocalLlamaClient(
         if (!file.isFile) {
             throw LocalInferenceException("本地模型文件缺失：$name（可能已被删除，请重新下载）")
         }
-        val handle = engine.acquire(file.absolutePath, setting.nCtx, setting.nThreads, 0)
+        val gpu = resolveGpuPlan()
+        var handle = engine.acquire(file.absolutePath, setting.nCtx, setting.nThreads, gpu.layers)
+
+        // GPU 装载失败要能退回 CPU，而不是把「本地推理」整个打死。
+        //
+        // 这条兜底不是防御性编程，是场景决定的：Vulkan 路线在真机上有两类失败
+        // （驱动拒绝分配设备内存、模型层卸载时 vk 报错），两者都表现为 nativeInit 返回 0。
+        // 而用户点开 GPU 的动机是「想更快」，结果却「一个字都出不来」——这个代价太大了。
+        // 退回 CPU 一定还能用，只是慢；代价是必须把原因写进日志，否则又变成一次静默降级。
+        if (handle == 0L && gpu.layers > 0) {
+            AgentLogger.e(
+                "LocalLlama",
+                "GPU 装载失败（n_gpu_layers=${gpu.layers}），退回纯 CPU 重试一次；" +
+                    "原因见上一行 llama-jni 记录。若反复出现，请在「推理参数 › GPU 加速」里选「关闭」",
+            )
+            handle = engine.acquire(file.absolutePath, setting.nCtx, setting.nThreads, 0)
+        }
         if (handle == 0L) {
             throw LocalInferenceException("本地模型加载失败：${file.name}（详见「运行日志」里的 llama-jni 记录）")
         }
     }
+
+    /**
+     * 这台机器这一轮该不该把层卸载到 GPU。
+     *
+     * 两个前提缺一不可，而且它们的失效方式完全不同，所以必须分开判：
+     *  - **装没装**（[LlamaJni.gpuBackendAvailable]）：编译期事实，整个安装包统一；
+     *  - **能不能跑**（[LocalDeviceRules.resolveGpu]）：按设备判，同一份包装到不同手机上结果不同。
+     *
+     * 拿不到画像时按 CPU 走并写明原因——「没探测到」不等于「支持」。
+     */
+    private fun resolveGpuPlan(): LocalDeviceRules.GpuPlan {
+        val profile = AndroidDeviceProbe.cachedProfile
+            ?: return LocalDeviceRules.GpuPlan(0, "设备画像尚未采集完成，本轮先用 CPU")
+        val advice = LocalDeviceRules.advise(profile)
+        val plan = LocalDeviceRules.resolveGpu(advice, LlamaJni.gpuBackendAvailable, setting.gpuMode)
+        // 每轮对话都会走这里，但结论几乎不变。只记「变化」——否则 Agent 跑十轮就刷十行
+        // 同样的「GPU 未启用」，真正有用的那行反而被淹掉。
+        val line = if (plan.usingGpu) {
+            "GPU 卸载：${plan.layers} 层 → ${advice.gpuModel ?: advice.gpu.label}" +
+                "（Vulkan ${advice.vulkanVersion ?: "?"}）"
+        } else {
+            // 这条日志是「用户以为在用 GPU」的唯一解药：把「为什么没用」写进运行日志。
+            "GPU 未启用：${plan.reason}"
+        }
+        if (line != lastGpuLogLine) {
+            lastGpuLogLine = line
+            AgentLogger.i("LocalLlama", line)
+        }
+        return plan
+    }
+
 
     override fun streamText(
         messages: List<ChatMessage>,

@@ -4,8 +4,7 @@
 #   llama-jni.cpp          —— 自研 JNI 桥（本仓库提交）
 #   llama.cpp/             —— llama.cpp v0.7.0 源码（构建前由 scripts/fetch-llama.sh 拉取，不进 git）
 #
-# 只编 arm64-v8a 的纯 CPU 版：GPU 后端（Vulkan/OpenCL）留待后续迭代，
-# 先把「能跑」做扎实。关闭一切用不到的组件，APK 体积和编译时间都受益。
+# 只编 arm64-v8a。CPU 后端恒开，Vulkan 后端由工具链是否就绪决定（见下方 AK_HAS_VULKAN）。
 
 cmake_minimum_required(VERSION 3.22.1)
 project(agentkit-llama)
@@ -58,7 +57,6 @@ set(GGML_NATIVE    OFF CACHE BOOL "" FORCE)  # 交叉编译禁 native 检测，�
 set(GGML_OPENMP    OFF CACHE BOOL "" FORCE)  # NDK 无 OpenMP 运行时
 set(GGML_LLAMAFILE OFF CACHE BOOL "" FORCE)
 set(GGML_OPENCL    OFF CACHE BOOL "" FORCE)
-set(GGML_VULKAN    OFF CACHE BOOL "" FORCE)
 set(GGML_CUDA      OFF CACHE BOOL "" FORCE)
 set(GGML_HIPBLAS   OFF CACHE BOOL "" FORCE)
 set(GGML_METAL     OFF CACHE BOOL "" FORCE)
@@ -68,6 +66,52 @@ set(GGML_RPC       OFF CACHE BOOL "" FORCE)
 set(GGML_BLAS      OFF CACHE BOOL "" FORCE)
 set(GGML_CPU_HBM   OFF CACHE BOOL "" FORCE)
 set(GGML_CPU_ALL_VARIANTS OFF CACHE BOOL "" FORCE)  # 单架构，不需要多后端变体
+
+# ---------------------------------------------------------------------------
+# GPU 后端（Vulkan）：覆盖「非高通」与「8 Gen 1 以下」的唯一一条路
+#
+# 为什么值得开：NPU 是一机一包（LiteRT 的 QNN context 按具体 Hexagon 版本 AOT 编译），
+# 天玑/麒麟/老骁龙连这条路都没有。Vulkan 是唯一「一份 shader 跑遍所有支持它的 GPU」
+# 的方案，Adreno 与 Mali 都吃。
+#
+# 一个必须先说清的门槛：ggml-vulkan 要求 **Vulkan 1.2**（不是 1.1），源码里是
+#   if (api_version < VK_API_VERSION_1_2) throw ...
+# 这意味着 Android 10/11 且驱动只给 1.1 的老机仍然只能走 CPU。判定在 Kotlin 侧
+# （LocalDeviceRules.vulkanUsable），这里只负责「编得出来」。
+#
+# 失败是安全的：ggml_backend_vk_reg() 内部 try/catch，初始化失败返回 nullptr，
+# 注册表跳过这个后端，llama 继续用 CPU。所以一个包可以同时给有/没有 Vulkan 的设备。
+#
+# 工具链三件套（缺一不可，CI 里由 workflow 安装）：
+#   1. vulkan.h + libvulkan.so  —— NDK sysroot 自带
+#   2. glslc（host 侧可执行）    —— 把 .comp 编成 SPIR-V
+#   3. SPIRV-Headers 的 CMake 包 —— find_package(SPIRV-Headers CONFIG REQUIRED) 要它
+#
+# 为什么用环境变量而不是写死路径：Android Studio 里没有这套工具链，本地构建要能
+# 静默退回 CPU-only（否则每个开发者都编不过）。但 CI 里必须失败而不是静默降级——
+# 设了 AK_REQUIRE_VULKAN 就 FATAL，避免「以为开了 GPU，出的包其实只有 CPU」。
+# ---------------------------------------------------------------------------
+set(AK_HAS_VULKAN OFF)
+set(_ak_glslc "$ENV{AK_GLSLC}")
+set(_ak_spirv "$ENV{AK_SPIRV_DIR}")
+
+if (_ak_glslc AND EXISTS "${_ak_glslc}" AND _ak_spirv AND EXISTS "${_ak_spirv}")
+    # FindVulkan 的变量名不是 AK_*：写成 cache 变量让它跳过搜索，直接认我们给的。
+    # 跨编译时它自己找 glslc 会撞上 CMAKE_FIND_ROOT_PATH（只在 sysroot 里搜），必失败。
+    set(Vulkan_GLSLC_EXECUTABLE "${_ak_glslc}" CACHE FILEPATH "" FORCE)
+    set(SPIRV-Headers_DIR "${_ak_spirv}" CACHE PATH "" FORCE)
+    set(GGML_VULKAN ON CACHE BOOL "" FORCE)
+    set(AK_HAS_VULKAN ON)
+    message(STATUS "[agentkit] Vulkan: ON（glslc=${_ak_glslc}，spirv=${_ak_spirv}）")
+else()
+    set(GGML_VULKAN OFF CACHE BOOL "" FORCE)
+    if (DEFINED ENV{AK_REQUIRE_VULKAN})
+        message(FATAL_ERROR
+            "[agentkit] Vulkan: 要求开启但工具链缺失（AK_GLSLC=${_ak_glslc}，AK_SPIRV_DIR=${_ak_spirv}）。"
+            "CI 应安装 glslc 与 SPIRV-Headers；不想要 GPU 后端就不要设 AK_REQUIRE_VULKAN。")
+    endif()
+    message(STATUS "[agentkit] Vulkan: OFF（未提供 glslc / SPIRV-Headers，本次构建为 CPU-only）")
+endif()
 
 # 量化推理的算力几乎全在 Q4 点积上，而基线 armv8-a 只能用通用的 NEON 实现。
 # 抬到 armv8.2-a + dotprod + fp16 后，ggml 会编出 dotprod/i8mm 之外的专用
@@ -118,6 +162,13 @@ foreach(_t ggml ggml-base ggml-cpu llama)
     endif()
 endforeach()
 
+# Vulkan 后端的 shader 是预编译的 SPIR-V 数组，-O0/-O3 对它的体积与速度都没影响，
+# 但统一加上能省掉「为什么只有这个 target 是 -O0」的疑问。
+if (TARGET ggml-vulkan)
+    target_compile_options(ggml-vulkan PRIVATE -O3)
+    message(STATUS "[agentkit] ggml-vulkan: 追加 -O3")
+endif()
+
 # ---- 我们的 JNI 桥 ----
 add_library(agentkit-llama SHARED llama-jni.cpp)
 
@@ -131,6 +182,16 @@ target_link_libraries(agentkit-llama
     android
     log
 )
+
+# 静态库里带了 libggml-vulkan.a 时，libvulkan.so 的符号要在最终链接这一步解析。
+# 静态库的 PRIVATE 依赖会以 $<LINK_ONLY:...> 传播，理论上够；显式再写一次是因为
+# 「理论上够」在这类交叉编译里失败过一次就够让人怀疑人生，成本只有一行。
+if (AK_HAS_VULKAN)
+    target_link_libraries(agentkit-llama vulkan)
+    # 让 C++ 侧用编译期事实回答「这个包装了 GPU 后端没有」（见 nativeGpuBackend）。
+    # 用宏而不是让 Kotlin 写常量：常量要人同步，忘了改就会 UI 显示 GPU 可用、实际只有 CPU。
+    target_compile_definitions(agentkit-llama PRIVATE AK_HAS_VULKAN=1)
+endif()
 
 # 静态库里的 1000+ 个 llama_*/ggml_* 符号不该出现在 .so 的动态导出表：
 # 既污染符号空间又有潜在冲突风险。JNI 函数在本文件里编译，不受影响。

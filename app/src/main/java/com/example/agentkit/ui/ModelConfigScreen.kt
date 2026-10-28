@@ -58,6 +58,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -1424,6 +1425,8 @@ private fun LocalModelsTab(vm: ChatViewModel) {
     val threads by vm.localThreads.collectAsStateWithLifecycle()
     val maxTokens by vm.localMaxTokens.collectAsStateWithLifecycle()
     val agentMode by vm.localAgentMode.collectAsStateWithLifecycle()
+    val gpuMode by vm.localGpuMode.collectAsStateWithLifecycle()
+    val gpuSummary by vm.localGpuSummary.collectAsStateWithLifecycle()
     val ctx = LocalContext.current
     val catalog = remember(ctx) { com.example.agentkit.core.llm.local.GgufModelStore(ctx).catalog() }
     var pendingDelete by remember { mutableStateOf<String?>(null) }
@@ -1679,6 +1682,58 @@ private fun LocalModelsTab(vm: ChatViewModel) {
                 )
             }
             Switch(checked = agentMode, onCheckedChange = { vm.setLocalAgentMode(it) })
+        }
+    }
+
+    // —— GPU 加速 ————————————————————————————————————————————
+    //
+    // 放在「推理参数」之前，因为它是这一批机型（天玑 / 8 Gen 1 以下）唯一可能
+    // 提速一个数量级的开关，比调线程数重要得多。
+    //
+    // 三档而不是开关：Mali 的 Vulkan 驱动能在短任务上跑得不错，长任务会
+    // VK_ERROR_DEVICE_LOST。「自动」由设备规则判，「强制」是用户看过提示之后的
+    // 明确选择，「关闭」给那些更在意耗电与发热的人。
+    AkGroup(
+        title = "GPU 加速（Vulkan）",
+        description = "把模型层卸载到显卡。Adreno 自动开启；Mali 驱动在长时间推理后可能中断，默认不自动开。改动在下次加载模型时生效",
+        paddedContent = true
+    ) {
+        Text(
+            text = gpuSummary,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(AgentSpacing.space2))
+        com.example.agentkit.core.llm.local.GpuMode.values().forEach { mode ->
+            val hint = when (mode) {
+                com.example.agentkit.core.llm.local.GpuMode.AUTO -> "由设备判定，只在稳妥的机型上开"
+                com.example.agentkit.core.llm.local.GpuMode.FORCE -> "明知有风险也开，适合想自己试的机型"
+                com.example.agentkit.core.llm.local.GpuMode.OFF -> "完全不用显卡，最省电、最稳"
+            }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { vm.setLocalGpuMode(mode) }
+                    .padding(vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                RadioButton(
+                    selected = gpuMode == mode,
+                    onClick = { vm.setLocalGpuMode(mode) }
+                )
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        text = mode.label,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Text(
+                        text = hint,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
         }
     }
 

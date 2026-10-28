@@ -2,6 +2,7 @@ package com.example.agentkit.core.llm.local
 
 import android.app.ActivityManager
 import android.content.Context
+import android.content.pm.PackageManager
 import android.opengl.EGL14
 import android.opengl.EGLConfig
 import android.opengl.EGLContext
@@ -46,6 +47,15 @@ object AndroidDeviceProbe {
         cached = null
     }
 
+    /**
+     * 已采集的画像；启动阶段的采集还没跑完时为 null。
+     *
+     * 给不方便拿 Context 的调用方用（例如 [LocalLlamaClient] 只持有 setting 与 modelStore）。
+     * 拿到 null 的调用方必须按「最保守」处理，不能反过来猜设备能力。
+     */
+    val cachedProfile: LocalDeviceProfile?
+        get() = cached
+
     private fun collect(context: Context): LocalDeviceProfile {
         val socModel = readBuildField("SOC_MODEL")
         val socManu = readBuildField("SOC_MANUFACTURER")
@@ -56,7 +66,31 @@ object AndroidDeviceProbe {
             glRenderer = queryGlRenderer(),
             sdkInt = Build.VERSION.SDK_INT,
             totalRamMb = totalRamMb(context),
+            vulkanVersion = readVulkanVersion(context),
         )
+    }
+
+    /**
+     * 系统报告的 Vulkan 版本（"1.3" / "1.2" / "1.1"/ null = 不支持）。
+     *
+     * 走 PackageManager 的特性字符串，不需要自己 dlopen libvulkan、也不需要
+     * 创建 VkInstance —— 只是查一条系统预先登记的事实，零崩溃风险。
+     *
+     * 这个字段不是「参考信息」：ggml-vulkan 硬要求 1.2（源码里 1.2 以下直接抛），
+     * 而 Android 10/11 那批设备大量只给 1.1。判错了就是「用户点了 GPU，一开就退回」。
+     */
+    private fun readVulkanVersion(context: Context): String? = try {
+        if (!context.packageManager.hasSystemFeature(PackageManager.FEATURE_VULKAN_HARDWARE_VERSION)) {
+            null
+        } else {
+            // 该特性在支持时自带版本号（"1.1" 起）。老 ROM 上可能只给 "1.0" 或空串。
+            context.packageManager.systemAvailableFeatures
+                .firstOrNull { it.name == PackageManager.FEATURE_VULKAN_HARDWARE_VERSION }
+                ?.version
+                ?.takeIf { it.isNotBlank() && it != "0" }
+        }
+    } catch (t: Throwable) {
+        null
     }
 
     /**
