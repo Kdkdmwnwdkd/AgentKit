@@ -674,6 +674,10 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     private val _localMaxTokens = MutableStateFlow(localSetting.maxTokens)
     val localMaxTokens: StateFlow<Int> = _localMaxTokens.asStateFlow()
 
+    /** 本地 Agent 模式（默认关）：开＝注入工具协议与完整系统提示，关＝轻聊档。 */
+    private val _localAgentMode = MutableStateFlow(localSetting.agentMode)
+    val localAgentMode: StateFlow<Boolean> = _localAgentMode.asStateFlow()
+
     /** 刷新本地模型清单（页签 onResume / 下载完成后调用）。 */
     fun refreshLocalModels() {
         _localModels.value = modelStore.listDownloaded()
@@ -782,6 +786,16 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     fun setLocalMaxTokens(v: Int) {
         localSetting.maxTokens = v
         _localMaxTokens.value = localSetting.maxTokens
+    }
+
+    fun setLocalAgentMode(on: Boolean) {
+        localSetting.agentMode = on
+        _localAgentMode.value = on
+        AgentLogger.i(
+            "LocalLlama",
+            if (on) "本地切到 Agent 模式（会注入工具协议，prompt 变长、首字变慢）"
+            else "本地切到轻聊档（只发系统提示前几行 + 最近两轮，首字最快）"
+        )
     }
 
     /** L8 最近日志（格式化后的文本，最新的在前），供自动化页「运行日志」卡片展示。 */

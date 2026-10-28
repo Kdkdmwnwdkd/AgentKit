@@ -38,6 +38,23 @@ class LocalLlamaSetting(context: Context) {
         set(value) = sp.edit().putInt(KEY_MAX_TOKENS, value.coerceIn(64, 8192)).apply()
 
     /**
+     * 本地 Agent 模式：是否把工具协议、完整系统提示、历史一并塞进 prompt。
+     *
+     * **默认关**，这是 W-74 的核心结论。
+     *
+     * 同一台手机、同一个 `qwen2.5-3b-instruct-q4_k_m.gguf`：
+     *   - 只带用户那句话（7 token）→ 首字 4.8 秒、生成 4.8 tok/s；
+     *   - 带上工具协议 + 人格 + 设备上下文（1086 token）→ 180 秒还没算完 prefill。
+     *
+     * 手机 CPU 的算力是固定的，prompt 长 150 倍就是慢 150 倍。所以「本地能聊天」
+     * 和「本地能调工具」必须是两个档位，而不是一个默认值：
+     * 轻聊档默认开，要工具时由用户显式打开 Agent 模式（并接受它慢）。
+     */
+    var agentMode: Boolean
+        get() = sp.getBoolean(KEY_AGENT_MODE, false)
+        set(value) = sp.edit().putBoolean(KEY_AGENT_MODE, value).apply()
+
+    /**
      * 默认线程数 = 最高频簇（大核）的核心数，clamp 到 2..6。
      *
      * 手机 SoC 是大小核异构：开满 8 线程时每一步都要等最慢的小核，实际比 4 线程
@@ -68,6 +85,7 @@ class LocalLlamaSetting(context: Context) {
         private const val KEY_N_CTX = "n_ctx"
         private const val KEY_N_THREADS = "n_threads"
         private const val KEY_MAX_TOKENS = "max_tokens"
+        private const val KEY_AGENT_MODE = "agent_mode"
         const val DEFAULT_N_CTX = 4096
 
         /**

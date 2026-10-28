@@ -21,6 +21,7 @@ LOADER="$ROOT/app/src/main/java/com/example/agentkit/core/llm/local/LlamaJni.kt"
 CLIENT="$ROOT/app/src/main/java/com/example/agentkit/core/llm/local/LocalLlamaClient.kt"
 LOOP="$ROOT/app/src/main/java/com/example/agentkit/core/agent/RealAgentLoop.kt"
 VM="$ROOT/app/src/main/java/com/example/agentkit/ui/ChatViewModel.kt"
+SETTING="$ROOT/app/src/main/java/com/example/agentkit/core/llm/local/LocalLlamaSetting.kt"
 
 pass=0
 fail=0
@@ -112,6 +113,15 @@ expect "取消/卡死有等待上限" "$CLIENT" 'IDLE_TIMEOUT_MS'
 expect "native 进度实时转入运行日志" "$CLIENT" 'NativeProgressTap'
 expect "工具 JSON 不会无限憋着不出字" "$CLIENT" 'TOOL_JSON_HOLD_MAX_CHARS'
 expect "重复惩罚（防原地循环）" "$JNI" 'llama_sampler_init_penalties'
+
+echo "[8/8] 本地轻聊档（prompt 长度决定首字延迟）"
+# 真机对照：同一台手机同一模型，7 token 的 prompt 首字 4.8 秒，
+# 1086 token 的 prompt 180 秒算不完 prefill。所以「默认发多少」必须锁死。
+expect "Agent 模式默认关" "$SETTING" 'KEY_AGENT_MODE, false'
+expect "轻聊档不注入工具协议" "$CLIENT" 'EffectivePrompt\(lightMessages\(messages\), emptyList\(\)\)'
+expect "轻聊档剥掉设备上下文" "$CLIENT" '用户当前请求：'
+expect "轻聊档截断系统提示" "$CLIENT" 'LIGHT_SYSTEM_MAX_CHARS'
+expect "轻聊档限制历史条数" "$CLIENT" 'LIGHT_HISTORY_MESSAGES'
 
 echo
 if [ "$fail" -eq 0 ]; then

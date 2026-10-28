@@ -63,8 +63,9 @@ class LocalLlamaClient(
         tools: List<AgentTool>
     ): AssistantMessage = withContext(Dispatchers.IO) {
         ensureModelLoaded()
-        val prompt = buildPrompt(messages, tools)
-        AgentLogger.llmRequest(currentModelLabel(), messages.size, tools.size)
+        val eff = effectivePrompt(messages, tools)
+        val prompt = buildPrompt(eff.messages, eff.tools)
+        AgentLogger.llmRequest(currentModelLabel(), eff.messages.size, eff.tools.size)
         val startedAt = System.currentTimeMillis()
         val text = engine.generate(prompt, setting.maxTokens, null)
         val elapsed = System.currentTimeMillis() - startedAt
@@ -74,7 +75,7 @@ class LocalLlamaClient(
             throw LocalInferenceException(localFailureReason(diag))
         }
         AgentLogger.llmResponse(currentModelLabel(), text.isNotEmpty(), elapsed, "生成长度=${text.length}")
-        parseAssistant(text, tools)
+        parseAssistant(text, eff.tools)
     }
 
     /**
@@ -157,12 +158,14 @@ class LocalLlamaClient(
         tools: List<AgentTool>
     ): Flow<ChatStreamEvent> = channelFlow {
         ensureModelLoaded()
-        val prompt = buildPrompt(messages, tools)
-        AgentLogger.llmRequest(currentModelLabel(), messages.size, tools.size)
+        val eff = effectivePrompt(messages, tools)
+        val prompt = buildPrompt(eff.messages, eff.tools)
+        AgentLogger.llmRequest(currentModelLabel(), eff.messages.size, eff.tools.size)
         val startedAt = System.currentTimeMillis()
         AgentLogger.i(
             "LocalLlama",
-            "开始生成：prompt ${prompt.length} 字符，上限 ${setting.maxTokens} token，线程 ${setting.nThreads}"
+            "开始生成：${if (setting.agentMode) "Agent 模式" else "轻聊模式"}，" +
+                "prompt ${prompt.length} 字符，上限 ${setting.maxTokens} token，线程 ${setting.nThreads}"
         )
 
         val acc = StringBuilder()
@@ -233,9 +236,11 @@ class LocalLlamaClient(
         tap.drain()
 
         if (stalled) {
+            val tokens = Regex("→ (\\d+) token").find(nativeDiagnostics())?.groupValues?.get(1)
             throw LocalInferenceException(
-                "本地模型 ${IDLE_TIMEOUT_MS / 1000} 秒没动过（连首字都没出）。这个模型对当前设备太重，" +
-                    "建议到「模型配置 → 本地模型」换 qwen2.5-0.5b 或 1.5b 再试。详情见运行日志"
+                "本地模型 ${IDLE_TIMEOUT_MS / 1000} 秒没出第一个字" +
+                    (tokens?.let { "（这一轮 prompt 有 $it token，这台设备算不动）" } ?: "") +
+                    "。到「模型配置 → 本地模型」：关掉「Agent 模式」走轻聊档，或改用 qwen2.5-0.5b"
             )
         }
         // 用户主动停止不算失败：prefill 阶段被打断时一个字都还没有，
@@ -259,7 +264,7 @@ class LocalLlamaClient(
         }
         AgentLogger.i("LocalLlama", "native 摘要｜${digest(nativeDiagnostics())}")
 
-        val message = parseAssistant(text, tools)
+        val message = parseAssistant(text, eff.tools)
         // 判定像工具调用、最终却没解析出 ToolCall（JSON 不合法 / 工具名不在白名单）：
         // 整段按普通文本补发一次，不让这轮回答凭空消失。
         if (looksLikeToolCall && message.toolCalls.isEmpty() && message.content.isNotEmpty()) {
@@ -369,6 +374,57 @@ class LocalLlamaClient(
     }
 
     // —— prompt 构建 ————————————————————————————————————————————————
+
+    /** 一轮对话真正要喂给模型的材料（消息 + 工具）。 */
+    private data class EffectivePrompt(val messages: List<ChatMessage>, val tools: List<AgentTool>)
+
+    /**
+     * 决定这一轮喂什么给模型。
+     *
+     * 真机对照（同一台手机、同一个 3B Q4_K_M）：
+     *   - 只带「你好」（7 token）：首字 4.8 秒，生成 4.8 tok/s；
+     *   - 带工具协议 + 人格 + 设备上下文（1086 token）：180 秒连 prefill 第一块都没算完。
+     *
+     * 手机 CPU 算力固定，prompt 长 150 倍就是慢 150 倍——所以默认走轻聊档，
+     * Agent 模式由用户显式打开。
+     */
+    private fun effectivePrompt(
+        messages: List<ChatMessage>,
+        tools: List<AgentTool>
+    ): EffectivePrompt =
+        if (setting.agentMode) EffectivePrompt(messages, tools)
+        else EffectivePrompt(lightMessages(messages), emptyList())
+
+    /**
+     * 轻聊档的消息裁剪：
+     * 1. 系统提示只留开头几行（人格设定），丢掉设备上下文、通知列表这些长尾；
+     * 2. 用户消息只留「用户当前请求：」之后的部分——前面那段设备上下文是给云端
+     *    大模型看的，本地小模型读了只会多算几百 token，还容易答跑题；
+     * 3. 历史只留最近 [LIGHT_HISTORY_MESSAGES] 条，控制增量 prefill 的基数。
+     */
+    private fun lightMessages(messages: List<ChatMessage>): List<ChatMessage> {
+        val sys = messages.filterIsInstance<SystemMessage>().firstOrNull()
+        val rest = messages.filterNot { it is SystemMessage }.takeLast(LIGHT_HISTORY_MESSAGES)
+        return buildList<ChatMessage> {
+            sys?.let { shortenSystem(it.content) }?.takeIf { it.isNotEmpty() }
+                ?.let { add(SystemMessage(it)) }
+            rest.forEach { m ->
+                if (m is UserMessage) add(UserMessage(shortenUser(m.content), m.images)) else add(m)
+            }
+        }
+    }
+
+    private fun shortenSystem(text: String): String = text.lineSequence()
+        .map { it.trim() }
+        .filter { it.isNotEmpty() }
+        .take(LIGHT_SYSTEM_LINES)
+        .joinToString("\n")
+        .take(LIGHT_SYSTEM_MAX_CHARS)
+
+    private fun shortenUser(text: String): String {
+        val marker = "用户当前请求："
+        return if (text.contains(marker)) text.substringAfter(marker).trim() else text
+    }
 
     /**
      * 把 ChatMessage 列表渲染成模型 prompt：
@@ -538,5 +594,14 @@ class LocalLlamaClient(
          * 期间界面全空。超过这个量就当普通文本往屏幕上推。
          */
         const val TOOL_JSON_HOLD_MAX_CHARS = 400
+
+        /** 轻聊档保留的历史条数（4 条 = 最近两轮）。 */
+        const val LIGHT_HISTORY_MESSAGES = 4
+
+        /** 轻聊档系统提示只留前几行。 */
+        const val LIGHT_SYSTEM_LINES = 3
+
+        /** 轻聊档系统提示字符上限——再长就只是在给 prefill 加时间。 */
+        const val LIGHT_SYSTEM_MAX_CHARS = 160
     }
 }

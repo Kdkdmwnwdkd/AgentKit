@@ -59,6 +59,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -1422,6 +1423,7 @@ private fun LocalModelsTab(vm: ChatViewModel) {
     val nCtx by vm.localNCtx.collectAsStateWithLifecycle()
     val threads by vm.localThreads.collectAsStateWithLifecycle()
     val maxTokens by vm.localMaxTokens.collectAsStateWithLifecycle()
+    val agentMode by vm.localAgentMode.collectAsStateWithLifecycle()
     val ctx = LocalContext.current
     val catalog = remember(ctx) { com.example.agentkit.core.llm.local.GgufModelStore(ctx).catalog() }
     var pendingDelete by remember { mutableStateOf<String?>(null) }
@@ -1648,6 +1650,35 @@ private fun LocalModelsTab(vm: ChatViewModel) {
                 }
             }
             if (entry != catalog.last()) AkDivider()
+        }
+    }
+
+    // —— 对话模式 ————————————————————————————————————————————
+    //
+    // 这一项直接决定「首字要等多久」，比线程数、上下文长度重要一个数量级：
+    // Agent 模式会把 7 个工具的说明一起塞进 prompt（约 1086 token），轻聊档只有几句话
+    // （约 40 token）。手机 CPU 上这就是「180 秒算不完」和「5 秒出字」的差别。
+    AkGroup(
+        title = "本地对话模式",
+        description = "轻聊档只发你这句话，出字最快；Agent 模式会附带工具清单与完整人设，prompt 长约 20 倍，首次回复会明显变慢",
+        paddedContent = true
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    text = "Agent 模式（能调用工具）",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    text = if (agentMode) "已开启：能读写文件、点屏幕，但首字会慢很多"
+                    else "已关闭：纯聊天，只发你这句话，首字最快",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Switch(checked = agentMode, onCheckedChange = { vm.setLocalAgentMode(it) })
         }
     }
 
