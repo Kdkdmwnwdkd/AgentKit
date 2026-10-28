@@ -74,7 +74,23 @@ CMake 侧一处**会静默出事**的改名：
 3. **回归**：`run-local-inference-perf-verification.sh` 由 61 条扩到 64 条（repack 断言改成新旧名各一条），全过。
 4. **还没做**：NDK 真编译 + 真机跑。这两步只能在 CI 和手机上完成。
 
-## 6. 真机要看的三行日志
+## 6. 踩到一个坑：annotated tag 的两行输出
+
+v0.7.0 是 **annotated tag**（带签名）。`git ls-remote --tags` 对它输出两行：
+
+```
+757cad0...  refs/tags/v0.7.0        ← tag 对象本身
+620d222...  refs/tags/v0.7.0^{}     ← 解引用后的 commit，这才是 clone 出来的 HEAD
+```
+
+第一版把**第一行**填进了 `EXPECTED_COMMIT`，CI 在 fetch 步骤当场失败：
+
+> `[fetch-llama] FATAL: 拉到的 commit 是 620d2225cc…，期望 757cad021b…`
+
+这条 FATAL 恰好证明钉 commit 的校验是有用的——错的是我填的值，不是校验逻辑。
+b4600 是 lightweight tag，只有一行，所以之前从没遇到。已在脚本注释里写明。
+
+## 7. 真机要看的三行日志
 
 - `nativeInit 成功: …` —— 能不能加载、模型描述是否正常
 - `prefill 完成：… 耗时 XXXX ms（XX tok/s）` —— 与升级前同 prompt 对比

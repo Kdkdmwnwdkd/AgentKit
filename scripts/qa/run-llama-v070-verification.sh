@@ -45,7 +45,7 @@ reject() {
 
 echo "[1/4] 版本钉定"
 expect "fetch 脚本拉 v0.7.0"        "$FETCH" 'TAG="v0\.7\.0"'
-expect "钉死 v0.7.0 的 commit"      "$FETCH" 'EXPECTED_COMMIT="757cad021b357f417065ddbc41a6e8f87c1f8136"'
+expect "钉死 v0.7.0 的 commit"      "$FETCH" 'EXPECTED_COMMIT="620d2225cc436ab0b001e3200e590e3b286ef9ab"'
 reject "没有残留 b4600 tag"          "$FETCH" 'TAG="b4600"'
 # 缓存 key 带版本：key 不变的话 CI 会拿到旧源码，编译出来还是老版本（且不报错）
 expect "CI 缓存 key 带新版本"        "$CI" 'llama-src-v070-'
@@ -81,7 +81,7 @@ expect "新名 GGML_CPU_REPACK=OFF"    "$CMAKE" 'GGML_CPU_REPACK[[:space:]]+OFF'
 expect "老名 GGML_CPU_AARCH64=OFF"   "$CMAKE" 'GGML_CPU_AARCH64[[:space:]]+OFF'
 expect "KleidiAI 显式关（新增依赖）" "$CMAKE" 'GGML_CPU_KLEIDIAI[[:space:]]+OFF'
 expect "ARM 架构标识未被改动"        "$CMAKE" 'armv8\.2-a\+dotprod\+fp16'
-expect "依赖台账已记录新版本"        "$DEPS" 'v0\.7\.0.*757cad021b357f417065ddbc41a6e8f87c1f8136'
+expect "依赖台账已记录新版本"        "$DEPS" 'v0\.7\.0.*620d2225cc436ab0b001e3200e590e3b286ef9ab'
 
 echo
 if [ "$fail" -eq 0 ]; then

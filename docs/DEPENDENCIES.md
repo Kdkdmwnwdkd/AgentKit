@@ -44,7 +44,7 @@
 | 项 | 值 |
 |---|---|
 | 上游 | `ggml-org/llama.cpp`（MIT） |
-| 版本 | tag `v0.7.0`（2026-10-15），钉死 commit `757cad021b357f417065ddbc41a6e8f87c1f8136` |
+| 版本 | tag `v0.7.0`（2026-10-15），钉死 commit `620d2225cc436ab0b001e3200e590e3b286ef9ab` |
 | 获取方式 | `scripts/fetch-llama.sh`（git 浅克隆；受限网络可走 CDN 逐文件拉） |
 | 校验 | 克隆后 `git rev-parse HEAD` 必须等于上面的 commit，否则**构建失败** |
 | 编译选项 | 只编 CPU 后端；`GGML_CPU_ARM_ARCH=armv8.2-a+dotprod+fp16`；`GGML_CPU_REPACK=OFF`；`GGML_CPU_KLEIDIAI=OFF`；关闭 OpenCL/Vulkan/CUDA/SYCL/OpenMP |

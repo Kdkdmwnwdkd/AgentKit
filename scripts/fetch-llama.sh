@@ -19,7 +19,14 @@ REPO="https://github.com/ggml-org/llama.cpp.git"
 # 一旦移动，同一份 `--branch v0.7.0` 在不同时间 clone 出来的源码就不是同一份了——
 # 构建产物不可复现，而且这种漂移**完全静默**（不报错，只是行为变了）。
 # 钉死 commit 后，任何漂移都会当场被下面的校验抓住。
-EXPECTED_COMMIT="757cad021b357f417065ddbc41a6e8f87c1f8136"
+#
+# ⚠️ v0.7.0 是 **annotated tag**（带签名的 tag 对象），`git ls-remote --tags` 会输出两行：
+#    757cad0...  refs/tags/v0.7.0        ← tag 对象本身
+#    620d222...  refs/tags/v0.7.0^{}     ← 解引用后的 commit，才是 clone 出来的 HEAD
+# 要填的是**第二行**。2026-10-28 第一版就填错了这一行，CI 在 fetch 步骤当场报
+# 「拉到的 commit 是 620d222…，期望 757cad0…」——校验逻辑本身起了作用，只是值填错。
+# b4600 是 lightweight tag，只有一行，所以之前没遇到这个坑。
+EXPECTED_COMMIT="620d2225cc436ab0b001e3200e590e3b286ef9ab"
 
 mkdir -p "$DEST"
 
