@@ -2,6 +2,10 @@
 .gradle/
 build/
 */build/
+# 例外：core/build 是**源码包**（Android 构建引擎），不是 Gradle 产物，必须入库。
+# 不加这条的话 git 会一直静默忽略它——2026-10-28 就是这样让远端多出 7 个本地不认识的
+# 文件（上一轮走 REST API 推的，绕过了 gitignore）。
+!app/src/main/java/com/example/agentkit/core/build/
 local.properties
 .idea/
 captures/
