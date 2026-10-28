@@ -206,6 +206,11 @@ ld.lld: error: undefined symbol: vkGetPhysicalDeviceFeatures2
 run 460 就因为拿中文串去 grep，把「兜底其实已经编进 .so」判成「没编进去」，
 在自己写的校验上白红一次。现在日志带 `vk11-shim:` 前缀，专供这条断言。
 
+还有一类假红值得单独记：脚本开着 `set -o pipefail`，而检查写成
+`strings x.so | grep -q 关键词`。`grep -q` 一匹配就退出，`strings` 拿 SIGPIPE（141），
+整条管道因此判成失败——符号明明在里面。这个错**依赖机器快慢**，本机必红、CI 偶尔绿，
+是最难查的一类。现在一律先把 `readelf`/`strings`/`nm` 的输出落盘，再对文件 grep。
+
 **行为段跑不起来时必须算失败。** 这条规则本身也踩过一次：`kotlinc` 在沙箱里是个
 自己拼 embeddable 编译器的 shim，位置与 stdlib 无关，脚本按 `dirname` 猜 stdlib 猜空，
 `java -cp` 少一个 jar，运行期第一句就 `NoClassDefFoundError`。断言一条都没跑，
