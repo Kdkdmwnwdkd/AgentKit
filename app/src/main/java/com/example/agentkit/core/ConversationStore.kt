@@ -97,7 +97,12 @@ data class MsgRecord(
     /**
      * W-30：消息时间（epoch 毫秒）。0 = 旧数据/未记录——UI 不显示时间行，而不是写个 1970。
      */
-    val timeMs: Long = 0
+    val timeMs: Long = 0,
+    /**
+     * W-RT7：产生本回答的模型标识（如 deepseek-chat）；空 = 旧数据/未记录。
+     * 费用下钻按它归属——没有它，「按模型算钱」就只能整锅算。
+     */
+    val modelId: String = ""
 )
 
 /**
@@ -153,7 +158,9 @@ internal fun UiItem.toMsgRecord(): MsgRecord = when (this) {
         completionTokens = usage?.completionTokens ?: 0L,
         // 功能五（P1-9）：推理过程随气泡落盘（截断纪律同正文）
         reasoning = reasoning.orEmpty().take(MAX_FIELD_CHARS),
-        timeMs = timeMs
+        timeMs = timeMs,
+        // W-RT7：模型归属随气泡落盘（费用下钻的依据）
+        modelId = modelId
     )
 
     is UiItem.Tool -> MsgRecord(
@@ -192,7 +199,9 @@ internal fun MsgRecord.toUiItem(): UiItem = when (role) {
         },
         // 功能五（P1-9）：还原推理过程（空白 = 无思考，UI 不渲染折叠块）
         reasoning = reasoning.takeIf { it.isNotBlank() },
-        timeMs = timeMs
+        timeMs = timeMs,
+        // W-RT7：还原模型归属（空 = 旧数据，下钻里归到「未知模型」）
+        modelId = modelId
     )
     // 未知 role 兜底按 assistant 渲染：宁可显示不错丢（历史数据兼容）
     else -> UiItem.Assistant(content)
@@ -231,7 +240,9 @@ internal fun ConversationRecord.toUiItems(): List<UiItem> = buildList {
                     },
                     // 功能五（P1-9）：选中变体的推理过程一起还原（空白 → null）
                     reasoning = sel.reasoning.takeIf { it.isNotBlank() },
-                    timeMs = sel.timeMs
+                    timeMs = sel.timeMs,
+                    // W-RT7：选中变体的模型归属一起还原
+                    modelId = sel.modelId
                 )
             )
         }

@@ -288,7 +288,9 @@ sealed interface UiItem {
         val usage: TokenUsage? = null,
         val reasoning: String? = null,
         /** W-30：消息时间（epoch 毫秒）；0 = 未记录，UI 不显示时间行。 */
-        val timeMs: Long = 0
+        val timeMs: Long = 0,
+        /** W-RT7：产生本回答的模型标识；空 = 旧数据/未记录，费用下钻归「未知模型」。 */
+        val modelId: String = ""
     ) : UiItem
 
     data class Tool(
@@ -1641,8 +1643,26 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         AgentLogger.i("Chat", "审批档位切换为 $next")
     }
 
-    // —— W-RT5：SSH 连接档案（v1 单档案，仅密钥登录）——
+    // —— W-RT7：费用下钻（当前会话，按模型归属）——
 
+    /**
+     * 当前会话的费用下钻：把带用量的助手气泡按模型聚合、逐模型估算费用。
+     * 纯展示用即时计算——消息就在内存里，遍历一次的开销可以忽略。
+     */
+    fun costDrillDown(): List<com.example.agentkit.core.llm.ModelPricing.ModelCost> =
+        com.example.agentkit.core.llm.ModelPricing.drillDown(
+            _messages.value.mapNotNull { item ->
+                (item as? UiItem.Assistant)?.usage?.let { usage ->
+                    com.example.agentkit.core.llm.ModelPricing.UsageEntry(
+                        modelId = item.modelId,
+                        promptTokens = usage.promptTokens,
+                        completionTokens = usage.completionTokens
+                    )
+                }
+            }
+        )
+
+    // —— W-RT5：SSH 连接档案（v1 单档案，仅密钥登录）——
     /**
      * UI 回调：保存 SSH 连接档案。
      * 校验不通过返回给用户的理由（UI 直接展示，不落盘）；成功返回 null。
@@ -1840,7 +1860,9 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
                         text = if (final.isBlank()) "（模型未返回内容）" else final,
                         usage = TokenUsage.sum(
                             history.filterIsInstance<AssistantMessage>().map { it.usage }
-                        )
+                        ),
+                        // W-RT7：归属到重生成完成时的当前模型（本地推理统一记 local-llama）
+                        modelId = if (_config.value.providerId == "local-llama") "local-llama" else _config.value.model
                     )
                     // hotfix30：变体落盘按 owner（切走期间 regenerate 的后台结果仍写回原会话）
                     conversationStore.appendVariant(
@@ -3246,7 +3268,9 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
                 msg.content,
                 usage = usage,
                 reasoning = msg.reasoning,
-                timeMs = System.currentTimeMillis()
+                timeMs = System.currentTimeMillis(),
+                // W-RT7：归属到回答完成时的当前模型（本地推理统一记 local-llama，免费且不误撞云端价格表）
+                modelId = if (_config.value.providerId == "local-llama") "local-llama" else _config.value.model
             )
             is ToolMessage -> UiItem.Tool(
                 ToolCall(msg.id, msg.name, msg.arguments),
