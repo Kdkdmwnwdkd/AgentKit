@@ -54,7 +54,7 @@ object NativeCrashMemory {
                     "LocalLlama",
                     "上次运行在「${crash.stageLabel}」阶段崩溃（${crash.signalName}，" +
                         "GPU ${crash.gpuLayers} 层 / ctx ${crash.ctx} / RSS ${crash.rssKb} KB）" +
-                        "——已开启安全模式（上下文 2048 / 批 64）",
+                        "——已开启安全模式（上下文 2048 / 批 128）",
                 )
                 return
             }

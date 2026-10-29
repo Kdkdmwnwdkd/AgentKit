@@ -89,7 +89,7 @@ has "$PROFILE" "fun effectiveCtx" '安全模式与 GPU 上限合起来判'
 has "$CLIENT" "LocalDeviceRules.effectiveCtx" '装载时用的是合判结果'
 has "$CLIENT" "LlamaJni.applySafeMode" '建 context 前把开关推给 native'
 has "$JNI" "g_safeMode" 'native 侧有进程级开关'
-has "$JNI" "g_safeMode.load() ? 64 : 256" '安全模式把批上限压到 64'
+has "$JNI" "g_safeMode.load() ? 128 : 256" '安全模式把批上限压到 128'
 has "$JNI" "cparams.n_ubatch = std::min<uint32_t>(cparams.n_batch" '物理批跟着逻辑批走（写死 512 等于没降）'
 has "$MEMORY" "setting.safeMode = true" '纯 CPU 推理崩溃时开安全模式'
 has "$SCREEN" "安全模式" '设置页能看见也能关掉'
@@ -533,6 +533,22 @@ hasnt "$CLIENT" "setting.gpuMode != GpuMode.FORCE" '强制开启也拦 Q4_K（�
 # 降级重试的日志必须和实际行为一致（原来写着「缩到 512」，实际 min(64,512)=64，等于没做）。
 hasnt "$JNI" '分块缩到 512' '不再谎报「缩到 512」'
 has "$JNI" '单块上限降到 64 token' '降级真的把单块压到 64'
+
+echo
+echo "== W-90：prefill 不能摊上小核 =="
+#
+# 真机 2026-10-29 13:49（骁龙 8 Gen 2，4 大 + 4 小）：
+#   生成（n_threads=4，全大核）：110 ms/token → 8~9.6 tok/s
+#   prefill（n_threads_batch=6）：65 token 19719 ms → 3.3 tok/s，比逐 token 生成还慢
+# 多出来的 2 个线程落在 Cortex-A510 上，ggml 的 spin-wait barrier 每层都要等最慢的那个。
+# 「核多就快」只对同构多核成立；手机的大小核是反的。
+has "$JNI" "cparams.n_threads_batch = nThreads" 'prefill 线程数与生成一致（不摊小核）'
+hasnt "$JNI" "nThreads + 2" '不再给 prefill 多加 2 个线程'
+
+# 批 64 → 128：90 token 的 prompt 原来被切成 64+26，两块各付一次整批开销
+# （真机 19.7s + 18s = 37.8s）。128 让常见 prompt 一次算完。
+has "$JNI" 'g_safeMode.load() ? 128 : 256' '安全模式批上限 128（一次算完常见 prompt）'
+has "$JNI" 'prefill 进度：' 'prefill 仍有分块进度（可判断是算得慢还是卡死）'
 
 echo
 echo "SUMMARY：PASS=$PASS FAIL=$FAIL"

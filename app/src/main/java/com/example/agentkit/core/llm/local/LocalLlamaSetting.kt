@@ -83,7 +83,7 @@ class LocalLlamaSetting(context: Context) {
         set(value) = sp.edit().putString(KEY_GPU_CRASH_NOTE, value).apply()
 
     /**
-     * 安全模式：把上下文压到 2048、物理批压到 64。
+     * 安全模式：把上下文压到 2048、物理批压到 128。
      *
      * 触发条件是「上次在 prefill/decode 阶段被信号打死，且当时就是纯 CPU」。
      * 那种情况下关 GPU 毫无意义——本来就没开——能动的只剩内存占用：

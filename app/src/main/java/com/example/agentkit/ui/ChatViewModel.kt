@@ -860,7 +860,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         _localSafeMode.value = on
         AgentLogger.i(
             "LocalLlama",
-            if (on) "安全模式已开启：上下文压到 2048、批压到 64，下一条消息生效"
+            if (on) "安全模式已开启：上下文压到 2048、批压到 128，下一条消息生效"
             else "安全模式已关闭：恢复设置里的上下文与批大小，下一条消息生效",
         )
     }

@@ -192,6 +192,6 @@ object NativeCrashParser {
         val why = shortReason(crash)
         val tail = if (why.isEmpty()) "" else "，原因：$why"
         return "上次在「${crash.stageLabel}」阶段被系统终止（${crash.signalName}，" +
-            "上下文 ${crash.ctx}${mem}）$tail，已开启安全模式：上下文 2048、批 64"
+            "上下文 ${crash.ctx}${mem}）$tail，已开启安全模式：上下文 2048、批 128"
     }
 }

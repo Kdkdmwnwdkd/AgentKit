@@ -908,20 +908,18 @@ Java_com_example_agentkit_core_llm_local_LlamaJni_nativeInit(
     llama_context_params cparams = llama_context_default_params();
     cparams.n_ctx = nCtx;
     cparams.n_threads = nThreads;
-    // prefill（batch）与逐 token 生成的开销结构不同：生成是「读 2GB 权重出 1 个 token」，
-    // 内存带宽受限于大核，堆线程只会抢带宽；prefill 是「读一遍权重算一批」，纯算力，
-    // 把能用的核都拉上更快。之前两者都钉在 nThreads（大核数），长 prompt 的 prefill
-    // 因此被白白拖慢一倍以上。
-    const int hwCores = static_cast<int>(std::thread::hardware_concurrency());
-    // prefill 线程数：比生成多 2 个，上限 8。
+    // prefill 线程数 = 生成线程数。**不要 +2。**
     //
-    // 上一次把两者钉成同一个值，是为了排除「8 线程把 158 token 的 prefill 卡 180 秒」
-    // 这个嫌疑。现在根因已经查实（-O0 编译，与线程数无关），可以按两者的开销结构分开：
-    //   - 生成：每 token 要读一遍 2GB 权重，瓶颈是内存带宽，线程多了只是互相抢，
-    //     所以严格用用户设的值；
-    //   - prefill：一批 token 共享同一遍权重读取，瓶颈是纯算力，多用两个核是净赚。
-    // 上限 8 是因为手机 SoC 通常 4 大 + 4 小，再往上就全是小核了。
-    cparams.n_threads_batch = std::min(hwCores, nThreads + 2);
+    // 之前这里写 `min(hwCores, nThreads+2)`，理由是「prefill 是纯算力，多用两个核净赚」。
+    // 真机 2026-10-29 13:49（骁龙 8 Gen 2，8 核 = 4 大 + 4 小）把这个假设打穿了：
+    //   生成（n_threads=4，全大核）：110 ms/token → 8~9.6 tok/s
+    //   prefill（n_threads_batch=6）：65 token 19719 ms → 3.3 tok/s
+    // 多出来的两个线程落在 Cortex-A510 小核上：barrier 每次都要等最慢的那个，
+    // 小核算 Q4_K 的速度约为大核 1/3，于是整批被拖慢到比逐 token 生成还慢。
+    // 「核多就快」只对同构多核成立，对手机的大小核（且 ggml 用 spin-wait barrier）是反的。
+    const int hwCores = static_cast<int>(std::thread::hardware_concurrency());
+    (void) hwCores;
+    cparams.n_threads_batch = nThreads;
     // n_batch = 256：一次 llama_decode 吃进去的 token 上限。
     //
     // 这个值不影响吞吐（llama.cpp 内部本来就按 n_ubatch 分趟算），但它决定两件事：
@@ -929,11 +927,14 @@ Java_com_example_agentkit_core_llm_local_LlamaJni_nativeInit(
     //   2) 中断粒度 —— 配合 abort 回调后，停止最迟在一个 ubatch 内生效。
     // 256 在「每行日志别太碎」与「别让用户干等」之间取的折中。
     //
-    // **安全模式把上限定到 64**：prefill 的内存峰值几乎正比于物理批——中间张量是按
-    // ubatch 建图的，3B 模型的 FFN 中间层一个 256 的 ubatch 就要几十 MB。
-    // 真机 2026-10-29：3B Q4 + 纯 CPU 在 prefill 阶段被 SIGABRT 打死两次，
-    // 现场 VmRSS 已贴到进程上限，降批是这个病最直接的对症药。
-    const int batchCap = g_safeMode.load() ? 64 : 256;
+    // **安全模式的上限从 64 提到 128。**
+    //
+    // 64 是 1.468 定的，当时的判据是「纯 CPU + prefill → SIGABRT，VmRSS 贴到进程上限」。
+    // 现在根因已经查清：那些 SIGABRT 是 Vulkan 的 q4_k 管线在每个 ubatch 上抛异常
+    // （见 W-89），不是内存。把一个 90 token 的 prompt 切成 64 + 26 两块，等于多付一次
+    // 整批的固定开销——真机实测第一块 19.7 秒、第二块 18 秒，总 37.8 秒。
+    // 128 让常见 prompt 一次算完，内存余量仍然充足（3B 的 128 ubatch 中间张量约几十 MB）。
+    const int batchCap = g_safeMode.load() ? 128 : 256;
     cparams.n_batch = std::min(nCtx, batchCap);
     // 物理批跟 batchCap 走，不再写死 512。
     //
