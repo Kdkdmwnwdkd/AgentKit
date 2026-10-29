@@ -1430,6 +1430,7 @@ private fun LocalModelsTab(vm: ChatViewModel) {
     val gpuSummary by vm.localGpuSummary.collectAsStateWithLifecycle()
     val gpuCrashNote by vm.localGpuCrashNote.collectAsStateWithLifecycle()
     val safeMode by vm.localSafeMode.collectAsStateWithLifecycle()
+    val resourceTier by vm.localResourceTierLock.collectAsStateWithLifecycle()
     val ctx = LocalContext.current
     val catalog = remember(ctx) { com.example.agentkit.core.llm.local.GgufModelStore(ctx).catalog() }
     var pendingDelete by remember { mutableStateOf<String?>(null) }
@@ -1756,6 +1757,44 @@ private fun LocalModelsTab(vm: ChatViewModel) {
         description = "上下文越大越吃内存（4K 约额外 0.5GB）；GPU 开启时上限 4096（显存要和权重共用）；线程数超过大核数收益递减，保存后下次加载生效",
         paddedContent = true
     ) {
+        // —— 资源档位 ——————————————————————————————
+        //
+        // 和安全模式一样是「会覆盖下面填的值」的开关（AUTO 只减不增），所以也放在
+        // 被覆盖的参数之前。默认自动：按机型画像选档；锁档后完全按档位表来。
+        val tierLock = resourceTier
+        val tierOptions: List<Pair<com.example.agentkit.core.llm.local.ResourceTier?, String>> = listOf(
+            null to "自动（跟机型走）",
+            com.example.agentkit.core.llm.local.ResourceTier.ECO to "省电：入门 / 中低端档，压线程、上下文封顶 4096",
+            com.example.agentkit.core.llm.local.ResourceTier.BALANCED to "均衡：现行默认口径，只对激进设置封顶",
+            com.example.agentkit.core.llm.local.ResourceTier.PERFORMANCE to "性能：不设额外限制，设置给多少用多少",
+        )
+        tierOptions.forEach { (tier, hint) ->
+            val selected = tier == com.example.agentkit.core.llm.local.ResourceTier.parse(tierLock) ||
+                (tier == null && com.example.agentkit.core.llm.local.ResourceTier.parse(tierLock) == null)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { vm.setLocalResourceTierLock(tier?.name ?: "AUTO") }
+                    .padding(vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                RadioButton(selected = selected, onClick = { vm.setLocalResourceTierLock(tier?.name ?: "AUTO") })
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        text = if (tier == null) "资源档位：自动" else "资源档位：${tier.label}",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Text(
+                        text = hint,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+            if (tier != tierOptions.last().first) Spacer(Modifier.height(AgentSpacing.space2))
+        }
+        Spacer(Modifier.height(AgentSpacing.space3))
         // —— 安全模式 ————————————————————————————————
         //
         // 排在最前，因为它会**覆盖**下面两个值：开着的时候，用户把上下文写到 8192

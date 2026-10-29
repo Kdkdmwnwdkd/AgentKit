@@ -115,6 +115,18 @@ class LocalLlamaSetting(context: Context) {
         set(value) = sp.edit().putBoolean(KEY_AGENT_MODE, value).apply()
 
     /**
+     * 资源档位锁：AUTO / ECO / BALANCED / PERFORMANCE（存原始字符串，解析在
+     * [ResourceTier.parse]——这里不做枚举校验，配置写坏时按「跟随自动」处理，
+     * 与 gpuMode 的兜底口径一致）。
+     *
+     * AUTO：档位跟着机型画像走，且只减不增（用户手动调高的参数不被覆盖）；
+     * 锁档：点名要这档，按 [ResourcePlanRules.specFor] 直取。
+     */
+    var resourceTierLock: String
+        get() = sp.getString(KEY_RESOURCE_TIER_LOCK, "AUTO") ?: "AUTO"
+        set(value) = sp.edit().putString(KEY_RESOURCE_TIER_LOCK, value).apply()
+
+    /**
      * 默认推理线程数。
      *
      * 早先取「最高频簇的核心数」（8 核机 → 4），理由是「大小核混跑要等最慢的小核」。
@@ -149,6 +161,7 @@ class LocalLlamaSetting(context: Context) {
         private const val KEY_GPU_MODE = "gpu_mode"
         private const val KEY_GPU_CRASH_NOTE = "gpu_crash_note"
     private const val KEY_SAFE_MODE = "safe_mode"
+        private const val KEY_RESOURCE_TIER_LOCK = "resource_tier_lock"
         const val DEFAULT_N_CTX = 4096
 
         /**

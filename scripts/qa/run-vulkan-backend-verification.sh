@@ -88,11 +88,14 @@ echo "== 静态：装载路径不许再写死 0 层 =="
 # 注意 ctx 用的是**压过的** nCtx，不是 setting.nCtx：
 # GPU 开启时上下文要被压到 4096（显存和权重共用，装不下就闪退，见 W-84）。
 # 这条以前写的是 setting.nCtx，W-84 一改就红了——断言要盯语义，不要盯字面。
-has "层数由规则层给" "$CLIENT" "engine.acquire(file.absolutePath, nCtx, setting.nThreads, gpu.layers)"
+# W-RT2 资源档位上线后，ctx 与线程又各套了一层档位（planCtx / planThreads），
+# 断言跟着语义走：装载入口必须用「压过 + 档位后」的值。
+has "层数由规则层给" "$CLIENT" "engine.acquire(file.absolutePath, nCtx, planThreads, gpu.layers)"
 # W-85 之后入口从 capCtxForGpu 换成了 effectiveCtx（安全模式与 GPU 上限合判）。
 # 断言盯语义不盯字面：这里只要求「客户端走的是合判入口」，再单独要求
 # 「合判内部仍复用 GPU 上限」——两个前提都在，才不会出现「开了安全模式就不压 GPU 上限」。
-has "GPU 开启时上下文先压到安全值" "$CLIENT" "effectiveCtx(setting.nCtx"
+# W-RT2：合判的入参是档位后的 planCtx（档位先压一道，安全模式/GPU 上限再压一道）。
+has "GPU 开启时上下文先压到安全值" "$CLIENT" "effectiveCtx(planCtx"
 has "压安全值之后仍过 GPU 上限" "$PROFILE" "capCtxForGpu(capped, gpuLayers)"
 has "两个前提分开判" "$CLIENT" "LlamaJni.gpuBackendAvailable"
 has "没画像就退回 CPU" "$CLIENT" "设备画像尚未采集完成"

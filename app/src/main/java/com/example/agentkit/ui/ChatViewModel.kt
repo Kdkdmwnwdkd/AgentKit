@@ -696,6 +696,14 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     private val _localSafeMode = MutableStateFlow(localSetting.safeMode)
     val localSafeMode: StateFlow<Boolean> = _localSafeMode.asStateFlow()
 
+    /**
+     * 资源档位锁（AUTO / 档位名）。AUTO = 按机型自动选档且只减不增；
+     * 锁档 = 完全按 [ResourcePlanRules.specFor] 的表来。原始字符串存取，
+     * 解析归 [com.example.agentkit.core.llm.local.ResourceTier.parse]。
+     */
+    private val _localResourceTierLock = MutableStateFlow(localSetting.resourceTierLock)
+    val localResourceTierLock: StateFlow<String> = _localResourceTierLock.asStateFlow()
+
     private val _localGpuCrashNote = MutableStateFlow(localSetting.lastGpuCrashNote)
     val localGpuCrashNote: StateFlow<String> = _localGpuCrashNote.asStateFlow()
 
@@ -867,6 +875,19 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
             if (on) "安全模式已开启：上下文压到 2048、批压到 128，下一条消息生效"
             else "安全模式已关闭：恢复设置里的上下文与批大小，下一条消息生效",
         )
+    }
+
+    /**
+     * 锁定资源档位（"AUTO" 或 [com.example.agentkit.core.llm.local.ResourceTier] 名）。
+     *
+     * 只落盘 + 更新 UI：档位在建 context 时读一次，由 ensureModelLoaded 在装载前
+     * 统一解析，语义是「下一条消息（重载）生效」，与安全模式同一口径。
+     */
+    fun setLocalResourceTierLock(name: String) {
+        localSetting.resourceTierLock = name
+        _localResourceTierLock.value = name
+        val label = com.example.agentkit.core.llm.local.ResourceTier.parse(name)?.label ?: "自动（跟机型走）"
+        AgentLogger.i("LocalLlama", "资源档位改为「$label」，下次加载模型生效")
     }
 
     fun setLocalGpuMode(mode: GpuMode) {
