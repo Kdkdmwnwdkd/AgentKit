@@ -39,6 +39,7 @@ ENGINE=app/src/main/java/com/example/agentkit/core/llm/local/LocalLlamaEngine.kt
 SCREEN=app/src/main/java/com/example/agentkit/ui/ModelConfigScreen.kt
 LOGGER=app/src/main/java/com/example/agentkit/core/AgentLogger.kt
 EXPORTER=app/src/main/java/com/example/agentkit/core/DiagnosticsExporter.kt
+VM=app/src/main/java/com/example/agentkit/ui/ChatViewModel.kt
 
 PASS=0
 FAIL=0
@@ -549,6 +550,31 @@ hasnt "$JNI" "nThreads + 2" '不再给 prefill 多加 2 个线程'
 # （真机 19.7s + 18s = 37.8s）。128 让常见 prompt 一次算完。
 has "$JNI" 'g_safeMode.load() ? 128 : 256' '安全模式批上限 128（一次算完常见 prompt）'
 has "$JNI" 'prefill 进度：' 'prefill 仍有分块进度（可判断是算得慢还是卡死）'
+
+echo
+echo "== W-92：并发加载必须单飞（否则同一份权重会进内存两遍） =="
+#
+# 真机 2026-10-29 15:02，只发了一句话：
+#   15:02:17.525  加载模型 …（第 1 次）
+#   15:02:17.528  加载模型 …（第 2 次）
+#   15:02:27.883  模型就绪 10358 ms
+#   15:02:31.717  模型就绪 14188 ms
+#   15:02:45      prefill … RSS 4078 MB
+# 起因：主对话与「AI 标题生成」同时 acquire。current 是加载完成后才写的，
+# 所以第二个线程在加载期间看到的仍是 null，于是也去加载了一遍。
+# 两个 2GB 实例并存 → RSS 4.1GB、prefill 互抢、预热 decode 20004 ms、一次 rc=-1。
+has "$ENGINE" 'private val loadLock = ReentrantLock()' '加载有独立的互斥锁'
+has "$ENGINE" 'loadLock.lock()' '整段加载过程持锁（不是只锁状态写入）'
+has "$ENGINE" '复用已加载实例（等锁期间已就绪）' '等锁后必须复查，否则会把刚加载好的再释放一遍'
+has "$ENGINE" 'activeUsers' '记录当前句柄的使用者数量'
+has "$ENGINE" 'retiredHandles' '正在使用中的旧句柄延迟释放（不 use-after-free）'
+has "$ENGINE" 'releaseRetiredLocked' '使用者归零时回收延迟句柄'
+has "$ENGINE" 'withHandle' 'generate / chatTemplate 走统一的持有入口'
+has "$ENGINE" 'fun generate(prompt: String, maxTokens: Int, listener: LlamaJni.TokenListener?): String =' \
+  'generate 不再裸取句柄（立刻 free 会 SIGSEGV）'
+has "$ENGINE" 'val isBusy: Boolean' '对外暴露「引擎是否在跑」，供低优先级任务让路'
+has "$VM" 'LocalLlamaEngine.isBusy' '标题生成会等本地引擎空闲'
+has "$VM" '本轮跳过标题生成' '等太久就放弃标题（不能为它拖住用户）'
 
 echo
 echo "SUMMARY：PASS=$PASS FAIL=$FAIL"

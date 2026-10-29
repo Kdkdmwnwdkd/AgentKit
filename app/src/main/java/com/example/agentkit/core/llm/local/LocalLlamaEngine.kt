@@ -3,6 +3,7 @@ package com.example.agentkit.core.llm.local
 import com.example.agentkit.core.AgentLogger
 import java.io.File
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.locks.ReentrantLock
 
 /**
  * 本地 llama 推理引擎（进程级单例）。
@@ -34,6 +35,39 @@ object LocalLlamaEngine {
     )
 
     private var current: Loaded? = null
+
+    /**
+     * 加载锁：**整段加载过程互斥**。
+     *
+     * 为什么不能只靠 [lock]：`current` 是加载完成后才写进去的，所以在「A 开始加载」
+     * 到「A 加载完成」这段时间里，B 看到的 current 仍是 null，于是 B 也会去加载。
+     * 真机 2026-10-29 15:02 就是这个形态——主对话和「AI 标题生成」同时进来：
+     *
+     *   15:02:17.525  加载模型 …（第 1 次）
+     *   15:02:17.528  加载模型 …（第 2 次）
+     *   15:02:27.883  模型就绪 10358 ms
+     *   15:02:31.717  模型就绪 14188 ms
+     *   15:02:45      prefill … RSS 4078 MB
+     *
+     * 同一个 2GB 权重被 mmap 了两份、两个 llama_context 并存，RSS 从 2.1GB 涨到 4.1GB，
+     * 两个 prefill 互相抢 CPU，预热 decode 从 110 ms 恶化到 20004 ms（「异常慢」），
+     * 还带出一次 `llama_decode 失败 rc=-1`。
+     *
+     * 加这把锁之后，第二个调用方会**等**第一个加载完，进来时 current 已就绪 → 直接复用。
+     */
+    private val loadLock = ReentrantLock()
+
+    /**
+     * 当前句柄的「正在使用」计数（generate / chatTemplate 期间）。
+     *
+     * 用来防止 use-after-free：参数变化时 `releaseLocked()` 会 free 旧 context，
+     * 但可能仍有线程在这个 handle 上跑生成。free 掉正在跑的 context 不是「报错」，
+     * 是向已释放内存写 KV——直接 SIGSEGV。
+     */
+    private var activeUsers = 0
+
+    /** 已被替换、但仍有人在用、等最后一个用户退出后再释放的句柄。 */
+    private val retiredHandles = ArrayList<Long>()
 
     /** 单调递增的代际号：每次加载/卸载 +1，供 UI 判断「加载中的是不是最新请求」。 */
     private val generation = AtomicLong(0)
@@ -104,10 +138,30 @@ object LocalLlamaEngine {
                 AgentLogger.i(TAG, "复用已加载实例: ${File(modelPath).name} (ctx=$nCtx, threads=$nThreads)")
                 return cur.handle
             }
-            // 参数变了：释放旧实例再加载（模型文件级切换）
-            releaseLocked()
         }
-        return load(modelPath, nCtx, nThreads, layers)
+        // 到这里说明「需要加载」。**必须持 loadLock 再做一次检查**：
+        // 两个线程可能同时判定 current 不匹配而走到这里，其中一个先加载完，
+        // 后进来的如果不复查就会把刚加载好的实例再释放、再加载一遍（就是上面那次事故）。
+        loadLock.lock()
+        try {
+            synchronized(lock) {
+                val cur = current
+                if (cur != null &&
+                    cur.modelPath == modelPath &&
+                    cur.nCtx == nCtx &&
+                    cur.nThreads == nThreads &&
+                    cur.nGpuLayers == layers
+                ) {
+                    AgentLogger.i(TAG, "复用已加载实例（等锁期间已就绪）: ${File(modelPath).name}")
+                    return cur.handle
+                }
+                // 参数变了：释放旧实例再加载（模型文件级切换）
+                releaseLocked()
+            }
+            return load(modelPath, nCtx, nThreads, layers)
+        } finally {
+            loadLock.unlock()
+        }
     }
 
     private fun load(modelPath: String, nCtx: Int, nThreads: Int, nGpuLayers: Int): Long {
@@ -148,20 +202,72 @@ object LocalLlamaEngine {
 
     /** 卸载当前模型，释放 native 内存。幂等。 */
     fun unload() {
-        synchronized(lock) {
-            releaseLocked()
-            generation.incrementAndGet()
-            loadedGeneration = -1L
+        loadLock.lock()
+        try {
+            synchronized(lock) {
+                releaseLocked()
+                generation.incrementAndGet()
+                loadedGeneration = -1L
+            }
+        } finally {
+            loadLock.unlock()
         }
         AgentLogger.i(TAG, "模型已卸载")
     }
 
+    /**
+     * 释放当前实例。
+     *
+     * 有人正在用这个句柄时**不能立即 free**：free 掉正在 decode 的 context 会让
+     * llama.cpp 往已释放内存里写 KV，表现为随机 SIGSEGV（而且现场看起来像「模型坏了」）。
+     * 改为登记到 [retiredHandles]，等最后一个使用者退出时统一释放。
+     */
     private fun releaseLocked() {
-        current?.let {
-            LlamaJni.nativeFree(it.handle)
-        }
+        val cur = current ?: return
         current = null
+        if (activeUsers > 0) {
+            retiredHandles.add(cur.handle)
+            AgentLogger.w(TAG, "旧实例仍有 $activeUsers 处在使用，延迟到它们退出后再释放")
+            return
+        }
+        LlamaJni.nativeFree(cur.handle)
     }
+
+    /** 使用者归零时回收延迟释放的句柄。调用方必须已持有 [lock]。 */
+    private fun releaseRetiredLocked() {
+        if (activeUsers > 0 || retiredHandles.isEmpty()) return
+        for (h in retiredHandles) LlamaJni.nativeFree(h)
+        AgentLogger.i(TAG, "已释放 ${retiredHandles.size} 个延迟回收的旧实例")
+        retiredHandles.clear()
+    }
+
+    /**
+     * 在「当前实例」的保护下执行一段 native 调用。
+     *
+     * 计数期间该句柄不会被 free（见 [releaseLocked]）。未加载时返回 null。
+     */
+    private inline fun <T> withHandle(block: (Long) -> T): T? {
+        val handle = synchronized(lock) {
+            val h = current?.handle ?: 0L
+            if (h == 0L) 0L else {
+                activeUsers++
+                h
+            }
+        }
+        if (handle == 0L) return null
+        try {
+            return block(handle)
+        } finally {
+            synchronized(lock) {
+                activeUsers--
+                if (activeUsers == 0) releaseRetiredLocked()
+            }
+        }
+    }
+
+    /** 引擎是否正在跑推理。标题生成这类「锦上添花」的任务据此让路。 */
+    val isBusy: Boolean
+        get() = synchronized(lock) { activeUsers > 0 }
 
     /** 请求停止当前生成（协程取消时调用；生成循环每 token 检查停止标志）。 */
     fun stop() {
@@ -171,18 +277,12 @@ object LocalLlamaEngine {
     }
 
     /** 应用模型自带对话模板；未加载时返回空串。 */
-    fun chatTemplate(roles: Array<String>, contents: Array<String>): String {
-        val handle = synchronized(lock) { current?.handle } ?: return ""
-        if (handle == 0L) return ""
-        return LlamaJni.nativeChatTemplate(handle, roles, contents)
-    }
+    fun chatTemplate(roles: Array<String>, contents: Array<String>): String =
+        withHandle { LlamaJni.nativeChatTemplate(it, roles, contents) } ?: ""
 
     /** 阻塞式生成；未加载时返回空串。listener 可空。 */
-    fun generate(prompt: String, maxTokens: Int, listener: LlamaJni.TokenListener?): String {
-        val handle = synchronized(lock) { current?.handle } ?: return ""
-        if (handle == 0L) return ""
-        return LlamaJni.nativeGenerate(handle, prompt, maxTokens, listener)
-    }
+    fun generate(prompt: String, maxTokens: Int, listener: LlamaJni.TokenListener?): String =
+        withHandle { LlamaJni.nativeGenerate(it, prompt, maxTokens, listener) } ?: ""
 
     /**
      * 取走「GPU 后端在生成期间自己抛异常」的记录（取走即清空，空串表示没发生）。

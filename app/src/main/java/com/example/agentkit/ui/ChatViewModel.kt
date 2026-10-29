@@ -4006,6 +4006,23 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         if (current.isNotBlank() && current != "新对话" && current != autoTitle) return
 
         viewModelScope.launch(Dispatchers.IO) {
+            // 本地模型：标题生成必须等主对话跑完再动手。
+            //
+            // 真机 2026-10-29 15:02：用户发「你能干什么呢」，标题生成和主对话同时进来，
+            // 结果 2GB 权重被加载了两份（RSS 4078 MB）、两个 prefill 互相抢 CPU，
+            // 这一轮总共花了 46 秒，其中 20 秒的预热 decode 是纯浪费。
+            // 标题是「锦上添花」，让它排在主回答之后：引擎空闲时它只补 14 个 token，不到 1 秒。
+            if (_config.value.providerId == "local-llama") {
+                var waited = 0
+                while (LocalLlamaEngine.isBusy && waited < 180_000) {
+                    Thread.sleep(500)
+                    waited += 500
+                }
+                if (LocalLlamaEngine.isBusy) {
+                    AgentLogger.i("Chat", "本地引擎持续占用 ${waited / 1000} 秒，本轮跳过标题生成")
+                    return@launch
+                }
+            }
             runCatching {
                 val client = buildTaskClient()
                 val reply = client.chat(
