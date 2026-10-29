@@ -170,6 +170,7 @@ import com.example.agentkit.tools.AskUserTool
 import com.example.agentkit.tools.PlanTool
 import com.example.agentkit.tools.CalculatorTool
 import com.example.agentkit.tools.ConversationSearchTool
+import com.example.agentkit.tools.KnowledgeSearchTool
 import com.example.agentkit.tools.EditFileTool
 import com.example.agentkit.tools.WriteBackupHook
 import com.example.agentkit.tools.SpeakTool
@@ -1060,6 +1061,8 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         // W-18：会话检索 + 计算器
         register(ConversationSearchTool(conversationStore))
         register(CalculatorTool())
+        // W-RT6：本地知识库检索（filesDir/knowledge 下的离线文档，与记忆库互补）
+        register(KnowledgeSearchTool(java.io.File(app.filesDir, "knowledge")))
         // W-17：定时任务（模型可自建/查询/删除/开关）
         register(WorkflowCreateTool(workflowStore) { refreshWorkflows() })
         register(WorkflowListTool(workflowStore))
