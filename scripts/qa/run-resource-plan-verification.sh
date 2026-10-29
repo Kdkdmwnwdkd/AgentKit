@@ -180,10 +180,11 @@ println("RESULT: PASS=$pass FAIL=$fail")
 if (fail > 0) kotlin.system.exitProcess(1)
 }
 EOF
-        if kotlinc "$TMP/stubs-android.kt" "$TMP/stubs.kt" "$PLAN" "$DIR/LocalLlamaSetting.kt" "$TMP/check.kt" -d "$TMP" >/dev/null 2>&1; then
-            # 目录模式下 -include-runtime 不打包 stdlib，运行时显式带上 kotlinc 自带的
-            KSTDLIB="$(dirname "$(dirname "$(command -v kotlinc)")")/lib/kotlin-stdlib.jar"
-            OUT=$(java -cp "$TMP:$KSTDLIB" CheckKt 2>/dev/null)
+        # 2026-10-30 修（CI 抓出）：目录模式跑 java 需要手工拼 kotlinc 自带 stdlib 路径，
+        # 在 CI 的 kotlinc shim 布局下拼出坏 classpath → JVM 静默崩（stderr 被吞，OUT 为空被判红）。
+        # 改 -include-runtime jar 自包含：运行库随包走，哪个环境都一个跑法。
+        if kotlinc "$TMP/stubs-android.kt" "$TMP/stubs.kt" "$PLAN" "$DIR/LocalLlamaSetting.kt" "$TMP/check.kt" -d "$TMP/check.jar" -include-runtime >/dev/null 2>&1; then
+            OUT=$(java -jar "$TMP/check.jar" 2>/dev/null)
             echo "$OUT"
             echo "$OUT" | grep -q "FAIL=0" && pass "行为断言全过" || fail "行为断言有红"
         else
