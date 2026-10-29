@@ -80,6 +80,14 @@ class GgufModelStore(private val context: Context) {
             description = "官方量化，中英文均衡，入门首选"
         ),
         GgufCatalogEntry(
+            fileName = "qwen2.5-1.5b-instruct-q8_0.gguf",
+            displayName = "Qwen2.5 1.5B Instruct（Q8_0 · GPU 用）",
+            url = "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q8_0.gguf",
+            approxBytes = 1_894_532_128,
+            paramSize = "1.5B",
+            description = "想用 GPU 加速就选它：Adreno 驱动编不过 Q4_K 的着色器，Q8_0 才能卸载到显卡"
+        ),
+        GgufCatalogEntry(
             fileName = "qwen2.5-coder-1.5b-instruct-q4_k_m.gguf",
             displayName = "Qwen2.5 Coder 1.5B",
             url = "https://huggingface.co/lmstudio-community/Qwen2.5-Coder-1.5B-Instruct-GGUF/resolve/main/qwen2.5-coder-1.5b-instruct-q4_k_m.gguf",
@@ -111,6 +119,14 @@ class GgufModelStore(private val context: Context) {
             approxBytes = 1_881_000_000,
             paramSize = "3B",
             description = "质量/速度平衡点，推荐 6GB+ 内存"
+        ),
+        GgufCatalogEntry(
+            fileName = "qwen2.5-3b-instruct-q8_0.gguf",
+            displayName = "Qwen2.5 3B Instruct（Q8_0 · GPU 用）",
+            url = "https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q8_0.gguf",
+            approxBytes = 3_616_088_480,
+            paramSize = "3B",
+            description = "3B 里唯一能用 GPU 的版本（Q4_K 在 Adreno 上必崩）；3.4GB，建议 8GB 内存"
         ),
         GgufCatalogEntry(
             fileName = "Llama-3.2-3B-Instruct-Q4_K_M.gguf",
