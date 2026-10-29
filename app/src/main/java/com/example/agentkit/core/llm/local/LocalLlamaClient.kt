@@ -60,15 +60,15 @@ class LocalLlamaClient(
     private var lastGpuLogLine: String? = null
 
     /**
-     * 本进程内「GPU 后端已经炸过」的原因。非空即钉死 CPU，直到 App 重启或用户改设置。
+     * 本进程内「GPU 后端已经炸过」的原因 —— **存在 [LocalLlamaEngine] 里**，不是这里。
      *
-     * 为什么不直接用设置：用户的「自动/强制开启」是意愿，不是事实。驱动在
-     * createComputePipeline 上返回 VK_ERROR_UNKNOWN 时，继续开 GPU 的结果是
-     * 「每轮先白算十几秒、再退回 CPU」，比直接 CPU 更差。这里只覆盖本次进程，
-     * 不动用户设置——下次开 App 会重新评估，驱动更新后能自动恢复。
+     * 这个 client 是每轮对话新建的（provider 工厂），实例字段活不过一轮。之前把它放在
+     * 这里，真机表现就是「上一轮说已关闭 GPU，下一轮又打出 99 层」：
+     *   13:13:09 本次进程内已关闭 GPU 加速 → 13:13:16 GPU 卸载：99 层
+     * 于是同一个坏驱动被反复踩、每轮都要先白跑一次。
      */
-    @Volatile
-    private var gpuFaultDisabled: String? = null
+    private val gpuFaultDisabled: String?
+        get() = LocalLlamaEngine.gpuDisabledReason
 
     // —— 对话主路径 ————————————————————————————————————————————————
 
@@ -87,7 +87,7 @@ class LocalLlamaClient(
         // 当场把这一轮补出来。用户付出的只是多等一次加载，而不是「又崩了」。
         val fault = engine.takeGpuFault()
         if (fault.isNotEmpty()) {
-            gpuFaultDisabled = fault
+            LocalLlamaEngine.disableGpu(fault)
             AgentLogger.e("LocalLlama", "GPU 后端在生成时抛出异常：$fault")
             AgentLogger.w("LocalLlama", "本次进程内已关闭 GPU 加速，改用 CPU 重新加载并重试这一轮…")
             ensureModelLoaded()
@@ -200,10 +200,12 @@ class LocalLlamaClient(
         val plan = LocalDeviceRules.resolveGpu(advice, LlamaJni.gpuBackendAvailable, setting.gpuMode)
         // 已知驱动缺陷先拦一道：Adreno 上 Q4_K 的 compute pipeline 建不出来，开了必炸。
         //
-        // 拦在「自动」这一档，是因为用户选自动的语义就是「你替我判断安全不安全」——
-        // 而这里恰好有一条已知会崩的路径。「强制开启」放行：那是用户明知有风险的选择，
-        // 况且 native 侧现在已经能接住异常并降级，最多白跑一轮，不会再闪退。
-        val risk = if (plan.usingGpu && setting.gpuMode != GpuMode.FORCE) {
+        // **「强制开启」也拦。** 早先给 FORCE 留了口子（「用户明知风险」），但真机证据
+        // 说明那不是风险而是必然：2026-10-29 用户在「自动 / 强制开启 / 关闭」三档里
+        // 各试一次，强制开启那轮 100% 停在 createComputePipeline。
+        // 留这个口子的唯一效果是「多一轮 7 秒加载 + 一条报错」，不产生任何信息量。
+        // 想验证 GPU 是否可用，正确做法是换成 Q4_0 / Q8_0 再开——那才是变量实验。
+        val risk = if (plan.usingGpu) {
             LocalDeviceRules.adrenoQ4kRisk(setting.activeModel, advice.gpuModel)
         } else {
             null
@@ -258,7 +260,7 @@ class LocalLlamaClient(
             val diag = nativeDiagnostics()
             val fault = engine.takeGpuFault()
             if (fault.isNotEmpty()) {
-                gpuFaultDisabled = fault
+                LocalLlamaEngine.disableGpu(fault)
                 AgentLogger.e("LocalLlama", "GPU 后端在生成时抛出异常：$fault")
                 AgentLogger.w("LocalLlama", "本次进程内已关闭 GPU 加速，下一条消息将改用 CPU（无需重启）")
                 throw LocalInferenceException(
@@ -426,7 +428,7 @@ class LocalLlamaClient(
             // 钉死 CPU 即可：下一条消息直接跑 CPU，代价只有这一轮。
             val fault = engine.takeGpuFault()
             if (fault.isNotEmpty()) {
-                gpuFaultDisabled = fault
+                LocalLlamaEngine.disableGpu(fault)
                 AgentLogger.e("LocalLlama", "GPU 后端在生成时抛出异常：$fault")
                 AgentLogger.w("LocalLlama", "本次进程内已关闭 GPU 加速，下一条消息将改用 CPU（无需重启）")
                 throw LocalInferenceException(

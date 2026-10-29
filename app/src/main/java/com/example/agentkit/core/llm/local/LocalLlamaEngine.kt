@@ -38,6 +38,24 @@ object LocalLlamaEngine {
     /** 单调递增的代际号：每次加载/卸载 +1，供 UI 判断「加载中的是不是最新请求」。 */
     private val generation = AtomicLong(0)
 
+    /**
+     * 进程级：GPU 后端在本进程里炸过（原因文本；null 表示没炸过）。
+     *
+     * **必须放在这里而不是 client 里。** LocalLlamaClient 是每轮对话新建的（见类注释），
+     * 实例字段活不过一轮——真机 2026-10-29 13:13 的表现就是「13:13:09 刚说已关闭 GPU，
+     * 13:13:16 又打出 GPU 卸载：99 层」，同一个坏驱动被反复踩。
+     *
+     * 用户把「自动」理解成「安全」是合理的，所以这里不赌第二次：一旦置位，
+     * 之后所有 acquire 一律按 CPU 装，直到进程重启。
+     */
+    @Volatile
+    var gpuDisabledReason: String? = null
+        private set
+
+    fun disableGpu(reason: String) {
+        if (gpuDisabledReason == null) gpuDisabledReason = reason
+    }
+
     /** 当前代际（加载成功后与 generation 对齐）。 */
     @Volatile
     var loadedGeneration: Long = -1L
@@ -60,13 +78,28 @@ object LocalLlamaEngine {
             AgentLogger.e(TAG, LlamaJni.unavailableReason ?: "native 库不可用，本地推理终止")
             return 0L
         }
+        // 本进程里 GPU 已经炸过 → 无论调用方要几层都不给。
+        //
+        // 调用方（LocalLlamaClient.resolveGpuPlan）也有一判断，但它是每轮新建的对象，
+        // 状态会丢；这里是进程级单例，是唯一可靠的闸门。两层都留，是因为
+        // 「请求 99 层 → 被强制改成 0 层」这件事必须同时反映在日志和 Loaded 缓存里。
+        var layers = nGpuLayers
+        gpuDisabledReason?.let { why ->
+            if (layers > 0) {
+                AgentLogger.w(
+                    TAG,
+                    "本进程内 GPU 已遭禁用（$why），忽略请求的 $layers 层，按 CPU 加载",
+                )
+                layers = 0
+            }
+        }
         synchronized(lock) {
             val cur = current
             if (cur != null &&
                 cur.modelPath == modelPath &&
                 cur.nCtx == nCtx &&
                 cur.nThreads == nThreads &&
-                cur.nGpuLayers == nGpuLayers
+                cur.nGpuLayers == layers
             ) {
                 AgentLogger.i(TAG, "复用已加载实例: ${File(modelPath).name} (ctx=$nCtx, threads=$nThreads)")
                 return cur.handle
@@ -74,7 +107,7 @@ object LocalLlamaEngine {
             // 参数变了：释放旧实例再加载（模型文件级切换）
             releaseLocked()
         }
-        return load(modelPath, nCtx, nThreads, nGpuLayers)
+        return load(modelPath, nCtx, nThreads, layers)
     }
 
     private fun load(modelPath: String, nCtx: Int, nThreads: Int, nGpuLayers: Int): Long {
@@ -162,6 +195,10 @@ object LocalLlamaEngine {
     fun takeGpuFault(): String {
         val handle = synchronized(lock) { current?.handle } ?: return ""
         if (handle == 0L) return ""
-        return LlamaJni.takeGpuFault(handle)
+        val fault = LlamaJni.takeGpuFault(handle)
+        // 取走的同时钉进进程级状态：调用方（可能已经忘了处理、或者下一轮是个新对象）
+        // 不需要额外做什么，闸门就已经落下。
+        if (fault.isNotEmpty()) disableGpu(fault)
+        return fault
     }
 }

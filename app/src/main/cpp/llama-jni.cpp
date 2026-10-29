@@ -135,6 +135,7 @@ void diagPrintf(int prio, const char* fmt, ...) {
 
 #define LOGI(...) diagPrintf(ANDROID_LOG_INFO, __VA_ARGS__)
 #define LOGE(...) diagPrintf(ANDROID_LOG_ERROR, __VA_ARGS__)
+#define LOGW(...) diagPrintf(ANDROID_LOG_WARN, __VA_ARGS__)
 
 /**
  * 把 llama.cpp / ggml 自己的日志接进「运行日志」。
@@ -223,6 +224,32 @@ void installLlamaLogging() {
  */
 static std::atomic<bool> g_safeMode{false};
 
+/**
+ * 进程级「GPU 已判死刑」标记。
+ *
+ * 真机 2026-10-29 暴露了一个致命组合：Vulkan 后端一旦被编进 .so，**即使 n_gpu_layers=0**
+ * 它仍会参与 context 的 compute buffer 分配（日志里有铁证：
+ * `~llama_context: Vulkan0 compute buffer size of 25.07 MiB`），于是「纯 CPU」也在
+ * Adreno 上建 mul_mat_vec 管线 → 同一个 VK_ERROR_UNKNOWN。
+ *
+ * 结果就是用户在「关闭 / 自动 / 强制开启」三档里怎么切都失败——关闭也失败，因为
+ * 关闭只是不卸载层，并没有把 Vulkan 设备从 model.devices 里摘掉。
+ *
+ * 这里记在 native：Kotlin 侧每个请求都会新建一个 client，实例字段活不过一轮，
+ * 只有进程级状态才靠得住。一旦置位，之后所有 nativeInit 一律按 CPU 装（devices 只给 CPU）。
+ */
+static std::atomic<bool> g_gpuDisabled{false};
+
+/**
+ * 最近一次 nativeInit 的诊断序号水位。
+ *
+ * 诊断缓冲是进程级的，跨请求累积。之前 nativeDiagnostics() 一次性倒出全部 80 行，
+ * 用户看到「本轮」诊断里混着上一轮的预热/prefill 行，两次的耗时还被并排比较——
+ * 13:09 那轮到底是纯 CPU 还是 GPU，光看那坨文本根本分不清。
+ * 只倒出「本次加载之后」的行，诊断才是可以按时间顺序读的。
+ */
+static std::atomic<long long> g_loadSeq{0};
+
 /** 一个已加载的本地模型实例。句柄以 jlong 传给 Kotlin。 */
 struct LlamaInstance {
     llama_model* model = nullptr;
@@ -275,6 +302,9 @@ struct LlamaInstance {
             faultReason = (what && *what) ? what : "未知 C++ 异常";
             gpuFault.store(true);
         }
+        // 进程级：不只是「这个实例坏了」，而是「这台机器的 GPU 这条路走不通」。
+        // 之后任何 nativeInit 都不再尝试卸载，避免用户切一次档就多崩一轮。
+        g_gpuDisabled.store(true);
     }
 
     /** 重载（新建实例）时复位：新实例本来就没有故障。 */
@@ -533,7 +563,14 @@ bool decodeExplicit(LlamaInstance* inst, const llama_token* toks, int32_t n, lla
                  rc, n, inst->kvTokens.size());
             return false;
         }
-        LOGE("llama_decode 失败 rc=%d（n=%d, pos0=%d, KV 已占用=%zu, n_ctx=%d）",
+        // 失败也要把 KV 回退到账本。
+        //
+        // llama.h 对非 0 返回值只说「成功处理的 ubatch 会留在 memory 里」——留多少不知道。
+        // 账本是唯一真相（成功才记账），所以这里按账本长度切一刀，把多写的删掉。
+        // 不切的话，下一轮从账本长度推出的 pos 会和 KV 里残留的条目冲突，
+        // 报 `inconsistent sequence positions`，然后每一轮都 rc=-1（真机 13:13:16 那次）。
+        akKvSeqRm(inst->ctx, 0, static_cast<llama_pos>(inst->kvTokens.size()), -1);
+        LOGE("llama_decode 失败 rc=%d（n=%d, pos0=%d, KV 已占用=%zu, n_ctx=%d，KV 已回退到账本）",
              rc, n, static_cast<int>(pos0), inst->kvTokens.size(),
              static_cast<int>(llama_n_ctx(inst->ctx)));
         return false;
@@ -721,7 +758,22 @@ Java_com_example_agentkit_core_llm_local_LlamaJni_nativeInit(
     JNIEnv* env, jobject /*thiz*/, jstring modelPath,
     jint nCtx, jint nThreads, jint nGpuLayers) {
     std::string path = jstringToStd(env, modelPath);
-    LOGI("nativeInit: %s ctx=%d threads=%d gpu=%d", path.c_str(), nCtx, nThreads, nGpuLayers);
+
+    // 诊断只留「本次加载之后」的行。
+    g_loadSeq.store(g_diagSeq.load());
+
+    // 进程内已经判过 GPU 死刑：无论调用方要几层，一律按 CPU 装。
+    //
+    // 这不是「不信任上层」，而是上层的状态活不过一轮：LocalLlamaClient 每轮新建，
+    // 用户点一次「强制开启」就能把刚记住的故障状态覆盖掉，然后同一台机器再崩一次。
+    // 判据必须放在唯一不会丢的地方。
+    int gpuLayers = nGpuLayers;
+    if (gpuLayers > 0 && g_gpuDisabled.load()) {
+        LOGW("nativeInit: 进程内已标记 GPU 驱动故障，请求的 %d 层不予卸载，本次按 CPU 加载",
+             gpuLayers);
+        gpuLayers = 0;
+    }
+    LOGI("nativeInit: %s ctx=%d threads=%d gpu=%d", path.c_str(), nCtx, nThreads, gpuLayers);
 
     // 第一件事：把 ggml 的日志接过来、把 std::terminate 接住。
     // 必须在任何 llama_* 调用之前——装载期就会抛异常（架构不认、文件损坏），
@@ -758,16 +810,16 @@ Java_com_example_agentkit_core_llm_local_LlamaJni_nativeInit(
     // 这是「用户以为在用 GPU、其实一直在 CPU 上」的唯一防线。Vulkan 后端初始化失败
     // 是**静默**的（源码里 try/catch 后返回 nullptr，注册表直接跳过），所以如果只看
     // 「加载成功」，一台驱动不支持的机器会安静地退回 CPU 跑上几周。这里当场说清楚。
-    if (nGpuLayers > 0) {
+    if (gpuLayers > 0) {
         // Vulkan 实例与物理设备就在这一次枚举里首次创建（ggml 的 reg_init），
         // 驱动不兼容时崩的就是这里，所以必须单独标一个阶段。
         ak_stage_set(AK_STAGE_DEVICE_INIT);
         const GpuDevices devs = enumerateDevices();
         if (devs.gpus == 0) {
             LOGE("请求 GPU %d 层，但没有任何 GPU 后端可用（%s）——本次将按 CPU 运行",
-                 nGpuLayers, devs.list.empty() ? "注册表为空" : devs.list.c_str());
+                 gpuLayers, devs.list.empty() ? "注册表为空" : devs.list.c_str());
         } else {
-            LOGI("请求 GPU %d 层，可用设备：%s", nGpuLayers,
+            LOGI("请求 GPU %d 层，可用设备：%s", gpuLayers,
                  devs.list.empty() ? "（空）" : devs.list.c_str());
         }
     }
@@ -775,7 +827,7 @@ Java_com_example_agentkit_core_llm_local_LlamaJni_nativeInit(
     auto* inst = new LlamaInstance();
     // 记下这次真的卸载了几层：llama_decode 抛异常时据此决定「算 GPU 故障」还是
     // 「纯 CPU 上的普通错误」——前者要降级重载，后者降级没意义。
-    inst->gpuLayers = nGpuLayers;
+    inst->gpuLayers = gpuLayers;
 
     // 预读提示：让内核在我们解析 GGUF 头部的同时，把权重从闪存拉进 page cache。
     //
@@ -792,7 +844,32 @@ Java_com_example_agentkit_core_llm_local_LlamaJni_nativeInit(
     }
 
     llama_model_params mparams = llama_model_default_params();
-    mparams.n_gpu_layers = nGpuLayers;
+    mparams.n_gpu_layers = gpuLayers;
+
+    // **纯 CPU 时必须把设备列表钉死成「只有 CPU」**，这是这次真机事故的根因修复。
+    //
+    // llama_model_params.devices 的语义是「卸载可用的设备集合，NULL = 全部可用设备」。
+    // 传 NULL 时，v0.7.0 会把 Vulkan 设备也放进 model.devices —— 而 context 的
+    // compute buffer 是**按 model.devices 建**的，与 n_gpu_layers 无直接关系。
+    // 真机铁证（2026-10-29 13:13，明确选了「关闭 GPU」）：
+    //   nativeInit ... gpu=0
+    //   [ggml] ~llama_context: Vulkan0 compute buffer size of 25.0747 MiB, does not match...
+    //   llama_decode 抛出异常（纯 CPU）：vk::Device::createComputePipeline: ErrorUnknown
+    // 也就是说「关掉 GPU」只关掉了权重卸载，没关掉 Vulkan 参与计算；
+    // Adreno 740 上 q4_k 的管线建不出来，于是纯 CPU 也跟着一起死（还会卡住 45 秒）。
+    //
+    // 这不是配置问题，是「设备列表不设就等于全都要」。显式只给 CPU，Vulkan 连
+    // buffer 都不会被分配，pipeline 更不会创建 —— CPU 路径从此与 Vulkan 彻底隔离。
+    static ggml_backend_dev_t cpuOnlyDevs[2] = {nullptr, nullptr};
+    if (gpuLayers <= 0) {
+        cpuOnlyDevs[0] = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
+        if (cpuOnlyDevs[0] != nullptr) {
+            mparams.devices = cpuOnlyDevs;
+            LOGI("设备列表：仅 CPU（Vulkan 不参与本次加载的任何 buffer 分配）");
+        } else {
+            LOGW("没有可用的 CPU 后端设备，设备列表保持默认（可能退回全部设备）");
+        }
+    }
     // 内存映射：启动快、峰值可控。
     //
     // v0.7.0 把 use_mmap/use_mlock 两个布尔合并成 load_mode 枚举，并额外引入
@@ -811,7 +888,7 @@ Java_com_example_agentkit_core_llm_local_LlamaJni_nativeInit(
     {
         const size_t slash = path.find_last_of('/');
         const char* base = slash == std::string::npos ? path.c_str() : path.c_str() + slash + 1;
-        ak_crash_context(base, nCtx, nThreads, nGpuLayers);
+        ak_crash_context(base, nCtx, nThreads, gpuLayers);
     }
     ak_stage_set(AK_STAGE_MODEL_LOAD);
     inst->model = llama_model_load_from_file(path.c_str(), mparams);
@@ -925,7 +1002,13 @@ Java_com_example_agentkit_core_llm_local_LlamaJni_nativeInit(
                 LOGI("冷启动预热完成：1 token / %lld ms（含权重首次载入与重排，一次性成本）",
                      nowMs() - t0);
             } else {
-                LOGE("冷启动预热失败（decode 返回非 0），不影响后续，交由首轮 prefill 处理");
+                // 失败必须清 KV：llama_decode 返回非 0 时，KV 里可能已经留下 pos 0 的条目，
+                // 而账本（kvTokens）仍是空的。下一轮 prefill 从 pos0 起，就会撞上
+                //   [ggml] init: the tokens of sequence 0 ... inconsistent sequence positions
+                // 然后**每一轮**都 rc=-1 —— 用户看到的是「模型不兼容」，实际是我们自己的脏状态。
+                // 真机 2026-10-29 13:13:16 就是这条链：预热失败 → 留脏 → 之后全废。
+                resetKv(inst, "冷启动预热失败");
+                LOGE("冷启动预热失败（decode 返回非 0），KV 已清空，由首轮 prefill 重新开始");
             }
         } else {
             LOGI("模型没有 bos token，跳过冷启动预热");
@@ -1068,8 +1151,12 @@ Java_com_example_agentkit_core_llm_local_LlamaJni_nativeDiagnostics(
     std::string out;
     {
         std::lock_guard<std::mutex> lk(diagMu);
+        // 只给「本次加载之后」的行：缓冲是进程级的，全量倒出会把上一轮的预热/prefill
+        // 混进本轮诊断，用户（和我）会拿两次不同配置的耗时做对比，越看越乱。
+        const long long floor = g_loadSeq.load();
         out.reserve(diagLines.size() * 96);
         for (const auto& entry : diagLines) {
+            if (entry.first <= floor) continue;
             out += '#';
             out += std::to_string(entry.first);
             out += '|';
@@ -1280,12 +1367,16 @@ Java_com_example_agentkit_core_llm_local_LlamaJni_nativeGenerate(
         }
         // 三级自愈，全部在 native 内完成，用户侧只体现为「这一次慢一点」：
         //   1) KV 已被 decodeFrom 重置 —— 排除账本脏；
-        //   2) 分块缩到 512 —— 排除「单批太大被后端拒绝」；
+        //   2) 单块上限降到 64 —— 排除「单批太大被后端拒绝」；
         //   3) 重建上下文 —— 排除 KV/后端状态损坏。
         // 真机上「一个字都不出」大多是 1 或 2 能救回来的情况；救不回来也要留下
         // 明确日志，而不是让 UI 空着。
-        LOGE("prefill 失败，降级重试：分块缩到 512");
-        inst->n_batch = std::min(inst->n_batch, 512);
+        //
+        // 这里原来写的是「缩到 512」、也真的 min(n_batch, 512)——安全模式下 n_batch 本来就是
+        // 64，等于**什么都没做却声称做了**。日志和实际行为必须一致，否则下次排查又要在
+        // 「明明缩了还失败」上绕圈。
+        LOGE("prefill 失败，降级重试：单块上限降到 64 token（当前 %d）", inst->n_batch);
+        inst->n_batch = std::min(inst->n_batch, 64);
         const long long retryStart = nowMs();
         if (!decodeFrom(inst, tokens, 0, retryStart)) {
             if (inst->stop.load()) {

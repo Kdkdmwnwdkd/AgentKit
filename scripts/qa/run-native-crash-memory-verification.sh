@@ -35,6 +35,7 @@ MEMORY=app/src/main/java/com/example/agentkit/core/llm/local/NativeCrashMemory.k
 PROFILE=app/src/main/java/com/example/agentkit/core/llm/local/LocalDeviceProfile.kt
 CATALOG=app/src/main/java/com/example/agentkit/core/llm/local/LocalBackendCatalog.kt
 CLIENT=app/src/main/java/com/example/agentkit/core/llm/local/LocalLlamaClient.kt
+ENGINE=app/src/main/java/com/example/agentkit/core/llm/local/LocalLlamaEngine.kt
 SCREEN=app/src/main/java/com/example/agentkit/ui/ModelConfigScreen.kt
 LOGGER=app/src/main/java/com/example/agentkit/core/AgentLogger.kt
 EXPORTER=app/src/main/java/com/example/agentkit/core/DiagnosticsExporter.kt
@@ -486,6 +487,52 @@ KT
     fi
     rm -rf "$W3"
 fi
+
+echo
+echo "== W-89：纯 CPU 必须与 Vulkan 彻底隔离 =="
+#
+# 真机 2026-10-29 13:09/13:13（Adreno 740 / 装了含 Vulkan 的 .so）：
+#   选「关闭 GPU」→ nativeInit gpu=0 → 仍然
+#     [ggml] ~llama_context: Vulkan0 compute buffer size of 25.0747 MiB ...
+#     llama_decode 抛出异常（纯 CPU）：vk::Device::createComputePipeline: ErrorUnknown
+# 也就是说「关掉 GPU」只关掉了权重卸载，没关掉 Vulkan 参与 buffer 分配。
+# 三档（自动/强制/关闭）全崩，用户看到的结论是「这 App 用不了本地模型」。
+has "$JNI" "ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU)" '纯 CPU 时按类型取 CPU 设备'
+has "$JNI" "mparams.devices = cpuOnlyDevs" '把设备列表钉死成「只有 CPU」'
+if grep -q 'if (gpuLayers <= 0)' "$JNI"; then
+    pass '限制设备列表只在纯 CPU 分支生效'
+else
+    fail '纯 CPU 分支判断缺失（gpuLayers <= 0）'
+fi
+hasnt "$JNI" "mparams.devices = nullptr" '没有把设备列表留成「全部设备」'
+
+# 进程级「GPU 已判死刑」：client 每轮新建，实例字段活不过一轮。
+has "$JNI" "static std::atomic<bool> g_gpuDisabled" 'native 记住「本进程 GPU 已废」'
+has "$JNI" "g_gpuDisabled.store(true)" 'GPU 异常时就地置位'
+has "$JNI" "gpuLayers > 0 && g_gpuDisabled.load()" 'nativeInit 强制把层数降到 0'
+has "$ENGINE" "var gpuDisabledReason" 'Kotlin 侧同样有进程级禁用状态'
+has "$ENGINE" "layers = 0" 'acquire 忽略上层请求、按 CPU 装'
+hasnt "$CLIENT" "private var gpuFaultDisabled" 'client 不再持有跨轮状态（每轮新建，会丢）'
+
+# KV 脏状态：预热失败后在 KV 里留下 pos0，之后每轮都 inconsistent sequence positions。
+has "$JNI" 'resetKv(inst, "冷启动预热失败")' '冷启动预热失败就清 KV'
+KVFIX=$(grep -cF 'akKvSeqRm(inst->ctx, 0, static_cast<llama_pos>(inst->kvTokens.size()), -1)' "$JNI")
+if [ "$KVFIX" -ge 2 ]; then
+    pass "decode 失败也把 KV 回退到账本（$KVFIX 处）"
+else
+    fail "decode 失败未回退 KV（只找到 $KVFIX 处，应 ≥2：中止 + 失败）"
+fi
+
+# 诊断只留本次加载之后的行，否则两轮配置的耗时会被并排比较。
+has "$JNI" "static std::atomic<long long> g_loadSeq" '诊断有加载水位'
+has "$JNI" "if (entry.first <= floor) continue" '诊断只倒出本次加载之后的行'
+
+# 「强制开启」不再绕过 Q4_K 已知缺陷（留口子只会多一轮 7 秒白跑）。
+hasnt "$CLIENT" "setting.gpuMode != GpuMode.FORCE" '强制开启也拦 Q4_K（已知必崩，不是风险）'
+
+# 降级重试的日志必须和实际行为一致（原来写着「缩到 512」，实际 min(64,512)=64，等于没做）。
+hasnt "$JNI" '分块缩到 512' '不再谎报「缩到 512」'
+has "$JNI" '单块上限降到 64 token' '降级真的把单块压到 64'
 
 echo
 echo "SUMMARY：PASS=$PASS FAIL=$FAIL"
