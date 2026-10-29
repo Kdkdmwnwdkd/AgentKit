@@ -268,6 +268,17 @@ expect "安全模式跳过投票" "$JNI" '!g_affinity\.decided && !g_safeMode\.l
 expect "改线程数作废绑核结论" "$VM" 'LlamaJni\.nativeResetAffinity\(\)'
 expect "native 侧有作废入口" "$JNI" 'nativeResetAffinity'
 
+# ---- W-97：投票口径 ----
+# 1.478 的真机数据把「每组 2 个 token」证伪了：选出 cpu3-7/5 线程，decode 反而从
+# 9.6 掉到 6.1~7.9 tok/s。两条约束补上：测长一点、没快到阈值就别改。
+expect "每组连续测多个 token（不是 2 个突发）" "$JNI" 'kProbeTokens = 6'
+expect "首 token 只做热身、不计入均值" "$JNI" '先写一个 token 让这组配置'
+expect "没快 15% 就保持不绑核" "$JNI" 'perTok\[bestIdx\] > perTok\[0\] \* 0\.85'
+expect "结论里带上相对不绑核的倍数" "$JNI" '是不绑核的'
+# 票不白投：摘要白名单原来只放 prefill/生成，真机上投票 4 行 + 结论一条都看不到，
+# 只能靠「线程 5」反推它跑过。
+expect "投票与落点进 Run 日志摘要" "$CLIENT" '"绑核", "CPU 落点"'
+
 echo
 if [ "$fail" -eq 0 ]; then
   # 汇总行要带 FAIL=0：run-all.sh 用它识别「跑完且全过」（RESULT PASS 不认）

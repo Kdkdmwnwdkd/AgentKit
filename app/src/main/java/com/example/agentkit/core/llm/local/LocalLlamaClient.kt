@@ -547,7 +547,11 @@ class LocalLlamaClient(
         .filter { line ->
             listOf(
                 "nativeInit 成功", "冷启动预热", "prompt 长度", "prefill 开始", "prefill 完成",
-                "预热", "生成完成", "命中结束符", "生成为空", "tokenize 失败"
+                "预热", "生成完成", "命中结束符", "生成为空", "tokenize 失败",
+                // W-97：绑核是**每台机器只算一次**的结论，它不进摘要就等于没有——
+                // 真机 18:38 那几轮里 prefill 已经显示「线程 5」，可投票的 4 行数值和
+                // 结论行一条都看不见，只能靠线程数反推「投票跑过了」。
+                "绑核", "CPU 落点"
             ).any { keyword -> line.contains(keyword) }
         }
         .joinToString(" ｜ ")

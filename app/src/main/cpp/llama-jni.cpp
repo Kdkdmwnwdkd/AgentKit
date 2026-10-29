@@ -591,7 +591,14 @@ static std::vector<AkCandidate> akCandidates(int fallbackThreads) {
         }
         std::sort(perf.begin(), perf.end());
         if (perf.size() >= 2 && perf != big) {
-            const int t = std::min<int>(6, static_cast<int>(perf.size()));
+            // W-97：线程数**不超过大簇核数**。
+            //
+            // 原来抄 IRIDIS 的「6 线程」是照搬它的机器（8 Elite 有 6 个性能核）。本机是
+            // 1+4+3，perf 是 4×A715 + 1×X3，凑出 5 线程：4 个 A715 各跑一个、X3 单跑一个，
+            // 而 ggml 每层是 spin-wait barrier——只要 X3 那一路降频，四路一起等它。
+            // 真机 1.478 就是这么慢下来的（decode 9.6 → 6.5 tok/s，prefill 反而变快）。
+            const int cap = static_cast<int>(big.size());
+            const int t = std::min<int>(cap, static_cast<int>(perf.size()));
             out.push_back(AkCandidate{perf, t, akCpuRange(perf) + "/" + std::to_string(t) + "线程"});
             if (t - 2 >= 2) {
                 out.push_back(AkCandidate{perf, t - 2,
@@ -622,6 +629,14 @@ static void akVoteAffinity(LlamaInstance* inst) {
     int bestIdx = -1;
     double best = 0;
 
+    // W-97：每组连续测 6 个 token。
+    //
+    // 1.478 的真机数据把「只测 2 个」证伪了：投票选出 cpu3-7/5 线程，可 decode 从
+    // 9.6 掉到 6.1~7.9 tok/s。单 token 量到的是**突发**——X3 在短突发里最快，
+    // 持续生成时它降频，还要和 4 个 A715 抢同一条 LPDDR 通道。测长一点，
+    // 选出来的才是「能一直跑」的配置。
+    constexpr int kProbeTokens = 6;
+
     for (size_t i = 0; i < cands.size(); i++) {
         const auto& c = cands[i];
         // 空 cpus = 「不绑核」= 放开全部。**必须显式放开**：上一组绑过核之后掩码还留着，
@@ -634,19 +649,25 @@ static void akVoteAffinity(LlamaInstance* inst) {
         applyThreads(inst);
         resetKv(inst, nullptr);
 
-        const long long t0 = nowMs();
+        // 先写一个 token 让这组配置「热起来」：首个 token 要新建 KV 块、落页表、
+        // 让调度器把线程搬过去，这段成本与配置无关，算进去会把慢的组测成快的。
         bool ok = decodeExplicit(inst, &bos, 1, 0);
-        if (ok) {
-            resetKv(inst, nullptr);
-            ok = decodeExplicit(inst, &bos, 1, 0);
+        const long long t0 = nowMs();
+        int done = 0;
+        for (int k = 1; ok && k <= kProbeTokens; k++) {
+            if (!decodeExplicit(inst, &bos, 1, k)) {
+                ok = false;
+                break;
+            }
+            done++;
         }
         const long long dt = nowMs() - t0;
         resetKv(inst, nullptr);
-        if (!ok) {
+        if (done == 0) {
             LOGE("绑核投票：%s decode 失败，跳过", c.label.c_str());
             continue;
         }
-        perTok[i] = dt / 2.0;
+        perTok[i] = dt / static_cast<double>(done);
         if (bestIdx < 0 || perTok[i] < best) {
             best = perTok[i];
             bestIdx = static_cast<int>(i);
@@ -676,6 +697,18 @@ static void akVoteAffinity(LlamaInstance* inst) {
         }
     }
 
+    // W-97：没快到阈值就别动。
+    //
+    // 投票本身有 ±10% 的噪声，而「绑过核再放开」也不等于回到初始状态。只有把对照组
+    // （不绑核）甩开 15% 才值得改——最坏情况退回现状，不会像 1.478 那样
+    // 「投出一组更慢的，还照着用到底」。
+    if (bestIdx > 0 && perTok[0] > 0 && perTok[bestIdx] > perTok[0] * 0.85) {
+        LOGI("绑核投票：最快也只比不绑核快 %.0f%%，不到 15%%，保持不绑核（%d 线程）",
+             (perTok[0] - perTok[bestIdx]) * 100.0 / perTok[0], cands[0].threads);
+        bestIdx = 0;
+        best = perTok[0];
+    }
+
     const auto& win = cands[bestIdx];
     g_affinity.decided = true;
     g_affinity.pinned = !win.cpus.empty();
@@ -687,8 +720,11 @@ static void akVoteAffinity(LlamaInstance* inst) {
     // 投票期间也走 decodeExplicit，采样表里混进了四组配置的落点——清掉，
     // 否则第一轮的「CPU 落点」会是一锅粥。
     akResetPlacement();
-    LOGI("绑核结论：%s（%.0f ms/token，约 %.1f tok/s）。这是本进程的最终配置，重建上下文也照用",
-         win.label.c_str(), best, best > 0 ? 1000.0 / best : 0.0);
+    // 结论里带上「相对不绑核快多少」：绝对值看不出"这值不值得绑"，
+    // 倍数才是判据（1.00 附近说明这机器根本没必要绑）。
+    const double speedup = (perTok[0] > 0 && best > 0) ? perTok[0] / best : 1.0;
+    LOGI("绑核结论：%s（%.0f ms/token，约 %.1f tok/s，是不绑核的 %.2f 倍）。这是本进程的最终配置，重建上下文也照用",
+         win.label.c_str(), best, best > 0 ? 1000.0 / best : 0.0, speedup);
 }
 
 // ---- 落点观测：证明「绑了没有 / 绑对没有」 ----------------------------------
