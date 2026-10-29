@@ -193,6 +193,7 @@ import com.example.agentkit.tools.TodoWriteTool
 import com.example.agentkit.core.capability.shellCapabilitySnapshot
 import com.example.agentkit.automation.screenCapabilitySnapshot
 import com.example.agentkit.core.terminal.TerminalSessionPool
+import com.example.agentkit.core.terminal.backend.SshBackendProvider
 import com.example.agentkit.core.terminal.backend.TerminalBackendFactory
 import com.example.agentkit.core.terminal.backend.createTerminalBackendFactory
 import com.example.agentkit.tools.ClipboardTool

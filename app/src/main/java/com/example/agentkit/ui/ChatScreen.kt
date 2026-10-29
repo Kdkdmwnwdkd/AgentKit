@@ -130,6 +130,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.agentkit.core.ModelProfile
+import com.example.agentkit.core.PromptItem
 import com.example.agentkit.core.TokenUsage
 import com.example.agentkit.core.llm.ProviderCatalog
 import java.util.Locale

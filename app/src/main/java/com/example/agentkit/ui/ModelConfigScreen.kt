@@ -298,6 +298,38 @@ fun ModelConfigScreen(vm: ChatViewModel, onBack: () -> Unit) {
                             AkTextButton(text = "导入配置", onClick = { showQrImport = true })
                         }
                     }
+
+                    // —— W-RT7：费用下钻（当前会话按模型归属；参考价，随各家调价可能滞后）——
+                    val drill = remember(config) { vm.costDrillDown() }
+                    if (drill.isNotEmpty()) {
+                        AkGroup(
+                            title = "费用参考（当前会话）",
+                            description = "按各模型官网牌价估算，单位美元；价格调整可能滞后，量级为准",
+                            paddedContent = true
+                        ) {
+                            drill.forEach { mc ->
+                                val costText = mc.costUsd?.let { " ≈ $%.4f".format(it) } ?: "（价格未知，未计入合计）"
+                                Text(
+                                    text = buildString {
+                                        append(mc.modelId)
+                                        append("：入 ${mc.promptTokens} / 出 ${mc.completionTokens} tokens")
+                                        append(costText)
+                                    },
+                                    style = machineSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            val total = com.example.agentkit.core.llm.ModelPricing.totalUsd(drill)
+                            if (total != null) {
+                                Spacer(Modifier.height(AgentSpacing.space2))
+                                Text(
+                                    text = "合计 ≈ $%.4f".format(total),
+                                    style = MaterialTheme.typography.labelLarge,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                            }
+                        }
+                    }
                 }
 
                 1 -> LocalModelsTab(vm = vm)
@@ -2416,38 +2448,6 @@ private fun PromptTab(config: com.example.agentkit.skill.ModelConfig) {
             style = machineSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
-    }
-
-    // —— W-RT7：费用下钻（当前会话按模型归属；参考价，随各家调价可能滞后）——
-    val drill = remember(config) { vm.costDrillDown() }
-    if (drill.isNotEmpty()) {
-        AkGroup(
-            title = "费用参考（当前会话）",
-            description = "按各模型官网牌价估算，单位美元；价格调整可能滞后，量级为准",
-            paddedContent = true
-        ) {
-            drill.forEach { mc ->
-                val costText = mc.costUsd?.let { " ≈ $%.4f".format(it) } ?: "（价格未知，未计入合计）"
-                Text(
-                    text = buildString {
-                        append(mc.modelId)
-                        append("：入 ${mc.promptTokens} / 出 ${mc.completionTokens} tokens")
-                        append(costText)
-                    },
-                    style = machineSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-            val total = com.example.agentkit.core.llm.ModelPricing.totalUsd(drill)
-            if (total != null) {
-                Spacer(Modifier.height(AgentSpacing.space2))
-                Text(
-                    text = "合计 ≈ $%.4f".format(total),
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-            }
-        }
     }
 }
 
