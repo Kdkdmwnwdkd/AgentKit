@@ -89,6 +89,7 @@ import com.example.agentkit.core.llm.local.GgufModelStore
 import com.example.agentkit.core.llm.local.GpuMode
 import com.example.agentkit.core.llm.local.LlamaJni
 import com.example.agentkit.core.llm.local.LocalDeviceRules
+import com.example.agentkit.runtime.wrapLocalLlm
 import com.example.agentkit.core.llm.local.LocalLlamaClient
 import com.example.agentkit.core.llm.local.LocalLlamaEngine
 import com.example.agentkit.core.llm.local.LocalLlamaSetting
@@ -1905,7 +1906,9 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
      */
     private val providerManager = ProviderManager().apply {
         registerProvider("local-llama") { cfg ->
-            LocalLlamaClient(LocalLlamaEngine, localSetting, modelStore, cfg)
+            // 运行层（Runtime）：包一层生命周期壳——使用心跳 + 在途计数 + 空闲自动卸载。
+            // 推理本体零改动；空闲释放后下一轮 ensureModelLoaded 自动重载。
+            wrapLocalLlm(LocalLlamaClient(LocalLlamaEngine, localSetting, modelStore, cfg))
         }
     }
 
