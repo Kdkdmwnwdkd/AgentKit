@@ -93,6 +93,21 @@ has "$JNI" "cparams.n_ubatch = std::min<uint32_t>(cparams.n_batch" '物理批跟
 has "$MEMORY" "setting.safeMode = true" '纯 CPU 推理崩溃时开安全模式'
 has "$SCREEN" "安全模式" '设置页能看见也能关掉'
 has "$PARSER" "fun shouldEnableSafeMode" '判定做成纯函数（可断言）'
+has "$PARSER" "val reason: String = \"\"" '解析器认识 reason（C++ 异常那条）'
+has "$PARSER" "原因：\$why" '用户能直接看到原因，不用去翻文件'
+
+echo "== 静态：W-87 —— 让推理库自己说话 =="
+# ggml 的输出默认只走 stderr，Android 上 fd 2 指向 /dev/null。不接过来，
+# 「GGML_ASSERT / 分配失败」这些最有用的话永远到不了用户眼前。
+has "$JNI" "llama_log_set" 'ggml 日志接进运行日志'
+has "$JNI" "GGML_LOG_LEVEL_ERROR" '按级别过滤（不能把 INFO 全灌进来）'
+has "$JNI" "installLlamaLogging" '只装一次（call_once）'
+has "$JNI" "std::set_terminate" '接住未捕获的 C++ 异常'
+has "$JNI" "ak_crash_dump_now" 'terminate 时也写现场'
+has "$JNI" "ak_rss_kb" 'prefill 能量到进程内存'
+has "$CPP" "signal=0 (TERMINATE)" 'terminate 现场有独立标记'
+has "$CPP" "ak_crash_reason" '理由能记进现场'
+has "$CPP" "writeCrashFile" '两条死亡路径共用同一个写盘函数'
 echo "== 静态：W-86 —— 崩完之后还看得见、带得走 =="
 # 五连崩那几次，用户贴过来的日志全是启动段（崩溃捕获已安装 / 设备画像 / WebView 已就绪），
 # 一行推理记录都没有。不是没记，是内存缓冲随进程死了，而 UI 只认缓冲。
@@ -159,6 +174,20 @@ static int stageOf(const char* s) {
 int main(int argc, char** argv) {
     if (argc < 6) return 2;
     const char* dir = argv[1];
+
+    // W-87：不走信号的死亡路径（std::terminate）。同一份现场文件必须能被写出，
+    // 而且要带上 reason —— 那是推理库自己说的话，比信号编号有用得多。
+    if (!strcmp(argv[2], "TERMINATE")) {
+        ak_crash_install(dir);
+        ak_crash_context("qwen2.5-3b-instruct-q4_k_m.gguf", 2048, 4, 0);
+        ak_stage_set(AK_STAGE_PREFILL);
+        ak_crash_reason("failed to allocate KV cache");
+        ak_crash_dump_now();
+        // 顺手验 RSS 读取：返回负数说明 /proc/self/status 没读到，日志里就永远是空。
+        printf("%ld 0\n", ak_rss_kb());
+        return 0;
+    }
+
     const int stage = stageOf(argv[2]);
     const int gpu   = atoi(argv[3]);
     const int ctx   = atoi(argv[4]);
@@ -267,6 +296,29 @@ CPP
             # ⑤ 别把 stderr 接到父进程：父进程的 stdout 还得能读。
             [ "$OUT" = "1 11" ] && pass 'stderr 重定向没影响父进程输出（工具链还能拿到结果）' \
                 || fail '父进程输出被 stderr 重定向污染了'
+
+            # ——— C. W-87：不走信号的死亡（std::terminate）+ RSS 读数 ———
+            #     前五次闪退全是 SIGABRT 且日志空白，只测信号路径等于没测「异常」这条。
+            rm -f "$F"
+            OUT3="$("$W/t" "$W" TERMINATE 0 2048 6 2>/dev/null)"
+            if [ -f "$F" ]; then
+                grep -q "signal=0 (TERMINATE)" "$F" && pass 'terminate 现场写成 signal=0 (TERMINATE)' \
+                    || fail 'terminate 现场的信号标记不对'
+                grep -q "reason=failed to allocate KV cache" "$F" \
+                    && pass 'reason 行原样落盘（推理库自己说的话）' \
+                    || fail 'reason 行没写进现场'
+                grep -q "stage=PREFILL" "$F" && pass 'terminate 现场也带阶段' \
+                    || fail 'terminate 现场没有阶段'
+            else
+                fail 'terminate 路径没有生成现场文件'
+            fi
+            # 第一列是 ak_rss_kb()：必须 > 0，否则 prefill 那行 RSS 永远是空的。
+            RSS2="$(printf '%s' "$OUT3" | awk '{print $1}')"
+            if [ -n "$RSS2" ] && [ "$RSS2" -gt 0 ] 2>/dev/null; then
+                pass "ak_rss_kb 读到了真实数字（$RSS2 KB）"
+            else
+                fail "ak_rss_kb 没读到内存：'$RSS2'"
+            fi
         fi
         rm -rf "$W"
     fi

@@ -35,7 +35,16 @@ data class NativeCrash(
      */
     val rssKb: Int = 0,
     /** 崩溃瞬间的虚拟地址空间（KB，VmSize）；读不到时为 0。 */
-    val vmKb: Int = 0
+    val vmKb: Int = 0,
+    /**
+     * 「不是信号打死的」理由，目前只有一类：没被接住的 C++ 异常。
+     *
+     * 有值时 `signal` 恒为 0（`native-crash.cpp` 里写的是 `signal=0 (TERMINATE)`）。
+     * 这条信息的分量比信号编号大得多——它是推理库自己说的话，比如
+     * `failed to allocate KV cache` 或 `unknown model architecture`，
+     * 而信号编号只能告诉我们「它死了」。
+     */
+    val reason: String = ""
 ) {
     /** 崩的时候是不是在用 GPU。这是「要不要自动关掉 GPU」的唯一判据。 */
     val gpuInvolved: Boolean get() = gpuLayers > 0
@@ -105,7 +114,8 @@ object NativeCrashParser {
             model = map["model"] ?: "?",
             vulkanBuilt = map["vulkan_built"] == "1",
             rssKb = memValue(text, "VmRSS:"),
-            vmKb = memValue(text, "VmSize:")
+            vmKb = memValue(text, "VmSize:"),
+            reason = map["reason"] ?: ""
         )
     }
 
@@ -149,10 +159,25 @@ object NativeCrashParser {
         return rest.takeWhile { it.isDigit() }.toIntOrNull() ?: 0
     }
 
+    /**
+     * 把 `reason=` 搓成一句能塞进界面的短话。
+     *
+     * 截断是必须的：C++ 的 what() 可能带整条路径甚至整段模板报错，设置页那行红字
+     * 只能放一句。完整的原文在崩溃文件和诊断包里，这里只负责「一眼看出是哪一类」。
+     */
+    private fun shortReason(crash: NativeCrash, max: Int = 60): String {
+        val r = crash.reason.trim().replace('\n', ' ')
+        if (r.isEmpty()) return ""
+        return if (r.length <= max) r else r.take(max) + "…"
+    }
+
     /** 给用户看的一句话（设置页 + 日志共用，措辞保持一致）。 */
-    fun describe(crash: NativeCrash): String =
-        "上次在「${crash.stageLabel}」阶段崩溃（${crash.signalName}，" +
-            "GPU ${crash.gpuLayers} 层 / 上下文 ${crash.ctx}），已自动关闭 GPU 加速"
+    fun describe(crash: NativeCrash): String {
+        val why = shortReason(crash)
+        val tail = if (why.isEmpty()) "" else "，原因：$why"
+        return "上次在「${crash.stageLabel}」阶段崩溃（${crash.signalName}，" +
+            "GPU ${crash.gpuLayers} 层 / 上下文 ${crash.ctx}）$tail，已自动关闭 GPU 加速"
+    }
 
     /**
      * 纯 CPU 推理崩溃时给用户看的一句话（安全模式那条）。
@@ -164,7 +189,9 @@ object NativeCrashParser {
         val mem = if (crash.rssKb > 0) {
             "，崩溃时占用 ${crash.rssKb / 1024} MB 内存"
         } else ""
+        val why = shortReason(crash)
+        val tail = if (why.isEmpty()) "" else "，原因：$why"
         return "上次在「${crash.stageLabel}」阶段被系统终止（${crash.signalName}，" +
-            "上下文 ${crash.ctx}${mem}），已开启安全模式：上下文 2048、批 64"
+            "上下文 ${crash.ctx}${mem}）$tail，已开启安全模式：上下文 2048、批 64"
     }
 }

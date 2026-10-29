@@ -57,6 +57,15 @@ volatile sig_atomic_t g_threads = 0;
 volatile sig_atomic_t g_gpuLayers = 0;
 volatile sig_atomic_t g_hasVulkan = 0;
 
+/**
+ * 「非信号」死亡理由（多半是没接住的 C++ 异常）。
+ *
+ * 写作顺序有讲究：**先把字符串写完，最后才置标志位**。处理器只认标志位，
+ * 这样它绝不会读到写了一半的字符串（单写者、单读者，无需锁）。
+ */
+char g_reason[192] = {0};
+volatile sig_atomic_t g_hasReason = 0;
+
 /* ------------------------- async-signal-safe 小工具 ------------------------- */
 
 /** 把无符号整数写成十进制，返回写入后的指针。不用 snprintf（非异步信号安全）。 */
@@ -161,6 +170,28 @@ const char* stageName(int stage) {
 }
 
 /**
+ * 把拼好的现场写盘。
+ *
+ * 抽出来是因为有两条路要写同一份：信号处理器（在信号上下文里），和
+ * std::terminate（还没收到信号，但马上就会 abort）。两份格式必须一致，
+ * 否则 Kotlin 侧的解析器要认两种文件——那正是最容易长出来的第二套真相。
+ */
+void writeCrashFile(const char* buf, size_t len) {
+    if (!g_path[0] || !buf || len == 0) return;
+    const int fd = ::open(g_path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    if (fd < 0) return;
+    size_t off = 0;
+    // write 可能短写，循环写完；失败就放弃，别在崩溃路径上较劲。
+    while (off < len) {
+        const ssize_t n = ::write(fd, buf + off, len - off);
+        if (n <= 0) break;
+        off += static_cast<size_t>(n);
+    }
+    ::fsync(fd);
+    ::close(fd);
+}
+
+/**
  * 信号处理器本体。
  *
  * 只做三件事：拼一段定长文本 → 同步写盘 → 让进程照常死。
@@ -198,25 +229,18 @@ void crashHandler(int sig, siginfo_t* info, void* /*ctx*/) {
     p = putStr(p, end, "model=");
     p = putStr(p, end, g_model[0] ? g_model : "?");
     if (p < end) *p++ = '\n';
+    // 有「非信号理由」就带上：std::terminate 会先记理由再 abort，
+    // 于是同一个进程会走两遍写盘（先 terminate、后 SIGABRT）——不带上就丢了。
+    if (g_hasReason && g_reason[0]) {
+        p = putStr(p, end, "reason=");
+        p = putStr(p, end, g_reason);
+        if (p < end) *p++ = '\n';
+    }
     // 放在最后：内存快照要读 procfs，耗时比前面几行大，别让它挤掉上面的关键字段。
     p = putMemSnapshot(p, end);
     *p = '\0';
 
-    if (g_path[0]) {
-        const int fd = ::open(g_path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
-        if (fd >= 0) {
-            const size_t len = static_cast<size_t>(p - buf);
-            size_t off = 0;
-            // write 可能短写，循环写完；失败就放弃，别在崩溃路径上较劲。
-            while (off < len) {
-                const ssize_t n = ::write(fd, buf + off, len - off);
-                if (n <= 0) break;
-                off += static_cast<size_t>(n);
-            }
-            ::fsync(fd);
-            ::close(fd);
-        }
-    }
+    writeCrashFile(buf, static_cast<size_t>(p - buf));
 
     // 交还系统：重发信号让默认处理生效（Android 由此生成 tombstone / 重启应用）。
     ::raise(sig);
@@ -237,6 +261,68 @@ void ak_crash_context(const char* modelName, int nCtx, int nThreads, int gpuLaye
     g_ctx = nCtx;
     g_threads = nThreads;
     g_gpuLayers = gpuLayers;
+}
+
+long ak_rss_kb() {
+    const int fd = ::open("/proc/self/status", O_RDONLY);
+    if (fd < 0) return -1;
+    char buf[4096];
+    const ssize_t got = ::read(fd, buf, sizeof(buf) - 1);
+    ::close(fd);
+    if (got <= 0) return -1;
+    buf[got] = '\0';
+
+    // 这里不在信号上下文里，可以用普通字符串函数。
+    const char* at = strstr(buf, "\nVmRSS:");
+    if (!at) return -1;
+    at += 7;  // 跳过 "\nVmRSS:"
+    while (*at == ' ' || *at == '\t') ++at;
+    long v = 0;
+    bool any = false;
+    while (*at >= '0' && *at <= '9') {
+        v = v * 10 + (*at - '0');
+        ++at;
+        any = true;
+    }
+    return any ? v : -1;
+}
+
+void ak_crash_reason(const char* why) {
+    if (!why) return;
+    size_t i = 0;
+    for (; why[i] && i < sizeof(g_reason) - 1; ++i) g_reason[i] = why[i];
+    g_reason[i] = '\0';
+    g_hasReason = 1;  // 字符串写完再置位，见声明处的注释
+}
+
+void ak_crash_dump_now() {
+    char buf[kBufSize];
+    char* end = buf + sizeof(buf) - 1;
+    char* p = buf;
+
+    p = putStr(p, end, "kind=native-crash\n");
+    // 信号写 0：表示「不是信号打死的，是我们自己判定要死」。Kotlin 侧据此
+    // 走「C++ 异常」那条解释，而不是去分析 si_code。
+    p = putStr(p, end, "signal=0 (TERMINATE)\n");
+    p = putStr(p, end, "stage=");
+    p = putStr(p, end, stageName(static_cast<int>(g_stage)));
+    if (p < end) *p++ = '\n';
+    p = putIntLine(p, end, "gpu_layers", static_cast<long>(g_gpuLayers));
+    p = putIntLine(p, end, "ctx", static_cast<long>(g_ctx));
+    p = putIntLine(p, end, "threads", static_cast<long>(g_threads));
+    p = putIntLine(p, end, "vulkan_built", static_cast<long>(g_hasVulkan));
+    p = putStr(p, end, "model=");
+    p = putStr(p, end, g_model[0] ? g_model : "?");
+    if (p < end) *p++ = '\n';
+    if (g_hasReason && g_reason[0]) {
+        p = putStr(p, end, "reason=");
+        p = putStr(p, end, g_reason);
+        if (p < end) *p++ = '\n';
+    }
+    p = putMemSnapshot(p, end);
+    *p = '\0';
+
+    writeCrashFile(buf, static_cast<size_t>(p - buf));
 }
 
 /* ================================ JNI 入口 ================================ */

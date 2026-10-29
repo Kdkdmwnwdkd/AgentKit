@@ -14,6 +14,7 @@
 #include <unistd.h>
 #include <atomic>
 #include <chrono>
+#include <exception>
 #include <cstdarg>
 #include <cstdio>
 #include <deque>
@@ -134,6 +135,85 @@ void diagPrintf(int prio, const char* fmt, ...) {
 
 #define LOGI(...) diagPrintf(ANDROID_LOG_INFO, __VA_ARGS__)
 #define LOGE(...) diagPrintf(ANDROID_LOG_ERROR, __VA_ARGS__)
+
+/**
+ * 把 llama.cpp / ggml 自己的日志接进「运行日志」。
+ *
+ * **这是「闪退且日志空白」的另一半原因。** 这两层的输出默认只走 stderr，
+ * 而 Android 的 App 进程在 zygote 里 fd 2 就指向 /dev/null 了 ——
+ * ggml 在 abort 前明明说了话（`GGML_ASSERT(...) failed`、`failed to allocate`、
+ * `unknown model architecture`），我们一个字都收不到。
+ *
+ * 分级刻意收窄：
+ *  - ERROR / WARN：全收。这类行一出现就基本等于「这就是死因」；
+ *  - CONT（续行）：只在上一条是 ERROR/WARN 时收，否则会把长表格拆散；
+ *  - INFO / DEBUG：一律丢。decode 期间每批都有一行图构建信息，全转进来会把
+ *    80 行的环形缓冲冲干净，反而埋掉真正有用的那几行。
+ *    （细节仍然照抄一份进 native-stderr.txt，需要时按文件看。）
+ */
+void akLlamaLog(ggml_log_level level, const char* text, void* /*user*/) {
+    if (!text || !*text) return;
+    // thread_local：prefill 用多线程，续行标志必须按线程分，混用会串行。
+    static thread_local bool prevNotable = false;
+    const bool isErr = (level == GGML_LOG_LEVEL_ERROR);
+    const bool isWarn = (level == GGML_LOG_LEVEL_WARN);
+    const bool isCont = (level == GGML_LOG_LEVEL_CONT);
+    const bool emit = isErr || isWarn || (isCont && prevNotable);
+    prevNotable = isErr || isWarn;
+    if (!emit) return;
+
+    // 去掉行尾换行：日志页是逐行渲染的，带 '\n' 会多出一行空白。
+    char line[256];
+    size_t n = 0;
+    for (; text[n] && n < sizeof(line) - 1; ++n) line[n] = text[n];
+    while (n > 0 && (line[n - 1] == '\n' || line[n - 1] == '\r')) --n;
+    line[n] = '\0';
+    if (n == 0) return;
+    if (isErr) LOGE("[ggml] %s", line);
+    else LOGI("[ggml] %s", line);
+}
+
+/**
+ * 未捕获的 C++ 异常 → std::terminate → abort() → SIGABRT，**一行日志都不留**。
+ *
+ * llama.cpp 内部大量 `throw std::runtime_error(...)`（分配失败、架构不认、形状
+ * 不合法）。这些异常穿过 JNI 边界没人接，就变成「闪退 + 日志空白」——和「被系统
+ * 杀掉」在用户侧完全同形。装一个 terminate 处理器，至少把 what() 留下来。
+ *
+ * 刻意绕开 LOGE：terminate 可能发生在正持有 diagMu 的线程里，走日志回路有死锁
+ * 风险。直接写 stderr（已被接进 native-stderr.txt）最稳。
+ */
+static void akTerminate() {
+    char msg[192];
+    const char* what = "std::terminate（无活动异常）";
+    if (auto e = std::current_exception()) {
+        try {
+            std::rethrow_exception(e);
+        } catch (const std::exception& ex) {
+            snprintf(msg, sizeof(msg), "未捕获的 C++ 异常: %s", ex.what());
+            what = msg;
+        } catch (...) {
+            what = "未捕获的 C++ 异常（非 std::exception）";
+        }
+    }
+    fprintf(stderr, "[terminate] %s\n", what);
+    fflush(stderr);
+    ak_crash_reason(what);
+    // 先把现场写一份：随后的 abort() 会再走一遍信号处理器（它会把 reason 一起带上）。
+    ak_crash_dump_now();
+    abort();
+}
+
+/**
+ * 装一次就够（进程级）。llama_log_set 是全局的，重复设只会重复覆盖。
+ */
+void installLlamaLogging() {
+    static std::once_flag once;
+    std::call_once(once, [] {
+        llama_log_set(akLlamaLog, nullptr);
+        std::set_terminate(akTerminate);
+    });
+}
 
 /**
  * 安全模式：压物理批 + 由 Kotlin 侧同时压上下文，专门对付「prefill 阶段 OOM」。
@@ -452,9 +532,15 @@ bool decodeFrom(LlamaInstance* inst, std::vector<llama_token>& tokens, size_t fr
         // 同时给 tok/s —— 3B Q4 在手机 CPU 上 prefill 十几 tok/s 属正常，个位数就是异常。
         const long long spent = nowMs() - startedAt;
         const size_t done = i + chunk;
-        LOGI("prefill 进度：%zu / %zu token，%lld ms（%.1f tok/s）",
+        // RSS 一起打：三次真机闪退都崩在 prefill，而我们手上连「当时占了多少内存」
+        // 都没有。孤立的一个数字说服力有限，一串数字可以——它涨得快不快，
+        // 「算不动」和「装不下」在日志里就是两种形状。
+        char rssBuf[32] = {0};
+        const long rssKb = ak_rss_kb();
+        if (rssKb > 0) snprintf(rssBuf, sizeof(rssBuf), "，RSS %ld MB", rssKb / 1024);
+        LOGI("prefill 进度：%zu / %zu token，%lld ms（%.1f tok/s）%s",
              done, tokens.size(), spent,
-             spent > 0 ? done * 1000.0 / static_cast<double>(spent) : 0.0);
+             spent > 0 ? done * 1000.0 / static_cast<double>(spent) : 0.0, rssBuf);
     }
     return true;
 }
@@ -579,6 +665,11 @@ Java_com_example_agentkit_core_llm_local_LlamaJni_nativeInit(
     jint nCtx, jint nThreads, jint nGpuLayers) {
     std::string path = jstringToStd(env, modelPath);
     LOGI("nativeInit: %s ctx=%d threads=%d gpu=%d", path.c_str(), nCtx, nThreads, nGpuLayers);
+
+    // 第一件事：把 ggml 的日志接过来、把 std::terminate 接住。
+    // 必须在任何 llama_* 调用之前——装载期就会抛异常（架构不认、文件损坏），
+    // 那正是我们最需要 what() 的时候。
+    installLlamaLogging();
 
     // ggml 时间基准与 f16 查找表初始化（进程级，仅一次；CPU 后端由静态注册表自动注册）
     static std::once_flag backendOnce;

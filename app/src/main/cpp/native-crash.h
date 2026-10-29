@@ -36,6 +36,29 @@ void ak_stage_set(int stage);
 void ak_crash_context(const char* modelName, int nCtx, int nThreads, int gpuLayers);
 
 /**
+ * 当前进程的常驻内存（KB）。读不到返回 -1。
+ *
+ * 用途：prefill 每算完一块就打一行 RSS。崩溃前那几行连起来看，是不是一路顶到
+ * 天花板一目了然——这比事后从崩溃现场读一个孤立的 VmRSS 更有说服力：孤立的
+ * 数字没法自证「它在涨」，一串数字可以。
+ */
+long ak_rss_kb(void);
+
+/**
+ * 记一条「不是信号打死的」死亡理由（典型是没被接住的 C++ 异常）。
+ *
+ * llama.cpp / ggml 内部大量 `throw std::runtime_error("failed to allocate ...")`，
+ * 一旦穿过 JNI 边界没人接，就是 std::terminate → abort() → SIGABRT，日志全空。
+ * 理由存在固定数组里，信号处理器会把它一起写进现场，不会被随后的 abort 覆盖掉。
+ */
+void ak_crash_reason(const char* why);
+
+/**
+ * 立刻按「信号崩溃」的同一套格式写现场（供 std::terminate 这种还没收到信号的路径用）。
+ */
+void ak_crash_dump_now(void);
+
+/**
  * 安装崩溃捕获，崩溃文件写到 `dir/native-crash.txt`。
  *
  * 从 JNI 入口里抽出来，是为了能在主机上直接跑一遍（fork → raise(SIGSEGV) →
