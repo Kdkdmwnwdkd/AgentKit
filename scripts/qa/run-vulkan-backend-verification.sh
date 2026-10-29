@@ -85,7 +85,11 @@ has "集显也计入 GPU" "$CPP" "GGML_BACKEND_DEVICE_TYPE_IGPU"
 
 echo "== 静态：装载路径不许再写死 0 层 =="
 
-has "层数由规则层给" "$CLIENT" "engine.acquire(file.absolutePath, setting.nCtx, setting.nThreads, gpu.layers)"
+# 注意 ctx 用的是**压过的** nCtx，不是 setting.nCtx：
+# GPU 开启时上下文要被压到 4096（显存和权重共用，装不下就闪退，见 W-84）。
+# 这条以前写的是 setting.nCtx，W-84 一改就红了——断言要盯语义，不要盯字面。
+has "层数由规则层给" "$CLIENT" "engine.acquire(file.absolutePath, nCtx, setting.nThreads, gpu.layers)"
+has "GPU 开启时上下文先压到安全值" "$CLIENT" "LocalDeviceRules.capCtxForGpu(setting.nCtx, gpu.layers)"
 has "两个前提分开判" "$CLIENT" "LlamaJni.gpuBackendAvailable"
 has "没画像就退回 CPU" "$CLIENT" "设备画像尚未采集完成"
 # GPU 装载失败必须能退回 CPU，且留下原因。少了这条，一台驱动有问题的机器会

@@ -153,15 +153,29 @@ fi
 
 echo "== 行为：Kotlin 解析与判定（真编真跑） =="
 
+# 编译器的找法要和 CI 对齐：CI 在 `Prepare kotlinc shim` 步骤里造了一个
+# `/tmp/kotlinc/bin/kotlinc`（Gradle 缓存里的 embeddable 编译器 + 自己补 -classpath），
+# **没有加进 PATH**。只查 `command -v kotlinc` 在 CI 上必然落空——
+# 而落空时如果按 0 累加，就又是一次安静的假绿（见 W-83 笔记）。
 KOTLINC=""
-command -v kotlinc >/dev/null 2>&1 && KOTLINC="$(command -v kotlinc)"
+if command -v kotlinc >/dev/null 2>&1; then
+    KOTLINC="$(command -v kotlinc)"
+elif [ -x /tmp/kotlinc/bin/kotlinc ]; then
+    KOTLINC="/tmp/kotlinc/bin/kotlinc"
+elif [ -x "$HOME/.sdkman/candidates/kotlin/current/bin/kotlinc" ]; then
+    KOTLINC="$HOME/.sdkman/candidates/kotlin/current/bin/kotlinc"
+elif [ -x /opt/kotlinc/bin/kotlinc ]; then
+    KOTLINC="/opt/kotlinc/bin/kotlinc"
+fi
 STDLIB=""
 for cand in \
+    "${KOTLIN_STDLIB:-}" \
+    "/tmp/kotlinc/lib/kotlin-stdlib.jar" \
     "$HOME/.sdkman/candidates/kotlin/current/lib/kotlin-stdlib.jar" \
     "/tmp/khome/lib/kotlin-stdlib.jar" \
     "/usr/share/kotlin/lib/kotlin-stdlib.jar" \
     "$(dirname "$(dirname "$KOTLINC")")/lib/kotlin-stdlib.jar"; do
-    [ -f "$cand" ] && { STDLIB="$cand"; break; }
+    [ -n "$cand" ] && [ -f "$cand" ] && { STDLIB="$cand"; break; }
 done
 
 if [ -z "$KOTLINC" ] || [ -z "$STDLIB" ]; then
