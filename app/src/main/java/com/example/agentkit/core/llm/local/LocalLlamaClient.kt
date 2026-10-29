@@ -128,7 +128,10 @@ class LocalLlamaClient(
 
         // 资源档位：机型画像 → 档位参数的落点（AUTO 跟机走且只减不增，锁档按表直取）。
         // 画像在 resolveGpuPlan 里已经算过一次，这里复用探测缓存，代价是零。
-        val deviceAdvice = LocalDeviceRules.advise(AndroidDeviceProbe.cachedProfile)
+        // 画像可空（启动早期未采完）：空就传 null，resolve 自己回退 unprobed——
+        // 2026-10-30 修：与 run 483 同类的可空撞非空编译错，藏在这里的第二处调用点。
+        val deviceAdvice = AndroidDeviceProbe.cachedProfile
+            ?.let { LocalDeviceRules.advise(it) }
         val rPlan = ResourcePlanRules.resolve(setting.resourceTierLock, deviceAdvice)
         val planCtx = rPlan.capContext(setting.nCtx)
         val planThreads = rPlan.effectiveThreads(setting.nThreads)

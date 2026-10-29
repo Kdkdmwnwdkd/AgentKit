@@ -71,7 +71,9 @@ has "客户端读档位" "$CLIENT" "ResourcePlanRules.resolve(setting.resourceTi
 # 2026-10-29 修（run 483 编译红）：cachedProfile 是可空类型，
 # 直接当非空传给 advise 就是一个真编译错（CI 上挂的就是它，
 # 桩编译的规则层查不出接线层的类型错）。
-has "客户端画像可空防护" "$CLIENT" "cachedProfile?.let { LocalDeviceRules.advise(it) }"
+# 2026-10-30 二次修：同样的错还藏在 LocalLlamaClient 的第二处调用点
+# （档位落点处直传 cachedProfile）——本断言钉的就是这里，可空调用。
+has "客户端画像可空防护" "$CLIENT" "?.let { LocalDeviceRules.advise(it) }"
 has "画像缺失不套档位" "$PLAN" "fun unprobed(): ResourcePlan"
 has "装载用档位线程" "$CLIENT" "engine.acquire(file.absolutePath, nCtx, planThreads, gpu.layers)"
 has "CPU 回退也守档位" "$CLIENT" "engine.acquire(file.absolutePath, cpuCtx, planThreads, 0)"
