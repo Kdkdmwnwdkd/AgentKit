@@ -438,17 +438,24 @@ fun ChatScreen(
                 state = listState,
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(
-                    horizontal = AgentSpacing.space4,
-                    vertical = AgentSpacing.space2
+                    // W-96：左右 16 → 20dp。16dp 时头像与气泡两头的圆角几乎贴住屏幕边，
+                    // 一屏看下来像「被塞满」；20dp 也是 Dimens 里给页面左右定的默认值。
+                    start = AgentSpacing.space5,
+                    end = AgentSpacing.space5,
+                    // W-96：底部只留 8dp 时，最后一条气泡的圆角几乎贴着输入栏上沿；
+                    // 12dp 让「消息区到此为止」这件事看得出来。
+                    top = AgentSpacing.space2,
+                    bottom = AgentSpacing.space3
                 )
             ) {
-                // 同发送者间距 8dp、切换 16dp（§6.2 通用）；不用 spacedBy——间距随发送者变化
+                // 同发送者间距 8dp、换手 24dp（W-96 从 16dp 提起）：
+                // 3:1 的间距差就是「分组」的全部视觉线索，不用分隔线
                 itemsIndexed(messages) { index, item ->
                     val prev = messages.getOrNull(index - 1)
                     val gap = when {
                         prev == null -> 0.dp
                         sameSender(prev, item) -> AgentSpacing.space2
-                        else -> AgentSpacing.space4
+                        else -> TURN_GAP
                     }
                     Column(Modifier.padding(top = gap)) {
                         MessageRow(
@@ -570,7 +577,22 @@ fun ChatScreen(
                 // 流式草稿气泡（重新生成/发送时 T01 增量实时填入，尚未落库）
                 if (streamDraft != null) {
                     item(key = "stream-draft") {
-                        MessageRow(UiItem.Assistant(streamDraft.orEmpty(), reasoning = reasoningDraft), streaming = true)
+                        // W-96：草稿这一条原来是**零间距**——它不走上面的 itemsIndexed，
+                        // 自然也没拿到 gap，于是「正在生成的回答」直接压在提问的下边沿上。
+                        // 落库后又按 20dp 排，气泡会往下跳一格。两头都难看，所以这里
+                        // 用与落库完全同口径的 gap：生成时什么样，定稿就是什么样。
+                        val prev = messages.lastOrNull()
+                        val draftGap = when {
+                            prev == null -> 0.dp
+                            prev is UiItem.Assistant -> AgentSpacing.space2
+                            else -> TURN_GAP
+                        }
+                        Column(Modifier.padding(top = draftGap)) {
+                            MessageRow(
+                                UiItem.Assistant(streamDraft.orEmpty(), reasoning = reasoningDraft),
+                                streaming = true
+                            )
+                        }
                     }
                 }
             }
@@ -1257,7 +1279,9 @@ private fun AssistantActions(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(start = 36.dp, top = 2.dp),
+            // W-96：气泡圆角 18dp，操作栏贴 2dp 会「啃」进圆角的弧线上；
+            // 4dp 让这一行落在气泡下沿之外，视觉上是"附在消息下面"而不是"压在消息身上"
+            .padding(start = 36.dp, top = 4.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         if (showCopy) {
@@ -1359,7 +1383,10 @@ private fun UserMessageActions(
     onReask: () -> Unit
 ) {
     Row(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            // W-96：与 AssistantActions 同口径——两侧操作行都从气泡下沿退 4dp
+            .padding(top = 4.dp),
         horizontalArrangement = Arrangement.End,
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -3101,3 +3128,14 @@ private const val ONBOARDING_KEY = "seen"
 
 /** 相邻两条消息间隔超过这个值才重画时间戳（v4）。 */
 private const val TIME_GAP_MS = 5 * 60 * 1000L
+
+/**
+ * 换手间距（W-96）：一问一答之间的留白。
+ *
+ * 原来是 space4（16dp）——手机上 16dp 只有两个字宽，一屏里两个圆角块上下叠着，
+ * 读起来像「一整段文字被切成两半」。真机视频里用户的原话是「完全挨在一起」。
+ *
+ * 现在 24dp，与同侧 8dp 形成 3:1：靠间距差本身就能读出「换人了」，
+ * 不需要再画分隔线或加时间戳。24dp 仍能让 393dp 宽的屏一屏放下 4~5 轮。
+ */
+private val TURN_GAP = AgentSpacing.space6
