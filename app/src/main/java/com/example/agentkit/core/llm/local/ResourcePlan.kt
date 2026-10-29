@@ -91,16 +91,42 @@ object ResourcePlanRules {
     }
 
     /**
-     * 最终落档：锁档优先，AUTO 按画像。
+     * 最终落档：锁档优先，AUTO 按画像；画像缺失时 AUTO 不猜档。
      *
      * 自动档与锁档的行为差异是故意的：
      *   - AUTO 是「替不懂参数的用户兜底」，只减不增（[ResourcePlan.effectiveThreads] /
      *     [ResourcePlan.capContext] 里的 min）——用户明确调高的值不该被悄悄改掉；
      *   - 锁档是「用户点名要这档」，按表直取，E 档就是 4 线程，不含糊。
+     *
+     * 为什么 advice 收成可空：[com.example.agentkit.core.llm.local.LocalLlamaClient]
+     * 里的画像来自 [com.example.agentkit.core.llm.local.AndroidDeviceProbe.cachedProfile]，
+     * 启动早期采集还没跑完时是 null。AUTO 的语义是「跟机型走」，
+     * 机型未知就不能拍脑袋猜档——猜成省电会把旗舰压到 4 线程，
+     * 猜成性能又失去兜底意义。此时退回 [unprobed]：不套任何档位，
+     * 参数完全按用户设置走（画像一到，下一轮装载自然落回正常档）。
+     * 锁档不受影响：用户点名要这档，不需要画像。
+     *
+     * 实现注意：**只此一个函数**。可空/非空两个重载在 JVM 里擦除后签名相同
+     * （run 483 编译红的教训），收成单参数可空版，调用方传非空值照常工作。
      */
-    fun resolve(lock: String?, advice: DeviceAdvice): ResourcePlan {
+    fun resolve(lock: String?, advice: DeviceAdvice?): ResourcePlan {
         val locked = ResourceTier.parse(lock)
-        val tier = locked ?: autoTier(advice)
+        val tier = locked ?: advice?.let(::autoTier) ?: return unprobed()
         return specFor(tier)
     }
+
+    /**
+     * 画像未采集完成时的「不套档位」：线程与上下文上限给到无穷大，
+     * [ResourcePlan.effectiveThreads] / [ResourcePlan.capContext] 的 min
+     * 天然等于用户设置原样生效（只减不增的空集）。
+     * 调用方的日志只在档位真的压了参数时才打——这一档永远不会压，
+     * 所以「未套档位」不会给用户任何噪音；这是有意的。
+     */
+    fun unprobed(): ResourcePlan = ResourcePlan(
+        tier = ResourceTier.PERFORMANCE,
+        threads = Int.MAX_VALUE,
+        contextCap = Int.MAX_VALUE,
+        suggestSafeMode = false,
+        reason = "设备画像尚未采集完成，本轮不套档位（参数按你的设置原样生效）",
+    )
 }
