@@ -11,9 +11,14 @@
 #include <android/log.h>
 #include <dlfcn.h>
 #include <fcntl.h>
+#include <dirent.h>
+#include <sched.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #include <atomic>
 #include <chrono>
+#include <cstdlib>
+#include <cstring>
 #include <exception>
 #include <cstdarg>
 #include <cstdio>
@@ -416,6 +421,346 @@ void applyThreads(LlamaInstance* inst) {
     llama_set_n_threads(inst->ctx, inst->n_threads, inst->n_threads);
 }
 
+// ---------------------------------------------------------------------------
+// W-95：线程绑核（参考 IRIDIS 的 CpuTopology / TierProfiles）
+//
+// 为什么需要它：真机 2026-10-29 16:08 生成 9.6 tok/s，而 3B Q4_K_M 权重 2007 MB
+// 每 token 读一遍 → 有效内存带宽只有 19.2 GB/s。这颗 8 Gen 2 是 1×X3 + 4×A715 + 3×A510，
+// 单核 A715 能吃到 12~15 GB/s，单核 A510 只有 6~8 GB/s —— **3 小核 + 1 大核 ≈ 19~21 GB/s**，
+// 和实测严丝合缝。也就是说：4 个线程被调度器摊到小核上去了。
+//
+// 这和 W-90「核多反而慢」是同一件事的两面：不是线程越多越好，而是**线程必须落在同一类核上**。
+// ggml 的 barrier 是 spin-wait，每层都要等最慢那个线程，一混簇就整层被拖住。
+//
+// IRIDIS 的做法是「按簇生成默认值 + 用户可改」（省电 1 线程/慢簇、高 = 性能核−2 线程/nice −4）。
+// 我们不抄死值，抄它的两件事：
+//   1. 拓扑从 /sys 读（不猜机型）—— IRIDIS 的 CpuTopology 也是这么来的；
+//   2. 让设备自己投票（它在 GPU 档上踩过「三档看着一样」的坑，因为没有量化验证）。
+//
+// 投票放在冷启动预热之后：那时 2GB 权重刚被触碰过、页表已热，测出来的差异才是「算力差异」，
+// 而不是「谁先吃缺页」。四组候选、每组 2 个 token，总成本约 1~2 秒，只付一次。
+// ---------------------------------------------------------------------------
+
+struct AkCluster {
+    std::vector<int> cpus;
+    long maxKhz = 0;
+};
+
+// 落点采样的实现在后面（用到 dirent / stat 解析，和投票逻辑分开更好读），
+// 这里先声明：投票结束要清一次采样表。
+static void akResetPlacement();
+
+/** 从 /sys 读拓扑：按最高频率聚簇，升序（慢簇在前）。读不到就退化成「单簇 + 0 频率」。 */
+static std::vector<AkCluster> akCpuTopology() {
+    std::vector<AkCluster> out;
+    for (int cpu = 0; cpu < 32; cpu++) {
+        char dir[96];
+        snprintf(dir, sizeof(dir), "/sys/devices/system/cpu/cpu%d", cpu);
+        struct stat st {};
+        if (stat(dir, &st) != 0) continue;
+
+        char path[160];
+        snprintf(path, sizeof(path), "%s/cpufreq/cpuinfo_max_freq", dir);
+        long khz = 0;
+        if (FILE* f = fopen(path, "r")) {
+            if (fscanf(f, "%ld", &khz) != 1) khz = 0;
+            fclose(f);
+        }
+        // 同簇频率通常完全相同；给 5% 容差，防止个别机型报 2801000 / 2800000 被拆成两簇。
+        bool merged = false;
+        if (khz > 0) {
+            for (auto& c : out) {
+                if (c.maxKhz > 0 && std::labs(khz - c.maxKhz) * 20 <= c.maxKhz) {
+                    c.cpus.push_back(cpu);
+                    merged = true;
+                    break;
+                }
+            }
+        }
+        if (!merged) out.push_back(AkCluster{{cpu}, khz});
+    }
+    if (out.empty()) out.push_back(AkCluster{{0}, 0});
+    std::sort(out.begin(), out.end(),
+              [](const AkCluster& a, const AkCluster& b) { return a.maxKhz < b.maxKhz; });
+    return out;
+}
+
+/** 本机实际存在的核数（present 形如 "0-7"）。用于「不绑核」时恢复默认掩码。 */
+static int akCpuCount() {
+    FILE* f = fopen("/sys/devices/system/cpu/present", "r");
+    if (!f) return static_cast<int>(sysconf(_SC_NPROCESSORS_CONF));
+    char buf[64] = {0};
+    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+    fclose(f);
+    if (n == 0) return 8;
+    int lo = 0, hi = 0;
+    if (sscanf(buf, "%d-%d", &lo, &hi) == 2) return hi + 1;
+    if (sscanf(buf, "%d", &lo) == 1) return lo + 1;
+    return 8;
+}
+
+/** 把当前线程钉到 [cpus]（空 = 放开全部）。worker 线程由 llama_decode 内部 pthread_create
+ *  创建，**继承创建者的掩码**，所以只需要管调用 decode 的那个线程。 */
+static bool akApplyAffinity(const std::vector<int>& cpus) {
+    cpu_set_t set;
+    CPU_ZERO(&set);
+    if (cpus.empty()) {
+        const int n = std::min(akCpuCount(), static_cast<int>(CPU_SETSIZE));
+        for (int i = 0; i < n; i++) CPU_SET(i, &set);
+    } else {
+        for (int c : cpus) {
+            if (c >= 0 && c < CPU_SETSIZE) CPU_SET(c, &set);
+        }
+    }
+    return sched_setaffinity(0, sizeof(set), &set) == 0;
+}
+
+/** 进程级绑定结论：一旦定下来，后续每次 nativeInit（自愈重建）直接照用，不再投票。 */
+struct AkAffinityPlan {
+    bool decided = false;
+    bool pinned = false;
+    std::vector<int> cpus;
+    int threads = 0;
+    std::string label;
+};
+static AkAffinityPlan g_affinity;
+
+/** 每轮 decode 前对齐掩码；掩码没变就一次 syscall 都不发。 */
+static void akEnsureAffinity() {
+    static thread_local bool applied = false;
+    static thread_local std::vector<int> appliedCpus;
+    if (!g_affinity.decided) return;
+    if (applied && appliedCpus == g_affinity.cpus) return;
+    applied = akApplyAffinity(g_affinity.cpus);
+    if (applied) appliedCpus = g_affinity.cpus;
+}
+
+/** "3-6" 这种紧凑写法，日志里比 "3,4,5,6" 好读。 */
+static std::string akCpuRange(const std::vector<int>& cpus) {
+    if (cpus.empty()) return "全部";
+    if (cpus.size() == 1) return "cpu" + std::to_string(cpus[0]);
+    bool contiguous = true;
+    for (size_t i = 1; i < cpus.size(); i++) {
+        if (cpus[i] != cpus[i - 1] + 1) { contiguous = false; break; }
+    }
+    if (contiguous) {
+        return "cpu" + std::to_string(cpus.front()) + "-" + std::to_string(cpus.back());
+    }
+    std::string s;
+    for (size_t i = 0; i < cpus.size(); i++) {
+        if (i) s += ",";
+        s += std::to_string(cpus[i]);
+    }
+    return "cpu" + s;
+}
+
+/**
+ * 候选配置。四条足够覆盖这支芯片族的全部合理选择：
+ *   ① 不绑（= 现在的行为，当对照组）
+ *   ② 最大簇单独（1+4+3 上是 4×A715，线程 = 簇大小）
+ *   ③ 全性能核（大簇 + prime，线程 = 核数，但不超过 6——IRIDIS 高档同口径）
+ *   ④ 全性能核减 2（IRIDIS 的「核数 − 2」：他们实测 9B 在 8 Elite 上 6 线程最快）
+ */
+struct AkCandidate {
+    std::vector<int> cpus;
+    int threads = 0;
+    std::string label;
+};
+
+static std::vector<AkCandidate> akCandidates(int fallbackThreads) {
+    std::vector<AkCandidate> out;
+    out.push_back(AkCandidate{{}, fallbackThreads, "不绑核/" + std::to_string(fallbackThreads) + "线程"});
+
+    const auto topo = akCpuTopology();
+    if (topo.size() >= 2) {
+        // 「大簇」按**核数**取，不按频率取：1+4+3 上频率最高的是 1 个 X3，
+        // 但真正该测的是 4 个 A715（按频率取会得到一个单核候选，等于没测）。
+        size_t bigIdx = 0;
+        for (size_t i = 1; i < topo.size(); i++) {
+            if (topo[i].cpus.size() > topo[bigIdx].cpus.size()) bigIdx = i;
+        }
+        const auto& big = topo[bigIdx].cpus;
+        if (big.size() >= 2) {
+            out.push_back(AkCandidate{big, static_cast<int>(big.size()),
+                                      akCpuRange(big) + "/" + std::to_string(big.size()) + "线程"});
+        }
+        // 全性能核 = 除最慢簇之外的全部（1+4+3 上是 A715×4 + X3×1）
+        std::vector<int> perf;
+        for (size_t i = 1; i < topo.size(); i++) {
+            perf.insert(perf.end(), topo[i].cpus.begin(), topo[i].cpus.end());
+        }
+        std::sort(perf.begin(), perf.end());
+        if (perf.size() >= 2 && perf != big) {
+            const int t = std::min<int>(6, static_cast<int>(perf.size()));
+            out.push_back(AkCandidate{perf, t, akCpuRange(perf) + "/" + std::to_string(t) + "线程"});
+            if (t - 2 >= 2) {
+                out.push_back(AkCandidate{perf, t - 2,
+                                          akCpuRange(perf) + "/" + std::to_string(t - 2) + "线程"});
+            }
+        }
+    }
+    return out;
+}
+
+/**
+ * 投票：每组跑 2 个 token，取「每 token 毫秒数」最小的那组。
+ *
+ * 为什么是 2 个而不是更多：单 token 的抖动（调度、频率、中断）能到 ±20%，
+ * 2 个 token 取均值已经能把「19 GB/s 对 30 GB/s」这种 50% 的差分辨出来，
+ * 再多就纯属让用户多等。前一组的结果不会污染后一组 —— 每组前后都 resetKv。
+ */
+static void akVoteAffinity(LlamaInstance* inst) {
+    if (!inst || !inst->ctx) return;
+    const llama_token bos = llama_vocab_bos(inst->vocab);
+    if (bos < 0) {
+        LOGI("绑核投票跳过：模型没有 bos token，测不出稳定的单 token 耗时");
+        g_affinity.decided = true;
+        return;
+    }
+    const auto cands = akCandidates(inst->n_threads);
+    std::vector<double> perTok(cands.size(), -1.0);
+    int bestIdx = -1;
+    double best = 0;
+
+    for (size_t i = 0; i < cands.size(); i++) {
+        const auto& c = cands[i];
+        // 空 cpus = 「不绑核」= 放开全部。**必须显式放开**：上一组绑过核之后掩码还留着，
+        // 不放开的话这一组测到的其实是上一组的配置，对照就白做了。
+        if (!akApplyAffinity(c.cpus)) {
+            LOGE("绑核投票：%s 设不上去（sched_setaffinity 失败），跳过", c.label.c_str());
+            continue;
+        }
+        inst->n_threads = c.threads;
+        applyThreads(inst);
+        resetKv(inst, nullptr);
+
+        const long long t0 = nowMs();
+        bool ok = decodeExplicit(inst, &bos, 1, 0);
+        if (ok) {
+            resetKv(inst, nullptr);
+            ok = decodeExplicit(inst, &bos, 1, 0);
+        }
+        const long long dt = nowMs() - t0;
+        resetKv(inst, nullptr);
+        if (!ok) {
+            LOGE("绑核投票：%s decode 失败，跳过", c.label.c_str());
+            continue;
+        }
+        perTok[i] = dt / 2.0;
+        if (bestIdx < 0 || perTok[i] < best) {
+            best = perTok[i];
+            bestIdx = static_cast<int>(i);
+        }
+    }
+
+    // 无论成败都把 KV 清干净：投票时写的 token 不属于任何一轮对话。
+    resetKv(inst, "绑核投票结束");
+
+    if (bestIdx < 0) {
+        // 一个都测不出来：保持原样，别把线程数改坏。
+        g_affinity.decided = true;
+        g_affinity.pinned = false;
+        g_affinity.threads = inst->n_threads;
+        LOGW("绑核投票：全部候选都失败，保持不绑核");
+        return;
+    }
+
+    for (size_t i = 0; i < cands.size(); i++) {
+        if (perTok[i] < 0) {
+            LOGI("绑核投票：%s → 不可用", cands[i].label.c_str());
+        } else {
+            LOGI("绑核投票：%s → %.0f ms/token（%.1f tok/s）%s",
+                 cands[i].label.c_str(), perTok[i],
+                 perTok[i] > 0 ? 1000.0 / perTok[i] : 0.0,
+                 static_cast<int>(i) == bestIdx ? " ← 选它" : "");
+        }
+    }
+
+    const auto& win = cands[bestIdx];
+    g_affinity.decided = true;
+    g_affinity.pinned = !win.cpus.empty();
+    g_affinity.cpus = win.cpus;
+    g_affinity.threads = win.threads;
+    g_affinity.label = win.label;
+    inst->n_threads = win.threads;
+    applyThreads(inst);
+    // 投票期间也走 decodeExplicit，采样表里混进了四组配置的落点——清掉，
+    // 否则第一轮的「CPU 落点」会是一锅粥。
+    akResetPlacement();
+    LOGI("绑核结论：%s（%.0f ms/token，约 %.1f tok/s）。这是本进程的最终配置，重建上下文也照用",
+         win.label.c_str(), best, best > 0 ? 1000.0 / best : 0.0);
+}
+
+// ---- 落点观测：证明「绑了没有 / 绑对没有」 ----------------------------------
+//
+// 光有配置不算证据：sched_setaffinity 可能返回 0 而调度器照样把线程挪走（cgroup cpuset
+// 与 uclamp 都会插一脚）。所以直接从 /proc/self/task/*/stat 读每个线程**实际**在哪个核上，
+// 每轮结束时打一行分布。没有这一行，「绑核生效了」只是我们自己的说法。
+static std::mutex g_placeMu;
+static int g_cpuHits[32] = {0};
+
+static void akSamplePlacement() {
+    DIR* d = opendir("/proc/self/task");
+    if (!d) return;
+    int hits[32] = {0};
+    struct dirent* e;
+    while ((e = readdir(d)) != nullptr) {
+        if (e->d_name[0] < '0' || e->d_name[0] > '9') continue;
+        char path[96];
+        snprintf(path, sizeof(path), "/proc/self/task/%s/stat", e->d_name);
+        FILE* f = fopen(path, "r");
+        if (!f) continue;
+        char buf[512];
+        const size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+        fclose(f);
+        buf[n] = 0;
+        // comm 字段可能含空格和括号，从最后一个 ')' 之后开始数字段最安全。
+        char* rp = strrchr(buf, ')');
+        if (!rp) continue;
+        char* p = rp + 2;   // 跳过 ") "
+        int field = 3;      // ')' 之后第一个字段是 state（第 3 字段）
+        int proc = -1;
+        while (*p && field <= 39) {
+            while (*p == ' ') p++;
+            if (field == 39) {
+                proc = atoi(p);
+                break;
+            }
+            while (*p && *p != ' ') p++;
+            field++;
+        }
+        if (proc >= 0 && proc < 32) hits[proc]++;
+    }
+    closedir(d);
+
+    std::lock_guard<std::mutex> lk(g_placeMu);
+    for (int i = 0; i < 32; i++) g_cpuHits[i] += hits[i];
+}
+
+/** 打一行「线程实际落点」并清零。tag 说明这是哪一轮。 */
+static void akLogPlacement(const char* tag) {
+    std::lock_guard<std::mutex> lk(g_placeMu);
+    int total = 0;
+    for (int i = 0; i < 32; i++) total += g_cpuHits[i];
+    if (total == 0) return;
+    std::string s;
+    for (int i = 0; i < 32; i++) {
+        if (!g_cpuHits[i]) continue;
+        char b[32];
+        snprintf(b, sizeof(b), "cpu%d %d%%", i, g_cpuHits[i] * 100 / total);
+        if (!s.empty()) s += " ";
+        s += b;
+    }
+    LOGI("%s CPU 落点：%s（采样 %d 次）", tag, s.c_str(), total);
+    for (int i = 0; i < 32; i++) g_cpuHits[i] = 0;
+}
+
+/** 丢弃已累计的采样（投票阶段的落点不属于任何一轮对话，不该混进第一轮统计）。 */
+static void akResetPlacement() {
+    std::lock_guard<std::mutex> lk(g_placeMu);
+    for (int i = 0; i < 32; i++) g_cpuHits[i] = 0;
+}
+
 /**
  * prefill 单块上限（token）。
  *
@@ -529,6 +874,10 @@ bool decodeExplicit(LlamaInstance* inst, const llama_token* toks, int32_t n, lla
     // 两个阶段的崩溃原因不同：prefill 看重算力与大 batch，生成看重显存带宽。
     ak_stage_set(batch.n_tokens > 1 ? AK_STAGE_PREFILL : AK_STAGE_DECODE);
 
+    // W-95：掩码必须在这里对齐，而且要在 llama_decode **之前**——ggml 的 worker 线程是
+    // decode 内部 pthread_create 出来的，创建那一刻继承调用线程的掩码。晚一步就等于没绑。
+    akEnsureAffinity();
+
     // llama.cpp 的后端实现大量 `throw std::runtime_error(...)`（Vulkan 那一侧尤其多，
     // 例如 vk::Device::createComputePipeline 拿到 VK_ERROR_UNKNOWN 就直接 throw）。
     // 异常穿过 JNI 边界 = terminate = SIGABRT = 用户那句「又闪退了」，而且什么都留不下。
@@ -574,6 +923,13 @@ bool decodeExplicit(LlamaInstance* inst, const llama_token* toks, int32_t n, lla
              rc, n, static_cast<int>(pos0), inst->kvTokens.size(),
              static_cast<int>(llama_n_ctx(inst->ctx)));
         return false;
+    }
+    // W-95：每 8 次 decode 采一次落点。一次采样要 open/read 每个线程的 stat，
+    // 逐 token 采会把 CPU 抢去读 /proc；8 次一次足够看清分布，开销约 0.1% 时间。
+    static thread_local int sampleGate = 0;
+    if (++sampleGate >= 8) {
+        sampleGate = 0;
+        akSamplePlacement();
     }
     return true;
 }
@@ -1020,6 +1376,37 @@ Java_com_example_agentkit_core_llm_local_LlamaJni_nativeInit(
             }
         } else {
             LOGI("模型没有 bos token，跳过冷启动预热");
+        }
+    }
+
+    // ---- W-95：绑核投票（只在第一次加载时做，代价约 1~2 秒） ----
+    //
+    // 放在冷启动预热**之后**：那时 2GB 权重刚被完整读过一遍、页表是热的，测出来的差
+    // 才是「大核 vs 小核」，而不是「谁先吃缺页」（1.446 那 13 秒的教训）。
+    //
+    // 投票会把 KV 清空（每组之间必须清，否则位置错乱），所以投票完要补一次 bos 记账，
+    // 否则首轮 prefill 从 pos0 重新开始——功能没错，但白丢了 1 个 token 的复用。
+    //
+    // 安全模式跳过：那一档的判据是「内存已经贴顶」，再压 2 秒纯属添乱；而且安全模式
+    // 本来就跑在降级路径上，性能不是这时候该操心的事。
+    if (!g_affinity.decided && !g_safeMode.load()) {
+        akVoteAffinity(inst);
+    } else if (g_affinity.decided) {
+        // 自愈重建（rebuildContext）之后走这里：结论是进程级的，直接照用，不再投票。
+        inst->n_threads = g_affinity.threads > 0 ? g_affinity.threads : inst->n_threads;
+        applyThreads(inst);
+        LOGI("绑核沿用上次结论：%s（线程 %d）", g_affinity.label.c_str(), inst->n_threads);
+    }
+    if (g_affinity.decided) {
+        const llama_token bos = llama_vocab_bos(inst->vocab);
+        if (bos >= 0 && inst->kvTokens.empty()) {
+            const long long t0 = nowMs();
+            if (decodeExplicit(inst, &bos, 1, 0)) {
+                inst->kvTokens.push_back(bos);
+                LOGI("投票后补记 bos：1 token / %lld ms（线程 %d）", nowMs() - t0, inst->n_threads);
+            } else {
+                resetKv(inst, "投票后补记 bos 失败");
+            }
         }
     }
     return reinterpret_cast<jlong>(inst);
@@ -1510,6 +1897,9 @@ Java_com_example_agentkit_core_llm_local_LlamaJni_nativeGenerate(
     llama_sampler_free(smpl);
     LOGI("生成完成：%d token / %zu 字符，%lld ms（%.1f tok/s）",
          produced, out.size(), genMs, genMs > 0 ? produced * 1000.0 / genMs : 0.0);
+    // W-95：这一轮线程**实际**落在哪些核上。绑核配置是一回事，调度器听不听是另一回事
+    // （cgroup cpuset / uclamp 都会插手），只有这一行能给出证据。
+    akLogPlacement("本轮");
     // 空输出是「界面没反应」的唯一来源，必须留下可判读的原因：
     // 首个 token 就是结束符 → 模板/prompt 问题；produced>0 但 0 字符 → token 全被
     // 当成特殊 token 丢掉了（词表不匹配）；produced=0 且没命中结束符 → 循环没进。

@@ -237,6 +237,34 @@ expect "运行时自报是否带 -O 优化" "$JNI" '__OPTIMIZE__'
 # 「这一版什么时候出的」要按北京时间显示，不能拿 CI 的 UTC 糊弄
 expect "关于页构建时间固定北京时间" "$ABOUT" 'Asia/Shanghai'
 
+echo "[11/11] 绑核（W-95，参考 IRIDIS 的 CpuTopology + TierProfiles）"
+# 真机 16:08 生成 9.6 tok/s，而 2007 MB 权重每 token 读一遍 → 19.2 GB/s，
+# 正好是「3 小核 + 1 大核」的带宽（单核 A510 只有 6~8 GB/s，A715 有 12~15 GB/s）。
+# 也就是 4 个线程被调度器摊到小核上去了——和 W-90「核多反而慢」是同一件事的两面。
+expect "拓扑从 /sys 读（不写死机型）" "$JNI" 'cpuinfo_max_freq'
+expect "有候选配置投票" "$JNI" 'akVoteAffinity'
+expect "投票结果进 Run 日志" "$JNI" '绑核投票：'
+expect "绑核用 sched_setaffinity" "$JNI" 'sched_setaffinity\(0,'
+# 掩码必须在 llama_decode **之前**设置：worker 线程是 decode 内部 pthread_create 的，
+# 创建那一刻继承调用线程的掩码，晚一步等于没绑。
+_bind=$(grep -n 'akEnsureAffinity();' "$JNI" | head -1 | cut -d: -f1)
+_dec=$(grep -n 'rc = llama_decode(inst->ctx, batch);' "$JNI" | head -1 | cut -d: -f1)
+if [ -n "$_bind" ] && [ -n "$_dec" ] && [ "$_bind" -lt "$_dec" ]; then
+  ok "掩码在 llama_decode 之前设置（worker 才会继承）"
+else
+  bad "掩码在 llama_decode 之前设置（绑定行=${_bind:-?} decode 行=${_dec:-?}）"
+fi
+# 「不绑核」这一组必须显式放开掩码，否则测到的还是上一组的配置，对照就白做了。
+expect "对照组显式放开掩码" "$JNI" 'if \(!akApplyAffinity\(c\.cpus\)\)'
+# 光有配置不算证据：调度器可能照旧挪线程（cgroup cpuset / uclamp）。
+expect "统计线程实际落点" "$JNI" '/proc/self/task'
+expect "落点写进 Run 日志" "$JNI" 'CPU 落点：'
+# 结论是进程级的：自愈重建不能再投一次票（否则每次重建多等 2 秒，还可能换个配置）。
+expect "绑核结论是进程级" "$JNI" 'g_affinity\.decided'
+expect "重建时沿用结论" "$JNI" '绑核沿用上次结论'
+# 安全模式那档的判据是「内存贴顶」，不该再加 2 秒投票。
+expect "安全模式跳过投票" "$JNI" '!g_affinity\.decided && !g_safeMode\.load\(\)'
+
 echo
 if [ "$fail" -eq 0 ]; then
   # 汇总行要带 FAIL=0：run-all.sh 用它识别「跑完且全过」（RESULT PASS 不认）
