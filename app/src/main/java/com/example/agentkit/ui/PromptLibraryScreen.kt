@@ -247,6 +247,78 @@ fun PromptPickerDialog(
     }
 }
 
+/**
+ * W-RT4：提示词填槽弹窗——选中带 `{{变量}}` 的提示词时，先按名收集变量、
+ * 逐个填值，确认后把成品交给 [onConfirm]（替换/插入由调用方决定）。
+ *
+ * 交互规则（与 fillPromptVariables 的纯函数语义对齐）：
+ *  - 任一变量为空白时确认键禁用——不做半填，半成品不进输入框；
+ *  - 变量多于 4 个时弹窗内可滚动（模板作者自由度不设上限）。
+ */
+@Composable
+fun PromptFillDialog(
+    item: PromptItem,
+    variables: List<String>,
+    onDismiss: () -> Unit,
+    onConfirm: (String) -> Unit
+) {
+    val values = remember(item.id) { mutableStateOf(variables.associateWith { "" }) }
+    val allFilled = variables.isNotEmpty() && variables.all { values.value[it]?.isNotBlank() == true }
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(AgentSpacing.space5),
+            shape = MaterialTheme.shapes.large,
+            color = MaterialTheme.colorScheme.surface
+        ) {
+            Column(Modifier.padding(AgentSpacing.space4)) {
+                Text(
+                    text = "填写变量：${item.title}",
+                    style = MaterialTheme.typography.titleMedium
+                )
+                Spacer(Modifier.height(AgentSpacing.space2))
+                Column(
+                    Modifier
+                        .heightIn(max = 360.dp)
+                        .verticalScroll(rememberPersistentScrollState())
+                ) {
+                    variables.forEach { name ->
+                        AkTextField(
+                            value = values.value[name].orEmpty(),
+                            onValueChange = { v ->
+                                values.value = values.value + (name to v)
+                            },
+                            label = name,
+                            placeholder = "{{ $name }}",
+                            singleLine = true
+                        )
+                        Spacer(Modifier.height(AgentSpacing.space2))
+                    }
+                }
+                Spacer(Modifier.height(AgentSpacing.space2))
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End
+                ) {
+                    AkTextButton(text = "取消", onClick = onDismiss)
+                    AkTextButton(
+                        text = "填入",
+                        enabled = allFilled,
+                        onClick = {
+                            val result =
+                                com.example.agentkit.core.fillPromptVariables(item.content, values.value)
+                            if (result is com.example.agentkit.core.PromptFillResult.Ok) {
+                                onConfirm(result.content)
+                            }
+                        }
+                    )
+                }
+            }
+        }
+    }
+}
+
 /** 提示词行（管理页与选择器共用）：标题 + 内容预览 + 标签 + 行尾动作。 */
 @Composable
 private fun PromptRow(

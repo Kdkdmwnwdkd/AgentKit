@@ -186,6 +186,8 @@ fun ChatScreen(
     // 功能五（P1-7）：提示词库（快捷指令）——输入栏闪电按钮唤起的选择器数据源
     val prompts by vm.prompts.collectAsStateWithLifecycle()
     var showPromptPicker by remember { mutableStateOf(false) }
+    // W-RT4：待填变量的提示词（非 null 时弹填槽；null = 无流程）
+    var fillPromptItem by remember { mutableStateOf<PromptItem?>(null) }
     val pendingApproval by vm.pendingApproval.collectAsStateWithLifecycle()
     val config by vm.config.collectAsStateWithLifecycle()
     // 功能四（模型快速切换，录屏反馈「保存了好多个模型，要换的时候不给换，
@@ -705,17 +707,35 @@ fun ChatScreen(
     }
 
     // 功能五（P1-7）：快捷指令选择器（点选填入输入框；「管理」进提示词库全功能页）
+    // W-RT4：带 {{变量}} 的提示词先弹填槽，填好再进输入框；无变量的保持原直插路径。
     if (showPromptPicker) {
         PromptPickerDialog(
             prompts = prompts,
             onDismiss = { showPromptPicker = false },
             onPick = { item ->
-                vm.insertPromptIntoInput(item.content)
                 showPromptPicker = false
+                if (com.example.agentkit.core.extractPromptVariables(item.content).isEmpty()) {
+                    vm.insertPromptIntoInput(item.content)
+                } else {
+                    fillPromptItem = item
+                }
             },
             onManage = {
                 showPromptPicker = false
                 onManagePrompts()
+            }
+        )
+    }
+
+    // W-RT4：提示词填槽弹窗（变量收集 → 确认后插入输入框）
+    fillPromptItem?.let { fillItem ->
+        PromptFillDialog(
+            item = fillItem,
+            variables = com.example.agentkit.core.extractPromptVariables(fillItem.content),
+            onDismiss = { fillPromptItem = null },
+            onConfirm = { filled ->
+                vm.insertPromptIntoInput(filled)
+                fillPromptItem = null
             }
         )
     }
