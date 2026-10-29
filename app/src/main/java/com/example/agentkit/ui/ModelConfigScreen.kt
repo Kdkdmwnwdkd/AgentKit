@@ -9,6 +9,7 @@ import android.widget.Toast
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -54,14 +55,17 @@ import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.StarBorder
 import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material.icons.outlined.VisibilityOff
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -100,6 +104,8 @@ import com.example.agentkit.core.llm.LlmProvider
 import com.example.agentkit.core.llm.ProviderCatalog
 import com.example.agentkit.core.llm.RecoveryAction
 import com.example.agentkit.core.llm.ProviderGroup
+import com.example.agentkit.core.qr.ConfigQr
+import com.example.agentkit.core.qr.QrCode
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.agentkit.core.ConfigSanitizer
 import com.example.agentkit.core.DEFAULT_SYSTEM_PROMPT
@@ -147,6 +153,9 @@ fun ModelConfigScreen(vm: ChatViewModel, onBack: () -> Unit) {
     // 功能二：新建档案对话框开关（用户录屏反馈「点＋新增没有任何 visible 反馈」——
     // 旧行为直接静默建副本，新 chip 还被横向滚动条挤到屏外；参照 App 改为先弹命名框）
     var showAdd by rememberSaveable { mutableStateOf(false) }
+    // W-RT8：二维码导入导出（配置分享；负载无 Key，导入只填非敏感字段，保存仍走用户确认）
+    var showQrExport by rememberSaveable { mutableStateOf(false) }
+    var showQrImport by rememberSaveable { mutableStateOf(false) }
 
     val dirty = baseUrl != config.baseUrl || apiKey != config.apiKey ||
         model != config.model || providerId != config.providerId ||
@@ -277,6 +286,18 @@ fun ModelConfigScreen(vm: ChatViewModel, onBack: () -> Unit) {
                         onSave = saveNow,
                         onCancel = onBack
                     )
+
+                    // W-RT8：配置二维码导入导出（负载无 Key——码会被拍照转发，按公开品处理）
+                    AkGroup(
+                        title = "配置二维码",
+                        description = "导出的码不含 Key；导入只填端点与模型，保存前请核对",
+                        paddedContent = true
+                    ) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(AgentSpacing.space3)) {
+                            AkTextButton(text = "导出二维码", onClick = { showQrExport = true })
+                            AkTextButton(text = "导入配置", onClick = { showQrImport = true })
+                        }
+                    }
                 }
 
                 1 -> LocalModelsTab(vm = vm)
@@ -299,6 +320,103 @@ fun ModelConfigScreen(vm: ChatViewModel, onBack: () -> Unit) {
             onConfirm = { vm.addProfile(name.ifBlank { null }); showAdd = false },
             onDismiss = { showAdd = false }
         )
+    }
+
+    // W-RT8：导出弹窗——当前编辑中的端点/模型出码（不含 Key）
+    if (showQrExport) {
+        val profileName = profiles.firstOrNull { it.id == activeProfileId }?.name.orEmpty()
+        val payload = ConfigQr.export(providerId, baseUrl, model, profileName)
+        val matrix = try { QrCode.encode(payload) } catch (_: QrCode.QrTooLongException) { null }
+        AlertDialog(
+            onDismissRequest = { showQrExport = false },
+            title = { Text("配置二维码", style = MaterialTheme.typography.titleMedium) },
+            text = {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    if (matrix != null) {
+                        QrImage(matrix = matrix, modifier = Modifier.size(240.dp))
+                        Spacer(Modifier.height(AgentSpacing.space2))
+                        Text(
+                            text = "端点与模型已编码；不含 Key。对方扫一扫或截图识别即可导入",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    } else {
+                        Text("配置太长，出不了码——请精简端点或模型名")
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showQrExport = false }) { Text("完成") }
+            }
+        )
+    }
+
+    // W-RT8：导入弹窗——粘贴扫码结果，只回填端点/模型/供应商（Key 一律不动，保存走既有确认）
+    if (showQrImport) {
+        var importText by remember { mutableStateOf("") }
+        var importError by remember { mutableStateOf<String?>(null) }
+        AlertDialog(
+            onDismissRequest = { showQrImport = false },
+            title = { Text("导入配置", style = MaterialTheme.typography.titleMedium) },
+            text = {
+                Column {
+                    Text(
+                        text = "粘贴扫码得到的配置文本（agentkit://config 开头）",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(AgentSpacing.space2))
+                    OutlinedTextField(
+                        value = importText,
+                        onValueChange = { importText = it; importError = null },
+                        placeholder = { Text("agentkit://config?...") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    if (importError != null) {
+                        Spacer(Modifier.height(AgentSpacing.space1))
+                        Text(
+                            text = importError ?: "",
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val parsed = ConfigQr.import(importText)
+                    if (parsed == null) {
+                        importError = "格式不对：这不是本 App 的配置码"
+                    } else {
+                        baseUrl = parsed.baseUrl
+                        model = parsed.model
+                        providerId = parsed.providerId
+                        showQrImport = false
+                    }
+                }) { Text("导入") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showQrImport = false }) { Text("取消") }
+            }
+        )
+    }
+}
+
+/** 二维码渲染：模块方阵 → 白底黑块 Canvas（导出弹窗用；静区由外层 padding 提供）。 */
+@Composable
+private fun QrImage(matrix: QrCode.Matrix, modifier: Modifier = Modifier) {
+    Canvas(modifier.background(Color.White, RoundedCornerShape(8.dp)).padding(12.dp)) {
+        val cell = size.width / matrix.size
+        for (r in 0 until matrix.size) for (c in 0 until matrix.size) {
+            if (matrix[r, c]) {
+                drawRect(
+                    color = Color.Black,
+                    topLeft = Offset(c * cell, r * cell),
+                    size = Size(cell, cell)
+                )
+            }
+        }
     }
 }
 
