@@ -30,9 +30,30 @@ object NativeCrashMemory {
         runCatching { crashFile(context).delete() }
 
         if (!NativeCrashParser.shouldDisableGpu(crash)) {
+            // 纯 CPU 崩在推理阶段：关 GPU 没有意义（本来就没开），能动的只剩内存占用。
+            // 这一支是 2026-10-29 真机第二次 SIGABRT 之后加的 —— 上一版只写了
+            // 「与 GPU 无关」就收工，用户下次进来还是同样的参数、同样的崩法。
+            if (NativeCrashParser.shouldEnableSafeMode(crash)) {
+                val note = NativeCrashParser.describeSafeMode(crash)
+                runCatching {
+                    val setting = LocalLlamaSetting(context)
+                    setting.safeMode = true
+                    setting.lastGpuCrashNote = note
+                }
+                // 这里**不**调 LlamaJni.applySafeMode：那会在 Application.onCreate 里
+                // 触发 dlopen，把「启动时不碰 native」这条约定打破。开关由
+                // LocalLlamaClient 在每次装载模型之前推送（见那边的说明）。
+                AgentLogger.e(
+                    "LocalLlama",
+                    "上次运行在「${crash.stageLabel}」阶段崩溃（${crash.signalName}，" +
+                        "GPU ${crash.gpuLayers} 层 / ctx ${crash.ctx} / RSS ${crash.rssKb} KB）" +
+                        "——已开启安全模式（上下文 2048 / 批 64）",
+                )
+                return
+            }
             AgentLogger.w(
                 "LocalLlama",
-                "上次运行被 ${crash.signalName} 终止（${crash.stageLabel}），当时是纯 CPU 运行——与 GPU 无关"
+                "上次运行被 ${crash.signalName} 终止（${crash.stageLabel}），当时是纯 CPU 运行——与 GPU 无关",
             )
             return
         }

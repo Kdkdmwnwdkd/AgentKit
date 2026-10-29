@@ -28,3 +28,7 @@ app/src/debugX86/assets/
 
 # QA 全套 runner 的日志目录（run-all.sh 生成，勿入库）
 qa-logs/
+
+# QA 里 fork 子进程 raise(SIGABRT) 会掉 core dump 在仓库根目录，
+# 别让它们混进来（名字是 core.<pid>，大小几十 MB）。
+core.[0-9]*

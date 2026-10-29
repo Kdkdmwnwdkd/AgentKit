@@ -405,6 +405,27 @@ object LocalDeviceRules {
         if (gpuLayers > 0) nCtx.coerceAtMost(GPU_MAX_CTX) else nCtx
 
     /**
+     * 安全模式下的上下文上限。
+     *
+     * 2048 是「还够一轮正常对话」与「KV 只占几十 MB」的交点：3B 模型 KV 约
+     * 36KB/token，2048 token ≈ 74MB；而 4096 是 148MB，加上 prefill 的中间张量
+     * （按 ubatch 建图，另算几十到几百 MB），在 8GB 机器上就是压死进程的那一档。
+     * 真机 2026-10-29 连续两次 SIGABRT 都发生在 4096 + 256 批的组合上。
+     */
+    const val SAFE_MAX_CTX = 2048
+
+    /**
+     * 本轮真正要交给 native 的上下文长度（安全模式与 GPU 限制叠在一起判）。
+     *
+     * 顺序不能反：先按安全模式压到 2048，再套 GPU 的 4096 上限——两个上限取更严的那个。
+     * 反过来写（先 GPU 再安全模式）结果一样，但读起来会让人以为安全模式只对 CPU 生效。
+     */
+    fun effectiveCtx(nCtx: Int, gpuLayers: Int, safeMode: Boolean): Int {
+        val capped = if (safeMode) nCtx.coerceAtMost(SAFE_MAX_CTX) else nCtx
+        return capCtxForGpu(capped, gpuLayers)
+    }
+
+    /**
      * 综合判断：这台机器该先试哪条路。
      *
      * 规则刻意保守——GPU 默认只对「Vulkan 1.2+ 且 Adreno」打开，Mali 一律先给 CPU。

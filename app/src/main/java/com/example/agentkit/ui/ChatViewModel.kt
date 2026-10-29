@@ -692,6 +692,9 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
      * 初值从磁盘读：崩溃时进程已经死了，这条只能靠 Application 在下次启动时落盘，
      * 这里只负责把它显示出来。用户手动改档位即视为「我知道了」，清空。
      */
+    private val _localSafeMode = MutableStateFlow(localSetting.safeMode)
+    val localSafeMode: StateFlow<Boolean> = _localSafeMode.asStateFlow()
+
     private val _localGpuCrashNote = MutableStateFlow(localSetting.lastGpuCrashNote)
     val localGpuCrashNote: StateFlow<String> = _localGpuCrashNote.asStateFlow()
 
@@ -728,6 +731,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         _localGpuDevices.value = AndroidDeviceProbe.cachedProfile
         // 崩溃说明也可能被 Application 在本次启动写进去（VM 早于它创建时不成立，但重进页面时要对齐）。
         _localGpuCrashNote.value = localSetting.lastGpuCrashNote
+        _localSafeMode.value = localSetting.safeMode
     }
 
     private fun LocalLlamaEngineIsLoaded(): Boolean =
@@ -841,6 +845,23 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
             "LocalLlama",
             if (on) "本地切到 Agent 模式（会注入工具协议，prompt 变长、首字变慢）"
             else "本地切到轻聊档（只发系统提示前几行 + 最近两轮，首字最快）"
+        )
+    }
+
+    /**
+     * 开关安全模式（压上下文 + 压批）。
+     *
+     * 不在这里调 `LlamaJni.applySafeMode`：native 的 n_batch 只在建 context 时读一次，
+     * 由 [com.example.agentkit.core.llm.local.LocalLlamaClient.ensureModelLoaded] 在
+     * 装载前统一推。这里只落盘 + 更新 UI，语义就是「下一条消息生效」。
+     */
+    fun setLocalSafeMode(on: Boolean) {
+        localSetting.safeMode = on
+        _localSafeMode.value = on
+        AgentLogger.i(
+            "LocalLlama",
+            if (on) "安全模式已开启：上下文压到 2048、批压到 64，下一条消息生效"
+            else "安全模式已关闭：恢复设置里的上下文与批大小，下一条消息生效",
         )
     }
 

@@ -24,7 +24,18 @@ data class NativeCrash(
     /** 模型文件名。 */
     val model: String,
     /** 当时包里是否编入了 Vulkan 后端。 */
-    val vulkanBuilt: Boolean
+    val vulkanBuilt: Boolean,
+    /**
+     * 崩溃瞬间的常驻内存（KB，来自 `/proc/self/status` 的 VmRSS）；读不到时为 0。
+     *
+     * 这一项是用来区分「内存不够」和「断言失败」的：
+     * SIGABRT 在 ggml 里几乎只有两种来源 —— 分配器返回空后 abort，或 GGML_ASSERT 失败。
+     * 前者 VmRSS 已经贴到进程上限，后者通常在几百 MB 就停了。
+     * 没有这个数，两种病在文件里长得一模一样。
+     */
+    val rssKb: Int = 0,
+    /** 崩溃瞬间的虚拟地址空间（KB，VmSize）；读不到时为 0。 */
+    val vmKb: Int = 0
 ) {
     /** 崩的时候是不是在用 GPU。这是「要不要自动关掉 GPU」的唯一判据。 */
     val gpuInvolved: Boolean get() = gpuLayers > 0
@@ -84,7 +95,9 @@ object NativeCrashParser {
             ctx = map["ctx"]?.toIntOrNull() ?: 0,
             threads = map["threads"]?.toIntOrNull() ?: 0,
             model = map["model"] ?: "?",
-            vulkanBuilt = map["vulkan_built"] == "1"
+            vulkanBuilt = map["vulkan_built"] == "1",
+            rssKb = memValue(text, "VmRSS:"),
+            vmKb = memValue(text, "VmSize:")
         )
     }
 
@@ -97,8 +110,53 @@ object NativeCrashParser {
      */
     fun shouldDisableGpu(crash: NativeCrash?): Boolean = crash != null && crash.gpuInvolved
 
+    /**
+     * 要不要因为这次崩溃开「安全模式」（压上下文 + 压批）。
+     *
+     * 条件是**纯 CPU 且崩在推理阶段**。这三件事缺一不可：
+     *  - 纯 CPU：GPU 崩溃该关 GPU，不该动用户的内存参数；
+     *  - PREFILL / DECODE：崩在装载/建上下文是模型文件或内存对不上，压批也救不了；
+     *  - 推理阶段意味着「模型装得下、一算就死」——这正是 KV + 中间张量顶爆画像。
+     *
+     * DEVICE_INIT 也排除：那是 Vulkan 初始化，跟批大小无关。
+     */
+    fun shouldEnableSafeMode(crash: NativeCrash?): Boolean {
+        if (crash == null) return false
+        if (crash.gpuInvolved) return false
+        return crash.stage == "PREFILL" || crash.stage == "DECODE"
+    }
+
+    /**
+     * 从现场文本里抠出 `mem=` 那一行中的某个数值（KB）。
+     *
+     * 不放进 map 解析，是因为 mem 行不是 `key=value` 而是
+     * `mem= VmPeak: 1 kB VmSize: 2 kB VmRSS: 3 kB` 这种一段话，
+     * 硬塞进统一解析只会让两边都变难读。找不到就返回 0。
+     */
+    private fun memValue(text: String, key: String): Int {
+        val line = text.lineSequence().firstOrNull { it.startsWith("mem=") } ?: return 0
+        val at = line.indexOf(key)
+        if (at < 0) return 0
+        val rest = line.substring(at + key.length).trimStart()
+        return rest.takeWhile { it.isDigit() }.toIntOrNull() ?: 0
+    }
+
     /** 给用户看的一句话（设置页 + 日志共用，措辞保持一致）。 */
     fun describe(crash: NativeCrash): String =
         "上次在「${crash.stageLabel}」阶段崩溃（${crash.signalName}，" +
             "GPU ${crash.gpuLayers} 层 / 上下文 ${crash.ctx}），已自动关闭 GPU 加速"
+
+    /**
+     * 纯 CPU 推理崩溃时给用户看的一句话（安全模式那条）。
+     *
+     * 措辞刻意不说「内存不足」：我们手里只有 VmRSS，没有「当时机器还剩多少」，
+     * 说死了会在别的机型上变成假结论。所以只陈述事实 + 已做的处理。
+     */
+    fun describeSafeMode(crash: NativeCrash): String {
+        val mem = if (crash.rssKb > 0) {
+            "，崩溃时占用 ${crash.rssKb / 1024} MB 内存"
+        } else ""
+        return "上次在「${crash.stageLabel}」阶段被系统终止（${crash.signalName}，" +
+            "上下文 ${crash.ctx}${mem}），已开启安全模式：上下文 2048、批 64"
+    }
 }

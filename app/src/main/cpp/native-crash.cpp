@@ -22,6 +22,7 @@
 #include <jni.h>
 
 #include <csignal>
+#include <cstdio>
 #include <cstring>
 #include <fcntl.h>
 #include <unistd.h>
@@ -31,7 +32,7 @@
 namespace {
 
 /** 崩溃时最多写这么多字节。够放阶段/模型名/参数，又不至于在 handler 里拼太久。 */
-constexpr size_t kBufSize = 1024;
+constexpr size_t kBufSize = 1536;
 
 /** 独立信号栈大小。64KB 足够跑「拼字符串 + write」，且不会挤占正常栈。 */
 constexpr size_t kAltStackSize = 64 * 1024;
@@ -91,6 +92,50 @@ char* putIntLine(char* p, char* end, const char* key, long v) {
     return p;
 }
 
+/**
+ * 把 `/proc/self/status` 里的三行内存数据抄进现场。
+ *
+ * **为什么非要这个**：2026-10-29 真机连续两次 SIGABRT 崩在 prefill（纯 CPU），
+ * 崩溃文件只告诉我们「崩在 prefill、没开 GPU」——这已经排除了显卡，但分不出
+ * 两种完全不同的病因：
+ *
+ *   - 内存真的不够（权重 1.9GB + prefill 的中间张量顶到上限，malloc 失败；
+ *     ggml 的分配器失败路径直接 abort）→ 该降批、降上下文；
+ *   - 断言失败（形状/位置不合法）→ 降参数没用，得改代码。
+ *
+ * VmRSS 贴着 VmSize / 接近设备可用量，就是前者。这一行数据让下一次崩溃能一句话定性，
+ * 不用再靠猜。读 `/proc/self/status` 用的是 open+read，都在 async-signal-safe 列表里。
+ */
+char* putMemSnapshot(char* p, char* end) {
+    // static：信号栈只有 64KB，handler 里再放 4KB 局部数组要跟别的局部量抢空间。
+    // handler 已先把自身重置为 SIG_DFL，不会重入，static 是安全的。
+    static char sbuf[4096];
+    const int fd = ::open("/proc/self/status", O_RDONLY);
+    if (fd < 0) return putStr(p, end, "mem=?\n");
+    const ssize_t got = ::read(fd, sbuf, sizeof(sbuf) - 1);
+    ::close(fd);
+    if (got <= 0) return putStr(p, end, "mem=?\n");
+    sbuf[got] = '\0';
+
+    p = putStr(p, end, "mem=");
+    const char* keys[] = {"VmPeak:", "VmSize:", "VmRSS:"};
+    for (int k = 0; k < 3; ++k) {
+        const size_t klen = strlen(keys[k]);
+        for (const char* line = sbuf; line && *line;) {
+            const char* eol = strchr(line, '\n');
+            const size_t len = eol ? static_cast<size_t>(eol - line) : strlen(line);
+            if (len > klen && memcmp(line, keys[k], klen) == 0) {
+                p = putStr(p, end, " ");
+                for (size_t i = 0; i < len && p < end; ++i) *p++ = line[i];
+                break;
+            }
+            line = eol ? eol + 1 : nullptr;
+        }
+    }
+    if (p < end) *p++ = '\n';
+    return p;
+}
+
 /** 信号名（写进文件让人一眼看懂，不用去查 11 是哪个）。 */
 const char* signalName(int sig) {
     switch (sig) {
@@ -121,7 +166,7 @@ const char* stageName(int stage) {
  * 只做三件事：拼一段定长文本 → 同步写盘 → 让进程照常死。
  * 任何一步失败都直接跳过，绝不在 handler 里重试或报错（重试=再崩一次）。
  */
-void crashHandler(int sig, siginfo_t* /*info*/, void* /*ctx*/) {
+void crashHandler(int sig, siginfo_t* info, void* /*ctx*/) {
     g_signal = sig;
 
     // 关掉自己：万一 write 过程中又触发信号，避免无限递归。
@@ -147,9 +192,14 @@ void crashHandler(int sig, siginfo_t* /*info*/, void* /*ctx*/) {
     p = putIntLine(p, end, "ctx", static_cast<long>(g_ctx));
     p = putIntLine(p, end, "threads", static_cast<long>(g_threads));
     p = putIntLine(p, end, "vulkan_built", static_cast<long>(g_hasVulkan));
+    // si_code：-6 是 SI_TKILL（自己 abort 自己，典型 ggml 断言），
+    // 1/2 是 SEGV_MAPERR/ACCERR（野指针），0 是 SI_USER（被别的进程 kill）。
+    p = putIntLine(p, end, "sigcode", static_cast<long>(info ? info->si_code : 0));
     p = putStr(p, end, "model=");
     p = putStr(p, end, g_model[0] ? g_model : "?");
     if (p < end) *p++ = '\n';
+    // 放在最后：内存快照要读 procfs，耗时比前面几行大，别让它挤掉上面的关键字段。
+    p = putMemSnapshot(p, end);
     *p = '\0';
 
     if (g_path[0]) {
@@ -212,11 +262,52 @@ Java_com_example_agentkit_core_llm_local_LlamaJni_nativeInstallCrashHandler(
 
 /* ============================ 不依赖 JNI 的安装入口 ============================ */
 
+/**
+ * 把本进程的 stderr 接到 `<crashDir>/native-stderr.txt`。
+ *
+ * **这是抓 SIGABRT 真凶的唯一手段。** ggml / llama.cpp 在断言失败时会先
+ * `fprintf(stderr, "GGML_ASSERT(...) failed")` 再 abort ——那行字就是答案。
+ * 但 Android 的 App 进程在 zygote 里就把 fd 0/1/2 接到 /dev/null 了，
+ * 所以这行字平时哪都去不了：logcat 看不到、我们的 Java 日志也看不到，
+ * 只留下一个「闪退，什么都没有」。
+ *
+ * 用 O_TRUNC：只保留最近一次运行。llama.cpp 装载时会把每个 tensor 都打一遍，
+ * 单次会话几百 KB 到几 MB，按时间戳堆文件没有意义。
+ *
+ * 失败一律静默返回：这是诊断设施，不能因为它装不上就让推理起不来。
+ */
+static void redirectStderr(const char* dir) {
+    char path[512];
+    int n = 0;
+    for (; dir[n] && n < static_cast<int>(sizeof(path)) - 24; ++n) path[n] = dir[n];
+    const char* leaf = "/native-stderr.txt";
+    for (int i = 0; leaf[i] && n < static_cast<int>(sizeof(path)) - 1; ++i) {
+        path[n++] = leaf[i];
+    }
+    path[n] = '\0';
+
+    const int fd = ::open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    if (fd < 0) return;
+    // dup2 之后 fd 2 指向同一个打开的文件，原来的 fd 可以关掉。
+    if (::dup2(fd, STDERR_FILENO) < 0) {
+        ::close(fd);
+        return;
+    }
+    ::close(fd);
+    // C 的 stderr 默认无缓冲，不需要额外 setvbuf；显式设一次是为了防止
+    // 某些 ROM 的 libc 把它设成行缓冲后，崩溃前那行断言留在用户态缓冲里丢掉。
+    ::setvbuf(stderr, nullptr, _IONBF, 0);
+}
+
 // 单独抽出来是为了能在**主机上**真跑一遍：断言里 fork 一个子进程、raise(SIGSEGV)、
 // 再检查文件内容。只断言「源码里有这个字符串」测不出处理器到底装没装上。
 void ak_crash_install(const char* dir) {
     if (g_installed) return;
     if (!dir || !*dir) return;
+
+    // 先接 stderr，再装信号处理器：断言行是在 abort 之前打出来的，
+    // 顺序反了也不丢，但接得越早越能把装载期的日志也收进来。
+    redirectStderr(dir);
 
     // 文件名固定为 native-crash.txt：**只保留最近一次**。
     //

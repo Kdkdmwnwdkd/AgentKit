@@ -135,6 +135,14 @@ void diagPrintf(int prio, const char* fmt, ...) {
 #define LOGI(...) diagPrintf(ANDROID_LOG_INFO, __VA_ARGS__)
 #define LOGE(...) diagPrintf(ANDROID_LOG_ERROR, __VA_ARGS__)
 
+/**
+ * 安全模式：压物理批 + 由 Kotlin 侧同时压上下文，专门对付「prefill 阶段 OOM」。
+ *
+ * 由 `LlamaJni.nativeSetSafeMode()` 在 `nativeInit` **之前**设置，进程级生效；
+ * 库随进程重启而重置，所以 Kotlin 每次启动都要重新设一次。
+ */
+static std::atomic<bool> g_safeMode{false};
+
 /** 一个已加载的本地模型实例。句柄以 jlong 传给 Kotlin。 */
 struct LlamaInstance {
     llama_model* model = nullptr;
@@ -692,10 +700,18 @@ Java_com_example_agentkit_core_llm_local_LlamaJni_nativeInit(
     //   1) 进度粒度 —— 慢设备上 512 token 可能要半分钟，用户盯着空白无从判断死活；
     //   2) 中断粒度 —— 配合 abort 回调后，停止最迟在一个 ubatch 内生效。
     // 256 在「每行日志别太碎」与「别让用户干等」之间取的折中。
-    cparams.n_batch = std::min(nCtx, 256);
-    // 物理批固定 512 以内：ggml 的 kernel 在这个量级上缓存局部性最好，再大只是多占
-    // 计算缓冲。逻辑批（n_batch）可以大于物理批，内部会分趟。
-    cparams.n_ubatch = std::min<uint32_t>(cparams.n_batch, 512u);
+    //
+    // **安全模式把上限定到 64**：prefill 的内存峰值几乎正比于物理批——中间张量是按
+    // ubatch 建图的，3B 模型的 FFN 中间层一个 256 的 ubatch 就要几十 MB。
+    // 真机 2026-10-29：3B Q4 + 纯 CPU 在 prefill 阶段被 SIGABRT 打死两次，
+    // 现场 VmRSS 已贴到进程上限，降批是这个病最直接的对症药。
+    const int batchCap = g_safeMode.load() ? 64 : 256;
+    cparams.n_batch = std::min(nCtx, batchCap);
+    // 物理批跟 batchCap 走，不再写死 512。
+    //
+    // 早先的注释说「固定 512 缓存局部性最好」，但那是**速度**视角；内存视角下
+    // 逻辑批 64、物理批 512，建图仍然按 512 算，等于没降。两处必须同口径。
+    cparams.n_ubatch = std::min<uint32_t>(cparams.n_batch, static_cast<uint32_t>(batchCap));
     // 关掉自带的性能计时：它每次都读时钟计数，纯 CPU 上这部分开销白付。
     cparams.no_perf = true;
     // 中断回调：让 decode 内部（而不只是分块边界）能立刻停下。
@@ -1219,6 +1235,21 @@ Java_com_example_agentkit_core_llm_local_LlamaJni_nativeGenerate(
              produced, firstTok, genBudget, tokens.size(), common, prefillMs);
     }
     return env->NewStringUTF(out.c_str());
+}
+
+/**
+ * 开关安全模式（必须在 nativeInit 之前调用，进程级生效）。
+ *
+ * 单独一个入口而不是往 nativeInit 加参数：nativeInit 的签名是 Kotlin 与 native
+ * 的契约，加参数就得同时改调用链（engine.acquire → LocalLlamaClient），而安全模式
+ * 是「配置层」的东西，跟模型路径无关，混在一个签名里只是噪音。
+ */
+JNIEXPORT void JNICALL
+Java_com_example_agentkit_core_llm_local_LlamaJni_nativeSetSafeMode(
+    JNIEnv* /*env*/, jobject /*thiz*/, jboolean on) {
+    g_safeMode.store(on == JNI_TRUE);
+    LOGI("安全模式：%s（n_batch 上限 %d）", on == JNI_TRUE ? "开" : "关",
+         on == JNI_TRUE ? 64 : 256);
 }
 
 }  // extern "C"

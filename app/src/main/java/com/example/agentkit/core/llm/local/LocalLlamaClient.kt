@@ -99,6 +99,12 @@ class LocalLlamaClient(
         if (!file.isFile) {
             throw LocalInferenceException("本地模型文件缺失：$name（可能已被删除，请重新下载）")
         }
+        // 安全模式是进程级开关，且 n_batch/n_ubatch 在 llama_init_from_model 里就定死了，
+        // 所以必须在 acquire 之前推。放在这里（而不是启动时）有两个原因：
+        //   1) 启动时不 dlopen，App 冷启动不被 .so 拖慢；
+        //   2) 用户在设置页开关安全模式后，「下一条消息」就生效，不用重启。
+        LlamaJni.applySafeMode(setting.safeMode)
+
         val gpu = resolveGpuPlan()
         // 显存保护：GPU 开启时上下文压到安全值。
         //
@@ -106,8 +112,14 @@ class LocalLlamaClient(
         // 进程直接消失（KV 和权重一起把显存顶爆，崩在 native，Java 层一句日志都没有）。
         // 与其让用户「等两分钟然后闪退」，不如用 4096 跑起来——少一点上下文，
         // 换来的是能出字。用户真要长上下文，把 GPU 关掉就是了。
-        val nCtx = LocalDeviceRules.capCtxForGpu(setting.nCtx, gpu.layers)
-        if (nCtx != setting.nCtx) {
+        val nCtx = LocalDeviceRules.effectiveCtx(setting.nCtx, gpu.layers, setting.safeMode)
+        if (setting.safeMode && nCtx != setting.nCtx) {
+            AgentLogger.w(
+                "LocalLlama",
+                "安全模式：上下文限制为 $nCtx（设置里是 ${setting.nCtx}）。" +
+                    "上次在本机纯 CPU 推理时崩溃过，先把负载压下来；稳定后可在「推理参数」里关闭安全模式",
+            )
+        } else if (nCtx != setting.nCtx) {
             AgentLogger.w(
                 "LocalLlama",
                 "GPU 开启时上下文限制为 $nCtx（设置里是 ${setting.nCtx}）：KV 缓存要和权重共用显存，" +
@@ -128,7 +140,9 @@ class LocalLlamaClient(
                 "GPU 装载失败（n_gpu_layers=${gpu.layers}），退回纯 CPU 重试一次；" +
                     "原因见上一行 llama-jni 记录。若反复出现，请在「推理参数 › GPU 加速」里选「关闭」",
             )
-            handle = engine.acquire(file.absolutePath, setting.nCtx, setting.nThreads, 0)
+            // 回退也要守安全模式：GPU 崩了说明余量已经不多，再用满 ctx 只会换个地方崩。
+            val cpuCtx = LocalDeviceRules.effectiveCtx(setting.nCtx, 0, setting.safeMode)
+            handle = engine.acquire(file.absolutePath, cpuCtx, setting.nThreads, 0)
         }
         if (handle == 0L) {
             throw LocalInferenceException("本地模型加载失败：${file.name}（详见「运行日志」里的 llama-jni 记录）")

@@ -1429,6 +1429,7 @@ private fun LocalModelsTab(vm: ChatViewModel) {
     val gpuMode by vm.localGpuMode.collectAsStateWithLifecycle()
     val gpuSummary by vm.localGpuSummary.collectAsStateWithLifecycle()
     val gpuCrashNote by vm.localGpuCrashNote.collectAsStateWithLifecycle()
+    val safeMode by vm.localSafeMode.collectAsStateWithLifecycle()
     val ctx = LocalContext.current
     val catalog = remember(ctx) { com.example.agentkit.core.llm.local.GgufModelStore(ctx).catalog() }
     var pendingDelete by remember { mutableStateOf<String?>(null) }
@@ -1755,6 +1756,32 @@ private fun LocalModelsTab(vm: ChatViewModel) {
         description = "上下文越大越吃内存（4K 约额外 0.5GB）；GPU 开启时上限 4096（显存要和权重共用）；线程数超过大核数收益递减，保存后下次加载生效",
         paddedContent = true
     ) {
+        // —— 安全模式 ————————————————————————————————
+        //
+        // 排在最前，因为它会**覆盖**下面两个值：开着的时候，用户把上下文写到 8192
+        // 也只按 2048 生效。把「为什么你的设置没起作用」放在被覆盖的参数之上，
+        // 比放在组尾更不容易让人以为设置坏了。
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    text = "安全模式",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Text(
+                    text = if (safeMode) "已开启：上下文按 2048、批按 64 运行（下一次加载模型生效）"
+                    else "已关闭：按下面填的值运行。若在本机反复闪退，可打开它换稳定",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (safeMode) MaterialTheme.colorScheme.error
+                    else MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Switch(checked = safeMode, onCheckedChange = { vm.setLocalSafeMode(it) })
+        }
+        Spacer(Modifier.height(AgentSpacing.space3))
         LocalParamField(
             label = "上下文长度（token）",
             value = nCtx.toString(),

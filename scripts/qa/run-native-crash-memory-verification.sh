@@ -9,9 +9,18 @@
 #   ① 在 native 装信号处理器，死之前把现场同步写盘（阶段 / GPU 层数 / ctx / 模型）；
 #   ② 下次启动读这份现场，**自动关掉 GPU** 并把原因写到设置页。
 #
+# W-85（2026-10-29 第二次闪退）补三件事：
+#   ③ 崩溃现场加「内存快照」（VmRSS/VmSize），用来区分 OOM 与断言失败；
+#   ④ 把 stderr 接到 native-stderr.txt —— ggml 断言失败会先 fprintf(stderr) 再 abort，
+#      那行字是唯一能证伪/证实的线索，而 Android 上它默认被丢进 /dev/null；
+#   ⑤ 纯 CPU 崩在 prefill → 开「安全模式」（ctx 2048 / 批 64），而不是只写一句「与 GPU 无关」。
+#
 # 静态 grep 只能证明「代码写了」，证明不了「处理器真的装上了、真的写了文件、真的没吞信号」。
 # 所以关键断言一律 fork 子进程 raise(SIGSEGV) 真跑一遍，再读文件核对内容。
 set -uo pipefail
+# 下面的断言会 fork 子进程 raise(SIGABRT)：不开这个的话每次跑完都会在仓库根目录
+# 掉几个几十 MB 的 core dump（core.<pid>）。
+ulimit -c 0 2>/dev/null || true
 
 cd "$(dirname "$0")/../.." || exit 1
 
@@ -62,9 +71,33 @@ has "$APP" "NativeCrashMemory.handleStartup(this)" '启动时消费崩溃现场'
 has "$MEMORY" "setting.gpuMode = GpuMode.OFF" '崩过就把 GPU 关掉'
 has "$MEMORY" "lastGpuCrashNote = note" '把原因留在设置页'
 
+echo "== 静态：W-85 —— 能分辨 OOM，且纯 CPU 崩溃也有救 =="
+# stderr 落盘：Android 上 fd 2 默认指向 /dev/null，ggml 的断言行平时无处可去。
+has "$CPP" "dup2(fd, STDERR_FILENO)" 'stderr 接到文件（抓 GGML_ASSERT 那行）'
+has "$CPP" "native-stderr.txt" 'stderr 文件用固定名（只留最近一次）'
+has "$CPP" "_IONBF" 'stderr 设无缓冲（崩溃前那行不能留在用户态缓冲里）'
+# 内存快照
+has "$CPP" "/proc/self/status" '崩溃时读进程内存'
+has "$CPP" "VmRSS:" '记录常驻内存（区分 OOM 与断言）'
+has "$CPP" "putMemSnapshot" '内存快照拼进现场'
+# 安全模式
+has "$PROFILE" "const val SAFE_MAX_CTX = 2048" '安全模式上下文上限 2048'
+has "$PROFILE" "fun effectiveCtx" '安全模式与 GPU 上限合起来判'
+has "$CLIENT" "LocalDeviceRules.effectiveCtx" '装载时用的是合判结果'
+has "$CLIENT" "LlamaJni.applySafeMode" '建 context 前把开关推给 native'
+has "$JNI" "g_safeMode" 'native 侧有进程级开关'
+has "$JNI" "g_safeMode.load() ? 64 : 256" '安全模式把批上限压到 64'
+has "$JNI" "cparams.n_ubatch = std::min<uint32_t>(cparams.n_batch" '物理批跟着逻辑批走（写死 512 等于没降）'
+has "$MEMORY" "setting.safeMode = true" '纯 CPU 推理崩溃时开安全模式'
+has "$SCREEN" "安全模式" '设置页能看见也能关掉'
+has "$PARSER" "fun shouldEnableSafeMode" '判定做成纯函数（可断言）'
+
 echo "== 静态：显存保护（这次的直接原因） =="
 has "$PROFILE" "const val GPU_MAX_CTX = 4096" 'GPU 开启时上下文上限 4096'
-has "$CLIENT" "LocalDeviceRules.capCtxForGpu" '装载时真的用了这个上限'
+# 盯语义不盯字面：装载入口现在走 effectiveCtx（安全模式 + GPU 上限一起判），
+# 而 effectiveCtx 内部必须仍然调 capCtxForGpu。只认旧名字会把「改好了」判成红。
+has "$CLIENT" "LocalDeviceRules.effectiveCtx" '装载时真的用了上下文上限'
+has "$PROFILE" "return capCtxForGpu(capped, gpuLayers)" 'effectiveCtx 仍然复用 GPU 上限'
 has "$CLIENT" "GPU 开启时上下文限制为" '压上下文时留了日志（不许静默改用户设置）'
 has "$SCREEN" "gpuCrashNote" '设置页显示崩溃原因'
 
@@ -90,20 +123,43 @@ else
 #include <unistd.h>
 #include <csignal>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
+
+// 阶段用字符串传：断言里写 AK_STAGE_PREFILL 这种宏更可读，
+// 顺带保证 native-crash.h 里的枚举名字和 llama-jni.cpp 用的是同一套。
+static int stageOf(const char* s) {
+    if (!strcmp(s, "MODEL_LOAD"))  return AK_STAGE_MODEL_LOAD;
+    if (!strcmp(s, "CTX_CREATE"))  return AK_STAGE_CTX_CREATE;
+    if (!strcmp(s, "DEVICE_INIT")) return AK_STAGE_DEVICE_INIT;
+    if (!strcmp(s, "PREFILL"))     return AK_STAGE_PREFILL;
+    if (!strcmp(s, "DECODE"))      return AK_STAGE_DECODE;
+    return AK_STAGE_IDLE;
+}
+
+// 用法：t <dir> <stage> <gpuLayers> <ctx> <signal>
 int main(int argc, char** argv) {
-    if (argc < 3) return 2;
+    if (argc < 6) return 2;
+    const char* dir = argv[1];
+    const int stage = stageOf(argv[2]);
+    const int gpu   = atoi(argv[3]);
+    const int ctx   = atoi(argv[4]);
+    const int sig   = atoi(argv[5]);
+
     pid_t p = fork();
     if (p == 0) {
-        ak_crash_install(argv[1]);
-        // 复刻真机那次：3B 模型、ctx 16384、GPU 全量卸载、崩在装载。
-        ak_crash_context("qwen2.5-3b-instruct-q4_k_m.gguf", 16384, 6, 99);
-        ak_stage_set(AK_STAGE_MODEL_LOAD);
-        raise(argc > 3 ? SIGABRT : SIGSEGV);
+        ak_crash_install(dir);
+        ak_crash_context("qwen2.5-3b-instruct-q4_k_m.gguf", ctx, 6, gpu);
+        ak_stage_set(stage);
+        // 复刻 ggml 的失败顺序：**先 fprintf(stderr) 那行断言，再 abort**。
+        // 真机上这行字默认被丢进 /dev/null，所以能读到它本身就是一条断言。
+        fprintf(stderr, "GGML_ASSERT(n_tokens <= n_batch) failed\n");
+        fflush(stderr);
+        raise(sig);
         _exit(0);
     }
     int st = 0;
     waitpid(p, &st, 0);
-    // 第一个参数 = 目录；第二个 = 期望的信号；第三个 = 额外参数（选信号）
     printf("%d %d\n", WIFSIGNALED(st), WTERMSIG(st));
     return 0;
 }
@@ -118,7 +174,8 @@ CPP
         fi
 
         if [ -x "$W/t" ]; then
-            OUT="$("$W/t" "$W" x 2>/dev/null)"
+            # ——— A. 上一版就有的形态：GPU 全量卸载 + ctx16384，崩在装载（SIGSEGV）
+            OUT="$("$W/t" "$W" MODEL_LOAD 99 16384 11 2>/dev/null)"
             # ① 进程必须**真的**死于信号：handler 不能把崩溃吞掉变成正常退出。
             [ "$OUT" = "1 11" ] && pass '装完处理器后进程仍按 SIGSEGV 死亡（没吞信号）' \
                 || fail "进程退出状态异常：$OUT（期望 1 11）"
@@ -141,11 +198,57 @@ CPP
                     || fail '没记录 GPU 层数'
                 grep -q "ctx=16384" "$F" && pass '记录了上下文长度（复现的关键参数）' \
                     || fail '没记录上下文长度'
+                grep -q "sigcode=" "$F" && pass '记录了 si_code（自己 abort 还是被 kill 能分开）' \
+                    || fail '没记录 si_code'
             fi
 
-            # ③ 纯 CPU 崩溃不该触发「关 GPU」：判据只有 gpu_layers，写错一位就会误伤。
-            rm -f "$F"
-            "$W/t" "$W" x >/dev/null 2>&1
+            # ——— B. 这次的形态：纯 CPU + ctx4096 + 崩在 prefill，且是 SIGABRT。
+            #     专门测它，是因为两次真机崩溃的形态**不一样**，只测 A 等于没测 B。
+            rm -f "$F" "$W/native-stderr.txt"
+            OUT2="$("$W/t" "$W" PREFILL 0 4096 6 2>/dev/null)"
+            [ "$OUT2" = "1 6" ] && pass 'SIGABRT 也被接住（真机崩的就是这个）' \
+                || fail "SIGABRT 退出状态异常：$OUT2（期望 1 6）"
+            if [ -f "$F" ]; then
+                grep -q "signal=6 (SIGABRT)" "$F" && pass '写下的信号是 SIGABRT' \
+                    || fail 'SIGABRT 现场的信号记错了'
+                grep -q "stage=PREFILL" "$F" && pass '写下的阶段是 PREFILL（这次崩在读题）' \
+                    || fail 'PREFILL 阶段没记下来'
+                grep -q "gpu_layers=0" "$F" && pass '写下 gpu_layers=0（据此判定「与 GPU 无关」）' \
+                    || fail '没记 gpu_layers'
+                # ③ 内存快照：能不能分辨 OOM 全靠这一行。
+                if [ -r /proc/self/status ]; then
+                    grep -q "mem=" "$F" && pass '现场带内存快照行' || fail '现场没有 mem= 行'
+                    grep -q "VmRSS:" "$F" && pass '内存快照里有 VmRSS（OOM 判据）' \
+                        || fail '内存快照里没有 VmRSS'
+                    # procfs 里是 "VmRSS:\t   504 kB"（制表符 + 空格），
+                    # 只写 "[ ]*" 会一位数字都匹配不到——这条断言第一次就是因此假红。
+                    RSS="$(sed -n 's/.*VmRSS:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$F" | head -1)"
+                    if [ -n "$RSS" ] && [ "$RSS" -gt 0 ] 2>/dev/null; then
+                        pass "VmRSS 是真实数字（$RSS KB），不是占位符"
+                    else
+                        fail "VmRSS 不是有效数字：'$RSS'"
+                    fi
+                else
+                    printf '  SKIP  本机没有 /proc/self/status（非 Linux），内存快照未验证\n'
+                fi
+            else
+                fail 'SIGABRT 没有生成崩溃文件'
+            fi
+
+            # ④ stderr 落盘：ggml 那行断言是唯一能一句话定性的证据。
+            E="$W/native-stderr.txt"
+            if [ -f "$E" ]; then
+                pass 'stderr 被接到了文件（不再丢进 /dev/null）'
+                grep -q "GGML_ASSERT(n_tokens <= n_batch) failed" "$E" \
+                    && pass 'ggml 的断言行原样落盘（下次真机能读到真凶）' \
+                    || fail 'stderr 文件里没有断言那行'
+            else
+                fail '没有生成 native-stderr.txt（stderr 没被接走）'
+            fi
+
+            # ⑤ 别把 stderr 接到父进程：父进程的 stdout 还得能读。
+            [ "$OUT" = "1 11" ] && pass 'stderr 重定向没影响父进程输出（工具链还能拿到结果）' \
+                || fail '父进程输出被 stderr 重定向污染了'
         fi
         rm -rf "$W"
     fi
@@ -212,6 +315,26 @@ fun main() {
     ck("纯 CPU 崩溃不关 GPU", cpu != null && !NativeCrashParser.shouldDisableGpu(cpu))
     ck("纯 CPU 阶段是生成", cpu?.stageLabel == "生成文字")
 
+    // —— W-85：第二次真机闪退的形态（纯 CPU + SIGABRT + prefill + 内存快照）——
+    val cpuPf = NativeCrashParser.parse(
+        "kind=native-crash\nsignal=6 (SIGABRT)\nstage=PREFILL\ngpu_layers=0\nctx=4096\n" +
+            "threads=6\nvulkan_built=1\nsigcode=-6\nmodel=qwen2.5-3b-instruct-q4_k_m.gguf\n" +
+            "mem= VmPeak: 3000000 kB VmSize: 2900000 kB VmRSS: 1850000 kB\n"
+    )
+    ck("纯 CPU prefill 开安全模式", NativeCrashParser.shouldEnableSafeMode(cpuPf))
+    ck("纯 CPU prefill 不关 GPU", cpuPf != null && !NativeCrashParser.shouldDisableGpu(cpuPf))
+    ck("解析出 VmRSS", cpuPf?.rssKb == 1850000)
+    ck("解析出 VmSize", cpuPf?.vmKb == 2900000)
+    ck("安全模式说明带内存", NativeCrashParser.describeSafeMode(cpuPf!!).contains("1806 MB"))
+    ck("纯 CPU 生成崩溃也开安全模式", NativeCrashParser.shouldEnableSafeMode(cpu))
+    // 开 GPU 崩的那次不该动上下文参数：那是显卡的事，降批救不了。
+    ck("GPU 崩溃不开安全模式", !NativeCrashParser.shouldEnableSafeMode(c))
+    ck("装载阶段崩溃不开安全模式", !NativeCrashParser.shouldEnableSafeMode(
+        NativeCrashParser.parse("kind=native-crash\nsignal=6 (SIGABRT)\nstage=MODEL_LOAD\ngpu_layers=0\nctx=4096")
+    ))
+    // 老版本写的现场没有 mem 行：解析不能因此变成 null（那样会连 GPU 判定一起丢）。
+    ck("没有 mem 行时 RSS 为 0 而不是解析失败", cpu?.rssKb == 0)
+
     // 写到一半的文件（进程死在 write 中间）：不能拿残缺证据关用户的 GPU。
     ck("半个文件当没有", NativeCrashParser.parse("kind=native-crash\nsignal=1") == null)
     // 别的模块写的文件。
@@ -259,6 +382,15 @@ fun main() {
     ck("GPU 开时 8192 压到 4096", LocalDeviceRules.capCtxForGpu(8192, 99) == 4096)
     ck("纯 CPU 保持 16384", LocalDeviceRules.capCtxForGpu(16384, 0) == 16384)
     ck("上限常量就是 4096", LocalDeviceRules.GPU_MAX_CTX == 4096)
+
+    // W-85 安全模式：两个上限叠着判，取更严的那个。
+    ck("安全模式把 8192 压到 2048", LocalDeviceRules.effectiveCtx(8192, 0, true) == 2048)
+    ck("安全模式把 16384 压到 2048", LocalDeviceRules.effectiveCtx(16384, 0, true) == 2048)
+    ck("安全模式下小值不放大", LocalDeviceRules.effectiveCtx(1024, 0, true) == 1024)
+    ck("安全模式 + GPU 仍是 2048", LocalDeviceRules.effectiveCtx(8192, 99, true) == 2048)
+    ck("非安全 + GPU 仍是 4096", LocalDeviceRules.effectiveCtx(8192, 99, false) == 4096)
+    ck("非安全纯 CPU 原样", LocalDeviceRules.effectiveCtx(8192, 0, false) == 8192)
+    ck("安全上限常量 2048", LocalDeviceRules.SAFE_MAX_CTX == 2048)
     println("SUMMARY $ok ${bad.size}")
     bad.forEach { println("  MISS $it") }
 }

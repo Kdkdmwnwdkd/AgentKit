@@ -83,6 +83,21 @@ class LocalLlamaSetting(context: Context) {
         set(value) = sp.edit().putString(KEY_GPU_CRASH_NOTE, value).apply()
 
     /**
+     * 安全模式：把上下文压到 2048、物理批压到 64。
+     *
+     * 触发条件是「上次在 prefill/decode 阶段被信号打死，且当时就是纯 CPU」。
+     * 那种情况下关 GPU 毫无意义——本来就没开——能动的只剩内存占用：
+     * 权重是死的（3B Q4 约 1.9GB），KV 和 prefill 的中间张量是活的，
+     * 于是把它们按比例压下来。
+     *
+     * **用户可手动关**。安全模式是「先让你能用」的临时档位，不是终态：
+     * 有人在 12GB 机器上崩一次只是偶然，不该被永久锁在 2048。
+     */
+    var safeMode: Boolean
+        get() = sp.getBoolean(KEY_SAFE_MODE, false)
+        set(value) = sp.edit().putBoolean(KEY_SAFE_MODE, value).apply()
+
+    /**
      * 本地 Agent 模式：是否把工具协议、完整系统提示、历史一并塞进 prompt。
      *
      * **默认关**，这是 W-74 的核心结论。
@@ -133,6 +148,7 @@ class LocalLlamaSetting(context: Context) {
         private const val KEY_AGENT_MODE = "agent_mode"
         private const val KEY_GPU_MODE = "gpu_mode"
         private const val KEY_GPU_CRASH_NOTE = "gpu_crash_note"
+    private const val KEY_SAFE_MODE = "safe_mode"
         const val DEFAULT_N_CTX = 4096
 
         /**

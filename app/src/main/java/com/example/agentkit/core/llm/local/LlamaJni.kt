@@ -109,6 +109,21 @@ object LlamaJni {
         }
     }
 
+    /**
+     * 把安全模式推给 native。
+     *
+     * **必须在 [nativeInit] 之前**：n_batch / n_ubatch 是在建 context 时定死的，
+     * 装载后再改只能重建上下文（清 KV、几十毫秒）。所以这条配置在启动时就推一次，
+     * 而不是每次装载前推——后者会让「用户中途开关安全模式」看起来有时生效有时不生效。
+     *
+     * native 侧是进程级静态变量，随进程重启而重置，因此每次启动都要重新推。
+     */
+    fun applySafeMode(on: Boolean) {
+        if (!ensureLoaded()) return
+        runCatching { nativeSetSafeMode(on) }
+            .onFailure { Log.w(TAG, "安全模式推送失败（不影响推理）: ${it.message}") }
+    }
+
     external fun nativeInit(modelPath: String, nCtx: Int, nThreads: Int, nGpuLayers: Int): Long
     external fun nativeFree(handle: Long)
     external fun nativeStop(handle: Long)
@@ -133,6 +148,9 @@ object LlamaJni {
      * @param crashDir 崩溃文件目录的绝对路径（必须已存在；通常就是 `filesDir/crash`）
      */
     external fun nativeInstallCrashHandler(crashDir: String)
+
+    /** 开关安全模式（压缩 n_batch/n_ubatch；必须在 nativeInit 之前调用）。 */
+    external fun nativeSetSafeMode(on: Boolean)
 
     external fun nativeGpuBackend(): Boolean
 
