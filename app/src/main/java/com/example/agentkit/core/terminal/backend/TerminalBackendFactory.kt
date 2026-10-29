@@ -116,6 +116,16 @@ class TerminalBackendFactory(
         obtain(TerminalIdentity.User, preferProot = false)
 
     /**
+     * W-RT5：按后端键显式取后端（KEY_SSH 等**不在降级链里**的键）。
+     * 在装配进来的 providers 里找同键 provider，可用即构造；没有/不可用返回 null。
+     */
+    override fun obtainByKey(backendKey: String): TerminalBackend? {
+        val provider = providers.firstOrNull { it.backendKey == backendKey } ?: return null
+        if (!isAvailable(provider)) return null
+        return runCatching { provider.create() }.getOrNull()
+    }
+
+    /**
      * 可用性查询（带缓存）：命中缓存直接返回；未命中则 [TerminalBackendProvider.probe]
      * 一次并缓存（probe 抛异常按不可用处理，留日志由 provider 侧负责）。
      */
@@ -139,11 +149,17 @@ class TerminalBackendFactory(
         /** proot 会话的默认别名。 */
         const val ALIAS_PROOT = "proot"
 
+        /** SSH 会话的默认别名（W-RT5）：远端 shell 同样独立占池，不与本机/容器混用。 */
+        const val ALIAS_SSH = "ssh"
+
         /**
-         * 按后端键取默认别名：proot 用 [ALIAS_PROOT]，其余（本机 user 等）用 [ALIAS_DEFAULT]。
-         * 纯函数：同样 key 两次调用结果相等。
+         * 按后端键取默认别名：proot 用 [ALIAS_PROOT]，SSH 用 [ALIAS_SSH]，
+         * 其余（本机 user 等）用 [ALIAS_DEFAULT]。纯函数：同样 key 两次调用结果相等。
          */
-        fun defaultAliasFor(backendKey: String): String =
-            if (backendKey == TerminalBackend.KEY_PROOT) ALIAS_PROOT else ALIAS_DEFAULT
+        fun defaultAliasFor(backendKey: String): String = when (backendKey) {
+            TerminalBackend.KEY_PROOT -> ALIAS_PROOT
+            TerminalBackend.KEY_SSH -> ALIAS_SSH
+            else -> ALIAS_DEFAULT
+        }
     }
 }

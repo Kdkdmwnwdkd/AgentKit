@@ -130,7 +130,8 @@ class ShellRunTool(
         JsonSchema.prop("command", "string", "要执行的 shell 命令原文（不要预先转义，不要包含命令结尾换行）"),
         JsonSchema.prop(
             "identity", "string", "执行身份：user/su/shizuku/ssh，默认走会话池（user 身份）。" +
-                "仅有 shizuku 是特殊值：走一次性提权通道（无句柄、cd 不保持）",
+                "仅有 shizuku 是特殊值：走一次性提权通道（无句柄、cd 不保持）；" +
+                "ssh 在远端机器开持久会话（需先在权限中心配置 SSH 连接，仅密钥登录）",
             enum = listOf("user", "su", "shizuku", "ssh")
         ),
         JsonSchema.prop("session", "string", "复用的会话句柄（4 位十六进制），缺省则自动开辟新会话"),
@@ -296,11 +297,22 @@ class ShellRunTool(
             // 但**必须说出来**：新会话的 cwd 是默认目录，原来 `cd` 过的位置没了。
             // 静默替换会让模型以为还在老目录里，后续命令全跑偏（比直接失败更难查）。
             if (arg != null) staleHandle = arg
-            val opened = pool.open(
-                identity = declaredIdentity ?: TerminalIdentity.User,
-                alias = null,
-                preferProot = preferProot
-            )
+            // W-RT5：identity=ssh 走显式后端键路由（远端机器不进本机/容器降级链）。
+            // 身份固化仍为 User（远端登录 shell 就是远端的用户身份），别名独立占池。
+            val opened = if (declaredIdentity == TerminalIdentity.Ssh) {
+                pool.open(
+                    identity = TerminalIdentity.User,
+                    alias = null,
+                    preferProot = preferProot,
+                    backendKey = TerminalBackend.KEY_SSH
+                )
+            } else {
+                pool.open(
+                    identity = declaredIdentity ?: TerminalIdentity.User,
+                    alias = null,
+                    preferProot = preferProot
+                )
+            }
             val h = opened.handle
             if (!opened.ok || h == null) {
                 return ToolResult.fail(

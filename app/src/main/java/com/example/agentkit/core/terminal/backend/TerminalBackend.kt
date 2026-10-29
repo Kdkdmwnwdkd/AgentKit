@@ -100,6 +100,16 @@ fun interface TerminalBackendSource {
      */
     fun obtainCandidates(identity: TerminalIdentity, preferProot: Boolean): List<TerminalBackend> =
         listOfNotNull(obtain(identity, preferProot))
+
+    /**
+     * W-RT5：按后端键**显式**取一条后端（如 KEY_SSH）。
+     *
+     * 与 [obtain] 的分工：`obtain` 走身份降级链（本机/容器的同构身份），本方法用于
+     * **不该进降级链的显式指定后端**——远端机器的能力面与手机不同，绝不能在本机
+     * shell 起不来时悄悄顶上。默认返回 null（无此键按「不可用」处理，现有 harness
+     * 的 lambda 假 source 不用改）。
+     */
+    fun obtainByKey(backendKey: String): TerminalBackend? = null
 }
 
 /**

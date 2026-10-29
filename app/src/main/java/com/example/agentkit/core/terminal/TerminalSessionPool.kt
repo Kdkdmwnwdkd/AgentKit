@@ -186,16 +186,37 @@ class TerminalSessionPool(
      * @param identity 声明的身份（开辟时固化）
      * @param alias 别名；null = 按后端键取默认别名（[TerminalBackendFactory.defaultAliasFor]）
      * @param preferProot true = 优先 proot 容器，不可用回落本机 user
+     * @param backendKey W-RT5：显式指定后端键（如 KEY_SSH）。非 null 时**不走身份降级链**，
+     *   直接经 [TerminalBackendSource.obtainByKey] 取该后端——远端机器绝不能在本机
+     *   shell 起不来时悄悄顶替。此时 identity 仍作为会话元数据固化（SSH 会话为 User）。
      * @return [OpenResult]
      */
     suspend fun open(
         identity: TerminalIdentity = TerminalIdentity.User,
         alias: String? = null,
-        preferProot: Boolean = true
+        preferProot: Boolean = true,
+        backendKey: String? = null
     ): OpenResult {
-        // 1) 取候选（W-55：不再只取一个——首个 start 失败时按顺序回落）
-        val candidates = source.obtainCandidates(identity, preferProot)
+        // 1) 取候选：显式后端键 > 身份降级链（W-RT5）
+        val candidates = if (backendKey != null) {
+            listOfNotNull(source.obtainByKey(backendKey))
+        } else {
+            source.obtainCandidates(identity, preferProot)
+        }
         if (candidates.isEmpty()) {
+            if (backendKey != null) {
+                return OpenResult.failure(
+                    code = "no_backend",
+                    message = "显式指定的后端「$backendKey」当前不可用。",
+                    hint = if (backendKey == TerminalBackend.KEY_SSH) {
+                        "SSH 后端不可用。依次确认：① 权限中心 → SSH 已填好主机/端口/用户名并保存；" +
+                            "② 目标机器已把本设备的公钥加进 authorized_keys（仅支持密钥登录，不支持密码）；" +
+                            "③ 设备上有可用的 ssh 命令（通常由容器工具链安装 openssh 提供）。"
+                    } else {
+                        "确认后端已正确配置，或改用默认参数（自动降级链）。"
+                    }
+                )
+            }
             return if (identity == TerminalIdentity.User) {
                 OpenResult.failure(
                     code = "no_backend",
@@ -215,8 +236,15 @@ class TerminalSessionPool(
                             "要 uid 2000 **并且** cwd 保持，改用 prefer_proot=false（会话池会依次试 " +
                             "Shizuku → 无线调试）；两者状态可到「设置 → 调试通道」查看。"
                     } else {
-                        "su / ssh 首期无后端。要容器用 prefer_proot=true（默认）；要 uid 2000 用 prefer_proot=false" +
-                            "（Shizuku / 无线调试）；普通文件操作用默认参数即可。"
+                        // W-RT5：ssh 已有后端，但走显式路由（identity=ssh 时上层应传 backendKey），
+                        // 不再是「无后端」；su 仍然首期未实现。
+                        if (identity == TerminalIdentity.Ssh) {
+                            "identity=ssh 需要显式路由：请确认工具调用走的是 SSH 通道（本池的降级链不包含远端机器）。" +
+                                "若 SSH 不可用，先到「权限中心 → SSH」检查连接配置。"
+                        } else {
+                            "su 首期无后端。要容器用 prefer_proot=true（默认）；要 uid 2000 用 prefer_proot=false" +
+                                "（Shizuku / 无线调试）；普通文件操作用默认参数即可。"
+                        }
                     }
                 )
             }

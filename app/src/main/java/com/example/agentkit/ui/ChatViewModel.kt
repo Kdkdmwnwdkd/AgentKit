@@ -922,7 +922,28 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
             // 由这里注入，避免 core 反向依赖 automation。
             // W-56：Shizuku 也做成池后端（uid 2000 + 持久 shell），所以默认会话链是
             // proot → shizuku → adb → user
-            extraProviders = listOf(ShizukuBackendProvider(), AdbBackendProvider())
+            // W-RT5：SSH 不进这条降级链（远端机器不能顶替本机 shell），
+            // 只注册 provider 供 obtainByKey 显式路由（identity=ssh）。
+            extraProviders = listOf(
+                ShizukuBackendProvider(),
+                AdbBackendProvider(),
+                SshBackendProvider(
+                    sshPathProvider = {
+                        val rootfsBin = RootfsManager.listAvailable(app).firstOrNull()?.id
+                            ?.let { java.io.File(app.filesDir, "containers/$it/rootfs/usr/bin").absolutePath }
+                        com.example.agentkit.core.terminal.backend.SshBinaryLocator.locate(
+                            com.example.agentkit.core.terminal.backend.SshBinaryLocator.defaultCandidates(rootfsBin)
+                        )
+                    },
+                    profileProvider = {
+                        val r = com.example.agentkit.core.terminal.backend.normalizeSshProfile(
+                            configStore.sshHost(), configStore.sshPort(),
+                            configStore.sshUser(), configStore.sshKeyPath()
+                        )
+                        (r as? com.example.agentkit.core.terminal.backend.SshProfileResult.Ok)?.profile
+                    }
+                )
+            )
         )
 
     /**
@@ -1615,6 +1636,33 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         _approvalTier.value = next
         configStore.setApprovalTier(next)
         AgentLogger.i("Chat", "审批档位切换为 $next")
+    }
+
+    // —— W-RT5：SSH 连接档案（v1 单档案，仅密钥登录）——
+
+    /**
+     * UI 回调：保存 SSH 连接档案。
+     * 校验不通过返回给用户的理由（UI 直接展示，不落盘）；成功返回 null。
+     * 保存后清后端工厂的可用性缓存——SSH 探测结果依赖档案是否存在，必须重新判定。
+     */
+    fun saveSshProfile(host: String, port: String, user: String, keyPath: String): String? {
+        val r = com.example.agentkit.core.terminal.backend.normalizeSshProfile(host, port, user, keyPath)
+        val profile = when (r) {
+            is com.example.agentkit.core.terminal.backend.SshProfileResult.Invalid -> return r.reason
+            is com.example.agentkit.core.terminal.backend.SshProfileResult.Ok -> r.profile
+        }
+        configStore.setSshProfile(profile.host, profile.port.toString(), profile.user, profile.keyPath)
+        terminalBackendFactory.clearCache()
+        AgentLogger.i("Chat", "SSH 连接档案已保存：${profile.user}@${profile.host}:${profile.port}")
+        return null
+    }
+
+    /** 当前 SSH 档案（设置页回显用；未配置返回 null）。 */
+    fun sshSavedProfile(): com.example.agentkit.core.terminal.backend.SshProfile? {
+        val r = com.example.agentkit.core.terminal.backend.normalizeSshProfile(
+            configStore.sshHost(), configStore.sshPort(), configStore.sshUser(), configStore.sshKeyPath()
+        )
+        return (r as? com.example.agentkit.core.terminal.backend.SshProfileResult.Ok)?.profile
     }
 
     /** UI 回调：批准计划。 */
