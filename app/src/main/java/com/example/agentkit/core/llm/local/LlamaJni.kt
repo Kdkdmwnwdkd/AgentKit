@@ -169,6 +169,14 @@ object LlamaJni {
     /** 开关安全模式（压缩 n_batch/n_ubatch；必须在 nativeInit 之前调用）。 */
     external fun nativeSetSafeMode(on: Boolean)
 
+    /**
+     * 作废绑核投票结论（W-95），下次加载重新投票。
+     *
+     * 投票结论是进程级的，自愈重建直接沿用；但用户手动改线程数后沿用旧结论等于
+     * 「设置没生效」，所以改参数时必须调一次这里。
+     */
+    external fun nativeResetAffinity()
+
     external fun nativeGpuBackend(): Boolean
 
     /**

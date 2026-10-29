@@ -831,6 +831,9 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     fun setLocalThreads(v: Int) {
         localSetting.nThreads = v
         _localThreads.value = localSetting.nThreads
+        // W-95：绑核投票的结论是按「上一组加载参数」投出来的，线程数一变就必须作废，
+        // 否则下次加载会沿用旧结论，用户看到的就是「我设了 6 线程，还是跑 4 个」。
+        runCatching { LlamaJni.nativeResetAffinity() }
     }
 
     fun setLocalMaxTokens(v: Int) {

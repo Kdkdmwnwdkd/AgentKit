@@ -1922,7 +1922,25 @@ Java_com_example_agentkit_core_llm_local_LlamaJni_nativeSetSafeMode(
     JNIEnv* /*env*/, jobject /*thiz*/, jboolean on) {
     g_safeMode.store(on == JNI_TRUE);
     LOGI("安全模式：%s（n_batch 上限 %d）", on == JNI_TRUE ? "开" : "关",
-         on == JNI_TRUE ? 64 : 256);
+         on == JNI_TRUE ? 128 : 256);
+}
+
+/**
+ * 让下一次加载重新投票绑核（W-95）。
+ *
+ * 投票结论是进程级的，正常情况下自愈重建直接沿用，不该每轮重投。
+ * 但用户一旦在设置里手动改线程数，沿用旧结论就等于「设置没生效」——
+ * 那种情况下必须把 decided 清掉，让新参数有机会被重新衡量。
+ */
+JNIEXPORT void JNICALL
+Java_com_example_agentkit_core_llm_local_LlamaJni_nativeResetAffinity(
+    JNIEnv* /*env*/, jobject /*thiz*/) {
+    g_affinity.decided = false;
+    g_affinity.pinned = false;
+    g_affinity.cpus.clear();
+    g_affinity.threads = 0;
+    g_affinity.label.clear();
+    LOGI("绑核结论已作废：下次加载重新投票（用户改了线程数/加载参数）");
 }
 
 }  // extern "C"
