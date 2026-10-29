@@ -10,6 +10,7 @@ import com.example.agentkit.core.CrashLogger
 import com.example.agentkit.core.llm.local.AndroidDeviceProbe
 import com.example.agentkit.core.llm.local.LlamaJni
 import com.example.agentkit.core.llm.local.NativeCrashMemory
+import com.example.agentkit.runtime.LocalLlmRuntime
 import java.io.File
 
 /**
@@ -70,6 +71,10 @@ class AgentKitApplication : Application() {
         // 不发网络包也不生成密钥——首次配对时才生成 RSA（见 AdbCredentials.keyPair）。
         // 失败（存储不可用）不影响启动，只是该通道会如实返回「密钥不可用」。
         runCatching { AdbSession.init(this) }
+        // 运行层（Runtime）：能力注册与空闲释放策略。只建 SharedPreferences、
+        // 注册能力、起一个 30 秒一轮的节拍协程——全是轻操作，不影响冷启动。
+        // 失败不影响启动：本地模型的空闲释放退化为「常驻不卸载」，其余照常。
+        runCatching { LocalLlmRuntime.init(this) }
         // W-82：设备画像（芯片 / GPU / 内存 → 这台机器该走 NPU / GPU / CPU 哪条路）。
         //
         // 为什么放后台线程：画像要起一个 1x1 的 EGL 上下文问 GL_RENDERER（几毫秒到几十毫秒），
