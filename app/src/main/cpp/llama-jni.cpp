@@ -664,9 +664,10 @@ bool rebuildContext(LlamaInstance* inst) {
     llama_context_params cp = llama_context_default_params();
     cp.n_ctx = nCtx;
     cp.n_threads = inst->n_threads;
-    // 与 nativeInit 同口径：prefill 多给两个核（见那边的说明）。
-    const int hwCores = static_cast<int>(std::thread::hardware_concurrency());
-    cp.n_threads_batch = std::min(hwCores, inst->n_threads + 2);
+    // 与 nativeInit 同口径：prefill 线程数 = 生成线程数，**不要 +2**（见 W-90）。
+    // 这条曾经在重建路径上漏掉：自愈重建后 prefill 又摊上小核，于是「重建过一次
+    // 之后一直慢」——比崩溃更难查，因为它不报错，只是慢十倍。
+    cp.n_threads_batch = inst->n_threads;
     cp.n_batch = std::min(inst->n_batch, std::min(nCtx, 256));
     cp.n_ubatch = std::min<uint32_t>(cp.n_batch, 512u);
     cp.no_perf = true;
@@ -917,8 +918,6 @@ Java_com_example_agentkit_core_llm_local_LlamaJni_nativeInit(
     // 多出来的两个线程落在 Cortex-A510 小核上：barrier 每次都要等最慢的那个，
     // 小核算 Q4_K 的速度约为大核 1/3，于是整批被拖慢到比逐 token 生成还慢。
     // 「核多就快」只对同构多核成立，对手机的大小核（且 ggml 用 spin-wait barrier）是反的。
-    const int hwCores = static_cast<int>(std::thread::hardware_concurrency());
-    (void) hwCores;
     cparams.n_threads_batch = nThreads;
     // n_batch = 256：一次 llama_decode 吃进去的 token 上限。
     //

@@ -173,7 +173,15 @@ expect "冷启动预热放在 nativeInit 内" "$JNI" '冷启动预热完成'
 # mmap 只建映射不读数据，先做一次异步预读能把首次 decode 的缺页摊薄。
 expect "加载前对模型文件做 fadvise 预读" "$JNI" 'POSIX_FADV_WILLNEED'
 # prefill 与生成本来是两种开销结构，不能钉成同一个线程数。
-expect "prefill 线程与生成线程分开设" "$JNI" 'cparams.n_threads_batch = std::min\(hwCores, nThreads \+ 2\)'
+# W-90：prefill 不再拿「硬件核数 +2」去凑线程。手机是 4 大 + 4 小，多出来的 2 个线程
+# 落在小核上，ggml 的 spin-wait barrier 每次都要等最慢那个，prefill 于是比逐 token 生成还慢。
+# 断言只锁语义：两个入口（首次 init / 自愈重建）都必须让 batch 线程等于生成线程。
+expect "prefill 线程与生成同口径（不摊小核）" "$JNI" 'cparams\.n_threads_batch = nThreads;'
+if grep -Eq 'n_threads_batch *= *std::min\(hwCores' "$JNI"; then
+  bad "没有残留的「硬件核数 +2」写法（自愈重建那条路径也会摊上小核）"
+else
+  ok "没有残留的「硬件核数 +2」写法（自愈重建那条路径也会摊上小核）"
+fi
 # 进程级诊断缓冲跨请求累积，不加序号就会「复读上一轮」，看门狗还会误判。
 expect "native 日志带全局序号" "$JNI" 'g_diagSeq'
 expect "Kotlin 侧按序号只消费本轮日志" "$CLIENT" 'nativeLogSeq'
