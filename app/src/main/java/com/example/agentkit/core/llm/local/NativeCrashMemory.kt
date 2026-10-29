@@ -25,9 +25,16 @@ object NativeCrashMemory {
     /** 启动时调用：读现场 → 必要时关 GPU → 删文件（只处理一次）。 */
     fun handleStartup(context: Context) {
         val crash = runCatching { read(context) }.getOrNull() ?: return
-        // 先删：无论后面怎么处理，这份现场都只该被消费一次。
-        // 留着的话，用户手动重开 GPU 后每次启动都会被「上次崩过」再关一次，永远开不回来。
-        runCatching { crashFile(context).delete() }
+        // 先处理文件：无论后面怎么判定，这份现场都只该被**消费**一次。
+        //
+        // 但不能直接删——用户此刻正看到设置页的红字、准备点「生成诊断包」求助，
+        // 而诊断包里最该有的就是这份现场。所以改名留档：原名消失（不会二次消费），
+        // 归档名固定（覆盖上一份，只留最近一次，不占空间）。
+        runCatching {
+            val archive = archiveFile(context)
+            if (archive.exists()) archive.delete()
+            crashFile(context).renameTo(archive)
+        }
 
         if (!NativeCrashParser.shouldDisableGpu(crash)) {
             // 纯 CPU 崩在推理阶段：关 GPU 没有意义（本来就没开），能动的只剩内存占用。
@@ -74,6 +81,15 @@ object NativeCrashMemory {
     /** 崩溃文件位置（和 Java 崩溃日志同一个目录，便于一起清理）。 */
     fun crashFile(context: Context): File =
         File(File(context.filesDir, CrashLogger.DIR_NAME), NativeCrashParser.FILE_NAME)
+
+    /**
+     * 归档文件：被 [handleStartup] 消费过的现场改名到这里，只留最近一次。
+     *
+     * 存在的唯一理由是「诊断包要能带走它」——删掉之后就只剩设置页那一句中文，
+     * 而 stage / sigcode / ctx / gpu_layers 这些复现必需的量全在文件里。
+     */
+    fun archiveFile(context: Context): File =
+        File(File(context.filesDir, CrashLogger.DIR_NAME), NativeCrashParser.ARCHIVE_NAME)
 
     /** 读取并解析；文件不存在或内容认不出时返回 null（绝不影响启动）。 */
     fun read(context: Context): NativeCrash? {

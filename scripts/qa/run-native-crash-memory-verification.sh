@@ -36,6 +36,8 @@ PROFILE=app/src/main/java/com/example/agentkit/core/llm/local/LocalDeviceProfile
 CATALOG=app/src/main/java/com/example/agentkit/core/llm/local/LocalBackendCatalog.kt
 CLIENT=app/src/main/java/com/example/agentkit/core/llm/local/LocalLlamaClient.kt
 SCREEN=app/src/main/java/com/example/agentkit/ui/ModelConfigScreen.kt
+LOGGER=app/src/main/java/com/example/agentkit/core/AgentLogger.kt
+EXPORTER=app/src/main/java/com/example/agentkit/core/DiagnosticsExporter.kt
 
 PASS=0
 FAIL=0
@@ -45,7 +47,7 @@ fail() { FAIL=$((FAIL + 1)); printf '  FAIL  %s\n' "$1"; }
 has() { grep -qF -- "$2" "$1" && pass "$3" || fail "$3（$1 里缺：$2）"; }
 hasnt() { grep -qF -- "$2" "$1" && fail "$3（$1 里不该有：$2）" || pass "$3"; }
 
-for f in "$CPP" "$HDR" "$JNI" "$CMAKE" "$APP" "$JNIKT" "$PARSER" "$MEMORY" "$PROFILE" "$CLIENT"; do
+for f in "$CPP" "$HDR" "$JNI" "$CMAKE" "$APP" "$JNIKT" "$PARSER" "$MEMORY" "$PROFILE" "$CLIENT" "$LOGGER" "$EXPORTER"; do
     [ -f "$f" ] || { echo "  FAIL  缺文件 $f"; exit 1; }
 done
 
@@ -91,6 +93,22 @@ has "$JNI" "cparams.n_ubatch = std::min<uint32_t>(cparams.n_batch" '物理批跟
 has "$MEMORY" "setting.safeMode = true" '纯 CPU 推理崩溃时开安全模式'
 has "$SCREEN" "安全模式" '设置页能看见也能关掉'
 has "$PARSER" "fun shouldEnableSafeMode" '判定做成纯函数（可断言）'
+echo "== 静态：W-86 —— 崩完之后还看得见、带得走 =="
+# 五连崩那几次，用户贴过来的日志全是启动段（崩溃捕获已安装 / 设备画像 / WebView 已就绪），
+# 一行推理记录都没有。不是没记，是内存缓冲随进程死了，而 UI 只认缓冲。
+has "$LOGGER" "restoreTail" '启动时回读上一次运行的日志'
+has "$LOGGER" "buffer.addAll(0, tail)" '历史插在缓冲最前面（UI 里排在上方）'
+has "$LOGGER" "LINE_RE" '能反解自己写出的行格式'
+has "$LOGGER" "clockToMillis" '把 HH:mm:ss.SSS 还原成时间戳'
+has "$LOGGER" '${formatClock(timeMs)} ${level.name} [$tag] $message' '写入格式没变（改了两边一起改）'
+# 现场不能一读完就删：用户正要点「生成诊断包」，删了等于把证据扔了。
+has "$MEMORY" "renameTo(archive)" '现场改名留档而不是删掉'
+hasnt "$MEMORY" "crashFile(context).delete()" '不再直接删现场'
+has "$PARSER" "ARCHIVE_NAME" '归档名做成常量（诊断包按名字取）'
+has "$EXPORTER" "crashSnapshot" '诊断包带上崩溃现场'
+has "$EXPORTER" "NativeCrashMemory.archiveFile" '取的是归档那份'
+has "$EXPORTER" "native-stderr.txt" '把 ggml 断言那行也带上（决定性证据）'
+
 
 echo "== 静态：显存保护（这次的直接原因） =="
 has "$PROFILE" "const val GPU_MAX_CTX = 4096" 'GPU 开启时上下文上限 4096'

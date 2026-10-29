@@ -6,6 +6,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import java.io.File
 import java.text.SimpleDateFormat
+import java.util.Calendar
 import java.util.Collections
 import java.util.Date
 import java.util.Locale
@@ -63,6 +64,18 @@ object AgentLogger {
 
     /** 一天毫秒数，仅用于保留天数换算。 */
     private const val DAY_MS = 24L * 60 * 60 * 1000
+
+    /** 回读历史时每个文件最多看这么多行（尾部）。 */
+    private const val TAIL_LINES = 2000
+
+    /**
+     * 反解 [LogEntry.format] 的单行格式：`HH:mm:ss.SSS LEVEL [tag] message`。
+     *
+     * 与那边是一对，改格式必须两边一起改——所以正则写成整行匹配（`matchEntire`），
+     * 格式一变匹配立刻失败（退化成"这条历史读不出来"），而不是悄悄解析出半截内容。
+     */
+    private val LINE_RE =
+        Regex("""^(\d{2}):(\d{2}):(\d{2})\.(\d{3}) (DEBUG|INFO|WARN|ERROR) \[([^\]]*)] (.*)$""")
 
     /** 脱敏替换串。 */
     private const val MASK = "***"
@@ -127,6 +140,18 @@ object AgentLogger {
     fun init(dir: File) {
         runCatching { if (!dir.exists()) dir.mkdirs() }
         logDir = dir
+        // 先回读上一次运行的尾巴，再写本次启动的第一条。
+        //
+        // 顺序不能反：反了的话「已就绪」这行会排在历史之前，UI 按时间正序渲染，
+        // 一眼看过去像是上次的日志跑到了本次之后。
+        val restored = runCatching { restoreTail(dir) }.getOrDefault(0)
+        if (restored > 0) {
+            i(
+                "AgentLogger",
+                "已恢复上次运行的最后 $restored 条日志（崩溃前那几行在最上面，" +
+                    "不要点「清空」，否则本次取证就没了）",
+            )
+        }
         i("AgentLogger", "日志目录已就绪：${dir.absolutePath}")
         // 清理放到串行 IO 协程：不阻塞主线程，也不与正在进行的写盘竞争
         ioScope.launch { cleanupOldLogs(dir, LOG_RETENTION_DAYS) }
@@ -270,6 +295,93 @@ object AgentLogger {
         runCatching { if (backup.exists()) backup.delete() }
         runCatching { file.renameTo(backup) }
     }
+
+    /**
+     * 把上一次运行留在磁盘上的最后若干条日志读回内存缓冲。
+     *
+     * ## 为什么非做不可
+     * 内存缓冲是**进程级**的。native 崩溃（SIGSEGV / SIGABRT，[CrashLogger] 抓不到）、
+     * 被系统 OOM killer 杀掉、用户从最近任务划掉——这几种情况下一次启动时 `buffer` 是空的，
+     * 用户点开「运行日志」只看得到**本次**启动之后的那十几行，而崩溃发生在**上一次**运行里。
+     *
+     * 于是「闪退 + 日志一片空白」成了固定现象：不是没记，是记了却没人看得到。
+     * 2026-10-29 真机连续五次闪退，每次贴过来的日志都只有启动段（`崩溃捕获已安装`、
+     * `设备画像`、`后台 WebView 已就绪`），一行推理记录都没有——就是这个原因。
+     *
+     * ## 边界
+     *  - 只回读当天与前一天的 `agent-<yyyyMMdd>.log`：更早的跟这次崩溃无关，
+     *    读进来只会把真正相关的那几十行挤出 [MAX_MEMORY]。
+     *  - 每个文件只取尾部 [TAIL_LINES] 行：整份文件可能 2MB，而现场在结尾。
+     *  - 超出 [MAX_MEMORY] 从头部丢，保留最近的。
+     *  - 一切异常都吞掉：日志是旁路，不能因为回读失败耽误启动。
+     *
+     * @return 实际恢复的条数（0 表示没有历史或全部解析失败）
+     */
+    private fun restoreTail(dir: File): Int {
+        val now = System.currentTimeMillis()
+        // 前一天也读：崩溃正好落在零点前后时，现场留在昨天那份文件里。
+        val files = listOf(
+            File(dir, "agent-${formatDay(now - DAY_MS)}.log"),
+            File(dir, "agent-${formatDay(now)}.log"),
+        ).filter { it.isFile }
+
+        val parsed = ArrayList<LogEntry>()
+        for (file in files) {
+            runCatching {
+                val lines = file.readLines()
+                val from = (lines.size - TAIL_LINES).coerceAtLeast(0)
+                for (raw in lines.subList(from, lines.size)) {
+                    val m = LINE_RE.matchEntire(raw)
+                    if (m == null) {
+                        // 不是新记录：多半是上一条的堆栈续行（[LogEntry.format] 会换行追加）。
+                        val last = parsed.lastOrNull()
+                        if (last != null && raw.isNotBlank()) {
+                            parsed[parsed.lastIndex] =
+                                last.copy(stack = ((last.stack ?: "") + "\n" + raw).trim())
+                        }
+                        continue
+                    }
+                    val v = m.groupValues
+                    parsed.add(
+                        LogEntry(
+                            timeMs = clockToMillis(v[1], v[2], v[3], v[4], now),
+                            // 级别字符串是我们自己写的，认不出时按 INFO 处理，
+                            // 不因为一条坏记录丢掉整批历史。
+                            level = runCatching { LogLevel.valueOf(v[5]) }.getOrDefault(LogLevel.INFO),
+                            tag = v[6],
+                            message = v[7],
+                        )
+                    )
+                }
+            }
+        }
+        if (parsed.isEmpty()) return 0
+
+        val tail = if (parsed.size > MAX_MEMORY) {
+            parsed.subList(parsed.size - MAX_MEMORY, parsed.size)
+        } else {
+            parsed
+        }
+        synchronized(buffer) { buffer.addAll(0, tail) }
+        return tail.size
+    }
+
+    /** 把 `HH:mm:ss.SSS` 还原成「今天该时刻」的时间戳；解析失败返回 [ref]。 */
+    private fun clockToMillis(h: String, m: String, s: String, ms: String, ref: Long): Long =
+        runCatching {
+            val cal = Calendar.getInstance().apply {
+                timeInMillis = ref
+                set(Calendar.HOUR_OF_DAY, h.toInt())
+                set(Calendar.MINUTE, m.toInt())
+                set(Calendar.SECOND, s.toInt())
+                set(Calendar.MILLISECOND, ms.toInt())
+            }
+            var t = cal.timeInMillis
+            // 跨零点：昨天文件里的 23:50 按「今天 23:50」还原会跑到未来，
+            // 列表里就会看到历史排在本次之后。往回挪一天。
+            if (t > ref + 60_000) t -= DAY_MS
+            t
+        }.getOrDefault(ref)
 
     /**
      * 清理过期日志：`agent-<yyyyMMdd>.log` / `.log.1`，保留最近 [keepDays] 天。

@@ -65,6 +65,14 @@ object NativeCrashParser {
     const val FILE_NAME: String = "native-crash.txt"
 
     /**
+     * 归档名：启动时被消费掉的现场改名到这里，供「生成诊断包」带走。
+     *
+     * 刻意不用 `native-crash.txt` 本身——那个名字代表「待消费」，
+     * 留着会让 [NativeCrashMemory.handleStartup] 每次启动都再判一遍。
+     */
+    const val ARCHIVE_NAME: String = "native-crash.last.txt"
+
+    /**
      * 解析 native 写出的 `key=value` 文本。
      *
      * 认不出的内容一律返回 null 而不是抛异常：这份文件是崩溃现场，

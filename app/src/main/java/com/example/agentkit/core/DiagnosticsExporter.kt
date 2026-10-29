@@ -5,6 +5,8 @@ import android.content.Intent
 import android.os.Build
 import androidx.core.content.FileProvider
 import com.example.agentkit.core.llm.KeyPoolStore
+import com.example.agentkit.core.llm.local.NativeCrashMemory
+import com.example.agentkit.core.llm.local.NativeCrashParser
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -25,6 +27,9 @@ import java.util.Locale
 object DiagnosticsExporter {
 
     private const val MAX_LOG_LINES = 300
+
+    /** 单个崩溃现场的截断长度：现场文件只有几百字节，这个上限纯属防意外。 */
+    private const val MAX_CRASH_CHARS = 4000
 
     /** 生成诊断文件；失败返回 null（调用方提示用户，不崩）。 */
     fun export(context: Context, logText: String): File? = runCatching {
@@ -77,6 +82,9 @@ object DiagnosticsExporter {
                     backupKeys.joinToString("、") { "${it.label}=${maskKey(it.key)}" })
             }
             appendLine()
+            appendLine("—— 原生崩溃现场 ——")
+            appendLine(crashSnapshot(context))
+            appendLine()
             appendLine("—— 最近 $MAX_LOG_LINES 行日志 ——")
             appendLine(tail.ifBlank { "(无日志)" })
         }
@@ -88,6 +96,38 @@ object DiagnosticsExporter {
         AgentLogger.i("Diagnostics", "诊断包已生成：${file.name}（${file.length()} 字节）")
         file
     }.getOrNull()
+
+    /**
+     * 把原生崩溃现场拼成一段文字。
+     *
+     * 为什么必须进来：现场文件里是复现所需的**全部参数**（stage / signal / sigcode /
+     * gpu_layers / ctx / threads / VmRSS / 模型名），而用户能看到的只有设置页那一句中文。
+     * 有了这段，「崩溃 → 点一下诊断包 → 发过来」就闭环了，不需要 adb、不需要 root、
+     * 也不需要用户去翻应用私有目录。
+     *
+     * 三份都带上，因为它们回答的是不同问题：
+     *  - 归档现场：上次崩在哪个阶段、什么信号、什么参数；
+     *  - 待处理现场：本次启动还没消费的那份（正常情况下上一行就能覆盖它）；
+     *  - stderr：ggml 的断言行，**唯一能一句话定性「OOM 还是断言」的证据**。
+     */
+    private fun crashSnapshot(context: Context): String {
+        val dir = File(context.filesDir, CrashLogger.DIR_NAME)
+        val candidates = listOf(
+            NativeCrashMemory.archiveFile(context) to "上次崩溃（已归档）",
+            File(dir, NativeCrashParser.FILE_NAME) to "待处理的崩溃现场",
+            File(dir, "native-stderr.txt") to "推理库 stderr（GGML_ASSERT 那行）",
+        )
+        val out = StringBuilder()
+        for ((file, label) in candidates) {
+            if (!file.isFile) continue
+            out.append("\u25b8 ").append(label).append("：").append(file.name)
+                .append("（").append(file.length()).append(" 字节）\n")
+            val body = runCatching { file.readText() }.getOrDefault("")
+            out.append(body.take(MAX_CRASH_CHARS))
+            if (!body.endsWith("\n")) out.append('\n')
+        }
+        return if (out.isEmpty()) "(无——本机还没发生过 native 崩溃，或已被「清空」删掉)" else out.toString()
+    }
 
     /** 调系统分享面板发送诊断文件。 */
     fun share(context: Context, file: File) {
