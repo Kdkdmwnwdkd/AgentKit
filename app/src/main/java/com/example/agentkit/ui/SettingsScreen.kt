@@ -9,6 +9,7 @@ import androidx.core.content.ContextCompat
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.clickable
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.foundation.layout.Column
@@ -43,6 +44,7 @@ import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -256,6 +258,44 @@ fun SettingsScreen(
                         )
                     }
                 )
+                AkDivider(Modifier.padding(start = AgentSpacing.space4))
+                // —— W-RT3：审批档位 ————————————————
+                // 三档单选（样式照 ModelConfigScreen 的资源档位组复刻）：
+                // 逐步确认 = 每次都问；常规 = 现行默认；全自动 = 低风险组免弹窗，
+                // 应用装卸 / GitHub 提交 / shell 仍必问（见 ApprovalTier.AUTO_ALLOW_GROUPS）。
+                val approvalTier by vm.approvalTier.collectAsStateWithLifecycle()
+                listOf(
+                    com.example.agentkit.core.agent.ApprovalTier.STRICT to "逐步确认：危险操作每次都问，「始终允许」暂不生效",
+                    com.example.agentkit.core.agent.ApprovalTier.STANDARD to "常规：弹窗确认，勾选「始终允许」后同类不再问",
+                    com.example.agentkit.core.agent.ApprovalTier.AUTO to "全自动：界面操作、截图、朗读通知、文件写入不再弹窗（文件写入有自动备份可回滚）；应用装卸、GitHub 提交、shell 命令仍必问"
+                ).forEach { (mode, hint) ->
+                    val selected = approvalTier == mode
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { vm.setApprovalTier(mode) }
+                            .padding(vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        RadioButton(selected = selected, onClick = { vm.setApprovalTier(mode) })
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                text = "危险操作审批：" + when (mode) {
+                                    com.example.agentkit.core.agent.ApprovalTier.STRICT -> "逐步确认"
+                                    com.example.agentkit.core.agent.ApprovalTier.AUTO -> "全自动"
+                                    else -> "常规"
+                                },
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                text = hint,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
             }
 
             // —— 设备能力：自动化总开关 + 权限入口 + 存活自检 ——

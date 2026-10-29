@@ -151,6 +151,7 @@ import com.example.agentkit.core.agent.AgentRunService
 import com.example.agentkit.core.agent.AgentRunState
 import com.example.agentkit.core.agent.AgentRunStateStore
 import com.example.agentkit.core.agent.ApprovalGrouping
+import com.example.agentkit.core.agent.ApprovalTier
 import com.example.agentkit.core.agent.PlanBroker
 import com.example.agentkit.tools.SubAgentTool
 import com.example.agentkit.core.agent.SubAgentRunner
@@ -1601,6 +1602,21 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         AgentLogger.i("Chat", "任务模式切换为 ${if (enabled) "先计划后执行" else "自动执行"}")
     }
 
+    // —— W-RT3：审批档位（逐步确认 / 常规 / 全自动）——
+    // 读盘过 normalize：旧版本残留或手改数据退回「常规」，坏配置永不放大权限。
+    private val _approvalTier = MutableStateFlow(
+        com.example.agentkit.core.agent.ApprovalTier.normalize(configStore.approvalTier())
+    )
+    val approvalTier: StateFlow<String> = _approvalTier.asStateFlow()
+
+    /** UI 回调：切换审批档位（设置页单选即时生效，落盘供下次启动读取）。 */
+    fun setApprovalTier(mode: String) {
+        val next = com.example.agentkit.core.agent.ApprovalTier.normalize(mode)
+        _approvalTier.value = next
+        configStore.setApprovalTier(next)
+        AgentLogger.i("Chat", "审批档位切换为 $next")
+    }
+
     /** UI 回调：批准计划。 */
     fun approvePlan(planId: String) {
         PlanBroker.approve(planId)
@@ -1878,7 +1894,11 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         // W-36：按「同类操作」放行，而不是按工具名。原来 ui_key 允许过，ui_tap 还要再问一遍，
         // 弹窗文案却写着「不再询问同类操作」——真机上一次任务被迫点十几次。
         val group = ApprovalGrouping.groupOf(tool.name)
-        if (group in sessionAllowed) return@withLock true
+        // W-RT3：档位判定统一走 ApprovalTier——「逐步确认」连会话白名单也失效；
+        // 「全自动」对低风险组（界面操作/截图/朗读通知/文件写入）免弹窗，高风险组维持原判。
+        if (ApprovalTier.shouldSkipDialog(_approvalTier.value, group, group in sessionAllowed)) {
+            return@withLock true
+        }
         // W-8 P1-C：ui_screenshot 按回合自动缓存批准——本回合已批准过一次截图，
         // 后续截图不再重复弹窗。
         // 修前每次截图都弹：真机日志里模型「看一眼点一下」被对话框反复打断，体感「更久」。
