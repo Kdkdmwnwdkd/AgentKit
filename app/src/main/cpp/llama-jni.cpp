@@ -499,6 +499,73 @@ static int akCpuCount() {
     return 8;
 }
 
+/** 某个核的当前频率（MHz，0 = 读不到）。 */
+static int akCpuCurMhz(int cpu) {
+    char path[96];
+    snprintf(path, sizeof(path), "/sys/devices/system/cpu/cpu%d/cpufreq/scaling_cur_freq", cpu);
+    FILE* f = fopen(path, "r");
+    if (!f) return 0;
+    long khz = 0;
+    if (fscanf(f, "%ld", &khz) != 1) khz = 0;
+    fclose(f);
+    return static_cast<int>(khz / 1000);
+}
+
+/**
+ * 当前可用的峰值频率（MHz），随便挑哪个核里最高的那个。
+ *
+ * W-98：prefill 是**算力受限**，decode 是**带宽受限**。所以「温度上来了」这件事
+ * 在日志里的形状是「prefill 掉一半、decode 纹丝不动」——只看 tok/s 分不出
+ * 「机器热了」和「线程配错了」，两种结论对应完全不同的修法。把频率一起打出来，
+ * 下一份日志就能一眼分开。
+ */
+static int akPeakMhz() {
+    const int n = std::min(akCpuCount(), 16);
+    int best = 0;
+    for (int i = 0; i < n; i++) {
+        const int v = akCpuCurMhz(i);
+        if (v > best) best = v;
+    }
+    return best;
+}
+
+/**
+ * 把**进程内所有线程**钉到 [cpus]（空 = 放开全部）。
+ *
+ * 和 [akApplyAffinity] 的区别：那个只管调用线程，靠「worker 创建时继承掩码」。
+ * 但 ggml 的线程池是在 nativeInit 建 context 时就创建好的，那时我们还没决定绑哪组核——
+ * 之后再 sched_setaffinity(0) 只改了主线程，worker 早就定在原地了（这一点在
+ * 1.478 的投票里被绕过：投票的第一组恰好是「不绑核」，所以没暴露）。
+ *
+ * 要给 prefill 阶段单独换一组核，只能逐个 tid 改。
+ */
+static bool akApplyAffinityAll(const std::vector<int>& cpus) {
+    cpu_set_t set;
+    CPU_ZERO(&set);
+    if (cpus.empty()) {
+        const int n = std::min(akCpuCount(), static_cast<int>(CPU_SETSIZE));
+        for (int i = 0; i < n; i++) CPU_SET(i, &set);
+    } else {
+        for (int c : cpus) {
+            if (c >= 0 && c < CPU_SETSIZE) CPU_SET(c, &set);
+        }
+    }
+    const bool ok = sched_setaffinity(0, sizeof(set), &set) == 0;
+
+    DIR* d = opendir("/proc/self/task");
+    if (!d) return ok;
+    const int self = static_cast<int>(gettid());
+    struct dirent* e;
+    while ((e = readdir(d)) != nullptr) {
+        if (e->d_name[0] < '0' || e->d_name[0] > '9') continue;
+        const int tid = atoi(e->d_name);
+        if (tid == self) continue;   // 上面已经设过
+        sched_setaffinity(tid, sizeof(set), &set);   // 线程可能刚退出，失败无所谓
+    }
+    closedir(d);
+    return ok;
+}
+
 /** 把当前线程钉到 [cpus]（空 = 放开全部）。worker 线程由 llama_decode 内部 pthread_create
  *  创建，**继承创建者的掩码**，所以只需要管调用 decode 的那个线程。 */
 static bool akApplyAffinity(const std::vector<int>& cpus) {
@@ -610,11 +677,31 @@ static std::vector<AkCandidate> akCandidates(int fallbackThreads) {
 }
 
 /**
- * 投票：每组跑 2 个 token，取「每 token 毫秒数」最小的那组。
+ * W-98：绑核投票**默认关闭**。
  *
- * 为什么是 2 个而不是更多：单 token 的抖动（调度、频率、中断）能到 ±20%，
- * 2 个 token 取均值已经能把「19 GB/s 对 30 GB/s」这种 50% 的差分辨出来，
- * 再多就纯属让用户多等。前一组的结果不会污染后一组 —— 每组前后都 resetKv。
+ * 它是 W-95~W-97 三版做出来的东西，结论已经拿到了：真机 2026-10-29 19:51 的投票表
+ *
+ *     不绑核/4线程     97 ms/token（10.3 tok/s）  ← 选它
+ *     cpu3-6/4线程    135 ms/token
+ *     cpu3-7/4线程     97 ms/token
+ *     cpu3-7/2线程    134 ms/token
+ *
+ * 绑核一分钱没赚到，而 CPU 落点那行解释了为什么：不绑核时 cpu3-6 已经吃掉 75% 的采样，
+ * 调度器本来就偏心大核（ggml 是 spin-wait barrier，跑得快的核自然接更多活）。
+ * 我们要「帮」它做的事，它自己已经做了。
+ *
+ * 代价倒是实打实的：4 组 × 7 次单 token 前向 = 28 次全量读那 2 GB 权重，
+ * 满载大核约 3 秒。紧接着的 prefill 从 16.3 掉到 7.1 tok/s——算力受限的那一段
+ * 正好撞在降频上（decode 带宽受限，所以看不出变化，这也是为什么上一版误判成
+ * 「prefill 变快了、decode 变慢了」）。
+ *
+ * 留着代码不删，是因为换一台机器（尤其 1+2+5 或全大核的）它可能真有用；
+ * 但要先有「投票比不投票便宜」的证据再打开。默认关。
+ */
+constexpr bool kAffinityVote = false;
+
+/**
+ * 投票：每组连续测 [kProbeTokens] 个 token，取「每 token 毫秒数」最小的那组。
  */
 static void akVoteAffinity(LlamaInstance* inst) {
     if (!inst || !inst->ctx) return;
@@ -726,6 +813,47 @@ static void akVoteAffinity(LlamaInstance* inst) {
     LOGI("绑核结论：%s（%.0f ms/token，约 %.1f tok/s，是不绑核的 %.2f 倍）。这是本进程的最终配置，重建上下文也照用",
          win.label.c_str(), best, best > 0 ? 1000.0 / best : 0.0, speedup);
 }
+
+// ---- W-98：prefill 阶段的临时绑核 -------------------------------------------
+//
+// 两个阶段的瓶颈是反的：
+//   decode（逐个 token）：带宽受限。4 个线程从哪几个核上跑都能吃满 LPDDR，
+//                        所以绑了没用甚至更慢（1.480 真机：绑 cpu3-6 是 135 ms/token，
+//                        不绑 97 ms/token，正好是三倍档差）。
+//   prefill（整块 prompt）：算力受限。落到 A510 上就是白扔一半算力
+//                        （1.478 真机：绑 cpu3-7 时 19.4 tok/s，不绑 16.3）。
+//
+// 所以不是给进程选一个「最优」配置——那件事投票已经做过，结论是「怎么选都不如不选」。
+// 而是按阶段切：算的时候钉到大核，算完立刻放开。
+class AkPrefillBind {
+public:
+    AkPrefillBind() {
+        if (g_safeMode.load()) return;
+
+        const auto topo = akCpuTopology();
+        if (topo.size() < 2) return;
+        const auto& big = topo.back().cpus;
+        // 少于两个核绑了没意义；全机只有一个大簇（比如 4 核全 A7x）时绑不绑一样。
+        if (big.size() < 2 || big.size() >= static_cast<size_t>(akCpuCount())) return;
+
+        if (!akApplyAffinityAll(big)) {
+            LOGW("prefill 绑核：%s 设不上去，按不绑核继续", akCpuRange(big).c_str());
+            return;
+        }
+        active_ = true;
+        LOGI("prefill 绑核：%s（算完自动放开，decode 仍不绑核）", akCpuRange(big).c_str());
+    }
+
+    ~AkPrefillBind() {
+        if (active_) akApplyAffinityAll({});
+    }
+
+    AkPrefillBind(const AkPrefillBind&) = delete;
+    AkPrefillBind& operator=(const AkPrefillBind&) = delete;
+
+private:
+    bool active_ = false;
+};
 
 // ---- 落点观测：证明「绑了没有 / 绑对没有」 ----------------------------------
 //
@@ -987,8 +1115,12 @@ bool decodeFrom(LlamaInstance* inst, std::vector<llama_token>& tokens, size_t fr
     //   有「预热」但没「开始」 → 卡在 KV 回退/账本；
     //   有「开始」但没「进度」 → 卡在 llama_decode 内部；
     //   有进度但很慢         → 才是真的算力不够。
-    LOGI("prefill 开始：从第 %zu 个起，共 %zu token，线程 %d，分块 %d",
-         from, tokens.size(), inst->n_threads, std::min(inst->n_batch, PREFILL_CHUNK));
+    // W-98：这一整段是算力受限的，先钉到大核再开算；函数返回时自动放开。
+    AkPrefillBind prefillBind;
+
+    LOGI("prefill 开始：从第 %zu 个起，共 %zu token，线程 %d，分块 %d，峰值频率 %d MHz",
+         from, tokens.size(), inst->n_threads, std::min(inst->n_batch, PREFILL_CHUNK),
+         akPeakMhz());
 
     // 分块上限取 PREFILL_CHUNK（现在是 128，理由见它的定义）。
     //
@@ -1425,7 +1557,7 @@ Java_com_example_agentkit_core_llm_local_LlamaJni_nativeInit(
     //
     // 安全模式跳过：那一档的判据是「内存已经贴顶」，再压 2 秒纯属添乱；而且安全模式
     // 本来就跑在降级路径上，性能不是这时候该操心的事。
-    if (!g_affinity.decided && !g_safeMode.load()) {
+    if (kAffinityVote && !g_affinity.decided && !g_safeMode.load()) {
         akVoteAffinity(inst);
     } else if (g_affinity.decided) {
         // 自愈重建（rebuildContext）之后走这里：结论是进程级的，直接照用，不再投票。
@@ -1826,9 +1958,10 @@ Java_com_example_agentkit_core_llm_local_LlamaJni_nativeGenerate(
         common = 0;
     }
     const long long prefillMs = nowMs() - prefillStart;
-    LOGI("prefill 完成：复用 %zu / 共 %zu token，补算 %zu，耗时 %lld ms（%.1f tok/s）",
+    LOGI("prefill 完成：复用 %zu / 共 %zu token，补算 %zu，耗时 %lld ms（%.1f tok/s），峰值频率 %d MHz",
          common, tokens.size(), tokens.size() - common, prefillMs,
-         prefillMs > 0 ? (tokens.size() - common) * 1000.0 / static_cast<double>(prefillMs) : 0.0);
+         prefillMs > 0 ? (tokens.size() - common) * 1000.0 / static_cast<double>(prefillMs) : 0.0,
+         akPeakMhz());
 
     // 3) 采样链：重复惩罚 → top-k 40 → top-p 0.9 → min-p 0.05 → 温度 0.7 → 随机抽取
     //

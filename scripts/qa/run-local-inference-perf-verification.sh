@@ -279,6 +279,20 @@ expect "结论里带上相对不绑核的倍数" "$JNI" '是不绑核的'
 # 只能靠「线程 5」反推它跑过。
 expect "投票与落点进 Run 日志摘要" "$CLIENT" '"绑核", "CPU 落点"'
 
+# ---- W-98：投票自己就是瓶颈，改成「按阶段绑」 ----
+# 1.480 真机 19:51 的投票表：不绑核 97 ms/token、cpu3-6 135、cpu3-7 97、cpu3-7/2线程 134。
+# 绑核一分钱没赚到，而代价是 28 次全量前向（约 3 秒满载）——紧接着的 prefill 从
+# 16.3 掉到 7.1 tok/s。所以默认关掉，只在别的机型上留个口子。
+expect "投票默认关闭" "$JNI" 'constexpr bool kAffinityVote = false'
+# prefill 算力受限（绑核有收益），decode 带宽受限（绑核更慢），按阶段切。
+expect "prefill 期间临时绑核" "$JNI" 'AkPrefillBind prefillBind;'
+expect "prefill 结束自动放开掩码" "$JNI" 'if \(active_\) akApplyAffinityAll\(\{\}\)'
+# worker 在建 context 时就已创建，只改主线程掩码对它无效——必须逐个 tid 改。
+expect "绑核覆盖进程内所有线程" "$JNI" 'sched_setaffinity\(tid,'
+expect "prefill 绑核写进日志" "$JNI" 'prefill 绑核：'
+# 「机器热了」和「线程配错了」都表现为 prefill 变慢，只有频率能把两者分开。
+expect "prefill 报峰值频率" "$JNI" '峰值频率 %d MHz'
+
 echo
 if [ "$fail" -eq 0 ]; then
   # 汇总行要带 FAIL=0：run-all.sh 用它识别「跑完且全过」（RESULT PASS 不认）
