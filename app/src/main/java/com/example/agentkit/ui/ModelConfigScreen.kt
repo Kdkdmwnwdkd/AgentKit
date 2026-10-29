@@ -1772,8 +1772,11 @@ private fun LocalModelsTab(vm: ChatViewModel) {
                     color = MaterialTheme.colorScheme.onSurface
                 )
                 Text(
-                    text = if (safeMode) "已开启：上下文按 2048、批按 64 运行（下一次加载模型生效）"
-                    else "已关闭：按下面填的值运行。若在本机反复闪退，可打开它换稳定",
+                    text = if (safeMode) {
+                        "已开启：上下文按 2048、批按 64 运行（下一次加载模型生效）"
+                    } else {
+                        "已关闭：按下面填的值运行。若在本机反复闪退，可打开它换稳定"
+                    },
                     style = MaterialTheme.typography.bodySmall,
                     color = if (safeMode) MaterialTheme.colorScheme.error
                     else MaterialTheme.colorScheme.onSurfaceVariant
