@@ -150,4 +150,18 @@ object LocalLlamaEngine {
         if (handle == 0L) return ""
         return LlamaJni.nativeGenerate(handle, prompt, maxTokens, listener)
     }
+
+    /**
+     * 取走「GPU 后端在生成期间自己抛异常」的记录（取走即清空，空串表示没发生）。
+     *
+     * 真机 2026-10-29：Adreno 740 + 99 层全卸载，首次生成时
+     * `vk::Device::createComputePipeline: ErrorUnknown`，异常穿过 JNI 边界直接闪退。
+     * native 侧现在就地接住，这里把原因交给调用方去降级——序列不消费会导致
+     * 「重试那一轮又被判成故障」的死循环。
+     */
+    fun takeGpuFault(): String {
+        val handle = synchronized(lock) { current?.handle } ?: return ""
+        if (handle == 0L) return ""
+        return LlamaJni.takeGpuFault(handle)
+    }
 }

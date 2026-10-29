@@ -250,6 +250,39 @@ struct LlamaInstance {
      * 锁只包住 nativeGenerate 本体（不包括 nativeStop —— 停止必须能随时生效）。
      */
     std::mutex genMu;
+
+    /** 加载时实际卸载到 GPU 的层数。0 = 纯 CPU，用来判断异常该不该记成「GPU 故障」。 */
+    int gpuLayers = 0;
+
+    /**
+     * GPU 后端自己炸了（Vulkan 驱动在 llama_decode 内部抛 C++ 异常）。
+     *
+     * 真机 2026-10-29：Adreno 740 / Vulkan 1.4，99 层全卸载，首次生成时
+     * `vk::Device::createComputePipeline` 返回 VK_ERROR_UNKNOWN 并 throw，异常穿过
+     * JNI 边界直接 terminate，整个 App 闪退，用户只看到「点了就没了」。
+     *
+     * 现在在 decodeExplicit 里就地接住：进程不崩，标记成故障，由 Kotlin 侧关掉 GPU
+     * 重载 CPU 后重试这一轮。**不做三级自愈**——GPU 后端已坏，再 decode 一次只是
+     * 把同一个异常再抛一遍，纯属浪费用户十几秒。
+     */
+    std::atomic<bool> gpuFault{false};
+    std::string faultReason;
+    std::mutex faultMu;
+
+    void markGpuFault(const char* what) {
+        std::lock_guard<std::mutex> g(faultMu);
+        if (!gpuFault.load()) {
+            faultReason = (what && *what) ? what : "未知 C++ 异常";
+            gpuFault.store(true);
+        }
+    }
+
+    /** 重载（新建实例）时复位：新实例本来就没有故障。 */
+    void clearGpuFault() {
+        std::lock_guard<std::mutex> g(faultMu);
+        faultReason.clear();
+        gpuFault.store(false);
+    }
 };
 
 /**
@@ -465,7 +498,30 @@ bool decodeExplicit(LlamaInstance* inst, const llama_token* toks, int32_t n, lla
     // 第一次进 decode 之前是 prefill（吃 prompt），之后是逐 token 生成。
     // 两个阶段的崩溃原因不同：prefill 看重算力与大 batch，生成看重显存带宽。
     ak_stage_set(batch.n_tokens > 1 ? AK_STAGE_PREFILL : AK_STAGE_DECODE);
-    const int rc = llama_decode(inst->ctx, batch);
+
+    // llama.cpp 的后端实现大量 `throw std::runtime_error(...)`（Vulkan 那一侧尤其多，
+    // 例如 vk::Device::createComputePipeline 拿到 VK_ERROR_UNKNOWN 就直接 throw）。
+    // 异常穿过 JNI 边界 = terminate = SIGABRT = 用户那句「又闪退了」，而且什么都留不下。
+    // 所以**在这里就地接住**：标记故障、返回失败，把「崩溃」降级成「这一轮没算出来」。
+    int rc = -100;
+    try {
+        rc = llama_decode(inst->ctx, batch);
+    } catch (const std::exception& e) {
+        llama_batch_free(batch);
+        if (inst->gpuLayers > 0) {
+            inst->markGpuFault(e.what());
+            LOGE("llama_decode 抛出异常（GPU %d 层，已标记为 GPU 故障）：%s",
+                 inst->gpuLayers, e.what());
+        } else {
+            LOGE("llama_decode 抛出异常（纯 CPU）：%s", e.what());
+        }
+        return false;
+    } catch (...) {
+        llama_batch_free(batch);
+        if (inst->gpuLayers > 0) inst->markGpuFault("未知 C++ 异常");
+        LOGE("llama_decode 抛出未知异常（GPU %d 层）", inst->gpuLayers);
+        return false;
+    }
     llama_batch_free(batch);
     if (rc != 0) {
         if (inst->stop.load()) {
@@ -522,6 +578,7 @@ bool decodeFrom(LlamaInstance* inst, std::vector<llama_token>& tokens, size_t fr
                             static_cast<llama_pos>(i))) {
             // 中止：KV 已在 decodeExplicit 里对齐到账本，账本本身没动，可以直接留用。
             // 真失败：账本与 KV 的关系不再可信，必须整块清掉。
+            // GPU 故障也照样清：llama_kv_cache_seq_rm 只动元数据，不碰 GPU，安全。
             if (!inst->stop.load()) resetKv(inst, "prefill decode 失败");
             return false;
         }
@@ -716,6 +773,9 @@ Java_com_example_agentkit_core_llm_local_LlamaJni_nativeInit(
     }
 
     auto* inst = new LlamaInstance();
+    // 记下这次真的卸载了几层：llama_decode 抛异常时据此决定「算 GPU 故障」还是
+    // 「纯 CPU 上的普通错误」——前者要降级重载，后者降级没意义。
+    inst->gpuLayers = nGpuLayers;
 
     // 预读提示：让内核在我们解析 GGUF 头部的同时，把权重从闪存拉进 page cache。
     //
@@ -892,6 +952,28 @@ Java_com_example_agentkit_core_llm_local_LlamaJni_nativeStop(
     JNIEnv* /*env*/, jobject /*thiz*/, jlong handle) {
     auto* inst = reinterpret_cast<LlamaInstance*>(handle);
     if (inst) inst->stop.store(true);
+}
+
+/**
+ * 取走「GPU 后端抛过异常」这件事，并把标记清空（取走即消费）。
+ *
+ * 返回空串 = 没发生过 GPU 故障；非空 = 故障原因（vk::... 那串）。
+ *
+ * 为什么要「取走」而不是「查询」：Kotlin 侧拿到原因后会关 GPU、重载 CPU、重试这一轮。
+ * 若不消费，重试那一轮（新实例，但旧句柄可能还在）会读到上一轮的残留标记，
+ * 于是把一次已经修好的重试判成「又炸了」，陷入无限降级。
+ */
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_example_agentkit_core_llm_local_LlamaJni_nativeTakeGpuFault(
+    JNIEnv* env, jobject /*thiz*/, jlong handle) {
+    auto* inst = reinterpret_cast<LlamaInstance*>(handle);
+    if (!inst) return env->NewStringUTF("");
+    std::lock_guard<std::mutex> g(inst->faultMu);
+    if (!inst->gpuFault.load()) return env->NewStringUTF("");
+    std::string reason = inst->faultReason;
+    inst->faultReason.clear();
+    inst->gpuFault.store(false);
+    return env->NewStringUTF(reason.c_str());
 }
 
 /**
@@ -1189,6 +1271,13 @@ Java_com_example_agentkit_core_llm_local_LlamaJni_nativeGenerate(
             LOGI("prefill 被用户停止，本回合直接结束（未产出文本）");
             return env->NewStringUTF("");
         }
+        // GPU 后端自己炸了：这时候三级自愈全是白费——分块再小、上下文再重建，
+        // 下次 still 是同一个 Vulkan 驱动抛同一个异常。直接收手，交给 Kotlin 侧
+        // 关 GPU 重载 CPU 再重试，比在这里把同一个异常再踩两遍快得多。
+        if (inst->gpuFault.load()) {
+            LOGE("prefill 阶段 GPU 后端抛出异常，放弃本轮（不重试，交由上层降级 CPU）");
+            return env->NewStringUTF("");
+        }
         // 三级自愈，全部在 native 内完成，用户侧只体现为「这一次慢一点」：
         //   1) KV 已被 decodeFrom 重置 —— 排除账本脏；
         //   2) 分块缩到 512 —— 排除「单批太大被后端拒绝」；
@@ -1301,6 +1390,10 @@ Java_com_example_agentkit_core_llm_local_LlamaJni_nativeGenerate(
         // 下一个 token：显式 pos（账本长度即下一位），成功后才记入账本
         if (!decodeExplicit(inst, &tok, 1, static_cast<llama_pos>(inst->kvTokens.size()))) {
             resetKv(inst, "生成中 decode 失败");
+            if (inst->gpuFault.load()) {
+                LOGE("生成到第 %d 个 token 时 GPU 后端抛出异常，本轮提前结束（已产出 %zu 字符）",
+                     produced, out.size());
+            }
             break;
         }
         inst->kvTokens.push_back(tok);

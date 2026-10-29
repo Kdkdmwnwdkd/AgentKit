@@ -131,6 +131,23 @@ object LlamaJni {
     external fun nativeGenerate(handle: Long, prompt: String, maxTokens: Int, listener: TokenListener?): String
 
     /**
+     * 取走上一次生成期间「GPU 后端自己抛异常」的记录（取走即清空）。
+     *
+     * 空串 = 没发生过。非空就是原因，典型是
+     * `vk::Device::createComputePipeline: ErrorUnknown`——Adreno 驱动在编译
+     * 计算管线时失败，llama.cpp 的 vulkan-hpp 绑定直接 throw。
+     *
+     * W-87 之前这种异常会穿过 JNI 边界 → terminate → SIGABRT，整个 App 闪退；
+     * 现在 native 侧就地接住，这里读到原因就说明**必须降到纯 CPU 重来**。
+     */
+    fun takeGpuFault(handle: Long): String {
+        if (handle == 0L || !ensureLoaded()) return ""
+        return runCatching { nativeTakeGpuFault(handle) }.getOrDefault("")
+    }
+
+    external fun nativeTakeGpuFault(handle: Long): String
+
+    /**
      * 这个 APK 是否编入了 GPU（Vulkan）后端。由 C++ 编译期宏回答，不是 Kotlin 常量。
      *
      * 先走 [ensureLoaded]：x86 模拟器上库根本不会加载，靠抛 UnsatisfiedLinkError 再吞掉

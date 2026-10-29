@@ -376,6 +376,28 @@ object LocalDeviceRules {
     }
 
     /**
+     * 「Adreno 驱动 + Q4_K 量化」是必崩组合；命中就返回要绕开 GPU 的理由。
+     *
+     * 依据是 llama.cpp issue #29786：Adreno 驱动在创建 `mul_mat_vec_q4_k_*` 的计算
+     * 管线时直接返回 VK_ERROR_UNKNOWN，vulkan-hpp 绑定把它 throw 出来，ggml 不接，
+     * 异常穿过 JNI 边界就是 SIGABRT —— 用户侧的表现是「发一句话，App 直接消失」。
+     *
+     * 真机 2026-10-29（Adreno 740 / Vulkan 1.4 / qwen2.5-3b-instruct-q4_k_m / 99 层）
+     * 完全吻合：模型加载成功（权重都进显存了），第一次生成才炸，报的就是
+     * `vk::Device::createComputePipeline: ErrorUnknown`。
+     *
+     * 同一份 SPIR-V 在 Turnip、lavapipe 上编译正常，所以不是我们的构建问题；
+     * 38 个 mul_mat_vec 变体里只有 q4_k 家族挂，q4_0 / q5_k / q6_k / q8_0 都正常。
+     * 结论：这不是调参能解决的，只能换量化格式，或者老老实实跑 CPU。
+     */
+    fun adrenoQ4kRisk(modelFile: String, gpuModel: String?): String? {
+        if (gpuModel.isNullOrBlank() || !gpuModel.contains("Adreno", ignoreCase = true)) return null
+        if (!modelFile.lowercase().contains("q4_k")) return null
+        return "模型是 Q4_K 量化，$gpuModel 的驱动编不过这种着色器（llama.cpp #29786）。" +
+            "换成 Q4_0 或 Q8_0 的模型就能用 GPU；继续用 Q4_K 只能跑 CPU"
+    }
+
+    /**
      * 卸载层数上限。99 是 llama.cpp 的惯用值，含义是「能卸的全卸」
      * （模型层数远小于它，等于 all layers）。写具体层数没有意义：
      * 不同模型的层数不同，而 llama.cpp 会按 min(n_layers, 上限) 处理。

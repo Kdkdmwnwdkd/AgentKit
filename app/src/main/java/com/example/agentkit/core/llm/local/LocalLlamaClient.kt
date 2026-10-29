@@ -59,6 +59,17 @@ class LocalLlamaClient(
     @Volatile
     private var lastGpuLogLine: String? = null
 
+    /**
+     * 本进程内「GPU 后端已经炸过」的原因。非空即钉死 CPU，直到 App 重启或用户改设置。
+     *
+     * 为什么不直接用设置：用户的「自动/强制开启」是意愿，不是事实。驱动在
+     * createComputePipeline 上返回 VK_ERROR_UNKNOWN 时，继续开 GPU 的结果是
+     * 「每轮先白算十几秒、再退回 CPU」，比直接 CPU 更差。这里只覆盖本次进程，
+     * 不动用户设置——下次开 App 会重新评估，驱动更新后能自动恢复。
+     */
+    @Volatile
+    private var gpuFaultDisabled: String? = null
+
     // —— 对话主路径 ————————————————————————————————————————————————
 
     override suspend fun chat(
@@ -70,7 +81,18 @@ class LocalLlamaClient(
         val prompt = buildPrompt(eff.messages)
         AgentLogger.llmRequest(currentModelLabel(), eff.messages.size, eff.tools.size)
         val startedAt = System.currentTimeMillis()
-        val text = engine.generate(prompt, setting.maxTokens, null)
+        var text = engine.generate(prompt, setting.maxTokens, null)
+        // GPU 后端自己炸了（Vulkan 驱动在 decode 里抛了 C++ 异常）：本轮没算出来，但进程还在。
+        // 这不是「模型不会答」，所以别把原因包装成推理失败——关掉 GPU、按 CPU 重新加载，
+        // 当场把这一轮补出来。用户付出的只是多等一次加载，而不是「又崩了」。
+        val fault = engine.takeGpuFault()
+        if (fault.isNotEmpty()) {
+            gpuFaultDisabled = fault
+            AgentLogger.e("LocalLlama", "GPU 后端在生成时抛出异常：$fault")
+            AgentLogger.w("LocalLlama", "本次进程内已关闭 GPU 加速，改用 CPU 重新加载并重试这一轮…")
+            ensureModelLoaded()
+            text = engine.generate(prompt, setting.maxTokens, null)
+        }
         val elapsed = System.currentTimeMillis() - startedAt
         if (text.isEmpty()) {
             val diag = nativeDiagnostics()
@@ -159,24 +181,48 @@ class LocalLlamaClient(
      * 拿不到画像时按 CPU 走并写明原因——「没探测到」不等于「支持」。
      */
     private fun resolveGpuPlan(): LocalDeviceRules.GpuPlan {
+        // 之前在本进程里被 GPU 后端炸过一次：直接判 CPU。
+        //
+        // 这条必须排在设备画像之前——画像只能说「这台机器理论上有 Adreno 740」，
+        // 它不知道驱动刚在 createComputePipeline 上返回过 VK_ERROR_UNKNOWN。
+        // 用户把「自动」理解成「安全」是合理的，所以这里不赌第二次。
+        gpuFaultDisabled?.let { why ->
+            val line = "GPU 未启用：上次生成时 GPU 后端抛出异常（$why），本次进程改用 CPU"
+            if (line != lastGpuLogLine) {
+                lastGpuLogLine = line
+                AgentLogger.w("LocalLlama", line)
+            }
+            return LocalDeviceRules.GpuPlan(0, "上次 GPU 后端抛出异常：$why")
+        }
         val profile = AndroidDeviceProbe.cachedProfile
             ?: return LocalDeviceRules.GpuPlan(0, "设备画像尚未采集完成，本轮先用 CPU")
         val advice = LocalDeviceRules.advise(profile)
         val plan = LocalDeviceRules.resolveGpu(advice, LlamaJni.gpuBackendAvailable, setting.gpuMode)
+        // 已知驱动缺陷先拦一道：Adreno 上 Q4_K 的 compute pipeline 建不出来，开了必炸。
+        //
+        // 拦在「自动」这一档，是因为用户选自动的语义就是「你替我判断安全不安全」——
+        // 而这里恰好有一条已知会崩的路径。「强制开启」放行：那是用户明知有风险的选择，
+        // 况且 native 侧现在已经能接住异常并降级，最多白跑一轮，不会再闪退。
+        val risk = if (plan.usingGpu && setting.gpuMode != GpuMode.FORCE) {
+            LocalDeviceRules.adrenoQ4kRisk(setting.activeModel, advice.gpuModel)
+        } else {
+            null
+        }
+        val finalPlan = if (risk != null) LocalDeviceRules.GpuPlan(0, risk) else plan
         // 每轮对话都会走这里，但结论几乎不变。只记「变化」——否则 Agent 跑十轮就刷十行
         // 同样的「GPU 未启用」，真正有用的那行反而被淹掉。
-        val line = if (plan.usingGpu) {
-            "GPU 卸载：${plan.layers} 层 → ${advice.gpuModel ?: advice.gpu.label}" +
+        val line = if (finalPlan.usingGpu) {
+            "GPU 卸载：${finalPlan.layers} 层 → ${advice.gpuModel ?: advice.gpu.label}" +
                 "（Vulkan ${advice.vulkanVersion ?: "?"}）"
         } else {
             // 这条日志是「用户以为在用 GPU」的唯一解药：把「为什么没用」写进运行日志。
-            "GPU 未启用：${plan.reason}"
+            "GPU 未启用：${finalPlan.reason}"
         }
         if (line != lastGpuLogLine) {
             lastGpuLogLine = line
             AgentLogger.i("LocalLlama", line)
         }
-        return plan
+        return finalPlan
     }
 
 
@@ -210,6 +256,16 @@ class LocalLlamaClient(
         thread.join()
         if (acc.isEmpty()) {
             val diag = nativeDiagnostics()
+            val fault = engine.takeGpuFault()
+            if (fault.isNotEmpty()) {
+                gpuFaultDisabled = fault
+                AgentLogger.e("LocalLlama", "GPU 后端在生成时抛出异常：$fault")
+                AgentLogger.w("LocalLlama", "本次进程内已关闭 GPU 加速，下一条消息将改用 CPU（无需重启）")
+                throw LocalInferenceException(
+                    "GPU 加速在这台机器上用不了：驱动创建计算管线失败（$fault）。" +
+                        "已自动改用 CPU，请再发一次。"
+                )
+            }
             AgentLogger.e("LocalLlama", "本地生成返回空文本（prompt ${prompt.length} 字符）。native 诊断：\n$diag")
             throw LocalInferenceException(localFailureReason(diag))
         }
@@ -364,6 +420,20 @@ class LocalLlamaClient(
         // 否则这个回合会静默落一条空助手消息，看起来就像卡住/重复上一句。
         if (text.isEmpty()) {
             val diag = nativeDiagnostics()
+            // GPU 后端自己炸了：Vulkan 驱动创建计算管线时抛异常，native 侧接住后
+            // 本轮一个字都算不出来。流式这里**不重试**——重跑要重开整条 Flow，
+            // 用户可能已经看到半截字，重来一遍反而更乱。
+            // 钉死 CPU 即可：下一条消息直接跑 CPU，代价只有这一轮。
+            val fault = engine.takeGpuFault()
+            if (fault.isNotEmpty()) {
+                gpuFaultDisabled = fault
+                AgentLogger.e("LocalLlama", "GPU 后端在生成时抛出异常：$fault")
+                AgentLogger.w("LocalLlama", "本次进程内已关闭 GPU 加速，下一条消息将改用 CPU（无需重启）")
+                throw LocalInferenceException(
+                    "GPU 加速在这台机器上用不了：驱动创建计算管线失败（$fault）。" +
+                        "已自动改用 CPU，请把这句话再发一次。"
+                )
+            }
             AgentLogger.e(
                 "LocalLlama",
                 "本地生成返回空文本（prompt ${prompt.length} 字符）。native 诊断：\n$diag"
