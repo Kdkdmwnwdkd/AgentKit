@@ -203,7 +203,9 @@ if (TARGET ggml-vulkan)
 endif()
 
 # ---- 我们的 JNI 桥 ----
-add_library(agentkit-llama SHARED llama-jni.cpp)
+# native-crash.cpp 必须在**同一个** .so 里：它要读到 llama-jni 里的阶段标记，
+# 而且崩溃时进程已经是死的，跨库调用不可靠。放同一目标里最省事也最稳。
+add_library(agentkit-llama SHARED llama-jni.cpp native-crash.cpp)
 
 target_include_directories(agentkit-llama PRIVATE
     "${LLAMA_SOURCE_DIR}/include"

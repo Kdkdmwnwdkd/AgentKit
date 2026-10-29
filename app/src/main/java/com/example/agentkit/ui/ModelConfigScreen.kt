@@ -1428,6 +1428,7 @@ private fun LocalModelsTab(vm: ChatViewModel) {
     val agentMode by vm.localAgentMode.collectAsStateWithLifecycle()
     val gpuMode by vm.localGpuMode.collectAsStateWithLifecycle()
     val gpuSummary by vm.localGpuSummary.collectAsStateWithLifecycle()
+    val gpuCrashNote by vm.localGpuCrashNote.collectAsStateWithLifecycle()
     val ctx = LocalContext.current
     val catalog = remember(ctx) { com.example.agentkit.core.llm.local.GgufModelStore(ctx).catalog() }
     var pendingDelete by remember { mutableStateOf<String?>(null) }
@@ -1704,6 +1705,16 @@ private fun LocalModelsTab(vm: ChatViewModel) {
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
+        // 上次开 GPU 崩过就把原因摆出来。不给提示的话，用户只会看到「自动」突然不生效了，
+        // 以为是设置坏了——而真相是上一条消息把进程打死了，这次被自动退回 CPU。
+        if (gpuCrashNote.isNotBlank()) {
+            Spacer(Modifier.height(AgentSpacing.space2))
+            Text(
+                text = "⚠ $gpuCrashNote",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error
+            )
+        }
         Spacer(Modifier.height(AgentSpacing.space2))
         com.example.agentkit.core.llm.local.GpuMode.values().forEach { mode ->
             val hint = when (mode) {
@@ -1741,7 +1752,7 @@ private fun LocalModelsTab(vm: ChatViewModel) {
     // —— 推理参数 ————————————————————————————————————————————
     AkGroup(
         title = "推理参数",
-        description = "上下文越大越吃内存（4K 约额外 0.5GB）；线程数超过大核数收益递减，保存后下次加载生效",
+        description = "上下文越大越吃内存（4K 约额外 0.5GB）；GPU 开启时上限 4096（显存要和权重共用）；线程数超过大核数收益递减，保存后下次加载生效",
         paddedContent = true
     ) {
         LocalParamField(

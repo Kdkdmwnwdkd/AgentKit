@@ -686,6 +686,15 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     private val _localGpuMode = MutableStateFlow(localSetting.gpuMode)
     val localGpuMode: StateFlow<GpuMode> = _localGpuMode.asStateFlow()
 
+    /**
+     * 上次「开 GPU 崩掉」的说明（空串 = 没有）。
+     *
+     * 初值从磁盘读：崩溃时进程已经死了，这条只能靠 Application 在下次启动时落盘，
+     * 这里只负责把它显示出来。用户手动改档位即视为「我知道了」，清空。
+     */
+    private val _localGpuCrashNote = MutableStateFlow(localSetting.lastGpuCrashNote)
+    val localGpuCrashNote: StateFlow<String> = _localGpuCrashNote.asStateFlow()
+
     // 必须声明在 localGpuSummary 之前：combine(...) 在属性初始化时就会读到它，
     // 放在后面的话拿到的是 null（Kotlin 按声明顺序初始化字段），表现为一进页面就 NPE。
     /** 设备画像（启动时后台采一次；页面打开时通常已就绪）。 */
@@ -717,6 +726,8 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         _localLoaded.value = LocalLlamaEngineIsLoaded()
         // 画像在启动时后台采一次，这里补一次读取：用户可能进得太快，创建 VM 时还是 null。
         _localGpuDevices.value = AndroidDeviceProbe.cachedProfile
+        // 崩溃说明也可能被 Application 在本次启动写进去（VM 早于它创建时不成立，但重进页面时要对齐）。
+        _localGpuCrashNote.value = localSetting.lastGpuCrashNote
     }
 
     private fun LocalLlamaEngineIsLoaded(): Boolean =
@@ -836,6 +847,11 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     fun setLocalGpuMode(mode: GpuMode) {
         localSetting.gpuMode = mode
         _localGpuMode.value = mode
+        // 用户已经看过这条提示并做了选择，不再重复打扰。
+        if (_localGpuCrashNote.value.isNotBlank()) {
+            localSetting.lastGpuCrashNote = ""
+            _localGpuCrashNote.value = ""
+        }
         AgentLogger.i("LocalLlama", "GPU 策略改为「${mode.label}」，下次加载模型生效")
     }
 

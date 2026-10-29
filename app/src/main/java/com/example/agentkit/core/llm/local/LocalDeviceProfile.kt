@@ -383,6 +383,28 @@ object LocalDeviceRules {
     const val GPU_MAX_LAYERS = 99
 
     /**
+     * GPU 开启时允许的最大上下文。
+     *
+     * KV cache 和权重抢的是同一块显存。3B Q4 权重约 2GB，ctx=16384 的 KV 还要再吃
+     * 六七百 MB；手机没有独立显存，单次分配上限由驱动给（常见 256MB～1GB），
+     * 分配失败的表现是「装载很久 → 悄悄退回 CPU」，运气差一点就是整个进程消失
+     * （真机 2026-10-29：3B + ctx=16384 + GPU 全量卸载，发一句话直接闪退）。
+     *
+     * 4096 覆盖手机上的绝大多数对话场景，又不至于把显存顶爆。确实需要更长上下文时，
+     * 关掉 GPU 即可——那时 KV 在系统内存里，能开多大由内存决定而不是驱动。
+     */
+    const val GPU_MAX_CTX = 4096
+
+    /**
+     * GPU 开启时把上下文压到安全值；纯 CPU 原样返回用户设置。
+     *
+     * 刻意做成纯函数：这条规则一旦写错，后果是「用户的 8192 被悄悄改成 4096」
+     * 这种只有对比日志才看得出的问题，所以它必须能被断言直接覆盖。
+     */
+    fun capCtxForGpu(nCtx: Int, gpuLayers: Int): Int =
+        if (gpuLayers > 0) nCtx.coerceAtMost(GPU_MAX_CTX) else nCtx
+
+    /**
      * 综合判断：这台机器该先试哪条路。
      *
      * 规则刻意保守——GPU 默认只对「Vulkan 1.2+ 且 Adreno」打开，Mali 一律先给 CPU。

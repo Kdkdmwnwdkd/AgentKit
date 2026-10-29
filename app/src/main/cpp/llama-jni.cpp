@@ -28,6 +28,9 @@
 // 设备注册表这层在 ggml-backend.h 里——「有没有认出 GPU」只能从这里回答。
 // CPU-only 构建下这个头照样能编（注册表里只有 CPU 一个设备），不需要条件编译。
 #include "ggml-backend.h"
+// 原生崩溃记忆：只往这里打「当前阶段」标记，实现见 native-crash.cpp。
+// 没有它，GPU 崩掉时进程直接消失，Java 那层一句日志都留不下。
+#include "native-crash.h"
 
 // ---------------------------------------------------------------------------
 // llama.cpp API 兼容层：b4600（2025-01）↔ v0.7.0（2026-10）
@@ -371,6 +374,9 @@ bool decodeExplicit(LlamaInstance* inst, const llama_token* toks, int32_t n, lla
         batch.logits[i] = (i == n - 1) ? 1 : 0;
     }
     batch.n_tokens = n;
+    // 第一次进 decode 之前是 prefill（吃 prompt），之后是逐 token 生成。
+    // 两个阶段的崩溃原因不同：prefill 看重算力与大 batch，生成看重显存带宽。
+    ak_stage_set(batch.n_tokens > 1 ? AK_STAGE_PREFILL : AK_STAGE_DECODE);
     const int rc = llama_decode(inst->ctx, batch);
     llama_batch_free(batch);
     if (rc != 0) {
@@ -597,6 +603,9 @@ Java_com_example_agentkit_core_llm_local_LlamaJni_nativeInit(
     // 是**静默**的（源码里 try/catch 后返回 nullptr，注册表直接跳过），所以如果只看
     // 「加载成功」，一台驱动不支持的机器会安静地退回 CPU 跑上几周。这里当场说清楚。
     if (nGpuLayers > 0) {
+        // Vulkan 实例与物理设备就在这一次枚举里首次创建（ggml 的 reg_init），
+        // 驱动不兼容时崩的就是这里，所以必须单独标一个阶段。
+        ak_stage_set(AK_STAGE_DEVICE_INIT);
         const GpuDevices devs = enumerateDevices();
         if (devs.gpus == 0) {
             LOGE("请求 GPU %d 层，但没有任何 GPU 后端可用（%s）——本次将按 CPU 运行",
@@ -638,6 +647,14 @@ Java_com_example_agentkit_core_llm_local_LlamaJni_nativeInit(
 #else
     mparams.use_mmap = true;
 #endif
+    // 崩溃前要知道「崩在哪个组合上」：模型多大、ctx 多长、开了几层 GPU。
+    // 这三项决定了复现难度——同一个模型 ctx=2048 和 ctx=16384 完全是两件事。
+    {
+        const size_t slash = path.find_last_of('/');
+        const char* base = slash == std::string::npos ? path.c_str() : path.c_str() + slash + 1;
+        ak_crash_context(base, nCtx, nThreads, nGpuLayers);
+    }
+    ak_stage_set(AK_STAGE_MODEL_LOAD);
     inst->model = llama_model_load_from_file(path.c_str(), mparams);
     if (!inst->model) {
         LOGE("llama_model_load_from_file 失败: %s", path.c_str());
@@ -700,6 +717,8 @@ Java_com_example_agentkit_core_llm_local_LlamaJni_nativeInit(
 #endif
     inst->n_batch = cparams.n_batch;
     inst->n_threads = nThreads;
+    // KV cache 就在这一步按 nCtx 分配；GPU 开启时它和权重抢同一块显存。
+    ak_stage_set(AK_STAGE_CTX_CREATE);
     inst->ctx = llama_init_from_model(inst->model, cparams);
     if (!inst->ctx) {
         LOGE("llama_init_from_model 失败");
@@ -707,6 +726,9 @@ Java_com_example_agentkit_core_llm_local_LlamaJni_nativeInit(
         delete inst;
         return 0;
     }
+
+    // 装载全部成功，回到空闲态：之后再崩就该归到推理/其他模块，而不是加载。
+    ak_stage_set(AK_STAGE_IDLE);
 
     char desc[256] = {0};
     llama_model_desc(inst->model, desc, sizeof(desc));

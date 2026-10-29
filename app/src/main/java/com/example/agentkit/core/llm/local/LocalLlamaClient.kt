@@ -100,7 +100,21 @@ class LocalLlamaClient(
             throw LocalInferenceException("本地模型文件缺失：$name（可能已被删除，请重新下载）")
         }
         val gpu = resolveGpuPlan()
-        var handle = engine.acquire(file.absolutePath, setting.nCtx, setting.nThreads, gpu.layers)
+        // 显存保护：GPU 开启时上下文压到安全值。
+        //
+        // 这一步不能省。真机 2026-10-29：3B + ctx=16384 + 全量卸载，用户发一句话，
+        // 进程直接消失（KV 和权重一起把显存顶爆，崩在 native，Java 层一句日志都没有）。
+        // 与其让用户「等两分钟然后闪退」，不如用 4096 跑起来——少一点上下文，
+        // 换来的是能出字。用户真要长上下文，把 GPU 关掉就是了。
+        val nCtx = LocalDeviceRules.capCtxForGpu(setting.nCtx, gpu.layers)
+        if (nCtx != setting.nCtx) {
+            AgentLogger.w(
+                "LocalLlama",
+                "GPU 开启时上下文限制为 $nCtx（设置里是 ${setting.nCtx}）：KV 缓存要和权重共用显存，" +
+                    "超过这个值容易在装载阶段分配失败甚至闪退。需要更长上下文请把 GPU 设为关闭",
+            )
+        }
+        var handle = engine.acquire(file.absolutePath, nCtx, setting.nThreads, gpu.layers)
 
         // GPU 装载失败要能退回 CPU，而不是把「本地推理」整个打死。
         //

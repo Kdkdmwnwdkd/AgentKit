@@ -72,6 +72,17 @@ class LocalLlamaSetting(context: Context) {
         set(value) = sp.edit().putString(KEY_GPU_MODE, value.name).apply()
 
     /**
+     * 上次「开 GPU 崩掉」的说明（空串 = 没有）。
+     *
+     * 由 [NativeCrashMemory.handleStartup] 写入、设置页读取。**必须持久化**：
+     * 崩溃发生在进程死亡的那一瞬间，内存里什么都留不下，只有提前写进磁盘的内容
+     * 能让下一次启动解释「为什么 GPU 被关掉了」。用户手动重选档位时清空。
+     */
+    var lastGpuCrashNote: String
+        get() = sp.getString(KEY_GPU_CRASH_NOTE, "") ?: ""
+        set(value) = sp.edit().putString(KEY_GPU_CRASH_NOTE, value).apply()
+
+    /**
      * 本地 Agent 模式：是否把工具协议、完整系统提示、历史一并塞进 prompt。
      *
      * **默认关**，这是 W-74 的核心结论。
@@ -121,6 +132,7 @@ class LocalLlamaSetting(context: Context) {
         private const val KEY_MAX_TOKENS = "max_tokens"
         private const val KEY_AGENT_MODE = "agent_mode"
         private const val KEY_GPU_MODE = "gpu_mode"
+        private const val KEY_GPU_CRASH_NOTE = "gpu_crash_note"
         const val DEFAULT_N_CTX = 4096
 
         /**

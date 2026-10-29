@@ -46,6 +46,12 @@ object LlamaJni {
         }
         available = try {
             System.loadLibrary("agentkit-llama")
+            // 装原生崩溃捕获：必须在**任何** native 调用之前。
+            //
+            // 放在 dlopen 成功之后而不是 Application.onCreate，是为了不让启动变慢：
+            // 这段逻辑只有在真正要用推理时才会跑到，而崩溃也只可能在这之后发生。
+            // 路径由 Application 提前塞进 [crashDir]（那里没有 .so 依赖，可以随便调）。
+            installCrashHandler()
             true
         } catch (e: UnsatisfiedLinkError) {
             unavailableReason = "native 库不可用（当前 ABI 未编入？）"
@@ -79,6 +85,30 @@ object LlamaJni {
         return "CPU 缺少 ${missing.joinToString("、")} 指令集，本地推理需 2018 年后机型（骁龙 845 及以上）"
     }
 
+    /**
+     * 原生崩溃落盘目录（由 Application 尽早赋值）。
+     *
+     * 用可变字段而不是构造参数传：这是一次性的进程级路径，传给每个调用方只是噪音。
+     * 未赋值时 [installCrashHandler] 直接跳过——宁可没有崩溃记录，也不要因此让推理起不来。
+     */
+    @Volatile
+    var crashDir: String? = null
+
+    @Volatile
+    private var crashHandlerReady = false
+
+    /** 安装原生信号处理器（幂等）。 */
+    private fun installCrashHandler() {
+        if (crashHandlerReady) return
+        val dir = crashDir ?: return
+        runCatching {
+            nativeInstallCrashHandler(dir)
+            crashHandlerReady = true
+        }.onFailure {
+            Log.w(TAG, "原生崩溃捕获安装失败（不影响推理）: ${it.message}")
+        }
+    }
+
     external fun nativeInit(modelPath: String, nCtx: Int, nThreads: Int, nGpuLayers: Int): Long
     external fun nativeFree(handle: Long)
     external fun nativeStop(handle: Long)
@@ -96,6 +126,13 @@ object LlamaJni {
         if (!ensureLoaded()) return@lazy false
         runCatching { nativeGpuBackend() }.getOrDefault(false)
     }
+
+    /**
+     * 安装原生崩溃捕获（见 native-crash.cpp）。
+     *
+     * @param crashDir 崩溃文件目录的绝对路径（必须已存在；通常就是 `filesDir/crash`）
+     */
+    external fun nativeInstallCrashHandler(crashDir: String)
 
     external fun nativeGpuBackend(): Boolean
 

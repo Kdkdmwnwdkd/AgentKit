@@ -8,6 +8,9 @@ import com.example.agentkit.automation.shizuku.ShizukuShell
 import com.example.agentkit.core.AgentLogger
 import com.example.agentkit.core.CrashLogger
 import com.example.agentkit.core.llm.local.AndroidDeviceProbe
+import com.example.agentkit.core.llm.local.LlamaJni
+import com.example.agentkit.core.llm.local.NativeCrashMemory
+import java.io.File
 
 /**
  * 应用入口（Application 子类，Manifest 已通过 `android:name` 声明）。
@@ -32,6 +35,20 @@ class AgentKitApplication : Application() {
                 "崩溃捕获已安装（filesDir/crash/，保留最近 ${CrashLogger.MAX_KEEP} 份）"
             )
         }
+        // 原生崩溃记忆（W-84）：把上一次「进程被信号打死」的现场读出来。
+        //
+        // 与上面 CrashLogger 的分工：CrashLogger 只管 Java 异常；GPU / Vulkan / ggml
+        // 崩起来走的是信号，进程当场消失，Java 那层一句日志都留不下——真机上表现就是
+        // 「发消息 → 转一会儿 → 直接回桌面，日志里什么都没有」。
+        // 这里做两件事：① 判断上次是不是开 GPU 崩的；② 是的话**自动关掉 GPU**，
+        // 保证这次至少能用起来，并把原因写进设置页。
+        runCatching {
+            val crashDir = File(filesDir, CrashLogger.DIR_NAME)
+            crashDir.mkdirs()   // 信号处理器要往里写文件，目录必须先存在
+            LlamaJni.crashDir = crashDir.absolutePath
+            NativeCrashMemory.handleStartup(this)
+        }
+
         // 崩溃可见性增强（真机第四轮 B）：启动时检测**未查看**的崩溃文件并留痕。
         // 用户看不到「最近崩溃」等于白做——这里至少让日志/横幅两条路都能发现它。
         // 读取失败一律静默降级（CrashLogger 内部全程 runCatching），**绝不影响启动**。
