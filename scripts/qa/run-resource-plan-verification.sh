@@ -57,7 +57,10 @@ echo "== 静态：两条纪律 =="
 has "自动档线程只减不增" "$PLAN" "fun effectiveThreads(userThreads: Int): Int = minOf(userThreads, threads)"
 has "自动档上下文只减不增" "$PLAN" "fun capContext(userCtx: Int): Int = minOf(userCtx, contextCap)"
 has "锁档优先于自动" "$PLAN" "val locked = ResourceTier.parse(lock)"
-has "锁档解析失败回自动" "$PLAN" "val tier = locked ?: autoTier(advice)"
+# 2026-10-29 修（run 483 编译红）：resolve 收成可空画像版——
+# 启动早期 cachedProfile 是 null，AUTO 不猜档退回「不套档位」，
+# 锁档不依赖画像照常生效。断言随语义更新（盯语义不盯字面）。
+has "锁档解析失败回自动" "$PLAN" "val tier = locked ?: advice?.let(::autoTier) ?: return unprobed()"
 has "安全模式只建议不代开" "$PLAN" "只建议、不代开"
 
 echo "== 静态：接线 =="
@@ -65,6 +68,11 @@ echo "== 静态：接线 =="
 has "设置项存在" "$SETTING" "resource_tier_lock"
 has "设置默认 AUTO" "$SETTING" "?: \"AUTO\""
 has "客户端读档位" "$CLIENT" "ResourcePlanRules.resolve(setting.resourceTierLock"
+# 2026-10-29 修（run 483 编译红）：cachedProfile 是可空类型，
+# 直接当非空传给 advise 就是一个真编译错（CI 上挂的就是它，
+# 桩编译的规则层查不出接线层的类型错）。
+has "客户端画像可空防护" "$CLIENT" "cachedProfile?.let { LocalDeviceRules.advise(it) }"
+has "画像缺失不套档位" "$PLAN" "fun unprobed(): ResourcePlan"
 has "装载用档位线程" "$CLIENT" "engine.acquire(file.absolutePath, nCtx, planThreads, gpu.layers)"
 has "CPU 回退也守档位" "$CLIENT" "engine.acquire(file.absolutePath, cpuCtx, planThreads, 0)"
 has "视图模型有状态" "$VM" "localResourceTierLock"
@@ -75,6 +83,32 @@ echo "== 行为：规则真编真跑（有 kotlinc 才跑，CI 里由 gradle 真
 
 if command -v kotlinc >/dev/null 2>&1; then
     TMP="$(mktemp -d)"
+    cat > "$TMP/stubs-android.kt" <<'EOF'
+// 行为断言专用最小桩：LocalLlamaSetting.kt 引用的 android.content 两件套
+// （内存实现，仅供 JVM 编译与跑规则；判定逻辑一律真实实现）。
+package android.content
+
+class Context {
+    companion object { const val MODE_PRIVATE = 0 }
+    val filesDir: java.io.File = java.io.File("/tmp/qa-stub-filesDir")
+    fun getSharedPreferences(name: String, mode: Int): SharedPreferences = SharedPreferences()
+}
+
+class SharedPreferences {
+    private val store = HashMap<String, Any>()
+    fun getString(key: String, def: String?): String? = store[key] as? String ?: def
+    fun getInt(key: String, def: Int): Int = store[key] as? Int ?: def
+    fun getBoolean(key: String, def: Boolean): Boolean = store[key] as? Boolean ?: def
+    fun edit(): Editor = Editor(store)
+    class Editor(private val store: MutableMap<String, Any>) {
+        fun putString(k: String, v: String?): Editor { if (v != null) store[k] = v; return this }
+        fun putInt(k: String, v: Int): Editor { store[k] = v; return this }
+        fun putBoolean(k: String, v: Boolean): Editor { store[k] = v; return this }
+        fun remove(k: String): Editor { store.remove(k); return this }
+        fun apply() {}
+    }
+}
+EOF
     cat > "$TMP/stubs.kt" <<'EOF'
 // 行为断言专用最小桩：只补齐 ResourcePlan.kt 引用的画像类型，判定逻辑一律真实实现。
 package com.example.agentkit.core.llm.local
@@ -84,7 +118,10 @@ enum class VulkanMaturity { GOOD, MIXED, POOR, UNKNOWN }
 enum class GpuFamily(val label: String, val maturity: VulkanMaturity) { ADRENO("Adreno", VulkanMaturity.GOOD) }
 enum class DeviceTier(val label: String) { ENTRY("入门"), LOW("中低端"), MID("中高端"), HIGH("旗舰") }
 enum class GpuPath(val label: String) { STABLE("稳"), RISKY("险"), NONE("无") }
-enum class GpuMode(val label: String) { AUTO("自动"), FORCE("强制"), OFF("关闭") }
+enum class GpuMode(val label: String) {
+    AUTO("自动"), FORCE("强制"), OFF("关闭");
+    companion object { fun parse(v: String?): GpuMode = entries.firstOrNull { it.name.equals(v, true) } ?: AUTO }
+}
 enum class LocalBackend { LOCAL_LLAMA }
 data class DeviceAdvice(
     val tier: DeviceTier, val vendor: SocVendor, val gpu: GpuFamily, val gpuModel: String?,
@@ -93,15 +130,15 @@ data class DeviceAdvice(
     val modelBudget: String, val memoryBudgetMb: Int, val notes: List<String>,
 )
 EOF
-    kotlinc "$TMP/stubs.kt" "$PLAN" "$DIR/LocalLlamaSetting.kt" -d "$TMP" >/dev/null 2>&1
+    kotlinc "$TMP/stubs-android.kt" "$TMP/stubs.kt" "$PLAN" "$DIR/LocalLlamaSetting.kt" -d "$TMP" >/dev/null 2>&1
     if [ $? -ne 0 ]; then
         fail "规则编译失败（见上）"
     else
-        kotlinc "$TMP/stubs.kt" "$PLAN" "$DIR/LocalLlamaSetting.kt" -d "$TMP" >/dev/null 2>&1 # 已编过，这里仅为对称
         cat > "$TMP/check.kt" <<'EOF'
 import com.example.agentkit.core.llm.local.*
 var pass = 0; var fail = 0
 fun ok(c: Boolean, n: String) { if (c) { pass++; println("  PASS  $n") } else { fail++; println("  FAIL  $n") } }
+fun main() {
 fun advice(t: DeviceTier) = DeviceAdvice(t, SocVendor.OTHER, GpuFamily.ADRENO, null, GpuPath.STABLE, null, null, false, null, LocalBackend.LOCAL_LLAMA, "1B", 2048, emptyList())
 val p = ResourcePlanRules
 // 自动选档
@@ -124,15 +161,27 @@ ok(p.resolve("PERFORMANCE", adviceMid).tier == ResourceTier.PERFORMANCE, "锁性
 ok(p.resolve("AUTO", adviceMid).tier == ResourceTier.BALANCED, "AUTO：跟机型走")
 ok(p.resolve("写坏的值", adviceMid).tier == ResourceTier.BALANCED, "配置写坏：回自动")
 ok(p.resolve(null, adviceMid).tier == ResourceTier.BALANCED, "未设置：回自动")
+// 画像缺失（启动早期 cachedProfile 为 null，run 483 编译红的根因）：
+// AUTO 不猜档，参数原样生效；锁档不依赖画像照常。
+val unprobed = p.resolve("AUTO", null)
+ok(unprobed.effectiveThreads(6) == 6, "画像缺失：AUTO 不压线程")
+ok(unprobed.capContext(8192) == 8192, "画像缺失：AUTO 不封上下文")
+ok(p.resolve(null, null).effectiveThreads(6) == 6, "画像缺失：用户线程数原样")
+ok(p.resolve(null, null).capContext(4096) == 4096, "画像缺失：用户上下文原样")
+ok(!p.resolve(null, null).suggestSafeMode, "画像缺失：不倒腾安全模式建议")
+ok(p.resolve("ECO", null).tier == ResourceTier.ECO, "画像缺失：锁档照常生效（点名不需要画像）")
+ok(p.resolve("PERFORMANCE", null).tier == ResourceTier.PERFORMANCE, "画像缺失：锁性能照常")
 // 档位解析
 ok(ResourceTier.parse("eco") == ResourceTier.ECO, "大小写不敏感")
 ok(ResourceTier.parse("AUTO") == null, "AUTO 不是档位，是跟随")
 println("RESULT: PASS=$pass FAIL=$fail")
 if (fail > 0) kotlin.system.exitProcess(1)
+}
 EOF
-        if kotlinc "$TMP/stubs.kt" "$PLAN" "$DIR/LocalLlamaSetting.kt" "$TMP/check.kt" -d "$TMP" -include-runtime >/dev/null 2>&1; then
-            java -cp "$TMP/check.jar:$TMP" CheckKt >/dev/null 2>&1 || true
-            OUT=$(java -cp "$(ls "$TMP"/*.jar 2>/dev/null | head -1):$TMP" CheckKt 2>/dev/null || java -cp "$TMP" CheckKt 2>/dev/null)
+        if kotlinc "$TMP/stubs-android.kt" "$TMP/stubs.kt" "$PLAN" "$DIR/LocalLlamaSetting.kt" "$TMP/check.kt" -d "$TMP" >/dev/null 2>&1; then
+            # 目录模式下 -include-runtime 不打包 stdlib，运行时显式带上 kotlinc 自带的
+            KSTDLIB="$(dirname "$(dirname "$(command -v kotlinc)")")/lib/kotlin-stdlib.jar"
+            OUT=$(java -cp "$TMP:$KSTDLIB" CheckKt 2>/dev/null)
             echo "$OUT"
             echo "$OUT" | grep -q "FAIL=0" && pass "行为断言全过" || fail "行为断言有红"
         else
