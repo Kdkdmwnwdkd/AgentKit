@@ -117,23 +117,31 @@ if [ -f "$KCOMPILE" ]; then
     # 沙箱：K2JVMCompiler 直调 + 沙箱桩 jar
     RUN_CMD=(java -cp "/tmp/ktcheck/kcomp.jar:/tmp/kstdlib.jar:/tmp/ktcheck/coroutines.jar:/tmp/ktcheck/trove.jar:/tmp/ktcheck/annotations.jar:$ZXING" org.jetbrains.kotlin.cli.jvm.K2JVMCompiler)
     RUN_CP="$TMP:/tmp/kstdlib.jar:$ZXING"
+    RUN_DIR="$TMP"
 elif command -v kotlinc >/dev/null 2>&1; then
-    # CI / 本机：kotlinc 命令 + 其自带 stdlib
-    KLIB="$(dirname "$(dirname "$(command -v kotlinc)")")/lib/kotlin-stdlib.jar"
+    # CI / 本机：kotlinc 命令。-include-runtime jar 自包含（CI 的 kotlinc 是 shim，
+    # 「可执行文件位置 → lib/kotlin-stdlib.jar」的推断在 shim 布局下拼出空路径，stdlib 缺失）
     RUN_CMD=(kotlinc -cp "$ZXING")
-    RUN_CP="$TMP:$KLIB:$ZXING"
+    RUN_JAR="$TMP/check.jar"
 else
     RUN_CMD=()
 fi
 if [ -n "${RUN_CMD[*]:-}" ] && [ -n "$ZXING" ]; then
-    if "${RUN_CMD[@]}" -d "$TMP" "$QR" "$CFG" "$TMP/check.kt" > "$TMP/compile.log" 2>&1; then
-        OUT=$(java -cp "$RUN_CP" CheckKt 2>&1)
-        echo "$OUT"
-        echo "$OUT" | grep -q "FAIL=0" && pass "对拍与负载断言全过" || fail "对拍有红"
+    if [ -n "${RUN_JAR:-}" ]; then
+        if "${RUN_CMD[@]}" -d "$RUN_JAR" -include-runtime "$QR" "$CFG" "$TMP/check.kt" > "$TMP/compile.log" 2>&1; then
+            OUT=$(java -jar "$RUN_JAR" 2>&1)
+        else
+            OUT=""; echo "编译失败："; grep -a 'error' "$TMP/compile.log" | head -8
+        fi
     else
-        echo "编译失败："; grep -a 'error' "$TMP/compile.log" | head -8
-        fail "二维码层编译"
+        if "${RUN_CMD[@]}" -d "$RUN_DIR" "$QR" "$CFG" "$TMP/check.kt" > "$TMP/compile.log" 2>&1; then
+            OUT=$(java -cp "$RUN_CP" CheckKt 2>&1)
+        else
+            OUT=""; echo "编译失败："; grep -a 'error' "$TMP/compile.log" | head -8
+        fi
     fi
+    echo "$OUT"
+    echo "$OUT" | grep -q "FAIL=0" && pass "对拍与负载断言全过" || fail "对拍有红"
 else
     echo "  SKIP  无 kotlinc / 无解码考官，跳过行为对拍（CI 由 gradle 真编）"
 fi
