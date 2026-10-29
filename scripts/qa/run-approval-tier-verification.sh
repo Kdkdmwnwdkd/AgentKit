@@ -112,8 +112,10 @@ println("RESULT: PASS=$pass FAIL=$fail")
 if (fail > 0) kotlin.system.exitProcess(1)
 }
 EOF
-    if kotlinc "$TMP/stubs.kt" "$TIER" "$TMP/check.kt" -d "$TMP" >/dev/null 2>&1; then
-        OUT=$(java -cp "$TMP" CheckKt 2>/dev/null)
+    # 2026-10-30 修（CI 抓出）：目录模式 java -cp "$TMP" 缺 kotlin-stdlib → JVM 静默崩
+    # （stderr 被吞，OUT 为空被判红）。改 -include-runtime jar 自包含，环境无关。
+    if kotlinc "$TMP/stubs.kt" "$TIER" "$TMP/check.kt" -d "$TMP/check.jar" -include-runtime >/dev/null 2>&1; then
+        OUT=$(java -jar "$TMP/check.jar" 2>/dev/null)
         echo "$OUT"
         echo "$OUT" | grep -q "FAIL=0" && pass "行为断言全过" || fail "行为断言有红"
     else

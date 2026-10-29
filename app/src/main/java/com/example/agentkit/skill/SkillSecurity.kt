@@ -87,6 +87,8 @@ object CapabilityRegistry {
         "ask_user" to Capability.SAFE,
         "calculator" to Capability.SAFE,
         "conversation_search" to Capability.SAFE,
+        // W6 本地知识库检索：只读 BM25 查询，不改变任何状态（与 conversation_search 同级）
+        "knowledge_search" to Capability.SAFE,
         "github_status" to Capability.SAFE,
         "github_log" to Capability.SAFE,
         "github_diff" to Capability.SAFE,

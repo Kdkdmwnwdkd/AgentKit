@@ -102,16 +102,40 @@ if (fail > 0) kotlin.system.exitProcess(1)
 }
 EOF
 
-JARS="/tmp/ktcheck/kcomp.jar:/tmp/kstdlib.jar:/tmp/ktcheck/coroutines.jar:/tmp/ktcheck/trove.jar:/tmp/ktcheck/annotations.jar:/tmp/zxing-core.jar"
-if java -cp "$JARS" org.jetbrains.kotlin.cli.jvm.K2JVMCompiler \
-    -cp "/tmp/kstdlib.jar:/tmp/zxing-core.jar" -d "$TMP" \
-    "$QR" "$CFG" "$TMP/check.kt" > "$TMP/compile.log" 2>&1; then
-    OUT=$(java -cp "$TMP:/tmp/kstdlib.jar:/tmp/zxing-core.jar" CheckKt 2>&1)
-    echo "$OUT"
-    echo "$OUT" | grep -q "FAIL=0" && pass "对拍与负载断言全过" || fail "对拍有红"
+# 2026-10-30 修（CI 抓出）：原实现硬编码沙箱专用路径（/tmp/ktcheck、/tmp/zxing-core.jar），
+# CI 上没有这些文件 → 解码考官起不来。改为双环境自适应：
+#   编译器：优先沙箱 jar 布局，否则用 PATH 上的 kotlinc；
+#   考官 jar：现成就用，没有则从 Maven Central 现取；取不到才跳过行为段（静态断言仍有效）。
+ZXING="/tmp/zxing-core.jar"
+if [ ! -f "$ZXING" ]; then
+    ZXING="$TMP/zxing-core-3.5.3.jar"
+    curl -sfL --max-time 60 -o "$ZXING" \
+        "https://repo1.maven.org/maven2/com/google/zxing/core/3.5.3/core-3.5.3.jar" || ZXING=""
+fi
+KCOMPILE="/tmp/ktcheck/kcomp.jar"
+if [ -f "$KCOMPILE" ]; then
+    # 沙箱：K2JVMCompiler 直调 + 沙箱桩 jar
+    RUN_CMD=(java -cp "/tmp/ktcheck/kcomp.jar:/tmp/kstdlib.jar:/tmp/ktcheck/coroutines.jar:/tmp/ktcheck/trove.jar:/tmp/ktcheck/annotations.jar:$ZXING" org.jetbrains.kotlin.cli.jvm.K2JVMCompiler)
+    RUN_CP="$TMP:/tmp/kstdlib.jar:$ZXING"
+elif command -v kotlinc >/dev/null 2>&1; then
+    # CI / 本机：kotlinc 命令 + 其自带 stdlib
+    KLIB="$(dirname "$(dirname "$(command -v kotlinc)")")/lib/kotlin-stdlib.jar"
+    RUN_CMD=(kotlinc -cp "$ZXING")
+    RUN_CP="$TMP:$KLIB:$ZXING"
 else
-    echo "编译失败："; grep -a 'error' "$TMP/compile.log" | head -8
-    fail "二维码层编译"
+    RUN_CMD=()
+fi
+if [ -n "${RUN_CMD[*]:-}" ] && [ -n "$ZXING" ]; then
+    if "${RUN_CMD[@]}" -d "$TMP" "$QR" "$CFG" "$TMP/check.kt" > "$TMP/compile.log" 2>&1; then
+        OUT=$(java -cp "$RUN_CP" CheckKt 2>&1)
+        echo "$OUT"
+        echo "$OUT" | grep -q "FAIL=0" && pass "对拍与负载断言全过" || fail "对拍有红"
+    else
+        echo "编译失败："; grep -a 'error' "$TMP/compile.log" | head -8
+        fail "二维码层编译"
+    fi
+else
+    echo "  SKIP  无 kotlinc / 无解码考官，跳过行为对拍（CI 由 gradle 真编）"
 fi
 rm -rf "$TMP"
 
