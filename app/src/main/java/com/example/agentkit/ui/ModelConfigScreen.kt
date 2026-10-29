@@ -77,6 +77,7 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
@@ -1695,7 +1696,7 @@ private fun LocalModelsTab(vm: ChatViewModel) {
     // 明确选择，「关闭」给那些更在意耗电与发热的人。
     AkGroup(
         title = "GPU 加速（Vulkan）",
-        description = "把模型层卸载到显卡。Adreno 自动开启；Mali 驱动在长时间推理后可能中断，默认不自动开。改动在下次加载模型时生效",
+        description = "把模型层卸载到显卡。Adreno 自动开启；Mali 驱动在长时间推理后可能中断，默认不自动开。改动会在下一条消息发出时自动重载生效",
         paddedContent = true
     ) {
         Text(
@@ -1828,7 +1829,26 @@ private fun LocalModeSummaryCard(vm: ChatViewModel, onOpenLocalTab: () -> Unit =
     }
 }
 
-/** 本地参数数字输入行：label + 数值框 + 提示。 */
+/**
+ * 本地参数数字输入行。
+ *
+ * **编辑期必须用本地文本，不能拿 [value] 直接受控。**
+ *
+ * 设置层的 setter 一律 `coerceIn`（上下文 512~16384、线程 1~8、一次上限 64~8192）。
+ * 受控写法 + coerce 会在**每次按键**后把半截数字送进 setter，再拿 coerce 后的值
+ * 覆盖输入框：想输 `2048`，打「2」被抬成 `512`、显示 `512`，再打「0」变 `5120`……
+ * 结果是怎么删都删不掉、打什么都跳回原值。
+ *
+ * 真机录屏（2026-10-29）就是这个现象：上下文卡在 `16384` 改不动，三个参数全废。
+ *
+ * 现在的分工：
+ *  - 输入过程中只更新本地 [text]，同时把合法数字**实时**落盘（不点别处也不丢）；
+ *  - 编辑中绝不把 [value] 灌回来，光标不会跳；
+ *  - 失焦后用 coerce 后的真实值校正显示（输入 `300` 会被改成 `512`，用户看得见）。
+ *
+ * 另外：label 只由 [AkTextField] 画一次。原来这里自己又画了一遍 + 传 label 进去，
+ * 真机上同一个标题上下出现两次（录屏里可见）。
+ */
 @Composable
 private fun LocalParamField(
     label: String,
@@ -1836,21 +1856,35 @@ private fun LocalParamField(
     hint: String,
     onValue: (String) -> Unit
 ) {
-    Column {
-        Text(
-            text = label,
-            style = MaterialTheme.typography.labelLarge,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        Spacer(Modifier.height(AgentSpacing.space2))
-        AkTextField(
-            value = value,
-            onValueChange = onValue,
-            label = label,
-            placeholder = hint,
-            machine = true
-        )
+    var text by remember { mutableStateOf(value) }
+    var focused by remember { mutableStateOf(false) }
+
+    // 非编辑态下跟随外部值：既覆盖「首次组合」，也覆盖「失焦后由 coerce 纠正」。
+    // 编辑中（focused）刻意不同步 —— 那正是把输入打断的元凶。
+    LaunchedEffect(value, focused) {
+        if (!focused && text != value) text = value
     }
+
+    AkTextField(
+        value = text,
+        onValueChange = { raw ->
+            // 只留数字：纯整数字段，粘贴进来带空格或单位不该整段作废。
+            // 截 5 位够到 16384；不截的话误触会打出天文数字，提交时再被拽回来。
+            val digits = raw.filter { it.isDigit() }.take(5)
+            text = digits
+            // 空串是「清空重打」的中间态，不是用户意图，不落盘。
+            if (digits.isNotEmpty()) onValue(digits)
+        },
+        // AkTextField 把 modifier 挂在最外层 Column 上，而这个 Column 自己永远不是
+        // 焦点目标（焦点在里面的 BasicTextField），所以它的 `isFocused` 恒为 false。
+        // 必须看 `hasFocus`（= 子树里有焦点），才能在离开字段时拿到那一次 true→false。
+        modifier = Modifier.onFocusChanged { state ->
+            focused = state.hasFocus
+        },
+        label = label,
+        placeholder = hint,
+        machine = true
+    )
 }
 
 /**
