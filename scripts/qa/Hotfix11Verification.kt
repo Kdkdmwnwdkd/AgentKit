@@ -608,7 +608,8 @@ private fun testConversationExport() {
     val scaffold = readSource("ui/AppScaffold.kt")
 
     check("Q1 core 纯函数 conversationToMarkdown（零 IO，harness 可断言）") {
-        assertContains("Q1", md, "fun conversationToMarkdown(record: ConversationRecord): String")
+        // W-RT9 起签名带第二参 archivedTurns（默认空表，旧调用不变）——断言随语义更新
+        assertContains("Q1", md, "fun conversationToMarkdown(")
         assertContains("Q1", md, "private const val MAX_CONTENT_CHARS = 20_000")
     }
     check("Q2 导出件自描述：标题 + 元信息头（时间/条数/token 用量）") {
@@ -618,7 +619,8 @@ private fun testConversationExport() {
         assertContains("Q2", md, "Token 用量：")
     }
     check("Q3 按轮组织 + 只导选中变体 + 多变体标注（废弃变体不进导出件）") {
-        assertContains("Q3", md, "## 第 \${index + 1} 轮")
+        // W-RT9 起轮号带总数（第 N/总数 轮，归档轮连续编号）——断言随语义更新
+        assertContains("Q3", md, "## 第 \${index + 1}/\${totalTurns} 轮")
         assertContains("Q3", md, "turn.variants.getOrNull(turn.selectedIndex)")
         assertContains("Q3", md, "*（变体 \${turn.selectedIndex + 1}/\${turn.variants.size}）*")
     }
