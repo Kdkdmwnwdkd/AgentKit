@@ -29,14 +29,18 @@ private val EXPORT_TIME_FORMAT: DateTimeFormatter =
  * 轮内顺序：user → trace（工具卡等）→ 选中变体（与 [ConversationBranch.flatten] 一致）；
  * 多变体轮在选中变体前标注「（变体 k/N）」——读者知道这轮曾重新生成过。
  */
-fun conversationToMarkdown(record: ConversationRecord): String = buildString {
+fun conversationToMarkdown(
+    record: ConversationRecord,
+    /** W-RT9：归档轮（超出工作集的更早历史，旧→新）。空 = 无归档，导出与旧版一致。 */
+    archivedTurns: List<TurnRecord> = emptyList()
+): String = buildString {
     appendLine("# ${record.title}")
     appendLine()
     appendLine("- 导出时间：${EXPORT_TIME_FORMAT.format(java.time.Instant.ofEpochMilli(record.updatedAt))}")
     appendLine("- 消息条数：${record.messages.size}")
     // token 用量（hotfix21 起落盘）：对全部变体求和，与抽屉行的口径一致
     val usage = TokenUsage.sum(
-        record.turns.flatMap { it.variants }
+        (archivedTurns + record.turns).flatMap { it.variants }
             .filter { it.role == ROLE_ASSISTANT }
             .map { TokenUsage(it.promptTokens, it.completionTokens) }
     )
@@ -46,9 +50,16 @@ fun conversationToMarkdown(record: ConversationRecord): String = buildString {
     appendLine()
     appendLine("---")
 
-    record.turns.forEachIndexed { index, turn ->
+    // W-RT9：归档轮在最前（旧→新），轮号连续——读者看到的是完整时间线
+    val totalTurns = archivedTurns.size + record.turns.size
+    val allTurns = archivedTurns.map { it to true } + record.turns.map { it to false }
+    allTurns.forEachIndexed { index, (turn, isArchived) ->
         appendLine()
-        appendLine("## 第 ${index + 1} 轮")
+        if (isArchived && index == 0) {
+            appendLine("（以下 ${archivedTurns.size} 轮为归档历史，已不在当前对话工作集内）")
+            appendLine()
+        }
+        appendLine("## 第 ${index + 1}/${totalTurns} 轮")
         appendMsg(turn.user)
         turn.trace.forEach { appendMsg(it) }
         val selected = turn.variants.getOrNull(turn.selectedIndex)

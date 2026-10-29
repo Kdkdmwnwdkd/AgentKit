@@ -367,13 +367,14 @@ class ConversationStore(file: File) {
      *    （和别家聊天记录一样自动命名，省用户手打）。
      */
     fun appendMessage(convId: String, rec: MsgRecord) {
+        val evicted = mutableListOf<TurnRecord>()
         synchronized(lock) {
             val idx = items.indexOfFirst { it.id == convId }
             // 会话已被删：静默丢弃，不崩溃（VM 有运行中守卫，双保险）
             if (idx < 0) return
             val conv = items[idx]
             // Phase 2 DoD②：先并入轮次变体结构，再据其展开为平坦缓存 messages
-            val turns = appendToTurns(conv.turns, rec)
+            val turns = appendToTurns(conv.turns, rec, evicted)
             val messages = ConversationBranch.flatten(turns)
             var title = conv.title
             if (title == DEFAULT_TITLE && rec.role == ROLE_USER && rec.content.isNotBlank()) {
@@ -385,6 +386,8 @@ class ConversationStore(file: File) {
                 messages = messages,
                 turns = turns
             )
+            // W-RT9：被挤出工作集的轮次落归档——全档保留（写失败安静放过，别让归档拖垮聊天）
+            if (evicted.isNotEmpty()) appendArchive(convId, evicted)
         }
         schedulePersist()
     }
@@ -396,9 +399,14 @@ class ConversationStore(file: File) {
      *    原变体保留可切回）；
      *  - tool → 按 id upsert 进**当前轮的 trace**（ToolStarted 空结果占位 → ToolFinished 终态覆盖，
      *    语义与旧 `messages` 的 replace 一致）。
-     * 轮数超 [MAX_MESSAGES] 丢最旧轮；无当前轮（异常数据）时安静忽略，绝不崩溃。
+     * 轮数超 [MAX_MESSAGES] 时最旧轮转入归档（W-RT9 全档保留，见 [archivedTurns]）；
+     * 无当前轮（异常数据）时安静忽略，绝不崩溃。
      */
-    private fun appendToTurns(turns: List<TurnRecord>, rec: MsgRecord): List<TurnRecord> {
+    private fun appendToTurns(
+        turns: List<TurnRecord>,
+        rec: MsgRecord,
+        evicted: MutableList<TurnRecord>
+    ): List<TurnRecord> {
         val out = turns.toMutableList()
         when (rec.role) {
             ROLE_USER -> out.add(TurnRecord(user = rec))
@@ -422,7 +430,8 @@ class ConversationStore(file: File) {
             }
             else -> Unit
         }
-        while (out.size > MAX_MESSAGES) out.removeAt(0)
+        // W-RT9：超限的轮不再「真没了」——逐轮交给调用方落归档（全档保留）
+        while (out.size > MAX_MESSAGES) evicted.add(out.removeAt(0))
         return out
     }
 
@@ -529,8 +538,43 @@ class ConversationStore(file: File) {
     /** 删除会话（含其全部消息，不可恢复——UI 层已有二次确认）。 */
     fun delete(convId: String) {
         synchronized(lock) { items.removeAll { it.id == convId } }
+        // W-RT9：会话没了归档也没意义——顺手清掉，别留孤儿文件
+        runCatching { archiveFile(convId).delete() }
         schedulePersist()
     }
+
+    // —— W-RT9：长对话全档保留（归档旁路文件，JSONL 追加式）——
+
+    /** 归档目录：与 conversations.json 同级，按会话 id 一问一件。 */
+    private fun archiveFile(convId: String): File =
+        File(File(file.parentFile, "archives"), "$convId.jsonl")
+
+    /** 追加被挤出的轮次（JSONL，一轮一行）。写失败安静放过——归档是加菜，不能硌着主菜。 */
+    private fun appendArchive(convId: String, turns: List<TurnRecord>) {
+        runCatching {
+            val f = archiveFile(convId)
+            f.parentFile?.mkdirs()
+            turns.forEach { turn ->
+                f.appendText(json.encodeToString(turn) + "\n")
+            }
+        }
+    }
+
+    /**
+     * 读归档：[offset] 起取 [limit] 轮（旧→新；越界夹安全范围）。
+     * 坏行（手改/写一半）安静跳过——归档要「尽量全」，不是「逐字节严格」。
+     */
+    fun archivedTurns(convId: String, offset: Int = 0, limit: Int = Int.MAX_VALUE): List<TurnRecord> {
+        val lines = runCatching { archiveFile(convId).readLines() }.getOrNull() ?: return emptyList()
+        val all = lines.mapNotNull { line ->
+            runCatching { json.decodeFromString<TurnRecord>(line.trim()) }.getOrNull()
+        }
+        return ConversationArchive.page(all, offset, limit)
+    }
+
+    /** 归档轮数（UI 判断「有没有更早的历史」用，比全量读省）。 */
+    fun archivedCount(convId: String): Int =
+        runCatching { archiveFile(convId).readLines().count { it.isNotBlank() } }.getOrDefault(0)
 
     /**
      * 保证至少有一个会话：列表空则 create 一个；否则返回最近更新的会话 id。

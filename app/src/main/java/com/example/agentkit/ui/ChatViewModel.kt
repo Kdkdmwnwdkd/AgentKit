@@ -3321,7 +3321,8 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     fun conversationMarkdown(convId: String): String {
         val rec = conversationStore.load(convId) ?: return ""
         if (rec.messages.isEmpty()) return ""
-        return conversationToMarkdown(rec)
+        // W-RT9：导出带全档——归档轮渲染在最前，超长对话的历史不缺页
+        return conversationToMarkdown(rec, conversationStore.archivedTurns(convId))
     }
 
     /* -------------------- 功能五（P1-7）：提示词库（快捷指令） -------------------- */
