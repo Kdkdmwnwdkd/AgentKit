@@ -124,6 +124,10 @@ echo "[7/10] 慢要看得见（「等了几分钟还是一片空白」）"
 # 这一组守的是「过程可见 + 等待有上限」。真机上 3B 模型的 prefill 本来就要几十秒到
 # 几分钟，用户能忍「慢」，不能忍「不知道在不在动」。
 expect "prefill 分块进度可观测" "$JNI" 'prefill 进度：'
+# W-94：速率的分子必须是「本轮真正补算的 token」。增量 prefill 时真机报过
+# 「118 / 118 token，1347 ms（87.6 tok/s）」，而同一块的汇总行是「补算 20，14.8 tok/s」——
+# 分子把复用的 98 个也算进去了。虚高的数字会让人误判 prefill 没问题。
+expect "prefill 速率按补算 token 计（不虚高）" "$JNI" '本轮补算 %zu'
 expect "生成过程有进度打点" "$JNI" '生成进度：'
 expect "prefill 可被停止打断" "$JNI" 'prefill 被用户停止'
 expect "取消/卡死有等待上限" "$CLIENT" 'firstTokenBudgetMs'
@@ -140,10 +144,25 @@ expect "轻聊档剥掉设备上下文" "$CLIENT" '用户当前请求：'
 # W-93：轻聊档不再截云端提示的前几行——那份提示写的是「你可以调用工具、可操作界面」，
 # 而轻聊档没有工具，模型据此答出「可以控制智能家居」（真机 2026-10-29 15:33）。
 expect "轻聊档改用本地能力声明" "$CLIENT" 'LocalChatPrompt\.TEXT'
-expect "能力声明写清「没有联网/不能操作」" \
-  app/src/main/java/com/example/agentkit/core/llm/local/LocalChatPrompt.kt '没有联网，也不能操作手机或家电'
-expect "能力声明给了「不能做」清单" \
-  app/src/main/java/com/example/agentkit/core/llm/local/LocalChatPrompt.kt '不能做'
+# W-94：边界只留一句因果（「没有联网 / 没有系统权限 → 所以做不到」），不再列「能做 / 不能做」
+# 清单。1.475 那张表被模型原样念成回答（真机 16:08「我能回答问题、解释概念、写作…」），
+# 再追问一句就掉进「数学物理 / 文学艺术 / 多语互译」的模板腔——它拿到的是一份能力目录，
+# 不是一个说话的人。参考 IRIDIS（默认几乎不写 system prompt）之后改成一句边界 + 语气约束。
+expect "能力声明写清离线与无权限" \
+  app/src/main/java/com/example/agentkit/core/llm/local/LocalChatPrompt.kt '没有联网'
+# 断言只看 TEXT 字面量本身（注释里会引用旧版本当反例，不能一起判）。
+PROMPT_FILE=app/src/main/java/com/example/agentkit/core/llm/local/LocalChatPrompt.kt
+_text_lit=$(sed -n '/const val TEXT: String =/,/^$/p' "$PROMPT_FILE")
+if printf '%s' "$_text_lit" | grep -q '不能做'; then
+  bad "不再罗列「不能做」清单（TEXT 里仍有 /不能做/）"
+else
+  ok "不再罗列「不能做」清单"
+fi
+if printf '%s' "$_text_lit" | grep -q '两三句'; then
+  ok "能力声明带语气约束（治模板腔、顺带压短输出）"
+else
+  bad "能力声明带语气约束（TEXT 里找不到 /两三句/）"
+fi
 if grep -q 'LIGHT_SYSTEM_MAX_CHARS' "$CLIENT"; then
   bad "不再按字数截断云端系统提示（已改成本地能力声明）"
 else
@@ -158,6 +177,13 @@ if [ -n "$_t_call" ] && [ -n "$_t_run" ] && [ "$_t_call" -gt "$_t_run" ]; then
 else
   bad "标题生成排在本轮结束之后（调用行=${_t_call:-?} 运行行=${_t_run:-?}）"
 fi
+# W-94：本地档标题**一次模型调用都不发**，直接截用户首句。
+# 16:08 的标题是「我能回答问题、解释概念、写作、翻译和闲聊」——那是助手回答的第一句：
+# buildTaskClient() 落到轻聊档，lightMessages() 把「你是会话标题生成器…」整条换成
+# LocalChatPrompt，模型自然开始自我介绍。1.5 秒一次前向，换来一个错标题。
+expect "本地档标题直接截取用户首句" "$VM" 'TitleLogic\.clean\(userText\)'
+expect "本地档标题走截取分支" "$VM" '标题（本地截取，未调用模型）'
+reject "标题生成不再等本地引擎空闲（已不调模型）" "$VM" 'LocalLlamaEngine\.isBusy'
 
 echo "[9/10] 停止与状态一致性（「点了停止没反应」「答案原样重复一遍」）"
 # 中断回调：只靠「分块之间查 stop」，慢设备上要等一整块（几百 token）才生效。

@@ -102,6 +102,16 @@ has "GPU 装载失败退回 CPU" "$CLIENT" "退回纯 CPU 重试一次"
 has "退回要说明怎么关掉" "$CLIENT" "GPU 加速」里选「关闭」"
 # GPU 结论每轮都会重算，日志必须去重，否则十轮对话刷十行同样的内容。
 has "GPU 日志去重" "$CLIENT" "if (line != lastGpuLogLine)"
+# W-94：去重变量必须是**进程级**（companion）。这个 client 每轮会被建好几次
+# （AgentLoop 的 llmProvider 每次取都现建），放实例字段等于每个实例各从 null 开始，
+# 真机 16:08 一轮里同一句「GPU 未启用…」打了三遍。和 W-92 的 g_gpuDisabled 同一个坑。
+_co=$(grep -n "private companion object" "$CLIENT" | head -1 | cut -d: -f1)
+_lg=$(grep -n "private var lastGpuLogLine" "$CLIENT" | head -1 | cut -d: -f1)
+if [ -n "$_co" ] && [ -n "$_lg" ] && [ "$_lg" -gt "$_co" ]; then
+  pass "GPU 日志去重变量是进程级（companion 之后）"
+else
+  fail "GPU 日志去重变量是进程级（companion=${_co:-?} 变量=${_lg:-?}）"
+fi
 
 echo "== 静态：CI 装齐工具链三件套 =="
 

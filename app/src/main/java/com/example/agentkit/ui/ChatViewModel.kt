@@ -4004,6 +4004,8 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
      *  1. 用户消息有信息量（[TitleLogic.worthGenerating]：不是"你好"、不是纯表情）；
      *  2. 标题仍是默认值 / 早期截取的首条消息文本（用户手动改过就不覆盖）。
      * 失败静默：标题生成不是主流程，失败保持原标题即可。
+     *
+     * 本地档走截取分支、不花模型调用（理由见下方注释）。
      */
     private fun maybeGenerateTitle(convId: String, userText: String) {
         if (!TitleLogic.worthGenerating(userText)) return
@@ -4011,26 +4013,31 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         val autoTitle = userText.trim().take(20)
         if (current.isNotBlank() && current != "新对话" && current != autoTitle) return
 
-        viewModelScope.launch(Dispatchers.IO) {
-            // 本地模型：标题生成必须等主对话跑完再动手。
-            //
-            // 真机 2026-10-29 15:02：标题生成和主对话同时进来，2GB 权重被加载了两遍
-            // （RSS 4078 MB）、两个 prefill 互相抢 CPU，整轮 46 秒里标题占掉 34 秒。
-            // 15:33 修好双加载之后仍然慢：两个 prefill 交错，首字 9709ms。
-            //
-            // 现在调用点已经挪到本轮结束之后（见 send 里 finalAnswer 落库那段），
-            // 这里的等待只是兜底——用户连发时引擎可能还在跑上一轮。
-            if (_config.value.providerId == "local-llama") {
-                var waited = 0
-                while (LocalLlamaEngine.isBusy && waited < 180_000) {
-                    Thread.sleep(500)
-                    waited += 500
+        // 本地档不调模型，直接截用户第一句。
+        //
+        // 真机 2026-10-29 16:08 生成的标题是「我能回答问题、解释概念、写作、翻译和闲聊」——
+        // **那是助手回答的第一句，不是标题**。原因在链路里：buildTaskClient() 落到的还是
+        // 轻聊档，而 lightMessages() 会把调用方传进来的 SystemMessage（「你是会话标题生成器…」）
+        // 整条丢掉、换成 LocalChatPrompt，模型收到的只剩「用户问：你能干嘛呢」，自然就开始
+        // 介绍自己。一次 1.5 秒的 forward，换来一个错标题。
+        //
+        // IRIDIS 不为标题花模型调用（titleFrom：首行截 24 字），照做：省一次前向、省约 1.5 秒，
+        // 而且标题一定对得上用户的问法。真机 15:02 那两个 prefill 互相抢 CPU 的问题
+        // （RSS 4078 MB、整轮 46 秒里标题占 34 秒）也一并消失。
+        if (_config.value.providerId == "local-llama") {
+            val quick = TitleLogic.clean(userText) ?: return
+            if (quick == current) return
+            viewModelScope.launch(Dispatchers.IO) {
+                runCatching {
+                    conversationStore.rename(convId, quick)
+                    refreshConversations()
                 }
-                if (LocalLlamaEngine.isBusy) {
-                    AgentLogger.i("Chat", "本地引擎持续占用 ${waited / 1000} 秒，本轮跳过标题生成")
-                    return@launch
-                }
+                AgentLogger.i("Chat", "标题（本地截取，未调用模型）：$quick")
             }
+            return
+        }
+
+        viewModelScope.launch(Dispatchers.IO) {
             runCatching {
                 val client = buildTaskClient()
                 val reply = client.chat(

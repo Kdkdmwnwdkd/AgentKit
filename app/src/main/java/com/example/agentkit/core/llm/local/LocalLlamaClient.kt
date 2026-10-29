@@ -55,9 +55,6 @@ class LocalLlamaClient(
     override val id: String = "local-llama"
 
     private val json = Json { ignoreUnknownKeys = true; isLenient = true }
-    /** 上一次打过的 GPU 结论，用来去重（见 resolveGpuPlan）。 */
-    @Volatile
-    private var lastGpuLogLine: String? = null
 
     /**
      * 本进程内「GPU 后端已经炸过」的原因 —— **存在 [LocalLlamaEngine] 里**，不是这里。
@@ -881,6 +878,17 @@ class LocalLlamaClient(
     }
 
     private companion object {
+        /**
+         * 上一次打过的 GPU 结论，用来去重（见 resolveGpuPlan）。
+         *
+         * **必须是进程级，不能是实例字段。** 这个 client 每轮对话会被建好几次
+         * （AgentLoop 的 llmProvider 每次取都现建），实例字段等于每个实例都从 null 重新开始，
+         * 去重形同虚设：真机 2026-10-29 16:08 一轮里同一句「GPU 未启用：模型是 Q4_K 量化…」
+         * 打了三遍，把真正有用的行挤跑了。和 W-92 的 g_gpuDisabled 是同一个坑。
+         */
+        @Volatile
+        private var lastGpuLogLine: String? = null
+
         /** 生成线程的轮询间隔：够细能看到进度，又不至于把 CPU 抢去读日志。 */
         const val POLL_INTERVAL_MS = 1500L
 

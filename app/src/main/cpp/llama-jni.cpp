@@ -626,15 +626,23 @@ bool decodeFrom(LlamaInstance* inst, std::vector<llama_token>& tokens, size_t fr
         // 同时给 tok/s —— 3B Q4 在手机 CPU 上 prefill 十几 tok/s 属正常，个位数就是异常。
         const long long spent = nowMs() - startedAt;
         const size_t done = i + chunk;
+        // 速率只用「本轮真正补算的 token」当分子，不用绝对下标。
+        //
+        // 增量 prefill 时 from > 0，两者差得很远：真机 2026-10-29 16:08 这一行报
+        //   prefill 进度：118 / 118 token，1347 ms（87.6 tok/s）
+        // 而紧接着的汇总行是「复用 98 / 共 118，补算 20，耗时 1347 ms（14.8 tok/s）」。
+        // 分母是这一块的耗时，分子却把复用的 98 个也算进去了，于是凭空多出 6 倍速率。
+        // 虚高的数字比没有数字更坏——它会让人以为 prefill 没问题，转去查别的地方。
+        const size_t computed = done - from;
         // RSS 一起打：三次真机闪退都崩在 prefill，而我们手上连「当时占了多少内存」
         // 都没有。孤立的一个数字说服力有限，一串数字可以——它涨得快不快，
         // 「算不动」和「装不下」在日志里就是两种形状。
         char rssBuf[32] = {0};
         const long rssKb = ak_rss_kb();
         if (rssKb > 0) snprintf(rssBuf, sizeof(rssBuf), "，RSS %ld MB", rssKb / 1024);
-        LOGI("prefill 进度：%zu / %zu token，%lld ms（%.1f tok/s）%s",
-             done, tokens.size(), spent,
-             spent > 0 ? done * 1000.0 / static_cast<double>(spent) : 0.0, rssBuf);
+        LOGI("prefill 进度：%zu / %zu token（本轮补算 %zu），%lld ms（%.1f tok/s）%s",
+             done, tokens.size(), computed, spent,
+             spent > 0 ? computed * 1000.0 / static_cast<double>(spent) : 0.0, rssBuf);
     }
     return true;
 }

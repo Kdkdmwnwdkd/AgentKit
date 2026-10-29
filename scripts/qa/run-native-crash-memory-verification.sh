@@ -573,8 +573,11 @@ has "$ENGINE" 'withHandle' 'generate / chatTemplate 走统一的持有入口'
 has "$ENGINE" 'fun generate(prompt: String, maxTokens: Int, listener: LlamaJni.TokenListener?): String =' \
   'generate 不再裸取句柄（立刻 free 会 SIGSEGV）'
 has "$ENGINE" 'val isBusy: Boolean' '对外暴露「引擎是否在跑」，供低优先级任务让路'
-has "$VM" 'LocalLlamaEngine.isBusy' '标题生成会等本地引擎空闲'
-has "$VM" '本轮跳过标题生成' '等太久就放弃标题（不能为它拖住用户）'
+# W-94：本地档标题不再调模型，也就没有「等引擎空闲」这回事——直接截用户首句。
+# 原来这两条锁的是「等待 + 超时放弃」的兜底文案；现在锁更强的性质：
+# 本地分支一次模型调用都不发，所以既不需要等，也不存在「等太久」。
+hasnt "$VM" 'LocalLlamaEngine.isBusy' '标题生成不再等引擎（本地档已不调模型）'
+has "$VM" '标题（本地截取，未调用模型）' '本地档标题直接截取用户首句'
 
 echo
 echo "SUMMARY：PASS=$PASS FAIL=$FAIL"
