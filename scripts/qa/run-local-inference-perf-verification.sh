@@ -137,8 +137,27 @@ echo "[8/10] 本地轻聊档（prompt 长度决定首字延迟）"
 expect "Agent 模式默认关" "$SETTING" 'KEY_AGENT_MODE, false'
 expect "轻聊档不注入工具协议" "$CLIENT" 'EffectivePrompt\(lightMessages\(messages\), emptyList\(\)\)'
 expect "轻聊档剥掉设备上下文" "$CLIENT" '用户当前请求：'
-expect "轻聊档截断系统提示" "$CLIENT" 'LIGHT_SYSTEM_MAX_CHARS'
-expect "轻聊档限制历史条数" "$CLIENT" 'LIGHT_HISTORY_MESSAGES'
+# W-93：轻聊档不再截云端提示的前几行——那份提示写的是「你可以调用工具、可操作界面」，
+# 而轻聊档没有工具，模型据此答出「可以控制智能家居」（真机 2026-10-29 15:33）。
+expect "轻聊档改用本地能力声明" "$CLIENT" 'LocalChatPrompt\.TEXT'
+expect "能力声明写清「没有联网/不能操作」" \
+  app/src/main/java/com/example/agentkit/core/llm/local/LocalChatPrompt.kt '没有联网，也不能操作手机或家电'
+expect "能力声明给了「不能做」清单" \
+  app/src/main/java/com/example/agentkit/core/llm/local/LocalChatPrompt.kt '不能做'
+if grep -q 'LIGHT_SYSTEM_MAX_CHARS' "$CLIENT"; then
+  bad "不再按字数截断云端系统提示（已改成本地能力声明）"
+else
+  ok "不再按字数截断云端系统提示（已改成本地能力声明）"
+fi
+# W-93：标题生成必须排在本轮结束之后。原来在主回答之前发起，本地模型下两个 prefill
+# 交错抢 CPU（15:33 那轮首字 9709ms）。用行号比较，比匹配文案可靠。
+_t_call=$(grep -n 'maybeGenerateTitle(_activeConversationId.value, text)' "$VM" | head -1 | cut -d: -f1)
+_t_run=$(grep -n 'val outcome = runCatching { loop.run' "$VM" | head -1 | cut -d: -f1)
+if [ -n "$_t_call" ] && [ -n "$_t_run" ] && [ "$_t_call" -gt "$_t_run" ]; then
+  ok "标题生成排在本轮结束之后（不抢 prefill）"
+else
+  bad "标题生成排在本轮结束之后（调用行=${_t_call:-?} 运行行=${_t_run:-?}）"
+fi
 
 echo "[9/10] 停止与状态一致性（「点了停止没反应」「答案原样重复一遍」）"
 # 中断回调：只靠「分块之间查 stop」，慢设备上要等一整块（几百 token）才生效。

@@ -2878,8 +2878,11 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
                 val userItem = UiItem.User(text, timeMs = System.currentTimeMillis())
                 appendUiItem(userItem)
                 appendToStore(userItem) // 功能三：聊天记录同步落盘
-                // W-26：首轮对话后用「任务模型」异步生成标题（不阻塞、失败静默）
-                maybeGenerateTitle(_activeConversationId.value, text)
+                // W-26：首轮对话后异步生成标题。
+                // W-93：**必须放到本轮结束之后**——原来在这里发起，本地模型下会和主回答
+                // 抢同一个引擎：15:33:06 那轮两个 prefill 交错（60 token 3873ms + 85 token
+                // 5374ms），首字被拖到 9709ms。标题是锦上添花，不值得让用户多等 9 秒。
+                // 调用点见本轮结束后（finalAnswer 落库之后）。
                 // 先拿到 Result，再在同一个挂起体里做后续 IO：Result.onSuccess 的 lambda 不是 suspend
                 val outcome = runCatching { loop.run(fullInput, images, priorMessages) }
                 // 流式草稿使命结束：最终回答以整条消息落库（防草稿与整条同时显示）。
@@ -3007,6 +3010,9 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
                     }
                     refreshMemories()
                 }
+                // W-93：标题生成挪到这里。此刻主回答已经落库、引擎空闲，
+                // 它会直接复用已加载的实例、只补算十几个 token，不到 1 秒。
+                maybeGenerateTitle(_activeConversationId.value, text)
             } finally {
                 // finally 保证取消路径（withContext 直接抛 CancellationException）也能复位
                 runJob = null
@@ -4008,10 +4014,12 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         viewModelScope.launch(Dispatchers.IO) {
             // 本地模型：标题生成必须等主对话跑完再动手。
             //
-            // 真机 2026-10-29 15:02：用户发「你能干什么呢」，标题生成和主对话同时进来，
-            // 结果 2GB 权重被加载了两份（RSS 4078 MB）、两个 prefill 互相抢 CPU，
-            // 这一轮总共花了 46 秒，其中 20 秒的预热 decode 是纯浪费。
-            // 标题是「锦上添花」，让它排在主回答之后：引擎空闲时它只补 14 个 token，不到 1 秒。
+            // 真机 2026-10-29 15:02：标题生成和主对话同时进来，2GB 权重被加载了两遍
+            // （RSS 4078 MB）、两个 prefill 互相抢 CPU，整轮 46 秒里标题占掉 34 秒。
+            // 15:33 修好双加载之后仍然慢：两个 prefill 交错，首字 9709ms。
+            //
+            // 现在调用点已经挪到本轮结束之后（见 send 里 finalAnswer 落库那段），
+            // 这里的等待只是兜底——用户连发时引擎可能还在跑上一轮。
             if (_config.value.providerId == "local-llama") {
                 var waited = 0
                 while (LocalLlamaEngine.isBusy && waited < 180_000) {

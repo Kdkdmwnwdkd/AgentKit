@@ -751,30 +751,32 @@ class LocalLlamaClient(
     }
 
     /**
-     * 轻聊档的消息裁剪：
-     * 1. 系统提示只留开头几行（身份 + 行为规则），丢掉「界面操作协议」与长尾；
+     * 轻聊档的消息裁剪。
+     *
+     * 1. **系统提示整条换成 [LocalChatPrompt]**，不再截云端提示的前几行。
+     *    云端那份写的是「你可以调用工具、可以操作界面」，而轻聊档没有工具——
+     *    真机 2026-10-29 15:33 模型据此答出「可以控制智能家居，你有 Alexa 吗」，
+     *    连用户点破「你连不了网吧」之后还在继续列并不存在的能力。
      * 2. 用户消息只留「用户当前请求：」之后的部分——前面那段设备上下文是给云端
      *    大模型看的，本地小模型读了只会多算几百 token，还容易答跑题；
      * 3. 历史只留最近 [LIGHT_HISTORY_MESSAGES] 条，控制增量 prefill 的基数。
      */
     private fun lightMessages(messages: List<ChatMessage>): List<ChatMessage> {
-        val sys = messages.filterIsInstance<SystemMessage>().firstOrNull()
-        val rest = messages.filterNot { it is SystemMessage }.takeLast(LIGHT_HISTORY_MESSAGES)
-        return buildList<ChatMessage> {
-            sys?.let { shortenSystem(it.content) }?.takeIf { it.isNotEmpty() }
-                ?.let { add(SystemMessage(it)) }
-            rest.forEach { m ->
-                if (m is UserMessage) add(UserMessage(shortenUser(m.content), m.images)) else add(m)
+        val rest = messages.filterNot { it is SystemMessage }
+            .takeLast(LIGHT_HISTORY_MESSAGES)
+            .map { m -> if (m is UserMessage) UserMessage(shortenUser(m.content), m.images) else m }
+        val sys = LocalChatPrompt.TEXT
+        // Gemma-2 这类模板没有 system 通道，只能并进第一条用户消息（否则一条规则都看不到）。
+        if (!supportsSystemPrompt()) {
+            val i = rest.indexOfFirst { it is UserMessage }
+            if (i >= 0) {
+                val u = rest[i] as UserMessage
+                return rest.toMutableList().also { it[i] = UserMessage("$sys\n\n${u.content}", u.images) }
             }
+            return listOf(UserMessage(sys)) + rest
         }
+        return listOf(SystemMessage(sys)) + rest
     }
-
-    private fun shortenSystem(text: String): String = text.lineSequence()
-        .map { it.trim() }
-        .filter { it.isNotEmpty() }
-        .take(LIGHT_SYSTEM_LINES)
-        .joinToString("\n")
-        .take(LIGHT_SYSTEM_MAX_CHARS)
 
     private fun shortenUser(text: String): String {
         val marker = "用户当前请求："
@@ -940,11 +942,5 @@ class LocalLlamaClient(
 
         /** 轻聊档保留的历史条数（4 条 = 最近两轮）。 */
         const val LIGHT_HISTORY_MESSAGES = 4
-
-        /** 轻聊档系统提示只留前几行。 */
-        const val LIGHT_SYSTEM_LINES = 3
-
-        /** 轻聊档系统提示字符上限——再长就只是在给 prefill 加时间。 */
-        const val LIGHT_SYSTEM_MAX_CHARS = 160
     }
 }
