@@ -129,7 +129,8 @@ fi
 if [ -n "${RUN_CMD[*]:-}" ] && [ -n "$ZXING" ]; then
     if [ -n "${RUN_JAR:-}" ]; then
         if "${RUN_CMD[@]}" -d "$RUN_JAR" -include-runtime "$QR" "$CFG" "$TMP/check.kt" > "$TMP/compile.log" 2>&1; then
-            OUT=$(java -jar "$RUN_JAR" 2>&1)
+            # -include-runtime 只带 Kotlin 运行库，zxing 考官包不进包 → 运行时 -cp 挂上
+            OUT=$(java -cp "$RUN_JAR:$ZXING" CheckKt 2>&1)
         else
             OUT=""; echo "编译失败："; grep -a 'error' "$TMP/compile.log" | head -8
         fi
