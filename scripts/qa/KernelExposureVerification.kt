@@ -150,7 +150,9 @@ fun main() = runBlocking {
     check("云端默认不是全量", cloudPlan.visible.size < all.size)
     check("云端至少省 1/3", cCloud * 3 < cFull * 2, "$cCloud vs $cFull")
     check("本地比全量省 2/3 以上", cLocal * 3 < cFull, "$cLocal vs $cFull")
-    check("默认激活 file/ui/skill 三组", cloudPlan.activated.containsAll(setOf("file", "ui", "skill")))
+    // W-102：云端默认只剩 file（+ 兜底 misc）。原先给 file/ui/skill 三组，
+    // 实测 ui 9 个工具占工具表近一半，而绝大多数对话一条都用不到。
+    check("云端默认只激活 file（+misc）", cloudPlan.activated - "misc" == setOf("file"), "${cloudPlan.activated}")
     check("元工具总在末尾", cloudPlan.visible.takeLast(2).map { it.name }.toSet() == setOf(KernelExposure.USE_TOOLS, KernelExposure.FIND_TOOLS))
 
     // ---------- 3. 元工具：找回被裁掉的工具 ----------
@@ -193,7 +195,9 @@ fun main() = runBlocking {
         "本地预激活 = file 组 + 常驻的 misc",
         localPlan.activated == setOf("file", "misc"), "${localPlan.activated}"
     )
-    check("本地工具表比云端更小", cLocal < cCloud, "$cLocal vs $cCloud")
+    // W-102：云端默认面收到只剩 file 之后，与端侧的初始工具面已经一致；
+    // 两者的差别只剩 mode（本地 META 更强调「先查再开」）。
+    eq("W-102：本地与云端默认工具面一致", cLocal, cCloud)
 
     // 哨兵：不认识的工具必须默认可见（无论是云端还是端侧）。
     // 这两条对应一个真实踩过的坑：T01 用 weather/wordcount 自定义工具测主循环，
@@ -207,6 +211,52 @@ fun main() = runBlocking {
     }
     eq("云端走 GROUPED", cloudPlan.mode.name, "GROUPED")
     eq("强制全量走 FULL", fullPlan.mode.name, "FULL")
+
+    // ---------- 5. 粘性激活与滞回淘汰（W-102）----------
+    println("\n[5] 粘性激活：开过就留着，撞上限才淘汰")
+    val sticky = linkedSetOf<String>()
+    KernelExposure.plan(all, "openai", false, sticky)
+    check("种子只有核心组", sticky == setOf("file", "misc"), "$sticky")
+
+    fun useGroup(g: String) {
+        runBlocking {
+            KernelExposure.plan(all, "openai", false, sticky)
+                .visible.first { it.name == KernelExposure.USE_TOOLS }
+                .execute(buildJsonObject { put("groups", g) })
+        }
+    }
+
+    useGroup("memory")
+    check("开 1 组后共 3 个（file+misc+memory）", sticky.size == 3, "$sticky")
+    useGroup("ui")
+    check("开 2 个可淘汰组仍在限内（不动手）", sticky.size == 4, "$sticky")
+    useGroup("shell")
+    check(
+        "第 3 个可淘汰组触发滞回：降到 1 个",
+        sticky.count { it != "file" && it != "misc" } == 1, "$sticky"
+    )
+    check("最后开的 shell 被保留（先开的 memory/ui 被挤掉）", "shell" in sticky, "$sticky")
+
+    // LRU：重新启用旧组 = 移回尾部，撞上限时淘汰的是别人
+    val lru = linkedSetOf("file", "misc", "memory", "ui", "workflow")
+    lru.remove("memory"); lru.add("memory")
+    val evicted = KernelExposure.enforceCap(lru)
+    eq("淘汰最久未用的两个", evicted, listOf("ui", "workflow"))
+    check("刚重开（移回尾部）的 memory 留下", lru == setOf("file", "misc", "memory"), "$lru")
+    eq(
+        "未超限时不动手",
+        KernelExposure.enforceCap(linkedSetOf("file", "misc", "ui")),
+        emptyList<String>()
+    )
+
+    // 持久化遗留：落盘读回的组名可能在代码改版后已不存在（组被删/合并）。
+    // 不清理的话它们会一直占着上限名额，让 enforceCap 每轮误判超限、反复淘汰在用的组。
+    val stale = linkedSetOf("file", "misc", "gone_group", "ui")
+    KernelExposure.plan(all, "openai", false, stale)
+    check("失效组名被清理掉", "gone_group" !in stale, "$stale")
+    check("清理不误伤在用组", "ui" in stale && "file" in stale, "$stale")
+
+    // ---------- 6. 结果 ----------
 
     // 结果行必须含 "0 失败"：run-all.sh 靠这个字样判 PASS，
     // 写成「0 项失败」不匹配它的正则，会被当成「跑完没有通过标记」判 FAIL。

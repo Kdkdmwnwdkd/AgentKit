@@ -1,6 +1,8 @@
 package com.example.agentkit.core.terminal
 
 import com.example.agentkit.core.MAX_TOOL_RESULT_CHARS
+import com.example.agentkit.core.safeHeadEnd
+import com.example.agentkit.core.safeTailStart
 
 /**
  * 截断结果：截断后文本 + 是否发生截断 + 原始长度。
@@ -16,15 +18,19 @@ data class TruncationResult(
 )
 
 /**
- * 工具输出截断器（T08，来源：zafiro B2 · `ToolOutputTruncator`，净室重写）。
+ * 工具输出截断器（T08，设计参照：zafiro · libterm 的输出截断器形态，净室重写）。
  *
  * ## 口径对齐（与 `core/ToolLimits.kt` 的关系，明确说明差异）
  * - **上限口径一致**：[DEFAULT_MAX_CHARS] 直接复用 [MAX_TOOL_RESULT_CHARS]（24000），
  *   保证「终端输出」与「工具结果」两条链路的封顶值同源，不会出现「池里放过 30K、
  *   AgentLoop 又砍回 24K」的重复口径漂移。
- * - **截断策略差异（有意）**：`truncateToolResult` 是**只保留头部**（模型看到结果开头即可）；
- *   本截断器是**保头 + 保尾**——终端命令的报错/退出信息通常在**尾部**，只砍尾会把最有用的
- *   一行丢掉。故此处保留 `head(60%) + 省略提示 + tail(20%)`，总长恒 ≤ 上限。
+ * - **截断策略同源**：两条链路都是「保头 + 保尾 + 中间省略」，因为结论几乎总在尾部
+ *   （命令的报错/退出码、编译错误、测试结论）。切点对齐码点的逻辑也共用同一份实现
+ *   （`core/ToolLimits.kt` 的 [safeHeadEnd] / [safeTailStart]）。
+ * - **比例不同（有意）**：本截断器 head 60% / tail 20% —— 终端输出尾部通常只有一两行
+ *   结论，20% 足够；`truncateToolResult` 是 head 60% / tail 40% —— 通用工具结果的尾部
+ *   可能是一整段多行错误栈，需要更多空间。两处封顶值同源（[MAX_TOOL_RESULT_CHARS]），
+ *   不会出现「池里放过 30K、AgentLoop 又砍回 24K」的口径漂移。
  *
  * 纯函数：同输入两次调用结果完全相等（与 [com.example.agentkit.core.truncateToolResult] 同性质）。
  */
@@ -74,22 +80,7 @@ class ToolOutputTruncator(
         /** 收敛迭代次数（后缀长度只随省略位数变化，3 次足够，留 5 次保险）。 */
         private const val ITERATIONS = 5
 
-        /**
-         * 头部切点对齐：若 [end] 恰落在**代理对中间**（前一码元是高位代理、当前是低位代理），
-         * 则回退 1，避免切出孤立代理（半个 emoji / 非法 UTF-8 码点）。BMP 字符（中/é 等，
-         * 单个 UTF-16 码元）本就天然对齐，不受影响。
-         */
-        private fun safeHeadEnd(s: String, end: Int): Int {
-            var e = end.coerceIn(0, s.length)
-            if (e in 1 until s.length && s[e - 1].isHighSurrogate() && s[e].isLowSurrogate()) e -= 1
-            return e
-        }
-
-        /** 尾部起点对齐：若起点落在代理对中间（当前是低位代理、前一位是高位代理），后移 1。 */
-        private fun safeTailStart(s: String, start: Int): Int {
-            var st = start.coerceIn(0, s.length)
-            if (st in 1 until s.length && s[st].isLowSurrogate() && s[st - 1].isHighSurrogate()) st += 1
-            return st
-        }
+        // 切点对齐（safeHeadEnd / safeTailStart）不在这里实现：已上收到
+        // `core/ToolLimits.kt` 与 truncateToolResult 共用，避免两份逻辑各自漂移。
     }
 }

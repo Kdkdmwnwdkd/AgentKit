@@ -34,6 +34,7 @@ import com.example.agentkit.automation.UiSwipeTool
 import com.example.agentkit.automation.UiTapTool
 import com.example.agentkit.automation.UiTreeTool
 import com.example.agentkit.core.agent.RealAgentLoop
+import com.example.agentkit.core.capability.ToolActivationStore
 import com.example.agentkit.core.AgentLogger
 import com.example.agentkit.core.agent.ConnectivityNetworkRecoveryWaiter
 import com.example.agentkit.core.ConfigSanitizer
@@ -1511,6 +1512,10 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
             isRunning.value = false
             // Phase 2 DoD③：兜底清「正在恢复」——重试收尾事件之外的最后一道保险
             _retryState.value = null
+            // W-102：粘性激活的落盘点。放这里而不是各终态分支，是因为 send 的成功/失败/
+            // 取消与 regenerate 全都汇聚到本函数——漏一处就是「这次开的组没记住」，
+            // 下次进同一任务又要模型重新 __use_tools 一遍（一次完整往返）。
+            persistToolGroups()
             if (rebuildMessages) reloadActiveMessages()
             refreshLogs()
         }
@@ -1781,6 +1786,9 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
                 // W-54：收尾仪式与 send 共用。rebuildMessages=false——成功/失败分支各自
                 // reload 过，取消分支草稿已清、列表未变，不必再重建一遍
                 turnRunner.finish(rebuildMessages = false)
+                // W-102：本轮可能开了组，收尾落盘（取消路径也走这里：开到一半被停，
+                // 下次进来仍是开着的——粘性语义要求「开过就算」）
+                persistToolGroups()
             }
         }
     }
@@ -1998,6 +2006,22 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         )
     }
 
+    /**
+     * W-102：粘性激活的工具组（LRU 序：最久未用在前）。
+     *
+     * 进程内唯一实例，由 loop 的元工具 `__use_tools` 就地修改；每次回合收尾
+     * 经 [persistToolGroups] 落盘，杀进程后还能带回来。
+     *
+     * 为什么不放 loop 内部：loop 是「一次请求的执行器」，而「用户这台设备上开过哪些组」
+     * 是会话之间的状态。放在 ViewModel 才能跨 send 保留。
+     */
+    private val activeToolGroups: MutableSet<String> = ToolActivationStore.load(app)
+
+    /** 把当前激活组落盘（失败只记日志，不打断收尾——见 ToolActivationStore 的失败模式）。 */
+    private fun persistToolGroups() {
+        ToolActivationStore.save(app, activeToolGroups)
+    }
+
     private val loop = RealAgentLoop(
         llmProvider = { buildMainClient() },
         registry = registry,
@@ -2012,7 +2036,9 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         // 功能五（P1-9）：推理过程增量 → handleReasoningDelta（与正文分流，UI 折叠块）
         onReasoningDelta = ::handleReasoningDelta,
         // 真机第三轮 Bug A2：退避期间监听网络恢复——关掉飞行模式后「秒续」而不是干等满额
-        networkRecovery = ConnectivityNetworkRecoveryWaiter(app)
+        networkRecovery = ConnectivityNetworkRecoveryWaiter(app),
+        // W-102：粘性激活——同一会话第二次问「帮我截图」不必再开一遍 ui 组
+        activeGroups = activeToolGroups
     )
 
     /**
@@ -3038,6 +3064,8 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
                 // 要求用轮次变体结构重建 _messages，补上助手气泡的变体游标元数据
                 // （首条回答变体数=1，切换器不显示；重新生成后才会 >1）
                 turnRunner.finish(rebuildMessages = true)
+                // W-102：同 regenerate——粘性激活的组随回合收尾落盘
+                persistToolGroups()
             }
         }
     }

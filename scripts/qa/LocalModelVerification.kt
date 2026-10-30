@@ -85,10 +85,11 @@ private val ALL_TOOL_NAMES: List<String> = listOf(
 /**
  * 各档位的预期暴露面（对着上面 25 个工具算出来的，改分组规则时必须同步改这里）。
  *
- * 云端 = file(2) + ui(8) + skill(1) = 11，加 2 个元工具 → 13
- * 本地 = file(2)，加 2 个元工具 → 4
+ * W-102 起云端与端侧默认面一致：都只给 file 组（read_file / write_file），
+ * 加 2 个元工具 → 4。改之前云端是三组（file+ui+skill = 13）。
+ * 两个常量都留着而不是合并成一个：将来档位再分化时，改动面只有数值。
  */
-private const val CLOUD_EXPOSED = 13
+private const val CLOUD_EXPOSED = 4
 private const val TINY_EXPOSED = 4
 
 /**
@@ -194,23 +195,25 @@ private suspend fun testTinySurface() {
     }
 }
 
-/** 用例 2：云端基础三组 —— 比全量小，但覆盖读写文件 / 看屏幕 / 用技能。 */
+/** 用例 2：云端初始面 —— W-102 起与端侧一致：只给 file 组 + 元工具。 */
 private suspend fun testCloudSurface() {
-    println("\n== 用例 2：云端基础三组 ==")
+    println("\n== 用例 2：云端初始面 = file 组 ==")
 
-    check("云端初始集 = file + ui + skill 三组 + 元工具，共 $CLOUD_EXPOSED 个") {
+    check("云端初始集 = file 组 + 元工具，共 $CLOUD_EXPOSED 个") {
         val plan = planFor("openai")
         assertEquals("暴露数", CLOUD_EXPOSED, plan.visible.size)
         assertEquals("模式", ExposureMode.GROUPED, plan.mode)
-        assertEquals("激活组", setOf("file", "ui", "skill"), plan.activated)
+        // misc 只有存在「前缀推不出组」的工具时才出现；这份 fixture 里没有，
+        // 但断言写成减法，避免将来往 fixture 加一个自定义工具就红。
+        assertEquals("激活组", setOf("file"), plan.activated - "misc")
     }
-    check("云端比全量小，但常用能力都在") {
+    check("云端默认只给读写文件，其余靠 __use_tools") {
         val plan = planFor("openai")
         assertTrue("少于全量", plan.visible.size < ALL_TOOL_NAMES.size)
-        for (n in listOf("read_file", "write_file", "ui_click", "ui_screenshot", "use_skill")) {
+        for (n in listOf("read_file", "write_file")) {
             assertTrue("含 $n", n in plan.names)
         }
-        for (n in listOf("memory_write", "shell_run", "workflow_list")) {
+        for (n in listOf("ui_click", "ui_screenshot", "use_skill", "memory_write", "shell_run")) {
             assertTrue("不含 $n（要靠 __use_tools 开）", n !in plan.names)
         }
     }
@@ -321,14 +324,14 @@ private suspend fun testSystemPromptSync() {
         assertNotContains("不含 shell_run 片段", llm.lastSystemPrompt, "FRAG-shell_run")
         assertNotContains("不含 use_skill 片段（本地不给技能组）", llm.lastSystemPrompt, "FRAG-use_skill")
     }
-    check("云端模型（claude）：提示含基础三组片段、不含记忆与命令执行") {
+    check("云端模型（claude）：初始提示与端侧一致，只含 file 组片段") {
         val fx = Fixture()
         val llm = ScriptedLlm("claude", listOf(AssistantMessage("ok")))
         val loop = RealAgentLoop(llmProvider = { llm }, registry = fx.registry, providerRetry = 0)
         loop.send("hi")
         assertContains("含 read_file 片段", llm.lastSystemPrompt, "FRAG-read_file")
-        assertContains("含 ui_swipe 片段", llm.lastSystemPrompt, "FRAG-ui_swipe")
-        assertContains("含 use_skill 片段", llm.lastSystemPrompt, "FRAG-use_skill")
+        assertNotContains("不含 ui_swipe 片段（未激活）", llm.lastSystemPrompt, "FRAG-ui_swipe")
+        assertNotContains("不含 use_skill 片段（未激活）", llm.lastSystemPrompt, "FRAG-use_skill")
         assertNotContains("不含 memory_write 片段", llm.lastSystemPrompt, "FRAG-memory_write")
     }
     check("提示只拼一次：第二轮不再重拼（保 KV 前缀稳定）") {
@@ -408,7 +411,7 @@ private suspend fun testTrimLogging() {
         val hit = AgentLogger.recent(500).firstOrNull { it.tag == "ToolExposure" }
         assertTrue("有 ToolExposure 日志", hit != null)
         assertContains("暴露数量", hit!!.message, "暴露 $CLOUD_EXPOSED 个")
-        assertContains("已启用组", hit.message, "file,ui,skill")
+        assertContains("已启用组", hit.message, "已启用组=file")
     }
     check("强制全量 → 不打日志（没裁剪，不该刷屏）") {
         AgentLogger.clear()

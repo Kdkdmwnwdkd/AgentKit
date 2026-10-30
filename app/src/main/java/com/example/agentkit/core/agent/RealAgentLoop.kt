@@ -104,9 +104,8 @@ import java.util.concurrent.atomic.AtomicBoolean
  *   构造 [RegistryToolExecutor]）。测试可注入违约 executor 验证回合级兜底；
  *   update(registry) 也因此对默认 executor 即时生效。
  * @param forceFullTools Phase 2 DoD④「本地模型工具暴露降级」：强制全量工具开关
- *   （默认 false = 按 provider 自动）。provider = local-llama 时默认把暴露给 LLM 的
- *   工具面按 [KernelExposure] 裁剪（本地最小集 / 云端基础三组）；置 true 可强制全量
- *   全量（开发者/设置项逃生门）。云端 provider 不受此开关影响（本就全量）。
+ *   （默认 false = 按 provider 自动）。W-102 起云端与端侧都只默认给 file 组
+ *   （+ 常驻 misc），其余靠 `__use_tools` 开；置 true 可强制全量（开发者/设置项逃生门）。
  * @param backoffPlan 第 n 次重试（1-based）应等待的计划毫秒数（默认
  *   [RetryBackoffPolicy.backoffMillis]：3s → 10s → 25s 封顶的**可配常量序列**）。
  *   测试可注入小值序列以保持 harness 毫秒级。
@@ -148,6 +147,16 @@ class RealAgentLoop(
     private val hooks: Hooks = NoopHooks,
     private val executorFactory: (() -> ToolExecutor)? = null,
     private val forceFullTools: Boolean = false,
+    /**
+     * W-102 粘性激活的工具组（跨回合、跨请求持久）。
+     *
+     * 传 null 时每次 [runTurn] 新建空集，行为与改造前逐字节一致——harness 与无状态调用
+     * 走这条路，不背「上一次的组还在」的隐含状态。
+     *
+     * 传入时必须是有序集合（`LinkedHashSet`）：[KernelExposure.enforceCap] 的淘汰顺序
+     * 依赖插入序做 LRU。移动端由 ChatViewModel 持有并落盘（`ToolActivationStore`）。
+     */
+    private val activeGroups: MutableSet<String>? = null,
     private val networkRecovery: NetworkRecoveryWaiter = NetworkRecoveryWaiter.TIMER_ONLY,
     private val backoffPlan: (attempt: Int) -> Long = RetryBackoffPolicy::backoffMillis,
     /**
@@ -264,11 +273,14 @@ class RealAgentLoop(
         priorMessages: List<ChatMessage> = emptyList()
     ): List<ChatMessage> {
         val loopStart = System.currentTimeMillis()
-        // 内核暴露（core/KernelExposure）：按能力档位选工具面——云端默认「基础三组 + 元工具」，
-        // 本地小模型只给「文件读写 + 元工具」。activeGroups 会被元工具 __use_tools 就地修改，
-        // 因此工具面在循环内**每轮重算**（见下方 repeat 块首）。
-        val activeGroups = mutableSetOf<String>()
-        val exposure0 = currentExposure(activeGroups)
+        // 内核暴露（core/KernelExposure）：按能力档位选工具面——W-102 起云端与端侧都只默认
+        // 激活 file 组（+ 常驻 misc），其余靠 `__use_tools` 开。开过的组由元工具就地写回
+        // 集合，因此工具面在循环内**每轮重算**（见下方 repeat 块首）。
+        // W-102：优先用外部持有的**粘性**集合——同一会话里第二次「帮我截图」不该再
+        // 开一遍 ui 组（开一次 = 一次完整往返 + 一次前缀失效）。未注入时退回每回合新建，
+        // 行为与改造前逐字节一致（harness 走这条）。
+        val active = this.activeGroups ?: linkedSetOf()
+        val exposure0 = currentExposure(active)
         logExposure(exposure0)
         // 系统提示只拼一次：它承载「身份 + 规则 + 工具用法」，逐轮重拼会让本地推理的 KV 前缀
         // 每轮失效（这正是改造前每轮都慢一截的原因之一）。后启用的组靠工具 description 自解释。
@@ -297,7 +309,7 @@ class RealAgentLoop(
             // 每轮重算工具面：上一步若调了 __use_tools，激活的组要立刻体现在下一轮请求里。
             // scopedRegistry 仍按暴露面收紧执行侧——被裁工具在此视图内「查无此工具」，
             // 走 T02 未知工具路径并提示先用 __use_tools，避免模型靠猜名字绕过裁剪。
-            val exposure = currentExposure(activeGroups)
+            val exposure = currentExposure(active)
             val turnRegistry = scopedRegistry(exposure)
             // T01 钩子：序列化前（每次 LLM 请求前一次；快照传参，钩子看不到后续变更）
             hooks.beforeSerialization(messages.toList())
@@ -615,7 +627,7 @@ class RealAgentLoop(
      */
     private suspend fun chatOnce(messages: List<ChatMessage>, exposure: KernelExposure.Plan): AssistantMessage {
         var completed: AssistantMessage? = null
-        // 发给 LLM 的工具定义用**本轮**暴露面（云端基础三组、本地最小集，均含元工具）。
+        // 发给 LLM 的工具定义用**本轮**暴露面（默认 file 组 + 元工具，均含元工具）。
         // 与系统提示同源的部分只在首轮一致；后续轮次因 __use_tools 启用新组而扩大，
         // 新组的用法由工具 description 自解释，系统提示不再重拼（保 KV 前缀稳定）。
         llmProvider().streamChat(messages, exposure.visible).collect { event ->
@@ -775,11 +787,12 @@ class RealAgentLoop(
     /**
      * 计算本回合的工具暴露面（委托 [KernelExposure.plan]）。
      *
-     * provider 决定档位：`local-llama` → 最小集（文件读写 + 元工具）；其余 → 基础三组 + 元工具；
-     * [forceFullTools] = true 时全量（开发者开关，行为与改造前一致）。
+     * provider 决定档位：W-102 起两者默认面都是 file 组 + 元工具，差别只在 mode
+     * （端侧 META 更强调「先查再开」）；[forceFullTools] = true 时全量（开发者开关）。
      *
-     * @param active 已启用的组；**会被就地修改**（元工具 `__use_tools` 执行时写入），
-     *   调用方按回合持有，跨轮传递即可实现「用到再开」。
+     * @param active 已启用的组；**会被就地修改**（元工具 `__use_tools` 执行时写入）。
+     *   由 [RealAgentLoop.activeGroups] 跨回合持有时即「粘性激活」——开过的组不会
+     *   下一轮就消失，只会在撞上限时被滞回淘汰。
      */
     private fun currentExposure(active: MutableSet<String>): KernelExposure.Plan =
         KernelExposure.plan(registry.list(), llmProvider().id, forceFullTools, active)

@@ -171,8 +171,23 @@ private suspend fun testT06Truncation() {
         val text = "a".repeat(MAX_TOOL_RESULT_CHARS + 1)
         val out = truncateToolResult(text)
         assertTrue("bound", out.length <= MAX_TOOL_RESULT_CHARS)
-        assertContains("suffix", out, "结果过长已截断，共 24001 字符")
+        assertContains("suffix", out, "共 24001 字符")
         assertTrue("not identical", out != text)
+    }
+    check("头尾都保留：开头与结尾标记都在，中间被省略") {
+        // 这条是「只留头部」的回归断言：改造前尾部结论必被丢掉
+        val head = "HEAD_MARK"
+        val tail = "TAIL_MARK"
+        val text = head + "x".repeat(60_000) + tail
+        val out = truncateToolResult(text)
+        assertTrue("bound", out.length <= MAX_TOOL_RESULT_CHARS)
+        assertTrue("keep head", out.startsWith(head))
+        assertTrue("keep tail", out.endsWith(tail))
+        assertContains("omitted note", out, "中间省略")
+    }
+    check("截断是确定性的：同输入两次结果完全相等") {
+        val text = "z".repeat(50_000)
+        assertEquals("deterministic", truncateToolResult(text), truncateToolResult(text))
     }
     check("后缀从预算预留：keep+suffix 不超上限（100K 输入）") {
         val text = "b".repeat(100_000)
