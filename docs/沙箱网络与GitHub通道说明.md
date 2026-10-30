@@ -1,195 +1,167 @@
-# 沙箱网络与 GitHub 通道说明（实测）
+# 沙箱网络与 GitHub 通道说明（2026-10-30 合并版）
 
-> 本文记录**在这个沙箱里访问 GitHub 的可用通道与坑**，供后续会话直接复用，
-> 不用再花一小时重新试错。
->
-> 参考了资料库里的《参考：沙箱绕过网络连接 GitHub - 通道说明》，并结合本仓库
-> 2026-10-22 的实测结果做了修正与补充。
+> 本文替代三份互相矛盾的旧记录：
+> 资料库《沙箱 GitHub 通道与交付 SOP》、《AgentKit 网络通道与加速指南》，以及本文件 2026-10-22 版。
+> 三者内容约八成重复，冲突全部来自同一个原因——**「通不通」是按天变的，被当成了结论写进去**。
+> 所以这一版只固化**不随网络变的东西**：判据、选路规则、命令、坑。
+> 状态数字挪进 §4，标明日期，**不许当结论抄**。
 
 ---
 
-## 一、先看：当前到底通不通
+## 一、判据要三层，不能只看 DNS
 
-**拦截是间歇性的，不要凭一次结果下结论。** 每次开工先跑一次：
+旧文档的判据是「DNS 落在 `198.18.0.0/15` 就是被拦」。这条**只能排除**，**不能证明能传数据**。
 
-```bash
-for d in github.com api.github.com raw.githubusercontent.com api.githubcopilot.com; do
-  echo -n "$d -> "; getent hosts $d | head -1 | awk '{print $1}'
-done
+2026-10-30 实测反例：
+
+```
+getent hosts github.com      → 20.205.243.166   （真实 IP，不是 198.18.x）
+curl -m 20 https://github.com        → 200
+curl -m 20 https://api.github.com    → 200
+git clone（同一个域名、同一个 token） → 134 秒后 Failed to connect
+git ls-remote origin                 → 秒回，能列出全部 refs
 ```
 
-| 解析结果 | 含义 |
-|---|---|
-| `198.18.0.x` | **被拦截**。这是 IANA 保留的基准测试网段（RFC 2544），出现它即代表流量被拦截设备接管 |
-| `20.205.243.x` / `140.82.113.x` 等 | **真实 GitHub IP，正常** |
+**解析正常、单请求 200、元数据能读，但对象传输挂死。** 所以判据必须是三层：
 
-2026-10-22 实测：解析到真实 IP，通道全通。**但之前有会话记录过被拦截的情况，
-所以每次开工都要重新确认一次。**
-
----
-
-## 二、四条通道（按用途选）
-
-| 通道 | 用途 | 状态 | 坑 |
+| 层 | 命令 | 能证明什么 | 不能证明什么 |
 |---|---|---|---|
-| `curl` + PAT 直连 `api.github.com` | REST API 读写 | ✅ 可用（TLS 已不被切断） | 偶发见 §3.1 |
-| `api.githubcopilot.com/mcp/` | 官方 GitHub MCP Server | ✅ 连通（401 = 需要 PAT） | **不含 Actions 工具** |
-| `gh-proxy.com` 直链 | **大文件下载（APK）** | ✅ **强烈推荐** | 见 §3.2 |
-| `WebFetch` 工具 | 读 `api.github.com` | ✅ 可用 | 见 §3.3 |
+| 1 解析 | `getent hosts <域名>` | 有没有被劫持到保留网段 | 能不能建连 |
+| 2 单请求 | `curl -m 20 -o /dev/null -w "%{http_code}"` | TLS 通不通、鉴权对不对 | 大响应能不能传完 |
+| 3 传输 | 真跑一次 `git fetch` / 下一次 tarball | **这条通道今天能不能用** | 明天还能不能用 |
 
-### 2.1 curl + PAT（主力）
+**只做第 1 层就下结论，是过去几轮反复白花时间的根因。**
 
-```bash
-export GH_PAT=<your classic PAT, 需 repo 权限>
-curl -s -H "Authorization: token $GH_PAT" https://api.github.com/user
-```
+---
 
-- **必须用 `token` 前缀**：`Authorization: Bearer` 会 401 Bad credentials。
-- 连接器（`@github-connector`）的 OAuth token **权限不足**（403 Resource not accessible
-  by integration），必须用**用户自建 classic PAT，勾选 `repo`**。
+## 二、选路：按「操作 × 体积」，不按域名状态
 
-### 2.2 GitHub MCP Server（`api.githubcopilot.com`）
-
-端点不在拦截名单内，可调用 GitHub 全量 API。写操作关键项：
-`create_or_update_file`（单文件）、`push_files`（批量）、`create_branch`、
-`create_pull_request`、`merge_pull_request`。
-
-- 更新已存在文件**必须提供 sha**（先 `get_file_contents` 取）。
-- 响应是 SSE 格式，需剥离 `data: ` 前缀。
-- **没有 Actions 相关工具**（`list_workflow_runs` 等返回 unknown tool），
-  查 CI 状态得走 REST API。
-
-### 2.3 gh-proxy 直链（大文件下载，最关键的提速）
-
-```bash
-# 注意：不要带 Authorization 头！带了反而 403。
-curl -sL -C - "https://gh-proxy.com/https://api.github.com/repos/{owner}/{repo}/actions/artifacts/{artifact_id}/zip" -o out.zip
-```
-
-**实测对比（本仓库 34 MB 的 APK artifact，2026-10-22）：**
-
-| 方式 | 耗时 | 速度 |
+| 想做的事 | 走哪条 | 关键约束 |
 |---|---|---|
-| API 直连 + Authorization | **40 分钟**（多轮断点续传） | ~14 KB/s |
-| **gh-proxy 直链（不带 auth）** | **4 分钟** | ~141 KB/s |
+| 推 1~20 个小文件（<100KB） | MCP `push_files` | 一次 commit，秒级；更新已有文件要 `sha` |
+| 推单文件 >100KB | REST `PUT /contents/{path}` | MCP 会 `argument list too long`（`ARG_MAX`） |
+| 推多文件且总量大 | 小文件 MCP 一批 + 大文件逐个 REST | 别硬凑一个 commit |
+| 读文件 / 查 issue / 查 CI | `curl api.github.com`（带 PAT） | 匿名会撞限流 |
+| 拉整仓源码 | `gh-proxy.com` + tarball | **不带** Authorization |
+| **同步本地 git 历史** | `git fetch https://gh-proxy.com/https://github.com/...` | 镜像**只读**，push 会 `No anonymous write access` |
+| 下 APK / artifact | `gh-proxy.com` 直链 | 不带 auth；支持 Range |
+| `git clone` / `git push` 直连 | **不要用** | 见 §1 反例，重试是纯浪费 |
 
-**快 10 倍。** 这轮在下载上浪费的近一小时，就是没先走这条通道。
-
-- `artifact_id` 从 `actions/runs/{run_id}/artifacts` 取（**这个接口要带 auth**）。
-- 支持 Range 断点续传（`-C -` / `-r`），返回 206。
-- artifact 有效期 90 天。
-- Release asset 直链（`github.com/.../releases/download/...`）会被 CDN 卡住
-  （实测卡在 3.6 MB 不动）→ **改用 gh-proxy 走 artifact**。
-
-### 2.4 WebFetch
-
-能读 `api.github.com` 的 REST 接口（含 Actions 运行记录）。
+一句话：**读走镜像，写走 MCP，大文件走 REST，git 协议只用来 fetch，不用来 push。**
 
 ---
 
-## 三、三个反复踩的坑
+## 三、五条命令（可直接粘）
 
-### 3.1 "Bad credentials" 401 —— 大概率不是令牌失效
+```bash
+export GH_TOKEN=$(cat /tmp/.ghpat)          # classic PAT，勾 repo（要触发 workflow 再加 workflow）
 
-这轮遇到过三次 `401 Bad credentials`，中间还夹着一次：
+# ① 探活（三层，10 秒内出结论）
+getent hosts github.com api.github.com | awk '{print $1, $2}'
+curl -s -m 10 -o /dev/null -w "api=%{http_code}\n" -H "Authorization: token $GH_TOKEN" https://api.github.com/user
 
+# ② 同步本地历史（秒回，只读）
+cd /workspace/AgentKit
+git fetch "https://gh-proxy.com/https://github.com/Kdkdmwnwdkd/AgentKit.git" main
+git reset --hard FETCH_HEAD                # 未跟踪文件不会被删
+
+# ③ 推小文件（MCP，一次 commit）
+mcporter call github.push_files owner=Kdkdmwnwdkd repo=AgentKit branch=main \
+  message="docs: ..." files='[{"path":"docs/x.md","content":"..."}]'
+
+# ④ 推大文件（REST，payload 走文件不进命令行）
+SHA=$(curl -s -H "Authorization: token $GH_TOKEN" \
+  "https://api.github.com/repos/Kdkdmwnwdkd/AgentKit/contents/<path>?ref=main" \
+  | python3 -c "import json,sys;print(json.load(sys.stdin)['sha'])")
+python3 -c "
+import json,base64
+open('/tmp/push.json','w').write(json.dumps({
+  'message':'...','content':base64.b64encode(open('<local>','rb').read()).decode(),
+  'sha':'$SHA','branch':'main'}))"
+curl -s -X PUT -H "Authorization: token $GH_TOKEN" --data @/tmp/push.json \
+  "https://api.github.com/repos/Kdkdmwnwdkd/AgentKit/contents/<path>"
+
+# ⑤ 下产物（不带 auth，带了反而 403）
+curl -sL --max-time 300 -o app-debug.apk \
+  "https://gh-proxy.com/https://github.com/Kdkdmwnwdkd/AgentKit/releases/download/latest/app-debug.apk"
 ```
-API rate limit exceeded for 114.132.152.117.
-(But here's the good news: Authenticated requests get a higher rate limit...)
+
+**MCP 注册（沙箱重置后必做，会清掉 `.mcp.json` 里的 github 条目）：**
+
+```bash
+mcporter config add github "https://api.githubcopilot.com/mcp/" \
+  --transport http --header "Authorization=Bearer $(cat /tmp/.ghpat)" --scope home
+mcporter list github | head
 ```
-
-**"rate limit exceeded" 暴露了真相**：那条请求是以**未认证身份**发出去的。
-也就是说偶发情况下 `Authorization` 头没生效（被中间设备剥离或请求重写），
-GitHub 就按匿名 IP 限流，然后返回 401/403。
-
-**处置**：**不要急着吊销或换令牌**——等 30~120 秒重试即可，这轮三次都是重试即恢复。
-判断依据：用 `curl -H "Authorization: token $GH_PAT" https://api.github.com/user`
-单独验一次，返回 `login` 就说明令牌没坏。
-
-### 3.2 gh-proxy 不能带 Authorization 头
-
-文档原话："不要带 Authorization 头 —— gh-proxy 服务端自带凭据，客户端带 token 会 403。"
-实测确认：不带 → 206 正常；带了 → 403。
-
-### 3.3 WebFetch 有 15 分钟缓存
-
-对同一 URL 反复查询可能拿到**过期快照**。曾有会话因此误判"CI 跑了 60 分钟还没结束"，
-实际那次 run 在 27 分钟时就已 success。
-
-**处置**：复核状态时在 URL 后加无害查询参数绕过缓存，如 `?t=<时间戳>`。
 
 ---
 
-## 四、本仓库的特殊约束（与网络无关但一起踩）
+## 四、实测数字（会变，只看量级）
 
-1. **沙箱里 git 协议直连 github.com:443 超时** → 只能走 REST API 造 commit
-   （blob → tree → commit → ref）。
-2. 由此导致**本地 git 历史与远端历史是两套**，`git rebase` 不可用。
-   正确姿势：「以远端 head 为 parent + 显式文件列表」造 commit。
-3. 远端 head 的 commit **在本地 git 里不存在**，`git rev-parse <sha>^{tree}` 会直接失败。
-   `base_tree` 必须从 API 取（`/git/commits/{sha}`）。
-4. **不要用 compare API 的文件列表重建 tree** —— 它会**漏文件**。
-   本仓库上一轮 `known-broken.txt` 就被漏掉，合并后没进远端，最后靠单独推一次补上。
-   合并时**直接用分支 head 的 tree**。
-5. 中文文件名走 `contents` API 时 shell 里容易被截断/误解析，
-   核对远端文件用网页或 raw 路径更稳。
+| 日期 | 通道 | 结果 |
+|---|---|---|
+| 10-19 | api.github.com | 被劫持到 198.18.0.x，`000` |
+| 10-22 | 四条通道 | 全通；APK 34MB 走 gh-proxy 4 分钟（141KB/s） |
+| 10-26 | MCP `push_files` | 7 文件一次提交，3 秒 |
+| 10-28 | git 协议 | `ls-remote` 40 秒超时；改走 API 造 commit |
+| **10-30** | gh-proxy tarball | Coomi 42MB / 5.0 秒（**8.3MB/s**） |
+| **10-30** | codeload 直连 | Coomi 30MB 传 15 分钟未完成；RikkaHub 18.7MB / 10 分钟（**约 30KB/s**） |
+| **10-30** | `git clone` 直连 | 134 秒 `Failed to connect`；同一时刻 `ls-remote` 秒回 |
+| **10-30** | 镜像 `git fetch` | 秒回，拿到真实 HEAD `16b9731` |
+
+**同一时刻，直连 30KB/s vs 镜像 8.3MB/s，差 250 倍。** 所以「慢」在多数情况下不是配额问题，是没换通道。
 
 ---
 
-## 五、2026-10-28 实测补充（W-79 推送这次）
+## 五、会复发的坑
 
-这一轮把「git push 走不通 → 用 API 造 commit」完整跑了一遍，四条结论值得记住：
+| # | 坑 | 现象 | 处置 |
+|---|---|---|---|
+| 1 | `git clone` 直连挂起 | TCP 三次握手成功，之后 0 字节，134 秒报 `Failed to connect` | 别重试。改用镜像 tarball / 镜像 fetch |
+| 2 | 镜像 push | `No anonymous write access` | 镜像只读，写走 MCP/REST |
+| 3 | 镜像带 auth | 反而变慢或 403 | 下载/同步一律不带 Authorization |
+| 4 | MCP 参数长度 | `argument list too long` | 单文件 >100KB 走 REST |
+| 5 | MCP 提交后本地分叉 | `git push` 被拒、`git log` 对不上 | `git fetch <镜像> main && git reset --hard FETCH_HEAD` |
+| 6 | 更新已有文件漏 `sha` | 422 | 先 `get_file_contents` 取 sha |
+| 7 | MCP 响应是 SSE | JSON 解析失败 | 剥掉 `data: ` 前缀 |
+| 8 | WebFetch 15 分钟缓存 | 拿旧状态误判「CI 卡住」 | URL 加 `?t=<时间戳>` |
+| 9 | 401 `Bad credentials` | 偶发，且夹着 `rate limit exceeded for <IP>` | **九成是请求变成匿名了**，等 30~120 秒重试；先单独验 `/user` 再决定要不要换令牌 |
+| 10 | 中文路径 | 全被判成「新增」 | `git -c core.quotepath=false`；API 侧用 UTF-8 原样 |
+| 11 | 文件 mode | 脚本在 CI 里没有执行位 | `.sh` 用 `100755`，其余 `100644` |
+| 12 | 分支名 | 404 | 参照仓库里 `rikkahub` 默认分支是 `master`，其余是 `main` |
+| 13 | 只看 HTTP 200 就收工 | 以为推上去了 | 推完**读回 blob sha 逐个比对**，不看 200 看内容 |
 
-### 5.1 `git push` 的表现和判据
+**第 13 条是本项目最贵的一条**：ref 动了不等于 tree 对，文件数涨了不等于内容对。
 
-```
-git ls-remote origin HEAD      → exit 124（40 秒超时，0 字节）
-curl https://github.com/.../info/refs → 45 秒超时
-TCP github.com:443             → 能连上（三次握手成功）
-```
+---
 
-**TCP 能连、TLS 后无响应**，与 §1 的「DNS 落 198.18.x」是同一件事的两种表现。
-判据不要只看 TCP：`/dev/tcp` 通不代表能用，必须发一个真实 HTTP 请求。
+## 六、旧结论裁定（明确作废，别再来回改）
 
-同时 `api.github.com` 正常 200。所以**读写都走 REST，不要碰 git 协议**。
+| 旧说法 | 现在 | 证据 |
+|---|---|---|
+| 「DNS 落 198.18.x 就是被拦」 | 不完整。DNS 正常也可能传不动 | §1 的 10-30 反例 |
+| 「`Authorization` 必须用 `token` 前缀」 | `token` / `Bearer` 都行 | 10-28、10-30 均 200 |
+| 「本地 git 历史与远端是两套，rebase 不可用」 | **已解决**：镜像 fetch 可拿到完整历史，本地 HEAD 就是真实 commit | 10-30 `git log` 正常 |
+| 「只能走 API 造 commit」 | 仍可用，但不必了：有真实历史后 `base_tree` 直接取本地 HEAD | 同上 |
+| 「沙箱不能编 APK」 | 可以，需 JDK17 + cmdline-tools + 腾讯 gradle 镜像，首次全量约 18 分钟 | 10-19 补充节 |
+| 「gh-proxy 只加速 artifact」 | 也加速 tarball 与 git fetch | 10-30 实测 |
 
-### 5.2 `Authorization` 头两种前缀都能用
+保存「坑」那一列比保存「状态」那一列有用得多——前者一年后还成立，后者一天就过期。
 
-本轮 `Authorization: Bearer <PAT>` 请求 `/user`、`/git/trees`、`/actions/runs`
-全部 200。§2.1 记的「必须 `token` 前缀」不成立——两种都可，`Bearer` 更通用。
-遇到 401 先按 §3.1 重试，别急着换令牌。
+---
 
-### 5.3 造 commit 的最小流程（13 个文件，一次成功）
+## 七、安全
 
-```text
-GET  /repos/{o}/{r}/git/trees/{base}?recursive=1      # 远端 path → blob sha
-本地 git ls-tree -r HEAD（配 -c core.quotepath=false）# 本地 path → blob sha
-差异集 = 本地有、远端 sha 不同或不存在
-POST /git/blobs   逐个上传（base64），得到新 blob sha
-POST /git/trees   { base_tree: base, tree: [{path,mode,type,sha}...] }
-POST /git/commits { message, tree, parents: [base] }
-PATCH /git/refs/heads/main { sha, force: false }
-```
+1. PAT 只放 `/tmp/.ghpat`（`chmod 600`）或密码管理器，**不进仓库、不进备份包、不进日志**。
+2. **聊天里明文出现过的令牌一律视为已泄露**：用完立刻吊销重发。
+3. 提交前扫一遍 diff 有没有 `api_key` / `token` / `Authorization` 字样。
+4. 第三方镜像（gh-proxy / ghfast）**永不带可写凭据**。
 
-三个细节：
+---
 
-- **必须 `core.quotepath=false`**。默认会把中文路径转成 `\346\211\271...`，
-  与 API 返回的 UTF-8 路径对不上，结果是把已有文档全判成「新增」，
-  再叠加「远端有本地无的不删」，看起来没坏，实际清单已经错了。
-- **只传差异文件，`base_tree` 用远端 head 的 tree**。本地历史落后远端时（本仓库常态），
-  这样能保住远端那些本地没有的文件（本轮 7 个 `core/build/*.kt`）。
-- **`.sh` 用 `100755`，其余 `100644`**。mode 传错会让脚本在 CI 里失去执行位。
+## 八、维护约定
 
-### 5.4 推完必须读回
-
-本轮推完做了一次逐文件比对：取新 commit 的 tree，与本地 `git ls-tree` 的 13 个
-blob sha 对照，**13/13 一致**，远端文件数 532 → 538（6 个新增）。
-
-只看 `PATCH ref` 返回 200 不算数——它只说明 ref 动了，不说明 tree 内容对。
-
-### 5.5 CI 与产物的口径
-
-- 本轮 run 447：17 个步骤全 success，`QA gate` 在列。
-- 日志汇总是 `PASS=57 SKIP=0 FAIL=0`，**57 是 QA 脚本个数**（`scripts/qa/run-*.sh`），
-  不是断言条数。对外说「N 条契约」时要么给脚本数，要么给断言数并注明口径。
-- APK 33.87 MB，Release `latest` 已更新，`versionName = 1.<run_number> = 1.447`。
+- **只改规则和命令，不改状态结论。** 状态只往 §4 加一行，带日期。
+- 新踩的坑追加到 §5，「首次记录」写清日期。
+- 旧结论改判写进 §6，注明证据——**不要直接删**，否则下一个人会把它重新写回来。
+- 本文与资料库里那两份冲突时以本文为准；那两份建议归档，不再各自维护。
