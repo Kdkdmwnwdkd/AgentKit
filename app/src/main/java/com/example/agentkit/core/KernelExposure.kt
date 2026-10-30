@@ -1,7 +1,5 @@
 package com.example.agentkit.core
 
-import com.example.agentkit.core.kernel.ExposureMode
-import com.example.agentkit.core.kernel.Strength
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
@@ -10,9 +8,13 @@ import kotlinx.serialization.json.contentOrNull
  * 工具暴露的**实现层**：把 [AgentTool]（现有 52 个工具的实现契约）接到内核的暴露模型上。
  *
  * ## 为什么需要这一层
- * `core/kernel/Exposure.kt` 用的是内核自己的 `ToolSpec`，而现有 52 个工具实现的是
- * `AgentTool`。让工具改实现是几十个文件的改动，且会让「核心化」这件事从第一天就背上回归面。
- * 所以中间加一层：内核只描述「按什么规则暴露」，这里负责「拿现有工具套规则」。
+ * 那套内核实验（`core/kernel/`，995 行）已经删除，但它描述的「按规则暴露」是对的，
+ * 而现有 52 个工具实现的是 `AgentTool` 契约。所以保留这一层：
+ * 规则由本文件承担，工具侧一行不用改。
+ *
+ * 删除时留下的教训：那 995 行里并不是全死——`Strength` 和 `ExposureMode` 被本文件用着，
+ * 「747 行整个删掉」的说法是错的，照删会编译不过。所以清理时先把这两个枚举搬到
+ * `core/ExposureTypes.kt`，`Prompt` 那组搬到 `core/PromptSegments.kt`，再删整个包。
  *
  * ## 和 [ToolExposurePolicy] 的差别（三处，都是针对现状的毛病）
  * 1. **不再有白名单**。旧策略是「本地小模型只给这 7 个，名单写死在代码里」，新增工具忘了

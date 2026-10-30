@@ -1,4 +1,4 @@
-package com.example.agentkit.core.kernel
+package com.example.agentkit.core
 
 /**
  * 系统提示的分段拼装。
@@ -6,17 +6,20 @@ package com.example.agentkit.core.kernel
  * ## 为什么按「变化频率」切段
  * 端侧本地推理有一个特性：**系统提示的前缀只要逐字节不变，KV 缓存就能复用**；一旦中间
  * 插进一个时间戳或随机顺序的工具列表，整段前缀作废，下一次请求要从头 prefill。
- * 现在 `buildSystemPrompt` 是每轮把「角色 + 规则 + 工具提示 + 记忆 + 时间」拼成一整块，
+ * 原先 `buildSystemPrompt` 是每轮把「角色 + 规则 + 工具提示 + 记忆 + 时间」拼成一整块，
  * 因此**每一轮都必然作废**——用户感觉到的「每次发消息都在等」，有相当一部分来自这里。
  *
  * 切成三段：
  * - [Stability.FROZEN]：身份、规则、工具调用格式。整个会话不变，排最前。
- * - [Stability.SESSION]：会话级设定（人格、模型配置、已激活的技能）。一次会话内不变。
+ * - [Stability.SESSION]：会话级设定（人格、模型配置、已激活的工具组）。只随工具面变。
  * - [Stability.TURN]：本轮计划、时间、记忆摘要、压缩摘要。**必须在最后**，
  *   因为它一定变，放前面会把后面全部拖下水。
  *
  * 另外一条硬规则：**段内顺序必须由数据决定，不能由 Map 遍历或哈希序决定**。同内容两次
  * 组装必须得到逐字节相同的串，否则缓存照样失效。
+ *
+ * 迁移说明：本文件原为 `core/kernel/Prompt.kt`。那个包整体是未进主链路的实验，但
+ * 这几个类被 [com.example.agentkit.core.agent.RealAgentLoop] 用着，所以搬出来而不是删掉。
  */
 enum class Stability { FROZEN, SESSION, TURN }
 

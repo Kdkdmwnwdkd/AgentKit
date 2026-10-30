@@ -217,7 +217,7 @@ object ContextBudget {
      *
      * 为什么用 [UserMessage] 而不是 [SystemMessage]：Claude / Gemini 会把**所有**
      * SystemMessage 拼进顶层 system 字段，插在中间会让系统提示每轮变化，刚做好的
-     * KV 分段立刻作废（见 `core/kernel/Prompt.kt`）。用户消息只会出现在它该在的位置。
+     * KV 分段立刻作废（见 `core/PromptSegments.kt`）。用户消息只会出现在它该在的位置。
      *
      * 折叠条本身**不额外占预算**：先按原规则丢到 ≤ [targetTokens]，再用剩下的空间写摘要
      * （至少 [MIN_FOLD_TOKENS]，至多 [MAX_FOLD_TOKENS]）。剩余空间不够就不折——宁可少信息，

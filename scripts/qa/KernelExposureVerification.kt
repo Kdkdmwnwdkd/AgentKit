@@ -2,9 +2,11 @@
 /**
  * 暴露实现层 harness：验证 [com.example.agentkit.core.KernelExposure]。
  *
- * 与 [KernelCoreVerification] 分工：那边验内核的**规则**（三模式、分组、激活语义），
- * 这边验**接上真实工具之后的效果**——用仓库里实际存在的 56 个工具名，量「发给 LLM 的
- * 工具表到底省了多少」，并确认元工具真的能把裁掉的工具捞回来。
+ * 验**接上真实工具之后的效果**——用仓库里实际存在的工具名，量「发给 LLM 的工具表到底
+ * 省了多少」，并确认元工具真的能把裁掉的工具捞回来、粘性激活与滞回淘汰按预期工作。
+ *
+ * （原先还有一份 `KernelCoreVerification` 验内核那套未接入的规则实现；那套实现已删，
+ * 它里面唯一有价值的「提示分段稳定性」断言已并入本文件的第 8 段。）
  *
  * 运行：bash scripts/qa/run-kernel-exposure-verification.sh
  *
@@ -16,6 +18,9 @@
 import com.example.agentkit.core.AgentTool
 import com.example.agentkit.core.JsonSchema
 import com.example.agentkit.core.KernelExposure
+import com.example.agentkit.core.PromptAssembler
+import com.example.agentkit.core.Section
+import com.example.agentkit.core.Stability
 import com.example.agentkit.core.ToolResult
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonObject
@@ -290,7 +295,33 @@ fun main() = runBlocking {
         fbMsg.lines().firstOrNull { "ui" in it } ?: ""
     )
 
-    // ---------- 7. 结果 ----------
+    // ---------- 7. 提示分段：稳定前缀是否真的稳定 ----------
+    //
+    // 原在 KernelCoreVerification（已随 `core/kernel/` 那套实现一起删除），搬过来是因为
+    // PromptAssembler 仍在主链路上——RealAgentLoop 用它拼系统提示，串了就会每轮 cache miss。
+    println("\n[7] 提示分段：TURN 段变化不拖累 FROZEN/SESSION")
+    val base = listOf(
+        Section("identity", "你是北辰", Stability.FROZEN),
+        Section("rules", "规则一……", Stability.FROZEN),
+        Section("persona", "人格设定", Stability.SESSION)
+    )
+    val p1 = PromptAssembler.assemble(base + Section("turn", "时间 10:00 计划 A", Stability.TURN))
+    val p2 = PromptAssembler.assemble(base + Section("turn", "时间 10:05 计划 B", Stability.TURN))
+    val p3 = PromptAssembler.assemble(
+        listOf(Section("identity", "你是北辰（改）", Stability.FROZEN)) + base.drop(1) +
+            Section("turn", "时间 10:00 计划 A", Stability.TURN)
+    )
+    check("TURN 变化不影响前缀指纹", p1.signature == p2.signature, p1.signature)
+    eq("TURN 变化不影响稳定前缀长度", p1.frozenChars, p2.frozenChars)
+    check("FROZEN 变化会改变指纹（该失效就失效）", p3.signature != p1.signature, p3.signature)
+    check("TURN 段排在最后", p2.text.endsWith("计划 B"), p2.text.takeLast(14))
+    check("空段不留多余空行", !p1.text.contains("\n\n\n"), "")
+    val withBlank = PromptAssembler.assemble(
+        listOf(Section("a", "A", Stability.FROZEN), Section("b", "   ", Stability.FROZEN))
+    )
+    eq("空白段不产生额外换行", "A", withBlank.text)
+
+    // ---------- 8. 结果 ----------
 
     // 结果行必须含 "0 失败"：run-all.sh 靠这个字样判 PASS，
     // 写成「0 项失败」不匹配它的正则，会被当成「跑完没有通过标记」判 FAIL。

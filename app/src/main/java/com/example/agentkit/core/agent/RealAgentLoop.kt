@@ -19,10 +19,10 @@ import com.example.agentkit.core.ToolRegistry
 import com.example.agentkit.core.ToolResult
 import com.example.agentkit.core.UserMessage
 import com.example.agentkit.core.llm.ChatStreamEvent
-import com.example.agentkit.core.kernel.Prompt
-import com.example.agentkit.core.kernel.PromptAssembler
-import com.example.agentkit.core.kernel.Section
-import com.example.agentkit.core.kernel.Stability
+import com.example.agentkit.core.Prompt
+import com.example.agentkit.core.PromptAssembler
+import com.example.agentkit.core.Section
+import com.example.agentkit.core.Stability
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.async

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 暴露实现层 harness：编译 + 运行（纯 JVM，不加载 Android 类）。
 #
-# 编译单元 = 内核 6 文件 + AgentContract/ToolResult + KernelExposure + harness。
+# 编译单元 = 暴露类型 + 提示分段 + AgentContract/ToolResult + KernelExposure + harness。
 # 不把 tools/ 下 56 个工具实现拉进来：工具名与描述是测试数据（见 harness 里的 NAMES），
 # execute 行为不计入本 harness 的验证范围。
 set -euo pipefail
@@ -10,7 +10,6 @@ cd "$(dirname "$0")/../.."
 ROOT=$(pwd)
 OUT=/tmp/qa-verify-kernel-exposure
 CORE="$ROOT/app/src/main/java/com/example/agentkit/core"
-KERNEL_DIR="$CORE/kernel"
 
 : "${QA_GRADLE_CACHE:=${AGENTKIT_GRADLE_CACHE:-${GRADLE_USER_HOME:-$HOME/.gradle}/caches/modules-2/files-2.1}}"
 CACHE="$QA_GRADLE_CACHE"
@@ -31,7 +30,7 @@ if [ -z "${KOTLINC_JAR:-}" ] || [ -z "${STDLIB:-}" ]; then
     STDLIB=${STDLIB:-$KC_HOME/lib/kotlin-stdlib.jar}
   fi
 fi
-# 环境不具备 → exit 3（SKIP）。见 run-kernel-core-verification.sh 同名说明。
+# 环境不具备 → exit 3（SKIP），不当作失败——「没验证」和「验证不通过」是两件事。
 [ -z "${KOTLINC_BIN:-}" ] && [ -z "${KOTLINC_JAR:-}" ] && { echo "SKIP: 找不到 kotlinc" >&2; exit 3; }
 for j in "$COROUTINES" "$SER_JSON" "$SER_CORE"; do
   [ -f "${j:-}" ] || { echo "SKIP: 缺少依赖 ${j:-<空>}" >&2; exit 3; }
@@ -40,7 +39,7 @@ done
 DEPS=$STDLIB:$COROUTINES:$SER_JSON:$SER_CORE
 [ -n "${JB_ANNOTATIONS:-}" ] && [ -f "${JB_ANNOTATIONS:-}" ] && DEPS=$DEPS:$JB_ANNOTATIONS
 
-SOURCES="$(ls "$KERNEL_DIR"/*.kt | sort) $CORE/AgentContract.kt $CORE/ToolResult.kt $CORE/KernelExposure.kt $ROOT/scripts/qa/KernelExposureVerification.kt"
+SOURCES="$CORE/ExposureTypes.kt $CORE/PromptSegments.kt $CORE/AgentContract.kt $CORE/ToolResult.kt $CORE/KernelExposure.kt $ROOT/scripts/qa/KernelExposureVerification.kt"
 
 rm -rf "$OUT" && mkdir -p "$OUT"
 

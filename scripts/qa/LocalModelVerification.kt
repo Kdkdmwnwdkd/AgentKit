@@ -17,16 +17,15 @@
  *
  * ## 明确不在这里验
  *
- * 分组规则本身、三模式语义、预算折叠 —— 那些在 `KernelExposureVerification`（34 项）
- * 和 `KernelCoreVerification`（47 项）。重复验会让两份 harness 互相拖累：
- * 改个分组规则要同时改两处断言，久而久之就没人敢改了。
+ * 分组规则本身、三模式语义、粘性激活与淘汰顺序 —— 那些在 `KernelExposureVerification`。
+ * 重复验会让两份 harness 互相拖累：改个分组规则要同时改两处断言，久而久之就没人敢改了。
+ * 本文件只验「loop 接上之后，模型实际收到什么」。
  *
  * 运行：`bash scripts/qa/run-localmodel-verification.sh`
  */
 
 import com.example.agentkit.core.*
 import com.example.agentkit.core.agent.RealAgentLoop
-import com.example.agentkit.core.kernel.ExposureMode
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
