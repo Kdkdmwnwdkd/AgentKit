@@ -51,7 +51,11 @@ private val NAMES = listOf(
     "ui_screenshot", "ui_swipe", "ui_tap", "ui_tree", "use_skill",
     "web_click", "web_eval", "web_open", "web_search", "web_snapshot",
     "web_type", "workflow_create", "workflow_delete", "workflow_list", "workflow_toggle",
-    "write_file"
+    "write_file",
+    // 以下两个刻意用「推不出分组的前缀」，模拟插件 / 用户新增 / 第三方注册的工具。
+    // 起因是 T01 harness 用 weather/wordcount 测主循环，被分组裁剪后模型看到「未知工具」。
+    // 「我们不认识它」不等于「它不该可见」，所以 misc 必须常驻——这两条就是那条规则的哨兵。
+    "weather", "wordcount"
 )
 
 private fun fakeTools(): List<AgentTool> = NAMES.map { n ->
@@ -123,7 +127,7 @@ fun main() = runBlocking {
     println("    " + groups.joinToString("  ") { "${it.first}:${it.second}" })
     eq("分组覆盖全部工具", groups.sumOf { it.second }, all.size)
     val misc = groups.firstOrNull { it.first == "misc" }?.second ?: 0
-    check("没有无法归类的工具", misc == 0, "misc=$misc")
+    eq("无前缀工具归入 misc", misc, 2)
     eq("read_file 归 file", KernelExposure.groupOf("read_file"), "file")
     eq("ui_tap 归 ui", KernelExposure.groupOf("ui_tap"), "ui")
     eq("github_clone 归 github", KernelExposure.groupOf("github_clone"), "github")
@@ -185,12 +189,28 @@ fun main() = runBlocking {
     eq("元工具是只读的", cloudPlan.visible.filter { it.name.startsWith("__") }.all { it.readOnly }, true)
     check("元工具不需要审批", cloudPlan.visible.filter { it.name.startsWith("__") }.none { it.needsApproval })
     eq("本地通道走 META", localPlan.mode.name, "META")
-    check("本地只预激活 file 组", localPlan.activated == setOf("file"), "${localPlan.activated}")
+    check(
+        "本地预激活 = file 组 + 常驻的 misc",
+        localPlan.activated == setOf("file", "misc"), "${localPlan.activated}"
+    )
     check("本地工具表比云端更小", cLocal < cCloud, "$cLocal vs $cCloud")
+
+    // 哨兵：不认识的工具必须默认可见（无论是云端还是端侧）。
+    // 这两条对应一个真实踩过的坑：T01 用 weather/wordcount 自定义工具测主循环，
+    // 分组裁剪把它们藏起来后，主循环收到的是「未知工具 weather」，端到端断言全红。
+    for (case in listOf("云端" to cloudPlan, "本地" to localPlan)) {
+        val label = case.first
+        val plan = case.second
+        val visibleNames = plan.visible.map { it.name }
+        check("$label：无前缀工具 weather 默认可见", "weather" in visibleNames)
+        check("$label：无前缀工具 wordcount 默认可见", "wordcount" in visibleNames)
+    }
     eq("云端走 GROUPED", cloudPlan.mode.name, "GROUPED")
     eq("强制全量走 FULL", fullPlan.mode.name, "FULL")
 
-    println("\n=== 结果：$pass 项通过，${fails.size} 项失败 ===")
+    // 结果行必须含 "0 失败"：run-all.sh 靠这个字样判 PASS，
+    // 写成「0 项失败」不匹配它的正则，会被当成「跑完没有通过标记」判 FAIL。
+    println("\n=== 结果：$pass 项通过 / " + if (fails.isEmpty()) "0 失败" else "${fails.size} 条断言失败" + " ===")
     if (fails.isNotEmpty()) {
         fails.forEach { println("  失败：$it") }
         kotlin.system.exitProcess(1)

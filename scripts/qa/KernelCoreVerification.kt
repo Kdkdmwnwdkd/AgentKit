@@ -369,7 +369,9 @@ fun main() = runBlocking {
     checkFailClosed()
     checkBudgetMath()
 
-    println("\n=== 结果：$pass 项通过，${fails.size} 项失败 ===")
+    // 结果行必须含 "0 失败"：run-all.sh 靠这个字样判 PASS，
+    // 写成「0 项失败」不匹配它的正则，会被当成「跑完没有通过标记」判 FAIL。
+    println("\n=== 结果：$pass 项通过 / " + if (fails.isEmpty()) "0 失败" else "${fails.size} 条断言失败" + " ===")
     if (fails.isNotEmpty()) {
         fails.forEach { println("  失败：$it") }
         kotlin.system.exitProcess(1)

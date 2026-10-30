@@ -31,9 +31,10 @@ if [ -z "${KOTLINC_JAR:-}" ] || [ -z "${STDLIB:-}" ]; then
     STDLIB=${STDLIB:-$KC_HOME/lib/kotlin-stdlib.jar}
   fi
 fi
-[ -z "${KOTLINC_BIN:-}" ] && [ -z "${KOTLINC_JAR:-}" ] && { echo "FATAL: 找不到 kotlinc" >&2; exit 1; }
+# 环境不具备 → exit 3（SKIP）。见 run-kernel-core-verification.sh 同名说明。
+[ -z "${KOTLINC_BIN:-}" ] && [ -z "${KOTLINC_JAR:-}" ] && { echo "SKIP: 找不到 kotlinc" >&2; exit 3; }
 for j in "$COROUTINES" "$SER_JSON" "$SER_CORE"; do
-  [ -f "${j:-}" ] || { echo "FATAL: 缺少依赖 ${j:-<空>}" >&2; exit 1; }
+  [ -f "${j:-}" ] || { echo "SKIP: 缺少依赖 ${j:-<空>}" >&2; exit 3; }
 done
 
 DEPS=$STDLIB:$COROUTINES:$SER_JSON:$SER_CORE

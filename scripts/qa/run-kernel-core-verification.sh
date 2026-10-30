@@ -31,13 +31,16 @@ if [ -z "${KOTLINC_JAR:-}" ] || [ -z "${STDLIB:-}" ]; then
   fi
 fi
 
+# 环境不具备 → exit 3（SKIP），与仓库其它 harness 一致。
+# 不能用 exit 1：run-all.sh 把非 0 非 3 视为 FAIL，会让"没有编译器"这种环境问题
+# 伪装成"断言失败"，把 CI 门禁堵死。
 if [ -z "${KOTLINC_BIN:-}" ] && [ -z "${KOTLINC_JAR:-}" ]; then
-  echo "FATAL: 找不到 kotlinc（Gradle 缓存与本机发行版均缺失）" >&2
-  exit 1
+  echo "SKIP: 找不到 kotlinc（Gradle 缓存与本机发行版均缺失）" >&2
+  exit 3
 fi
 if [ -z "${COROUTINES:-}" ] || [ ! -f "$COROUTINES" ]; then
-  echo "FATAL: 缺少 kotlinx-coroutines-core-jvm（内核 harness 用 runBlocking）" >&2
-  exit 1
+  echo "SKIP: 缺少 kotlinx-coroutines-core-jvm（内核 harness 用 runBlocking）" >&2
+  exit 3
 fi
 
 DEPS=$STDLIB:$COROUTINES

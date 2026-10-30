@@ -47,6 +47,19 @@ object KernelExposure {
     private val TINY_GROUPS = setOf("file")
 
     /**
+     * 未归类工具所在的组名。
+     *
+     * **这个组永远常驻，不参与裁剪。** 理由：前缀推不出组，说明「我们不认识这个工具」，
+     * 而不是「这个工具不重要」。把它藏起来的后果是——插件工具、用户自己新增的工具、
+     * 第三方 Skill 注册的工具，全部默认对模型不可见，模型只会看到「未知工具 xxx」，
+     * 然后反复重试或改用别的路径。这类"我们不知道的东西"必须保持可见。
+     *
+     * 真正该裁的是那些我们**清楚知道**体积大、用得少的组（ui 9 个、workflow、memory…），
+     * 因为你至少知道裁掉了什么。
+     */
+    private const val MISC = "misc"
+
+    /**
      * 少数不能靠前缀推断的工具名 → 组。
      *
      * 这张表是**补丁不是白名单**：不在表里、前缀也推不出来的，归 `misc` 仍然可见可发现，
@@ -124,6 +137,10 @@ object KernelExposure {
         if (active.isEmpty()) {
             val seed = if (strength == Strength.TINY) TINY_GROUPS else DEFAULT_GROUPS
             active.addAll(seed.filter { g -> all.any { groupOf(it.name) == g } })
+            // 未归类组常驻（见 MISC 注释）。注意这不是"顺手加一个组"：
+            // 少了这一行，任何前缀不认识的工具都会从模型视野里消失——
+            // 而"前缀不认识"恰恰是最该保守处理的情况。
+            if (all.any { groupOf(it.name) == MISC }) active.add(MISC)
         }
 
         val visible = all.filter { groupOf(it.name) in active } + metaTools(all, active)

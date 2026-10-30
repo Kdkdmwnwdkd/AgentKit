@@ -801,7 +801,7 @@ class RealAgentLoop(
         if (!plan.trimmed) return
         AgentLogger.i(
             "ToolExposure",
-            "工具面裁剪：mode=${plan.mode} 暴露 ${plan.visible.size} 个（含 2 个元工具），" +
+            "工具面裁剪：provider=${llmProvider().id} mode=${plan.mode} 暴露 ${plan.visible.size} 个（含 2 个元工具），" +
                 "裁掉 ${plan.hiddenCount} 个；已启用组=${plan.activated.joinToString(",")}"
         )
     }

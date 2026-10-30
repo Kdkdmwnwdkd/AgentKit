@@ -1,18 +1,32 @@
 #!/usr/bin/env kotlin
 /**
- * Phase 2 · DoD④「本地模型工具暴露降级」QA 行为验证 harness。
+ * 「端侧小模型工具暴露」QA harness。
  *
- * 目标：验证「按执行环境（provider）裁剪暴露给 LLM 的工具面」——provider = local-llama
- * 时只暴露核心集（≤7，含 read_file），云端 provider（openai/claude/gemini）行为完全不变；
- * 配套系统提示里的工具 systemPrompt 片段同步减少；被裁工具即便被本地模型瞎调，也走既有
- * 「未知工具」路径（T02 模糊匹配 + 可自纠 hint），**绝不抛异常**；裁剪发生时打一条 INFO。
+ * ## 这份 harness 验什么
  *
- * 仓库无测试源集（离线缓存无 JUnit），沿用纯 main() + 手写断言（形态学
- * scripts/qa/RetryVerification.kt）。运行方式见 scripts/qa/run-localmodel-verification.sh。
+ * 它最早验证的是 `ToolExposurePolicy` —— 一张写死的 7 条白名单（本地只给这 7 个）。
+ * 现役实现换成了 `KernelExposure`：按名字分组、按能力档位分派、元工具按需展开，
+ * 白名单已无调用方。所以这里改为验证**同一条意图在新实现下的落地**：
+ *
+ *  1. 端侧小模型拿到的是最小集（file 组 + 两个元工具），不是全量
+ *  2. 云端拿到基础三组 + 元工具——比全量小，但覆盖最常用的能力
+ *  3. 被裁的工具既不执行、也不消失：
+ *     直接调 → 未知工具路径（可自纠 hint，不抛异常）；查 → `__find_tools` 能找回来
+ *  4. 系统提示与首轮暴露面一致（不会「给了工具却没教」或「教了工具却没给」）
+ *  5. 裁剪发生时打一条 INFO，含 provider / 暴露数 / 裁剪数
+ *
+ * ## 明确不在这里验
+ *
+ * 分组规则本身、三模式语义、预算折叠 —— 那些在 `KernelExposureVerification`（34 项）
+ * 和 `KernelCoreVerification`（47 项）。重复验会让两份 harness 互相拖累：
+ * 改个分组规则要同时改两处断言，久而久之就没人敢改了。
+ *
+ * 运行：`bash scripts/qa/run-localmodel-verification.sh`
  */
 
 import com.example.agentkit.core.*
 import com.example.agentkit.core.agent.RealAgentLoop
+import com.example.agentkit.core.kernel.ExposureMode
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
@@ -69,6 +83,15 @@ private val ALL_TOOL_NAMES: List<String> = listOf(
 )
 
 /**
+ * 各档位的预期暴露面（对着上面 25 个工具算出来的，改分组规则时必须同步改这里）。
+ *
+ * 云端 = file(2) + ui(8) + skill(1) = 11，加 2 个元工具 → 13
+ * 本地 = file(2)，加 2 个元工具 → 4
+ */
+private const val CLOUD_EXPOSED = 13
+private const val TINY_EXPOSED = 4
+
+/**
  * 命名假工具：systemPrompt = `FRAG-<name>`（用于系统提示裁剪断言）、readOnly 可配、
  * 记录真实执行次数（用于证明被裁工具「根本没执行」）。
  */
@@ -104,7 +127,7 @@ private class Fixture {
 
 /**
  * 脚本化假 LLM：记录「最近一次收到的工具名列表 + 系统提示」，按调用序回放脚本，
- * 超出脚本长度复用最后一项。provider id 由构造参数指定（决定是否触发裁剪）。
+ * 超出脚本长度复用最后一项。provider id 由构造参数指定（决定档位）。
  */
 private class ScriptedLlm(
     override val id: String,
@@ -135,116 +158,123 @@ private fun argsOf(vararg kv: Pair<String, String>): JsonObject = buildJsonObjec
     kv.forEach { (k, v) -> put(k, v) }
 }
 
+private fun planFor(provider: String, forceFull: Boolean = false): KernelExposure.Plan =
+    KernelExposure.plan(Fixture().registry.list(), provider, forceFull, mutableSetOf())
+
 /* ------------------------------ 用例 ------------------------------ */
 
-/** 用例 1：核心集契约（≤7、恰好 7、含 read_file 与全部必需项、无重复、均为真实工具名）。 */
-private suspend fun testCoreSetContract() {
-    println("\n== 用例 1：本地核心集契约 ==")
+/**
+ * 用例 1：端侧最小集 —— 本地模型能看见什么，一开始就定死。
+ *
+ * 为什么连 ui_* 都不给：1.5B~4B 的模型在十几个工具里选错的概率，比「先用 __use_tools
+ * 开一组」贵得多；而 ui_* 的 description 又特别长，对小模型是纯噪声。
+ */
+private suspend fun testTinySurface() {
+    println("\n== 用例 1：端侧最小集 ==")
 
-    check("核心集大小恰好 7（≤7）且 read_file 必在其中") {
-        val core = ToolExposurePolicy.LOCAL_CORE_TOOLS
-        assertTrue("≤7（实际 ${core.size}）", core.size <= 7)
-        assertEquals("恰好 7", 7, core.size)
-        assertTrue("read_file 必含", "read_file" in core)
+    check("本地初始集 = file 组 + 两个元工具，共 $TINY_EXPOSED 个") {
+        val plan = planFor("local-llama")
+        assertEquals("暴露数", TINY_EXPOSED, plan.visible.size)
+        assertEquals("模式", ExposureMode.META, plan.mode)
+        assertTrue("含 read_file", "read_file" in plan.names)
+        assertTrue("含 write_file", "write_file" in plan.names)
+        assertTrue("含检索元工具", KernelExposure.FIND_TOOLS in plan.names)
+        assertTrue("含启用元工具", KernelExposure.USE_TOOLS in plan.names)
     }
-    check("核心集含全部必需项且无重复、均为真实工具名") {
-        val core = ToolExposurePolicy.LOCAL_CORE_TOOLS
-        val required = listOf(
-            "read_file", "write_file", "http_request", "ui_tree", "ui_tap", "clipboard", "use_skill"
-        )
-        required.forEach { assertTrue("必含 $it", it in core) }
-        assertEquals("无重复", core.size, core.toSet().size)
-        assertTrue("均为已注册面内的真实工具名", ALL_TOOL_NAMES.containsAll(core))
+    check("本地初始集不含屏幕操作、记忆、命令执行") {
+        val plan = planFor("local-llama")
+        for (n in listOf("ui_swipe", "ui_tap", "ui_screenshot", "memory_write", "shell_run", "use_skill")) {
+            assertTrue("不含 $n", n !in plan.names)
+        }
+    }
+    check("本地裁掉的数量 = 全量 - file 组（元工具不算被裁）") {
+        val plan = planFor("local-llama")
+        assertEquals("hiddenCount", ALL_TOOL_NAMES.size - 2, plan.hiddenCount)
+        assertTrue("trimmed 为真", plan.trimmed)
     }
 }
 
-/** 用例 2：exposureFor 纯函数语义（按 provider 裁剪 / 全量放行）。 */
-private suspend fun testExposureSelection() {
-    println("\n== 用例 2：exposureFor 按 provider 裁剪 ==")
-    val all = Fixture().registry.list()
+/** 用例 2：云端基础三组 —— 比全量小，但覆盖读写文件 / 看屏幕 / 用技能。 */
+private suspend fun testCloudSurface() {
+    println("\n== 用例 2：云端基础三组 ==")
 
-    check("provider=local-llama → 暴露列表 == 核心集（按重要度序），裁剪 18 个") {
-        val ex = ToolExposurePolicy.exposureFor(all, "local-llama")
-        assertEquals("exposedNames", ToolExposurePolicy.LOCAL_CORE_TOOLS, ex.exposedNames)
-        assertEquals("exposedCount", 7, ex.exposedCount)
-        assertEquals("totalCount", 25, ex.totalCount)
-        assertEquals("trimmedCount", 18, ex.trimmedCount)
-        assertTrue("trimmed", ex.trimmed)
-        assertTrue("forcedFull=false", !ex.forcedFull)
+    check("云端初始集 = file + ui + skill 三组 + 元工具，共 $CLOUD_EXPOSED 个") {
+        val plan = planFor("openai")
+        assertEquals("暴露数", CLOUD_EXPOSED, plan.visible.size)
+        assertEquals("模式", ExposureMode.GROUPED, plan.mode)
+        assertEquals("激活组", setOf("file", "ui", "skill"), plan.activated)
     }
-    check("provider=openai → 暴露列表 == 全量（25，注册序），行为不变") {
-        val ex = ToolExposurePolicy.exposureFor(all, "openai")
-        assertEquals("exposedNames == all", ALL_TOOL_NAMES, ex.exposedNames)
-        assertEquals("trimmedCount", 0, ex.trimmedCount)
-        assertTrue("trimmed=false", !ex.trimmed)
+    check("云端比全量小，但常用能力都在") {
+        val plan = planFor("openai")
+        assertTrue("少于全量", plan.visible.size < ALL_TOOL_NAMES.size)
+        for (n in listOf("read_file", "write_file", "ui_click", "ui_screenshot", "use_skill")) {
+            assertTrue("含 $n", n in plan.names)
+        }
+        for (n in listOf("memory_write", "shell_run", "workflow_list")) {
+            assertTrue("不含 $n（要靠 __use_tools 开）", n !in plan.names)
+        }
     }
-    check("provider=claude → 暴露列表 == 全量") {
-        val ex = ToolExposurePolicy.exposureFor(all, "claude")
-        assertEquals("claude 全量", ALL_TOOL_NAMES, ex.exposedNames)
-        assertTrue("未裁剪", !ex.trimmed)
+    check("任何云端 provider 都走同一档（不再按 provider 名逐个登记）") {
+        val sizes = listOf("openai", "claude", "gemini", "deepseek", "unknown-thing")
+            .map { planFor(it).visible.size }
+        assertEquals("各 provider 暴露数一致", List(sizes.size) { CLOUD_EXPOSED }, sizes)
     }
-    check("provider=gemini → 暴露列表 == 全量") {
-        val ex = ToolExposurePolicy.exposureFor(all, "gemini")
-        assertEquals("gemini 全量", ALL_TOOL_NAMES, ex.exposedNames)
-        assertTrue("未裁剪", !ex.trimmed)
+    check("强制全量开关：返回全量、无元工具、不裁剪") {
+        val plan = planFor("local-llama", forceFull = true)
+        assertEquals("暴露数", ALL_TOOL_NAMES.size, plan.visible.size)
+        assertEquals("模式", ExposureMode.FULL, plan.mode)
+        assertTrue("不含元工具", KernelExposure.FIND_TOOLS !in plan.names)
+        assertTrue("trimmed=false", !plan.trimmed)
     }
-    check("未知 provider（fake）→ 保守按全量（不裁剪非本地）") {
-        val ex = ToolExposurePolicy.exposureFor(all, "fake")
-        assertEquals("fake 全量", ALL_TOOL_NAMES, ex.exposedNames)
-        assertTrue("未裁剪", !ex.trimmed)
+    check("幂等：同入参两次调用结果一致") {
+        val a = planFor("local-llama").names
+        val b = planFor("local-llama").names
+        assertEquals("两次结果相同", a, b)
     }
-    check("强制全量开关（local + forceFullTools=true）→ 暴露全量、forcedFull=true") {
-        val ex = ToolExposurePolicy.exposureFor(all, "local-llama", forceFullTools = true)
-        assertEquals("强制全量", ALL_TOOL_NAMES, ex.exposedNames)
-        assertEquals("trimmedCount", 0, ex.trimmedCount)
-        assertTrue("forcedFull=true", ex.forcedFull)
-    }
-    check("纯函数幂等：同入参两次调用结果相等") {
-        val a = ToolExposurePolicy.exposureFor(all, "local-llama").exposedNames
-        val b = ToolExposurePolicy.exposureFor(all, "local-llama").exposedNames
-        assertEquals("idempotent", a, b)
-    }
-    check("核心工具未注册时只暴露「确实存在」的，且保持核心重要度序") {
+    check("只有 3 个工具时不会崩，且暴露的都在注册面内") {
         val reg = ToolRegistry()
-        reg.register(NamedTool("use_skill"))
-        reg.register(NamedTool("ui_tap"))
         reg.register(NamedTool("read_file"))
-        val ex = ToolExposurePolicy.exposureFor(reg.list(), "local-llama")
-        assertEquals("仅存在的核心工具，按核心序", listOf("read_file", "ui_tap", "use_skill"), ex.exposedNames)
+        reg.register(NamedTool("ui_tap"))
+        reg.register(NamedTool("use_skill"))
+        val plan = KernelExposure.plan(reg.list(), "local-llama", false, mutableSetOf())
+        assertTrue("暴露数不超过注册数", plan.visible.size <= 5)
+        assertTrue("含 read_file", "read_file" in plan.names)
+        assertTrue("不含未注册的 write_file", "write_file" !in plan.names)
     }
 }
 
-/** 用例 3：端到端 —— loop 下按 provider 裁剪工具定义。 */
+/** 用例 3：端到端 —— RealAgentLoop 下模型实际收到的工具定义。 */
 private suspend fun testLoopExposure() {
-    println("\n== 用例 3：RealAgentLoop 端到端按 provider 裁剪 ==")
+    println("\n== 用例 3：RealAgentLoop 端到端 ==")
 
-    check("本地模型：模型只收到核心集工具定义（≤7）") {
+    check("本地模型：模型收到 $TINY_EXPOSED 个工具定义（不是全量）") {
         val fx = Fixture()
         val llm = ScriptedLlm("local-llama", listOf(AssistantMessage("ok")))
         val loop = RealAgentLoop(llmProvider = { llm }, registry = fx.registry, providerRetry = 0)
         loop.send("hi")
-        assertEquals("收到的工具名", ToolExposurePolicy.LOCAL_CORE_TOOLS, llm.lastToolNames)
-        assertTrue("≤7（实际 ${llm.lastToolNames.size}）", llm.lastToolNames.size <= 7)
+        assertEquals("收到的工具名个数", TINY_EXPOSED, llm.lastToolNames.size)
+        assertTrue("少于全量", llm.lastToolNames.size < ALL_TOOL_NAMES.size)
+        assertTrue("含 read_file", "read_file" in llm.lastToolNames)
     }
-    check("云端模型（openai）：模型收到全量 25 个工具定义") {
+    check("云端模型（openai）：模型收到 $CLOUD_EXPOSED 个工具定义") {
         val fx = Fixture()
         val llm = ScriptedLlm("openai", listOf(AssistantMessage("ok")))
         val loop = RealAgentLoop(llmProvider = { llm }, registry = fx.registry, providerRetry = 0)
         loop.send("hi")
-        assertEquals("全量", ALL_TOOL_NAMES, llm.lastToolNames)
+        assertEquals("收到的工具名个数", CLOUD_EXPOSED, llm.lastToolNames.size)
     }
-    check("强制全量开关（local + forceFullTools）：模型收到全量") {
+    check("强制全量开关：模型收到全量 25 个") {
         val fx = Fixture()
         val llm = ScriptedLlm("local-llama", listOf(AssistantMessage("ok")))
         val loop = RealAgentLoop(
             llmProvider = { llm }, registry = fx.registry, providerRetry = 0, forceFullTools = true
         )
         loop.send("hi")
-        assertEquals("强制全量", ALL_TOOL_NAMES, llm.lastToolNames)
+        assertEquals("全量", ALL_TOOL_NAMES, llm.lastToolNames)
     }
 }
 
-/** 用例 4：边界 —— 被裁工具被调用走未知工具路径（不抛异常 + 可自纠 hint）。 */
+/** 用例 4：被裁工具被调用 → 未知工具路径（不抛异常 + 可自纠 hint + 真的没执行）。 */
 private suspend fun testTrimmedToolUnknownPath() {
     println("\n== 用例 4：被裁工具被调用 → 未知工具路径 ==")
 
@@ -266,7 +296,7 @@ private suspend fun testTrimmedToolUnknownPath() {
         assertContains("未知工具 code", tm.content, "unknown_tool")
         assertContains("未知工具文案", tm.content, "未知工具 'ui_swipe'")
         assertContains("可自纠 hint", tm.content, "hint:")
-        // 可用工具列表只含核心集：不应出现被裁工具 ui_long_press
+        // 可用工具列表只含本回合暴露面：不应出现另一个被裁工具
         assertNotContains("可用列表不含被裁工具", tm.content, "ui_long_press")
         // 关键：被裁工具「根本没有执行」（回合级工具视图里查无此工具）
         assertEquals("ui_swipe 未被执行", 0, fx.tools["ui_swipe"]!!.executions)
@@ -275,40 +305,58 @@ private suspend fun testTrimmedToolUnknownPath() {
     }
 }
 
-/** 用例 5：系统提示拼接 —— 工具 systemPrompt 片段随裁剪同步减少。 */
-private suspend fun testSystemPromptTrim() {
-    println("\n== 用例 5：系统提示拼接随裁剪同步 ==")
+/** 用例 5：系统提示与暴露面一致 —— 教了哪些工具，就只教这些。 */
+private suspend fun testSystemPromptSync() {
+    println("\n== 用例 5：系统提示与首轮暴露面一致 ==")
 
-    check("本地模型：系统提示含核心工具片段、不含被裁工具片段") {
+    check("本地模型：提示含 file 组片段、不含未暴露组片段") {
         val fx = Fixture()
         val llm = ScriptedLlm("local-llama", listOf(AssistantMessage("ok")))
         val loop = RealAgentLoop(llmProvider = { llm }, registry = fx.registry, providerRetry = 0)
         loop.send("hi")
         assertContains("含 read_file 片段", llm.lastSystemPrompt, "FRAG-read_file")
-        assertContains("含 use_skill 片段", llm.lastSystemPrompt, "FRAG-use_skill")
-        assertNotContains("不含被裁 ui_swipe 片段", llm.lastSystemPrompt, "FRAG-ui_swipe")
-        assertNotContains("不含被裁 memory_write 片段", llm.lastSystemPrompt, "FRAG-memory_write")
-        assertNotContains("不含被裁 shell_run 片段", llm.lastSystemPrompt, "FRAG-shell_run")
+        assertContains("含 write_file 片段", llm.lastSystemPrompt, "FRAG-write_file")
+        assertNotContains("不含 ui_swipe 片段", llm.lastSystemPrompt, "FRAG-ui_swipe")
+        assertNotContains("不含 memory_write 片段", llm.lastSystemPrompt, "FRAG-memory_write")
+        assertNotContains("不含 shell_run 片段", llm.lastSystemPrompt, "FRAG-shell_run")
+        assertNotContains("不含 use_skill 片段（本地不给技能组）", llm.lastSystemPrompt, "FRAG-use_skill")
     }
-    check("云端模型（claude）：系统提示同时含核心与被裁工具片段（全量，未变）") {
+    check("云端模型（claude）：提示含基础三组片段、不含记忆与命令执行") {
         val fx = Fixture()
         val llm = ScriptedLlm("claude", listOf(AssistantMessage("ok")))
         val loop = RealAgentLoop(llmProvider = { llm }, registry = fx.registry, providerRetry = 0)
         loop.send("hi")
         assertContains("含 read_file 片段", llm.lastSystemPrompt, "FRAG-read_file")
-        assertContains("含被裁 ui_swipe 片段", llm.lastSystemPrompt, "FRAG-ui_swipe")
-        assertContains("含被裁 memory_write 片段", llm.lastSystemPrompt, "FRAG-memory_write")
+        assertContains("含 ui_swipe 片段", llm.lastSystemPrompt, "FRAG-ui_swipe")
+        assertContains("含 use_skill 片段", llm.lastSystemPrompt, "FRAG-use_skill")
+        assertNotContains("不含 memory_write 片段", llm.lastSystemPrompt, "FRAG-memory_write")
+    }
+    check("提示只拼一次：第二轮不再重拼（保 KV 前缀稳定）") {
+        val fx = Fixture()
+        val llm = ScriptedLlm(
+            "local-llama",
+            listOf(
+                AssistantMessage("", listOf(ToolCall("r1", "read_file", argsOf("path" to "a.txt")))),
+                AssistantMessage("好")
+            )
+        )
+        val loop = RealAgentLoop(llmProvider = { llm }, registry = fx.registry, providerRetry = 0)
+        loop.send("读 a.txt")
+        // 两轮都在，但系统提示是同一份（ScriptedLlm 每次覆盖，最后一次即为第二轮）
+        assertEquals("两轮都发生了", 2, llm.calls)
+        assertContains("第二轮提示仍含 read_file 片段", llm.lastSystemPrompt, "FRAG-read_file")
     }
 }
 
 /**
- * 用例 6：端到端（假 LLMClient 剧本）——本地路径下模型只收到 ≤7 个工具定义，
- * 且一次 read_file 调用能成功执行并回喂。
+ * 用例 6：端到端 —— 一次 read_file 调用能成功执行并回喂。
+ *
+ * 这条是 DoD 的直接验收：裁剪之后「最常用的那个工具仍然能用」，而不是只剩元工具。
  */
 private suspend fun testEndToEndReadFile() {
-    println("\n== 用例 6：端到端 read_file（DoD ④ 直接验收） ==")
+    println("\n== 用例 6：端到端 read_file ==")
 
-    check("本地模型：≤7 工具 + read_file 调用成功执行并回喂") {
+    check("本地模型：read_file 调用成功执行并回喂") {
         val fx = Fixture()
         val llm = ScriptedLlm(
             "local-llama",
@@ -320,8 +368,7 @@ private suspend fun testEndToEndReadFile() {
         val loop = RealAgentLoop(llmProvider = { llm }, registry = fx.registry, providerRetry = 0)
         val history = loop.send("读一下 note.txt")
 
-        assertTrue("模型收到 ≤7 个工具定义（实际 ${llm.lastToolNames.size}）", llm.lastToolNames.size <= 7)
-        assertEquals("收到的正是核心集", ToolExposurePolicy.LOCAL_CORE_TOOLS, llm.lastToolNames)
+        assertEquals("模型收到的工具数", TINY_EXPOSED, llm.lastToolNames.size)
         assertTrue("read_file 在暴露面内", "read_file" in llm.lastToolNames)
 
         val tm = history.filterIsInstance<ToolMessage>().firstOrNull { it.id == "r1" }
@@ -333,7 +380,7 @@ private suspend fun testEndToEndReadFile() {
     }
 }
 
-/** 用例 7：日志 —— 裁剪发生时打一条 INFO（provider + 暴露数量 + 裁剪掉的数量）。 */
+/** 用例 7：日志 —— 裁剪发生时打一条 INFO（provider + 暴露数 + 裁剪数 + 已启用组）。 */
 private suspend fun testTrimLogging() {
     println("\n== 用例 7：裁剪 INFO 日志 ==")
 
@@ -348,14 +395,28 @@ private suspend fun testTrimLogging() {
         assertTrue("有 ToolExposure 日志", hit != null)
         assertEquals("级别 INFO", LogLevel.INFO, hit!!.level)
         assertContains("provider", hit.message, "provider=local-llama")
-        assertContains("暴露数量", hit.message, "暴露 7 个")
-        assertContains("裁剪数量", hit.message, "裁剪掉 18 个")
+        assertContains("暴露数量", hit.message, "暴露 $TINY_EXPOSED 个")
+        assertContains("裁剪数量", hit.message, "裁掉 ${ALL_TOOL_NAMES.size - 2} 个")
+        assertContains("已启用组", hit.message, "已启用组=file")
     }
-    check("云端（未裁剪）→ 不打 ToolExposure 日志（不刷屏）") {
+    check("云端也裁剪 → 同样打一条（否则云端省了多少无从得知）") {
         AgentLogger.clear()
         val fx = Fixture()
         val llm = ScriptedLlm("openai", listOf(AssistantMessage("ok")))
         val loop = RealAgentLoop(llmProvider = { llm }, registry = fx.registry, providerRetry = 0)
+        loop.send("hi")
+        val hit = AgentLogger.recent(500).firstOrNull { it.tag == "ToolExposure" }
+        assertTrue("有 ToolExposure 日志", hit != null)
+        assertContains("暴露数量", hit!!.message, "暴露 $CLOUD_EXPOSED 个")
+        assertContains("已启用组", hit.message, "file,ui,skill")
+    }
+    check("强制全量 → 不打日志（没裁剪，不该刷屏）") {
+        AgentLogger.clear()
+        val fx = Fixture()
+        val llm = ScriptedLlm("local-llama", listOf(AssistantMessage("ok")))
+        val loop = RealAgentLoop(
+            llmProvider = { llm }, registry = fx.registry, providerRetry = 0, forceFullTools = true
+        )
         loop.send("hi")
         val hit = AgentLogger.recent(500).firstOrNull { it.tag == "ToolExposure" }
         assertTrue("无 ToolExposure 日志", hit == null)
@@ -365,13 +426,13 @@ private suspend fun testTrimLogging() {
 /* ------------------------------ 入口 ------------------------------ */
 
 fun main() = runBlocking {
-    println("== Phase 2 DoD④ 本地模型工具暴露降级 · QA 行为验证 ==")
+    println("== 端侧小模型工具暴露 · QA 行为验证 ==")
 
-    testCoreSetContract()
-    testExposureSelection()
+    testTinySurface()
+    testCloudSurface()
     testLoopExposure()
     testTrimmedToolUnknownPath()
-    testSystemPromptTrim()
+    testSystemPromptSync()
     testEndToEndReadFile()
     testTrimLogging()
 

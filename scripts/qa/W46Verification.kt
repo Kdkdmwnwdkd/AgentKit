@@ -65,7 +65,9 @@ fun main() {
     }
 
     check("H3 历史插在系统提示之后、当前输入之前") {
-        val sysIdx = loop.indexOf("messages.add(SystemMessage(buildSystemPrompt(exposure.tools)))")
+        // 只匹配到 buildSystemPrompt( 为止：具体参数会随实现调整
+        // （exposure.tools → exposure0.visible 就变过一次），断言要验的是"顺序"不是"拼写"。
+        val sysIdx = loop.indexOf("messages.add(SystemMessage(buildSystemPrompt(")
         val priorIdx = loop.indexOf("messages.addAll(priorMessages)")
         val userIdx = loop.indexOf("messages.add(UserMessage(userInput, images))", sysIdx)
         assertTrue("三处顺序缺失", sysIdx >= 0 && priorIdx > sysIdx && userIdx > priorIdx)
