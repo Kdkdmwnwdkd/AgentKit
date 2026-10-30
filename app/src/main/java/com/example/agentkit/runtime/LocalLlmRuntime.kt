@@ -92,6 +92,8 @@ object LocalLlmRuntime : AgentCapability {
 
     override suspend fun start() = startWatch()
 
+    private var eventJob: kotlinx.coroutines.Job? = null
+
     /**
      * 启动空闲节拍（幂等）。[init] 里会顺手调一次——Application 没有现成的协程
      * 作用域，注册处不该被迫写协程样板；真正的挂起点由 policy 内部自己开。
@@ -99,8 +101,12 @@ object LocalLlmRuntime : AgentCapability {
     private fun startWatch() {
         if (stateFlow.value == CapabilityState.READY) return
         stateFlow.value = CapabilityState.STARTING
-        policyScope.launch {
-            policy.events.collect { AgentLogger.i(TAG, it) }
+        // 只订阅一次：stop 后再 start 时，上一轮的收集协程必须先取消，
+        // 否则每启停一次就多一个永远挂在 events 上的协程（泄漏）。
+        if (eventJob?.isActive != true) {
+            eventJob = policyScope.launch {
+                policy.events.collect { AgentLogger.i(TAG, it) }
+            }
         }
         policy.start(releasable)
         stateFlow.value = CapabilityState.READY
@@ -110,6 +116,8 @@ object LocalLlmRuntime : AgentCapability {
 
     override suspend fun stop() {
         policy.stop()
+        eventJob?.cancel()
+        eventJob = null
         releaseIfLoaded("运行层主动停止")
         stateFlow.value = CapabilityState.STOPPED
     }
@@ -143,7 +151,12 @@ object LocalLlmRuntime : AgentCapability {
         if (!LocalLlamaEngine.isLoaded) return
         val model = LocalLlamaEngine.loadedModelName ?: "未知模型"
         runCatching { LocalLlamaEngine.unload() }
-            .onSuccess { AgentLogger.i(TAG, "已释放本地模型 $model（$reason）") }
+            .onSuccess {
+                AgentLogger.i(
+                    TAG,
+                    "已释放本地模型 $model（$reason）。下次对话会自动重载，首字会慢十几秒",
+                )
+            }
             .onFailure { AgentLogger.w(TAG, "本地模型释放失败（$reason）", it) }
     }
 
@@ -155,7 +168,7 @@ object LocalLlmRuntime : AgentCapability {
         prefs = context.applicationContext
             .getSharedPreferences(SP_NAME, Context.MODE_PRIVATE)
         policy.idleTimeoutMs = if (enabled) timeoutMsFromPrefs() else 0L
-        CapabilityRegistry.register(this)
+        CapabilityHost.register(this)
         startWatch()
     }
 
@@ -166,8 +179,15 @@ object LocalLlmRuntime : AgentCapability {
     private const val KEY_ENABLED = "local_llm_idle_unload_enabled"
     private const val KEY_IDLE_MINUTES = "local_llm_idle_timeout_minutes"
 
-    /** 空闲阈值默认值（分钟）。 */
-    const val DEFAULT_IDLE_MINUTES = 5
+    /**
+     * 空闲阈值默认值（分钟）。
+     *
+     * 为什么是 30 而不是 5：3B Q4 模型在本机冷加载（mmap + 建 context）实测约 14 秒
+     * （2026-10-29 真机日志）。5 分钟就卸，意味着用户「看会儿别的再回来问一句」的
+     * 常见节奏会被打断成 14 秒黑等——省下的是 2GB 内存，赔掉的是首字延迟。
+     * 30 分钟覆盖「聊—查资料—回来继续聊」，同时仍能让长时间闲置的机器真正降温。
+     */
+    const val DEFAULT_IDLE_MINUTES = 30
 }
 
 /**

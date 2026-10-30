@@ -46,7 +46,7 @@ class IdleUnloadPolicy(
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
 ) {
 
-    /** 空闲判定阈值。默认 5 分钟；0 = 永不释放（等效停用）。 */
+    /** 空闲判定阈值。默认 30 分钟（见 [LocalLlmRuntime.DEFAULT_IDLE_MINUTES] 的理由）；0 = 永不释放（等效停用）。 */
     @Volatile
     var idleTimeoutMs: Long = DEFAULT_IDLE_TIMEOUT_MS
 
@@ -98,6 +98,6 @@ class IdleUnloadPolicy(
     }
 
     companion object {
-        const val DEFAULT_IDLE_TIMEOUT_MS: Long = 5 * 60_000L
+        const val DEFAULT_IDLE_TIMEOUT_MS: Long = 30 * 60_000L
     }
 }
