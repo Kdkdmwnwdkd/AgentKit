@@ -37,7 +37,6 @@ import kotlinx.serialization.json.JsonObject
 
 /** 事件类型常量（与 `android.app.usage.UsageEvents.Event` 同值；抽出常量使纯函数可测）。 */
 internal const val EVENT_ACTIVITY_RESUMED: Int = 1 // API29+；与 MOVE_TO_FOREGROUND 同值
-internal const val EVENT_SCREEN_NON_INTERACTIVE: Int = 15 // 息屏（不参与配对，仅备查）
 
 /**
  * 一条 UsageEvents 事件（纯数据，JVM harness 可直接构造，无需 Android）。
