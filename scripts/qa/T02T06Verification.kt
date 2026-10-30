@@ -488,6 +488,9 @@ private suspend fun testT05CancelClosure() = runBlocking {
         val loop = RealAgentLoop(
             llmProvider = { fake },
             registry = reg, maxParallelTools = 5, providerRetry = 0,
+            // 测的是「审批回调抛取消要重抛、不能吞成用户拒绝」，不是工具面裁剪。
+            // W-102 起默认面只留 file 组，ui_tap 会被裁掉走「未知工具」分支，审批不被触发。
+            forceFullTools = true,
             approval = { _, _ -> throw CancellationException("user left") },
             checkpoint = { lastSnapshot = it.toList() }
         )

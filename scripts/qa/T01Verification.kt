@@ -605,6 +605,11 @@ private suspend fun testT01BusinessFailure() {
             llmProvider = { fake },
             registry = reg,
             providerRetry = 0,
+            // 本用例测的是**审批路径**（拒绝 → approval_denied 回喂、不真执行），
+            // 与「哪些工具对模型可见」无关。W-102 起默认面只留 file 组，ui_tap 会被裁掉、
+            // 走「未知工具」分支，审批根本不会被问到——那样测的就不是审批了。
+            // 强制全量把裁剪这个变量隔离，用例才只测它该测的那件事。
+            forceFullTools = true,
             approval = { _, _ -> false }
         )
         val history = loop.send("x")
