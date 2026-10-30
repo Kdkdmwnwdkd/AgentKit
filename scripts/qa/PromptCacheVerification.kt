@@ -40,6 +40,7 @@ import com.example.agentkit.core.llm.parseClaudeUsage
 import com.example.agentkit.core.llm.parseGeminiUsage
 import com.example.agentkit.core.llm.parseOpenAiUsage
 import com.sun.net.httpserver.HttpServer
+import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -272,6 +273,25 @@ fun main() {
                 "SYS",
                 body["system"]!!.jsonPrimitive.content
             )
+        } finally {
+            srv.close()
+        }
+    }
+
+    check("流式通道也会降级（否则普通聊天模式会一直 400）") {
+        val srv = FakeAnthropic(rejectCache = true)
+        try {
+            val text = runBlocking {
+                // 假端点回的不是 SSE，正好复用 streamText 的 hotfix35「整段降级」路径：
+                // 拿得到内容就说明请求确实重发成功了
+                claudeFor(srv.port).streamText(
+                    listOf(SystemMessage("S"), UserMessage("hi")),
+                    listOf(FakeTool("a"))
+                ).toList().joinToString("")
+            }
+            assertEquals("降级后拿到正文", "ok", text)
+            assertEquals("共两次请求", 2, srv.bodies.size)
+            assertTrue("第二次不带断点", "cache_control" !in srv.bodies[1])
         } finally {
             srv.close()
         }

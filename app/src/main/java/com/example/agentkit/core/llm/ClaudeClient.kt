@@ -124,69 +124,80 @@ class ClaudeClient(
     ): Flow<String> = flow {
         // 流式分支的图片解析需要挂起，放到 flow 的 collect 协程里做
         val resolved = ImageUris.resolveImages(http, messages)
-        val requestJson = bodyJson(resolved, tools, stream = true, cache = promptCacheEnabled())
-        val request = buildRequest(requestJson)
-        AgentLogger.apiTrace(endpointUrl(), effectiveModel(), effectiveApiKey())
-        http.newCall(request).execute().use { resp ->
-            if (!resp.isSuccessful) {
-                val errBody = runCatching { resp.body?.string() }.getOrDefault("") ?: ""
-                val safeBody = AgentLogger.sanitize(errBody)
-                AgentLogger.httpError(resp.code, safeBody)
-                // hotfix10：同 OpenAIClient——抛结构化 LlmHttpException（带 code 与
-                // Retry-After），让上层认得出 429 并走限流专用退避序列。
-                throw com.example.agentkit.core.LlmHttpException(
-                    code = resp.code,
-                    message = "Claude 流式请求失败 ${resp.code}: ${safeBody.take(200)}",
-                    serverBody = safeBody.take(200),
-                    retryAfterMs = com.example.agentkit.core.parseRetryAfterMs(
-                        resp.header("Retry-After")
+        // 循环只为一件事故：端点不认 cache_control 时摘掉标记重发一次。
+        // 此时**一个 delta 都还没 emit**，重发不会让客户端看到重复文本。
+        while (true) {
+            var retryWithoutCache = false
+            val cache = promptCacheEnabled()
+            val request = buildRequest(bodyJson(resolved, tools, stream = true, cache = cache))
+            AgentLogger.apiTrace(endpointUrl(), effectiveModel(), effectiveApiKey())
+            http.newCall(request).execute().use { resp ->
+                if (!resp.isSuccessful) {
+                    val errBody = runCatching { resp.body?.string() }.getOrDefault("") ?: ""
+                    val safeBody = AgentLogger.sanitize(errBody)
+                    AgentLogger.httpError(resp.code, safeBody)
+                    if (resp.code == 400 && cache && looksLikeCacheRejection(safeBody)) {
+                        retryWithoutCache = true
+                        return@use
+                    }
+                    // hotfix10：同 OpenAIClient——抛结构化 LlmHttpException（带 code 与
+                    // Retry-After），让上层认得出 429 并走限流专用退避序列。
+                    throw com.example.agentkit.core.LlmHttpException(
+                        code = resp.code,
+                        message = "Claude 流式请求失败 ${resp.code}: ${safeBody.take(200)}",
+                        serverBody = safeBody.take(200),
+                        retryAfterMs = com.example.agentkit.core.parseRetryAfterMs(
+                            resp.header("Retry-After")
+                        )
                     )
-                )
-            }
-            val source = resp.body!!.source()
-            // hotfix35：兼容加固——个别中转会忽略 stream:true 直接回整段 JSON
-            // （无任何 data: 行）。旧实现产出空回答；这里留一份原文，末尾判定后
-            // 走非流式解析降级成一次性输出。
-            var sawData = false
-            val rawFallback = StringBuilder()
-            while (!source.exhausted()) {
-                val line = source.readUtf8Line() ?: continue
-                if (!line.startsWith("data:")) {
-                    if (rawFallback.length < PLAIN_BODY_MAX) rawFallback.append(line).append('\n')
-                    continue
                 }
-                sawData = true
-                val data = line.removePrefix("data:").trim()
-                if (data.isEmpty()) continue
-                runCatching {
-                    // hotfix33：SSE 分片可能是 null / 非对象，软转换跳过（不打断流）
-                    val obj = json.parseToJsonElement(data).objOrNull() ?: return@runCatching
-                    when (obj["type"]?.primOrNull()?.contentOrNull) {
-                        "content_block_delta" -> {
-                            val delta = obj["delta"]?.objOrNull()
-                            if (delta?.get("type")?.primOrNull()?.contentOrNull == "text_delta") {
-                                delta["text"]?.primOrNull()?.contentOrNull?.let { emit(it) }
+                val source = resp.body!!.source()
+                // hotfix35：兼容加固——个别中转会忽略 stream:true 直接回整段 JSON
+                // （无任何 data: 行）。旧实现产出空回答；这里留一份原文，末尾判定后
+                // 走非流式解析降级成一次性输出。
+                var sawData = false
+                val rawFallback = StringBuilder()
+                while (!source.exhausted()) {
+                    val line = source.readUtf8Line() ?: continue
+                    if (!line.startsWith("data:")) {
+                        if (rawFallback.length < PLAIN_BODY_MAX) rawFallback.append(line).append('\n')
+                        continue
+                    }
+                    sawData = true
+                    val data = line.removePrefix("data:").trim()
+                    if (data.isEmpty()) continue
+                    runCatching {
+                        // hotfix33：SSE 分片可能是 null / 非对象，软转换跳过（不打断流）
+                        val obj = json.parseToJsonElement(data).objOrNull() ?: return@runCatching
+                        when (obj["type"]?.primOrNull()?.contentOrNull) {
+                            "content_block_delta" -> {
+                                val delta = obj["delta"]?.objOrNull()
+                                if (delta?.get("type")?.primOrNull()?.contentOrNull == "text_delta") {
+                                    delta["text"]?.primOrNull()?.contentOrNull?.let { emit(it) }
+                                }
                             }
-                        }
-                        // 流中途报错（超限等）：抛出供上层按普通错误处理
-                        "error" -> {
-                            val msg = obj["error"]?.objOrNull()?.get("message")
-                                ?.primOrNull()?.contentOrNull ?: "Claude 流式错误"
-                            throw IOException(msg)
+                            // 流中途报错（超限等）：抛出供上层按普通错误处理
+                            "error" -> {
+                                val msg = obj["error"]?.objOrNull()?.get("message")
+                                    ?.primOrNull()?.contentOrNull ?: "Claude 流式错误"
+                                throw IOException(msg)
+                            }
                         }
                     }
                 }
+                // hotfix35：整段无 data: 行 → 供应商忽略 stream:true，按非流式降级输出
+                if (!sawData) {
+                    // hotfix36：降级留痕（日志页可对上「不逐字」的现象）
+                    com.example.agentkit.core.AgentLogger.i(
+                        "Chat",
+                        "Claude 通道未按 SSE 返回（stream:true 被忽略），已降级为整段响应输出"
+                    )
+                    runCatching { parseResponse(rawFallback.toString().trim()) }.getOrNull()
+                        ?.content?.takeIf { it.isNotBlank() }?.let { emit(it) }
+                }
             }
-            // hotfix35：整段无 data: 行 → 供应商忽略 stream:true，按非流式降级输出
-            if (!sawData) {
-                // hotfix36：降级留痕（日志页可对上「不逐字」的现象）
-                com.example.agentkit.core.AgentLogger.i(
-                    "Chat",
-                    "Claude 通道未按 SSE 返回（stream:true 被忽略），已降级为整段响应输出"
-                )
-                runCatching { parseResponse(rawFallback.toString().trim()) }.getOrNull()
-                    ?.content?.takeIf { it.isNotBlank() }?.let { emit(it) }
-            }
+            if (!retryWithoutCache) return@flow
+            disablePromptCache("流式请求被拒")
         }
     }
 
