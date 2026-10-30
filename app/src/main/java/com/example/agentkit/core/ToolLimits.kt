@@ -9,10 +9,6 @@ package com.example.agentkit.core
  */
 const val MAX_TOOL_RESULT_CHARS: Int = 24_000
 
-/** 截断后缀：声明原始体量，并建议模型改用分页参数（spec：`"\n…[结果过长已截断，共 N 字符]"`）。 */
-private const val TRUNCATION_HINT =
-    "\n…[结果过长已截断，共 %d 字符，建议改用分页参数（如 read_file 的 offset/limit）分批获取]"
-
 /**
  * 单个工具结果截断到 [maxChars] 以内（含后缀本身——保证回喂内容恒 ≤ 上限）。
  *

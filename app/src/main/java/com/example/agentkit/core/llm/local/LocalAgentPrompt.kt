@@ -67,7 +67,7 @@ object LocalAgentPrompt {
     )
 
     /**
-     * 固定顺序（= [com.example.agentkit.core.ToolExposurePolicy.LOCAL_CORE_TOOLS] 的语义顺序，
+     * 固定顺序（= 本地最小工具面的语义顺序：先读写、再感知与动作、最后扩展，
      * 外加常用云端工具）。顺序即「重要度」，也保证同一组工具每轮渲染结果逐字节一致。
      */
     private val ORDER: List<String> = listOf(
