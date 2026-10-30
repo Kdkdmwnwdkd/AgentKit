@@ -9,12 +9,11 @@ import com.example.agentkit.core.DEFAULT_SYSTEM_PROMPT
 import com.example.agentkit.core.FailureGuard
 import com.example.agentkit.core.LLMClient
 import com.example.agentkit.core.LlmHttpException
+import com.example.agentkit.core.KernelExposure
 import com.example.agentkit.core.MEMORY_USAGE_PROMPT
 import com.example.agentkit.core.SystemMessage
 import com.example.agentkit.core.ToolApproval
 import com.example.agentkit.core.ToolCall
-import com.example.agentkit.core.ToolExposure
-import com.example.agentkit.core.ToolExposurePolicy
 import com.example.agentkit.core.ToolMessage
 import com.example.agentkit.core.ToolRegistry
 import com.example.agentkit.core.ToolResult
@@ -101,7 +100,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  *   update(registry) 也因此对默认 executor 即时生效。
  * @param forceFullTools Phase 2 DoD④「本地模型工具暴露降级」：强制全量工具开关
  *   （默认 false = 按 provider 自动）。provider = local-llama 时默认把暴露给 LLM 的
- *   工具面裁剪到 [ToolExposurePolicy.LOCAL_CORE_TOOLS]（≤7 个）；置 true 可强制放行
+ *   工具面按 [KernelExposure] 裁剪（本地最小集 / 云端基础三组）；置 true 可强制全量
  *   全量（开发者/设置项逃生门）。云端 provider 不受此开关影响（本就全量）。
  * @param backoffPlan 第 n 次重试（1-based）应等待的计划毫秒数（默认
  *   [RetryBackoffPolicy.backoffMillis]：3s → 10s → 25s 封顶的**可配常量序列**）。
@@ -260,19 +259,19 @@ class RealAgentLoop(
         priorMessages: List<ChatMessage> = emptyList()
     ): List<ChatMessage> {
         val loopStart = System.currentTimeMillis()
-        // Phase 2 DoD④：按当前 provider 计算本回合的「工具暴露面」——provider = local-llama
-        // 时裁剪到核心集（≤7 个）。每回合算一次：系统提示拼接与发给 LLM 的工具列表共用同一
-        // [exposure]，保证「给了哪些工具」与「提示里教了哪些工具」始终一致。
-        val exposure = currentExposure()
-        logExposure(exposure)
-        // 回合级工具视图：未裁剪时为原 registry（零开销、行为不变）；裁剪时仅含暴露工具——
-        // 被裁工具即便被本地模型瞎编调用，也在此视图中「查无此工具」，走 T02 未知工具路径。
-        val turnRegistry = scopedRegistry(exposure)
+        // 内核暴露（core/KernelExposure）：按能力档位选工具面——云端默认「基础三组 + 元工具」，
+        // 本地小模型只给「文件读写 + 元工具」。activeGroups 会被元工具 __use_tools 就地修改，
+        // 因此工具面在循环内**每轮重算**（见下方 repeat 块首）。
+        val activeGroups = mutableSetOf<String>()
+        val exposure0 = currentExposure(activeGroups)
+        logExposure(exposure0)
+        // 系统提示只拼一次：它承载「身份 + 规则 + 工具用法」，逐轮重拼会让本地推理的 KV 前缀
+        // 每轮失效（这正是改造前每轮都慢一截的原因之一）。后启用的组靠工具 description 自解释。
+        val messages = mutableListOf<ChatMessage>()
+        messages.add(SystemMessage(buildSystemPrompt(exposure0.visible)))
         // W-46：历史对话插在系统提示之后、当前输入之前——多点追问（「它」「继续」「第二个方案」）
         // 才有所指。priorMessages 只用于**构造请求**，返回值不含它们（调用方按返回值落盘，
         // 若把历史一并返回会被重复写入会话）。裁剪统一交给 buildRequestMessages → ContextBudget。
-        val messages = mutableListOf<ChatMessage>()
-        messages.add(SystemMessage(buildSystemPrompt(exposure.tools)))
         messages.addAll(priorMessages)
         // 功能四（P0-2）：用户手动附带的图片随首条用户消息一起发
         messages.add(UserMessage(userInput, images))
@@ -289,6 +288,11 @@ class RealAgentLoop(
         repeat(maxSteps) {
             // T05：每轮开始复查取消——UI 点「停止」后 ≤1 轮内退出
             currentCoroutineContext().ensureActive()
+            // 每轮重算工具面：上一步若调了 __use_tools，激活的组要立刻体现在下一轮请求里。
+            // scopedRegistry 仍按暴露面收紧执行侧——被裁工具在此视图内「查无此工具」，
+            // 走 T02 未知工具路径并提示先用 __use_tools，避免模型靠猜名字绕过裁剪。
+            val exposure = currentExposure(activeGroups)
+            val turnRegistry = scopedRegistry(exposure)
             // T01 钩子：序列化前（每次 LLM 请求前一次；快照传参，钩子看不到后续变更）
             hooks.beforeSerialization(messages.toList())
             val stepStart = System.currentTimeMillis()
@@ -603,11 +607,12 @@ class RealAgentLoop(
      * 错误时重新收集，已发出的 TextDelta 会重复下发（UI 侧按追加渲染可接受）；
      * 换来的是供应商瞬时故障不丢轮次。默认（非流式）实现无此问题。
      */
-    private suspend fun chatOnce(messages: List<ChatMessage>, exposure: ToolExposure): AssistantMessage {
+    private suspend fun chatOnce(messages: List<ChatMessage>, exposure: KernelExposure.Plan): AssistantMessage {
         var completed: AssistantMessage? = null
-        // Phase 2 DoD④：发给 LLM 的工具定义用本回合的暴露面（本地小模型 ≤7 个），
-        // 与系统提示拼接的 exposure.tools 同源，保证「给的工具」与「教的工具」一致。
-        llmProvider().streamChat(messages, exposure.tools).collect { event ->
+        // 发给 LLM 的工具定义用**本轮**暴露面（云端基础三组、本地最小集，均含元工具）。
+        // 与系统提示同源的部分只在首轮一致；后续轮次因 __use_tools 启用新组而扩大，
+        // 新组的用法由工具 description 自解释，系统提示不再重拼（保 KV 前缀稳定）。
+        llmProvider().streamChat(messages, exposure.visible).collect { event ->
             when (event) {
                 is ChatStreamEvent.TextDelta -> onTextDelta?.invoke(event.text)
                 // 功能五（P1-9）：推理过程增量与正文分流上抛（UI 折叠块实时渲染），
@@ -762,37 +767,42 @@ class RealAgentLoop(
         )
 
     /**
-     * 计算本回合的工具暴露面（Phase 2 DoD④，纯委托 [ToolExposurePolicy.exposureFor]）。
-     * provider 取 `llmProvider().id`；[forceFullTools] = true 时强制全量。
+     * 计算本回合的工具暴露面（委托 [KernelExposure.plan]）。
+     *
+     * provider 决定档位：`local-llama` → 最小集（文件读写 + 元工具）；其余 → 基础三组 + 元工具；
+     * [forceFullTools] = true 时全量（开发者开关，行为与改造前一致）。
+     *
+     * @param active 已启用的组；**会被就地修改**（元工具 `__use_tools` 执行时写入），
+     *   调用方按回合持有，跨轮传递即可实现「用到再开」。
      */
-    private fun currentExposure(): ToolExposure =
-        ToolExposurePolicy.exposureFor(registry.list(), llmProvider().id, forceFullTools)
+    private fun currentExposure(active: MutableSet<String>): KernelExposure.Plan =
+        KernelExposure.plan(registry.list(), llmProvider().id, forceFullTools, active)
 
     /**
      * 由暴露面构造「回合级工具视图 registry」：
-     *  - 未裁剪（[ToolExposure.trimmed] = false）→ 原样返回 [registry]，**零开销、行为完全不变**；
-     *  - 发生裁剪 → 新建仅含 [ToolExposure.tools] 的 registry，使被裁工具在该视图内「查无此工具」，
+     *  - 未裁剪（全量）→ 原样返回 [registry]，零开销；
+     *  - 发生裁剪 → 新建仅含暴露工具的 registry，使被裁工具在该视图内「查无此工具」，
      *    从而 descriptor 解析为 null、executor 走 T02 未知工具路径（模糊匹配 + 自纠 hint），不抛异常。
      *
      * 注：仅影响本回合的「工具视图」，全局 [registry]（Skill 桥等复用）不变。
      */
-    private fun scopedRegistry(exposure: ToolExposure): ToolRegistry =
-        if (!exposure.trimmed) {
+    private fun scopedRegistry(plan: KernelExposure.Plan): ToolRegistry =
+        if (!plan.trimmed) {
             registry
         } else {
-            ToolRegistry().apply { exposure.tools.forEach { register(it) } }
+            ToolRegistry().apply { plan.visible.forEach { register(it) } }
         }
 
     /**
-     * 裁剪发生时打一条 INFO（Phase 2 DoD④ 诊断要求）：写明 provider + 暴露数量 + 裁剪掉的数量。
-     * 未裁剪（暴露数 = 全量数）时不打——避免每回合刷屏。日志文本经 [AgentLogger.sanitize] 无害化。
+     * 裁剪发生时打一条 INFO：写明模式、暴露数、裁掉数与已启用组。
+     * 未裁剪时不打——避免每回合刷屏。
      */
-    private fun logExposure(exposure: ToolExposure) {
-        if (!exposure.trimmed) return
+    private fun logExposure(plan: KernelExposure.Plan) {
+        if (!plan.trimmed) return
         AgentLogger.i(
             "ToolExposure",
-            "按 provider 裁剪工具：provider=${exposure.providerId} 暴露 ${exposure.exposedCount} 个，" +
-                "裁剪掉 ${exposure.trimmedCount} 个（暴露：${exposure.exposedNames.joinToString(",")}）"
+            "工具面裁剪：mode=${plan.mode} 暴露 ${plan.visible.size} 个（含 2 个元工具），" +
+                "裁掉 ${plan.hiddenCount} 个；已启用组=${plan.activated.joinToString(",")}"
         )
     }
 
