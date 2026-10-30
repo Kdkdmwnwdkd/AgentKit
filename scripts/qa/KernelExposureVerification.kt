@@ -226,6 +226,21 @@ fun main() = runBlocking {
         }
     }
 
+    // 一次开两个组：参数顺序必须等于 LRU 顺序（先写的更旧、后写的更新）。
+    // 这里锁的是一个真 bug：原写法先 addAll 再逐个 remove+add，对「本来不在集合里」
+    // 的组是空操作，新组停在 addAll 给的位置，得到 {misc,ui,memory}——与语义相反，
+    // 第一次淘汰会把刚开的 memory 砍掉、留下更早的 ui。
+    val pair = linkedSetOf<String>()
+    runBlocking {
+        KernelExposure.plan(all, "openai", false, pair)
+            .visible.first { it.name == KernelExposure.USE_TOOLS }
+            .execute(buildJsonObject { put("groups", "memory,ui") })
+    }
+    eq(
+        "一次开两组：迭代序 = 参数顺序（memory 旧、ui 新）",
+        pair.toList(), listOf("file", "misc", "memory", "ui")
+    )
+
     useGroup("memory")
     check("开 1 组后共 3 个（file+misc+memory）", sticky.size == 3, "$sticky")
     useGroup("ui")

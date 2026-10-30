@@ -141,11 +141,18 @@ private class ScriptedLlm(
     var lastSystemPrompt: String = ""
         private set
 
+    /**
+     * 每次 chat 收到的工具名，按调用序追加（`lastToolNames` 只留最后一次，测不了「第 1 轮
+     * 和第 3 轮有什么差别」）。粘性激活的断言要靠它区分「同一次 send 内的第几轮」。
+     */
+    val toolNamesLog: MutableList<List<String>> = mutableListOf()
+
     override suspend fun chat(
         messages: List<ChatMessage>,
         tools: List<AgentTool>
     ): AssistantMessage {
         lastToolNames = tools.map { it.name }
+        toolNamesLog += lastToolNames
         lastSystemPrompt = (messages.firstOrNull { it is SystemMessage } as? SystemMessage)?.content ?: ""
         val r = script[minOf(calls, script.size - 1)]
         calls++
@@ -426,6 +433,75 @@ private suspend fun testTrimLogging() {
     }
 }
 
+/**
+ * 用例 8：粘性激活真的跨 send 生效（W-102）。
+ *
+ * 这条是这轮改造的核心行为，但在此之前只有 `KernelExposureVerification` 在 plan() 层
+ * 测过——loop 层完全没覆盖。而 loop 里 `activeGroups` 默认是 null（每次新建集合），
+ * 意味着**所有既有 harness 走的都是不粘性那条路**，粘性代码在 CI 里一次都没被执行过。
+ *
+ * 三层断言，缺一不可：
+ *  1. 第 1 次 send 的第 1 轮看不到 ui（默认面确实收窄了）
+ *  2. 同一次 send 的第 2 轮看得到（`__use_tools` 当轮生效）
+ *  3. 第 2 次 send 依然看得到（粘性——这条才是新增行为）
+ */
+private suspend fun testStickyAcrossTurns() {
+    println("\n== 用例 8：粘性激活跨 send ==")
+
+    val openUi = listOf(
+        AssistantMessage("", listOf(ToolCall("c1", KernelExposure.USE_TOOLS, argsOf("groups" to "ui")))),
+        AssistantMessage("好了"),
+        AssistantMessage("再好了")
+    )
+
+    check("注入 activeGroups：开过的组跨 send 仍可见") {
+        val fx = Fixture()
+        val active = linkedSetOf<String>()
+        val llm = ScriptedLlm("openai", openUi)
+        val loop = RealAgentLoop(
+            llmProvider = { llm }, registry = fx.registry,
+            providerRetry = 0, activeGroups = active
+        )
+        loop.send("帮我截图")
+        assertTrue("第 1 轮不含 ui_swipe", "ui_swipe" !in llm.toolNamesLog[0])
+        assertTrue("同一次 send 第 2 轮含 ui_swipe", "ui_swipe" in llm.toolNamesLog[1])
+
+        loop.send("再截一张")
+        assertTrue("第 2 次 send 仍含 ui_swipe（粘性）", "ui_swipe" in llm.toolNamesLog.last())
+        assertTrue("active 里记下了 ui", "ui" in active)
+    }
+
+    check("不注入 activeGroups：退回每回合新建，老行为不变") {
+        val fx = Fixture()
+        val llm = ScriptedLlm("openai", openUi)
+        val loop = RealAgentLoop(llmProvider = { llm }, registry = fx.registry, providerRetry = 0)
+        loop.send("帮我截图")
+        assertTrue("同一次 send 第 2 轮含 ui_swipe", "ui_swipe" in llm.toolNamesLog[1])
+        loop.send("再截一张")
+        assertTrue("第 2 次 send 看不到 ui_swipe（未注入）", "ui_swipe" !in llm.toolNamesLog.last())
+    }
+
+    check("粘性不越界：跨 send 后仍受组上限约束") {
+        val fx = Fixture()
+        val active = linkedSetOf<String>()
+        val llm = ScriptedLlm("openai", openUi)
+        val loop = RealAgentLoop(
+            llmProvider = { llm }, registry = fx.registry,
+            providerRetry = 0, activeGroups = active
+        )
+        loop.send("帮我截图")
+        loop.send("再截一张")
+        // 预先塞进来的「幽灵组」不该被带进来占名额（plan() 入口会 retainAll 清掉）
+        active.add("nonexistent_group")
+        loop.send("再来一张")
+        assertTrue(
+            "可淘汰组没超出上限 ${KernelExposure.MAX_ACTIVE_GROUPS}（实际 $active）",
+            active.count { it != "file" && it != "misc" } <= KernelExposure.MAX_ACTIVE_GROUPS
+        )
+        assertTrue("幽灵组已被清理", "nonexistent_group" !in active)
+    }
+}
+
 /* ------------------------------ 入口 ------------------------------ */
 
 fun main() = runBlocking {
@@ -438,6 +514,7 @@ fun main() = runBlocking {
     testSystemPromptSync()
     testEndToEndReadFile()
     testTrimLogging()
+    testStickyAcrossTurns()
 
     println("\n== 汇总 ==")
     println("PASS: $passed  FAIL: ${failures.size}  TOTAL: ${passed + failures.size}")

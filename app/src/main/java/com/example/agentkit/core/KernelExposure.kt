@@ -297,10 +297,14 @@ object KernelExposure {
             } else {
                 val unknown = want.filter { it !in index }
                 val known = want.filter { it in index }
+                // W-102 粘性激活：本次启用的组一律视为「最近使用」，按参数顺序排到末尾。
+                //
+                // 必须先**全部 remove 再 addAll**，不能 `addAll` 之后逐个 `remove+add`：
+                // 后者对「本来就不在集合里」的组是空操作，于是新组停在 addAll 给的旧位置，
+                // 而顺序变成「后写的更新、先写的反而更旧」。实测 groups="ui,memory" 得到
+                // {memory,ui}——恰好与语义相反，第一次淘汰会先砍掉刚开的 memory。
+                known.forEach { active.remove(it) }
                 active.addAll(known)
-                // W-102 粘性激活：重新启用的组视为「最近使用」——remove + add 把它移回
-                // 迭代序末尾，撞上限时优先淘汰的是**最久没用**的组，而不是先开的那一组。
-                known.forEach { g -> if (active.remove(g)) active.add(g) }
                 enforceCap(active)
                 // 回执必须反映**实际生效**的组：一次开 2 个而容量只剩 1 个时，
                 // 先开的那个会被同一次调用里的滞回淘汰掉。只说「已启用」会让模型
