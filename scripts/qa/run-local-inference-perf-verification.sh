@@ -291,6 +291,11 @@ expect "prefill 结束自动放开掩码" "$JNI" 'if \(active_\) akApplyAffinity
 expect "绑核覆盖进程内所有线程" "$JNI" 'sched_setaffinity\(tid,'
 expect "prefill 绑核写进日志" "$JNI" 'prefill 绑核：'
 # 「机器热了」和「线程配错了」都表现为 prefill 变慢，只有频率能把两者分开。
+# prefill 能否并行，全看 batch 线程数——它藏在只改 cparams 字段的 setter 后面，
+# 日志里必须读回实际值。1.480 那次 85 token 用了 85 × 单token 的时间，就是没并行。
+expect "prefill 日志读回实际 batch 线程数" "$JNI" 'llama_n_threads_batch\(inst->ctx\)'
+expect "batch 线程数少于生成时修正" "$JNI" 'prefill 的 batch 线程数'
+# 「机器热了」和「线程配错了」都表现为 prefill 变慢，只有频率能把两者分开。
 expect "prefill 报峰值频率" "$JNI" '峰值频率 %d MHz'
 
 echo

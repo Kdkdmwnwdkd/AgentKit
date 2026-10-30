@@ -1118,8 +1118,28 @@ bool decodeFrom(LlamaInstance* inst, std::vector<llama_token>& tokens, size_t fr
     // W-98：这一整段是算力受限的，先钉到大核再开算；函数返回时自动放开。
     AkPrefillBind prefillBind;
 
-    LOGI("prefill 开始：从第 %zu 个起，共 %zu token，线程 %d，分块 %d，峰值频率 %d MHz",
-         from, tokens.size(), inst->n_threads, std::min(inst->n_batch, PREFILL_CHUNK),
+    // batch 线程数直接读回 cparams，不读 inst->n_threads。
+    //
+    // 1.480 的真机数据有一个对不上的地方：单 token decode 是 93 ms，而 85 token 的
+    // prefill 用了 11846 ms —— 85 × 93 ≈ 7.9 秒，和 11.8 秒同一个量级。也就是说
+    // 那一整块**几乎没有并行**，等于逐个 token 算了一遍。同一台机器 16:08 是
+    // 61 ms/token（有并行）。分块 128、n_batch 256 都对得上，那就只剩下「batch
+    // 线程数不是 4」这一种可能——而它藏在一个只改 cparams 字段、不碰 threadpool 的
+    // setter 后面，日志里从来没人看过。
+    const int batchThreads = static_cast<int>(llama_n_threads_batch(inst->ctx));
+    if (batchThreads < inst->n_threads) {
+        // 防御：batch 慢到比生成还慢是说不通的，prefill 本来就该并行度更高。
+        LOGW("prefill 的 batch 线程数 %d 小于生成线程 %d，按 %d 修正",
+             batchThreads, inst->n_threads, inst->n_threads);
+        llama_set_n_threads(inst->ctx, inst->n_threads, inst->n_threads);
+    }
+
+    LOGI("prefill 开始：从第 %zu 个起，共 %zu token，线程 %d/%d，批 %d/%d，分块 %d，峰值频率 %d MHz",
+         from, tokens.size(), inst->n_threads,
+         static_cast<int>(llama_n_threads_batch(inst->ctx)),
+         static_cast<int>(llama_n_batch(inst->ctx)),
+         static_cast<int>(llama_n_ubatch(inst->ctx)),
+         std::min(inst->n_batch, PREFILL_CHUNK),
          akPeakMhz());
 
     // 分块上限取 PREFILL_CHUNK（现在是 128，理由见它的定义）。
