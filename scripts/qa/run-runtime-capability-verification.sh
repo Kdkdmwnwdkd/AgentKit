@@ -98,16 +98,22 @@ KOTLINC=$(command -v kotlinc 2>/dev/null || true)
 if [ -z "$KOTLINC" ]; then
   echo "  SKIP  本机无 kotlinc，行为断言交 CI（静态断言已全跑）"
 else
-  # 两套编译方式自适应：
-  #  - 完整 kotlinc（CI 装的那个）：-include-runtime 打自包含 jar，最简单；
-  #  - 精简 kotlinc（本沙箱这种没有 lib/ 的）：-include-runtime 会报
-  #    "Couldn't find kotlin-stdlib"，改显式 -cp stdlib:coroutines，输出到目录。
-  #    两种都要能跑，否则本地检查会因为「环境缺库」被误判成代码红。
-  find_jar() { ls -1 $1 2>/dev/null | head -1; }
-  STDLIB=$(find_jar "$HOME/.gradle/caches/modules-2/files-2.1/org.jetbrains.kotlin/kotlin-stdlib/*/*/kotlin-stdlib-*.jar")
-  [ -n "$STDLIB" ] || STDLIB=$(find_jar "/tmp/khome/lib/kotlin-stdlib.jar")
-  CORO=$(find_jar "$HOME/.gradle/caches/modules-2/files-2.1/org.jetbrains.kotlinx/kotlinx-coroutines-core-jvm/1.8.1/*/kotlinx-coroutines-core-jvm-1.8.1.jar")
-  [ -n "$CORO" ] || CORO=$(find_jar "/tmp/kc/kotlinx-coroutines-core-jvm-*.jar")
+  # 两套编译方式自适应，顺序有讲究（2026-10-30 CI run 40988894534 教的）：
+  #   1. 首选 `-include-runtime` 打自包含 jar —— stdlib 由 kotlinc 自己决定，
+  #      不会挑错版本。运行时另外挂 coroutines（`-include-runtime` 只打 stdlib）。
+  #   2. 失败（本沙箱这种精简 kotlinc 没有 lib/，报 "Couldn't find kotlin-stdlib"）
+  #      才退回显式 `-cp stdlib:coroutines`，输出到目录。
+  # 为什么不能反过来：CI 的 gradle 缓存里有多个 stdlib 版本，`ls | head -1`
+  # 挑到旧的那个，编译用新、运行用旧，就会在运行时炸
+  # `NoClassDefFoundError: kotlin/coroutines/jvm/internal/SpillingKt`
+  # （SpillingKt 是 stdlib 里的类，不是 coroutines 的）。
+  # 取版本也一律 sort -V | tail -1（要最新的），不用 head -1。
+  newest() { ls -1 $1 2>/dev/null | sort -V | tail -1; }
+  CORO=$(newest "$HOME/.gradle/caches/modules-2/files-2.1/org.jetbrains.kotlinx/kotlinx-coroutines-core-jvm/*/*/kotlinx-coroutines-core-jvm-*.jar")
+  [ -n "$CORO" ] || CORO=$(newest "/tmp/kc/kotlinx-coroutines-core-jvm-*.jar")
+  [ -n "$CORO" ] || CORO=$(newest "/root/.gradle/caches/modules-2/files-2.1/org.jetbrains.kotlinx/kotlinx-coroutines-core-jvm/*/*/*.jar")
+  STDLIB=$(newest "$HOME/.gradle/caches/modules-2/files-2.1/org.jetbrains.kotlin/kotlin-stdlib/*/*/kotlin-stdlib-*.jar")
+  [ -n "$STDLIB" ] || STDLIB=$(newest "/tmp/khome/lib/kotlin-stdlib.jar")
 
   TMP=$(mktemp -d)
   cat > "$TMP/check.kt" <<'EOF'
@@ -213,23 +219,28 @@ fun main() = runBlocking {
 EOF
 
   compiled=0
-  if [ -n "$STDLIB" ] && [ -n "$CORO" ]; then
-    if "$KOTLINC" "$CAP" "$TMP/check.kt" -cp "$STDLIB:$CORO" -d "$TMP/out" >"$TMP/kc.log" 2>&1; then
+  OUT=""
+  # 方式 A（首选）：自包含 jar。stdlib 由 kotlinc 自己打，版本不会错；
+  # coroutines 单独在编译期给 classpath、运行时挂上（-include-runtime 只管 stdlib）。
+  if [ -n "$CORO" ]; then
+    if "$KOTLINC" "$CAP" "$TMP/check.kt" -cp "$CORO" -d "$TMP/check.jar" -include-runtime >"$TMP/kc.log" 2>&1; then
+      compiled=1
+      OUT=$(java -cp "$TMP/check.jar:$CORO" qa.CheckKt 2>"$TMP/run.err")
+    fi
+  fi
+  # 方式 B（退路）：本地精简 kotlinc 没有 lib/，-include-runtime 会报
+  # "Couldn't find kotlin-stdlib"，改为显式指定 stdlib，输出到目录。
+  if [ "$compiled" -eq 0 ] && [ -n "$STDLIB" ] && [ -n "$CORO" ]; then
+    if "$KOTLINC" "$CAP" "$TMP/check.kt" -cp "$STDLIB:$CORO" -d "$TMP/out" >"$TMP/kc2.log" 2>&1; then
       compiled=1
       OUT=$(java -cp "$TMP/out:$STDLIB:$CORO" qa.CheckKt 2>"$TMP/run.err")
-    fi
-  else
-    # 完整 kotlinc：自包含 jar
-    if "$KOTLINC" "$CAP" "$TMP/check.kt" -d "$TMP/check.jar" -include-runtime >"$TMP/kc.log" 2>&1; then
-      compiled=1
-      OUT=$(java -jar "$TMP/check.jar" 2>"$TMP/run.err")
     fi
   fi
 
   if [ "$compiled" -eq 0 ]; then
     echo "  SKIP  本机 kotlinc 缺 stdlib/coroutines，行为断言交 CI（静态断言已全跑）"
     echo "        编译器输出前 3 行："
-    head -3 "$TMP/kc.log" 2>/dev/null | sed 's/^/        /'
+    cat "$TMP"/kc*.log 2>/dev/null | head -3 | sed 's/^/        /'
   else
     echo "$OUT"
     # 编译成功但一行输出都没有 = JVM 静默崩（stderr 被吞过，这里补打）
