@@ -5,7 +5,9 @@ Android 本地 AI Agent —— Kotlin / Jetpack Compose，原创实现，四层�
 一个跑在手机上的 AI 助手：多轮工具调用、三家大模型协议原生适配、屏幕理解与操控、
 终端与容器能力、跨会话长期记忆。**零第三方新增依赖**，视觉与交互按自研规范落地。
 
-> 当前版本 **1.143** ｜ Kotlin 源码 **124 文件 / 36,992 行** ｜ 提交 **150** ｜ QA 断言 **173 条（0 失败）**
+> 规模：Kotlin 源码 **249 文件 / 65,313 行** ｜ 源码级 QA **68 个 harness** ｜ 版本号 = CI 构建号（`1.N`）
+>
+> 上面这两个数字会随提交漂移，别当契约看：`find app/src/main -name '*.kt' | wc -l` 自己数一遍更快。
 
 ---
 
@@ -21,13 +23,14 @@ Android 本地 AI Agent —— Kotlin / Jetpack Compose，原创实现，四层�
 
 ---
 
-## 能力一览（截至 v1.143）
+## 能力一览
 
 - **模型接入**：30+ 家供应商预设（DeepSeek / Kimi / 智谱 / 通义 / 豆包 / 文心 / 混元 / 星火 / MiniMax / 阶跃 / 百川 / Yi / 商汤 / Grok / Mistral / Groq / OpenRouter / 硅基流动 / Ollama / LM Studio / vLLM …），协议三类（OpenAI 兼容 / Claude / Gemini）+ 本地 llama.cpp；未收录端点一律 OpenAI 兼容兜底
 - **对话体验**：流式打字机（含**非 SSE 供应商自动降级**）、思考过程折叠（三家推理字段原生解析）、消息复制/朗读/分享/从此处删除、文件与图片附件、Token 用量统计、会话置顶/搜索/草稿/导出 `.md` 真文件
 - **会话与记忆**：生成中可切会话（后台续跑）、记忆库（列表/图谱双模式、可编辑、节点可拖动）、跨会话事件记忆沉淀
 - **外观**：主题三选 + Material You 动态取色 + **全局照片背景**（浓度 5%–100% 自调，全 App 生效）
 - **系统能力**：屏幕捕捉（真机实证）、shell 终端、无障碍 App 控制、本地模型推理、全局备份/恢复（含提示词库）
+- **运行成本**：56 个工具**按组加载**——默认只带 `file` 组 3 个，模型用 `__use_tools` 自己开组、开过就一直开着（粘性）；设置页「工具范围」可手动关闭。全量 22327 字符 ≈ 10064 token，默认面 1243 字符 ≈ 525 token（省 94%）
 - **稳定性**：JSON 空值安全化、429 专用退避（尊重 `Retry-After`）、断网自动恢复、崩溃日志留存
 
 ---
@@ -38,10 +41,13 @@ Android 本地 AI Agent —— Kotlin / Jetpack Compose，原创实现，四层�
 # 编译（干净构建；沙箱/CI 环境建议带 --rerun-tasks 确保完整校验）
 bash gradlew :app:compileDebugKotlin --rerun-tasks
 
-# 源码级 QA（主 harness：173 条断言）
+# 源码级 QA（主 harness；断言条数会随代码增长，跑完自己看结果行）
 bash scripts/qa/run-hotfix11-verification.sh
 
-# 全套回归（18 个 harness）
+# 工具面成本审计（真实工具描述，不是 harness 里的假数据）
+python3 scripts/tool-surface-audit.py --verbose
+
+# 全套回归（68 个 harness）
 for f in scripts/qa/run-*.sh; do bash "$f" || echo "FAIL $f"; done
 ```
 
