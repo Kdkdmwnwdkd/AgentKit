@@ -465,7 +465,14 @@ class RealAgentLoop(
         if (unknownCount > 0) {
             AgentLogger.w("AgentLoop", "本批含 $unknownCount 个未知工具调用（走 T02 模糊匹配文案）")
         }
-        val hasMutation = turnRegistry.batchHasMutation(calls)
+        // 元工具 `__use_tools` 标了 `readOnly = true`，但那只是「不需要审批」的意思，
+        // **不代表没有副作用**：它会就地修改 active 组集合。而 `batchHasMutation` 只看
+        // `readOnly` 判串并行，于是模型一次发两个 `__use_tools` 时，两个协程会同时
+        // `remove`/`addAll` 同一个 LinkedHashSet——轻则顺序错乱（LRU 失效），重则
+        // ConcurrentModificationException。这里按名字补一条，把它归入串行。
+        // `__find_tools` 不在此列：它纯读，并行无害。
+        val hasMutation = turnRegistry.batchHasMutation(calls) ||
+            calls.any { it.name == KernelExposure.USE_TOOLS }
         AgentLogger.i(
             "AgentLoop",
             "本批 ${calls.size} 个调用：hasMutation=$hasMutation（${if (hasMutation) "串行" else "并行"}）"

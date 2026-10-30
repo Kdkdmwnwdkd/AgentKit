@@ -271,7 +271,26 @@ fun main() = runBlocking {
     check("失效组名被清理掉", "gone_group" !in stale, "$stale")
     check("清理不误伤在用组", "ui" in stale && "file" in stale, "$stale")
 
-    // ---------- 6. 结果 ----------
+    // ---------- 6. find_tools 兜底必须标出「哪些能直接调」----------
+    //
+    // 兜底会把全部工具名列出来。只列名字而不标启用状态，模型看到就会直接调一个
+    // 当前不可见的工具，吃一次 unknown_tool，再重试一轮——正好是这轮改造想省掉的钱。
+    val fbActive = linkedSetOf<String>()
+    KernelExposure.plan(all, "openai", false, fbActive)
+    val fbMsg = runBlocking {
+        KernelExposure.plan(all, "openai", false, fbActive)
+            .visible.first { it.name == KernelExposure.FIND_TOOLS }
+            .execute(buildJsonObject { put("query", "zzz_no_such_tool") })
+    }.message
+    check("兜底列出全部工具", fbMsg.contains("read_file") && fbMsg.contains("ui_swipe"), fbMsg.take(80))
+    check("已启用的组带 [已启用] 标记", fbMsg.contains("file [已启用]"), fbMsg.lines().firstOrNull { "file" in it } ?: "")
+    check(
+        "未启用的组不带标记（避免模型直接调）",
+        fbMsg.contains("ui：") && !fbMsg.contains("ui [已启用]"),
+        fbMsg.lines().firstOrNull { "ui" in it } ?: ""
+    )
+
+    // ---------- 7. 结果 ----------
 
     // 结果行必须含 "0 失败"：run-all.sh 靠这个字样判 PASS，
     // 写成「0 项失败」不匹配它的正则，会被当成「跑完没有通过标记」判 FAIL。

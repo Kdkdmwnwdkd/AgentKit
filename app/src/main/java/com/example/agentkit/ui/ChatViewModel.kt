@@ -2017,6 +2017,11 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
      *
      * 作用域是**一次任务**，不是永久：新建会话时清空（见 [newConversation]）。
      * 上个任务开的 ui/shell 继续挂在每轮请求里，正是「不需要它的时候它还在付钱」。
+     *
+     * ⚠️ **必须声明在 [loop] 之前**。Kotlin 按声明顺序初始化属性，而 `RealAgentLoop` 的
+     * `activeGroups` 是可空参数（null = 不粘性）。一旦把这段挪到 loop 后面，loop 构造时
+     * 拿到的是 null，粘性**静默失效**——不报错、不崩溃，只是每次都退回「每回合新建」，
+     * 而日志里看不出任何异常。改这段位置前先跑 `LocalModelVerification` 用例 8。
      */
     private val activeToolGroups: MutableSet<String> = ToolActivationStore.load(app)
 

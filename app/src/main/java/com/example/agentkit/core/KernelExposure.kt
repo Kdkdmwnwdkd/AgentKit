@@ -265,9 +265,11 @@ object KernelExposure {
                     // 比让它换个词再查一轮便宜得多——失败重试也要花 token。
                     else -> ToolResult.ok(
                         "find_fallback",
-                        "没有精确匹配「$q」，以下是全部工具（按组）：\n" + index.entries.joinToString("\n") { (g, ts) ->
-                            "- $g：" + ts.joinToString(", ") { t -> t.name }
-                        }
+                        "没有精确匹配「$q」。以下是全部工具（按组；标 [已启用] 的可直接调用，" +
+                            "其余需先 $USE_TOOLS 启用所在组）：\n" + index.entries.joinToString("\n") { (g, ts) ->
+                                "- $g" + (if (g in active) " [已启用]" else "") + "：" +
+                                    ts.joinToString(", ") { t -> t.name }
+                            }
                     )
                 }
             }
