@@ -146,6 +146,17 @@ object KernelExposure {
     }
 
     /**
+     * 该组是否常驻（`file` / `misc`）。
+     *
+     * 常驻组不参与淘汰，因此**也不该让用户「关掉」**——关掉也会在下一轮 [plan] 的
+     * 强制 pin 步骤被加回来，UI 上留一个按了没反应的按钮比不给按钮更糟。
+     */
+    fun isPinned(group: String): Boolean = group in PINNED_GROUPS
+
+    /** 组的一句话说明（与 `__use_tools` 给模型看的组索引同源）；未知组回退成组名。 */
+    fun noteOf(group: String): String = GROUP_NOTES[group] ?: group
+
+    /**
      * provider + 用户设置 → 能力档位。
      *
      * 云端一律 [Strength.SMALL]（走分组）：它的工具表值 4k token/轮，是纯浪费；

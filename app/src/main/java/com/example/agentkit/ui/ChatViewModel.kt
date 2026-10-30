@@ -36,6 +36,7 @@ import com.example.agentkit.automation.UiTreeTool
 import com.example.agentkit.core.agent.RealAgentLoop
 import com.example.agentkit.core.capability.ToolActivationStore
 import com.example.agentkit.core.AgentLogger
+import com.example.agentkit.core.KernelExposure
 import com.example.agentkit.core.agent.ConnectivityNetworkRecoveryWaiter
 import com.example.agentkit.core.ConfigSanitizer
 import com.example.agentkit.core.ConfigStore
@@ -2028,6 +2029,71 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     /** 把当前激活组落盘（失败只记日志，不打断收尾——见 ToolActivationStore 的失败模式）。 */
     private fun persistToolGroups() {
         ToolActivationStore.save(app, activeToolGroups)
+        refreshToolGroups()
+    }
+
+    /**
+     * 设置页「工具范围」的一行。
+     *
+     * @param count 该组在**当前注册表**里的工具数（MCP 工具算进 misc）
+     * @param pinned 常驻组：不参与淘汰，UI 上不给关闭入口
+     */
+    data class ToolGroupRow(
+        val name: String,
+        val note: String,
+        val count: Int,
+        val active: Boolean,
+        val pinned: Boolean
+    )
+
+    private val _toolGroupsUi = MutableStateFlow<List<ToolGroupRow>>(emptyList())
+
+    /**
+     * 设置页要展示的组清单（已启用在前，同状态内按工具数降序）。
+     *
+     * 为什么是 StateFlow 而不是「进页面时算一次」：关掉一个组之后同屏的其它行要立刻
+     * 重新排序/置灰，靠 `remember` 算一次会停在旧快照上，用户点第二下才发现已经关了。
+     */
+    val toolGroupsUi: StateFlow<List<ToolGroupRow>> = _toolGroupsUi.asStateFlow()
+
+    /**
+     * 重算 [toolGroupsUi]。
+     *
+     * 调用点：设置页进入时（`LaunchedEffect`）、每次落盘激活组之后、以及用户手动关闭后。
+     * 不做成「响应式监听注册表」：MCP 工具是异步注册的，真要做到实时得给 registry 加
+     * 观察者，而这块 UI 的用途只是「看一眼、关掉一个」，下一次进页面刷新足够。
+     */
+    fun refreshToolGroups() {
+        val counts = KernelExposure.groupsOf(registry.list()).toMap()
+        _toolGroupsUi.value = counts.entries
+            .sortedWith(compareBy({ it.key !in activeToolGroups }, { -it.value }, { it.key }))
+            .map { (g, n) ->
+                ToolGroupRow(
+                    name = g,
+                    note = KernelExposure.noteOf(g),
+                    count = n,
+                    active = g in activeToolGroups,
+                    pinned = KernelExposure.isPinned(g)
+                )
+            }
+    }
+
+    /**
+     * 手动关掉一个工具组（W-103）——补上「粘性激活」缺的另一半。
+     *
+     * 之前只有「新建会话」能清空：用户在一个长会话里用完 `shell` 就再也关不掉，
+     * 只能等下次新建会话。而 `shell` 组 4 个工具 2676 字符，每轮都在付。
+     *
+     * 常驻组（`file` / `misc`）直接忽略：它们在 [KernelExposure.plan] 里会被强制加回，
+     * 关掉是假动作，UI 也不给入口（见 [ToolGroupRow.pinned]）。
+     *
+     * **不需要通知 loop**：组集合是同一个实例，下一轮 `plan()` 直接用新状态。
+     */
+    fun dropToolGroup(group: String) {
+        if (KernelExposure.isPinned(group)) return
+        if (!activeToolGroups.remove(group)) return
+        AgentLogger.i("ToolExposure", "用户手动关闭工具组 $group，剩余=${activeToolGroups.joinToString(",")}")
+        persistToolGroups()
     }
 
     /**

@@ -6,7 +6,7 @@
  * 省了多少」，并确认元工具真的能把裁掉的工具捞回来、粘性激活与滞回淘汰按预期工作。
  *
  * （原先还有一份 `KernelCoreVerification` 验内核那套未接入的规则实现；那套实现已删，
- * 它里面唯一有价值的「提示分段稳定性」断言已并入本文件的第 8 段。）
+ * 它里面唯一有价值的「提示分段稳定性」断言已并入本文件的第 8 段（提示分段）。）
  *
  * 运行：bash scripts/qa/run-kernel-exposure-verification.sh
  *
@@ -88,12 +88,6 @@ private fun fakeTools(): List<AgentTool> = NAMES.map { n ->
 }
 
 /**
- * 估算「这批工具发给 LLM 要多少字符」：按 OpenAI function-calling 的报文结构拼一遍。
- *
- * 不直接用 `ToolRegistry.descriptors()` 是因为那样只算 schema、漏掉 name/description，
- * 而 description 恰恰是工具表里最长的部分（每个约 100 字）。
- */
-/**
  * 手写 JsonSchema → JSON 串。
  *
  * 不用 `JsonSchema.serializer()`：那需要 kotlinx-serialization 编译器插件，而 harness 的
@@ -110,7 +104,13 @@ private fun schemaJson(s: JsonSchema): String = buildString {
     append("]}")
 }
 
-private fun payloadChars(tools: List<AgentTool>): Int = buildString {
+/**
+ * 估算「这批工具发给 LLM 要多少字符」：按 OpenAI function-calling 的报文结构拼一遍。
+ *
+ * 不直接用 `ToolRegistry.descriptors()` 是因为那样只算 schema、漏掉 name/description，
+ * 而 description 恰恰是工具表里最长的部分（每个约 100 字）。
+ */
+private fun payloadText(tools: List<AgentTool>): String = buildString {
     for (t in tools) {
         append("{\"type\":\"function\",\"function\":{\"name\":\"")
         append(t.name)
@@ -120,10 +120,39 @@ private fun payloadChars(tools: List<AgentTool>): Int = buildString {
         append(schemaJson(t.parameters))
         append("}}")
     }
-}.length
+}
+
+private fun payloadChars(tools: List<AgentTool>): Int = payloadText(tools).length
+
+/**
+ * token 估算，口径与 `ContextBudget.estimateTokens` 一致：CJK 1 字 1 token、
+ * ASCII 4 字 1 token、其余 2 字 1 token。
+ *
+ * **早前报表写的是 `字符 / 2`。** 那个系数对纯中文描述会低估约一倍，对纯 ASCII 的
+ * schema 样板会高估约一倍；工具表恰好是「中文描述 + 英文 JSON 结构」的混合，两个误差
+ * 互相抵消，所以结果看着还算接近（22167 字符：粗除得 11083，按口径算 9063）。
+ * 但这是巧合，不是正确性——工具描述一旦全写成英文，粗除 2 就会高估一倍。
+ * 既然要拿这个数去和真机 usage 对账，就别赌巧合。
+ */
+private fun estTokens(s: String): Int {
+    var cjk = 0; var ascii = 0; var other = 0
+    for (ch in s) {
+        val c = ch.code
+        when {
+            c < 0x80 -> ascii++
+            c in 0x3000..0x30FF || c in 0x3400..0x4DBF || c in 0x4E00..0x9FFF ||
+                c in 0xAC00..0xD7AF || c in 0xFF00..0xFFEF -> cjk++
+            else -> other++
+        }
+    }
+    return cjk + (ascii + 3) / 4 + (other + 1) / 2
+}
 
 fun main() = runBlocking {
-    println("=== 暴露实现层自检（56 个真实工具）===")
+    println("=== 暴露实现层自检（56 个真实工具名 + 2 个哨兵）===")
+    println("    注：本表用**假描述**（每个约 90 字）验分组规则，因此体量只能横向比较、")
+    println("    不能当真实成本。真实工具的描述长短差 6 倍（web_type 30 字 / ui_screenshot 180 字），")
+    println("    真实数字见 `python3 scripts/tool-surface-audit.py`。")
     val all = fakeTools()
 
     // ---------- 1. 分组 ----------
@@ -144,12 +173,21 @@ fun main() = runBlocking {
     val cloudPlan = KernelExposure.plan(all, "openai", forceFull = false, active = mutableSetOf())
     val localPlan = KernelExposure.plan(all, "local-llama", forceFull = false, active = mutableSetOf())
 
-    val cFull = payloadChars(fullPlan.visible)
-    val cCloud = payloadChars(cloudPlan.visible)
-    val cLocal = payloadChars(localPlan.visible)
-    println("    全量         ${fullPlan.visible.size.toString().padStart(2)} 个 → $cFull 字符 ≈ ${cFull / 2} token")
-    println("    云端·分组    ${cloudPlan.visible.size.toString().padStart(2)} 个 → $cCloud 字符 ≈ ${cCloud / 2} token（省 ${100 - cCloud * 100 / cFull}%）")
-    println("    本地·分组    ${localPlan.visible.size.toString().padStart(2)} 个 → $cLocal 字符 ≈ ${cLocal / 2} token（省 ${100 - cLocal * 100 / cFull}%）")
+    val tFull = payloadText(fullPlan.visible)
+    val tCloud = payloadText(cloudPlan.visible)
+    val tLocal = payloadText(localPlan.visible)
+    val cFull = tFull.length
+    val cCloud = tCloud.length
+    val cLocal = tLocal.length
+    val kFull = estTokens(tFull)
+    val kCloud = estTokens(tCloud)
+    val kLocal = estTokens(tLocal)
+    println("    全量         ${fullPlan.visible.size.toString().padStart(2)} 个 → $cFull 字符 ≈ $kFull token")
+    println("    云端·分组    ${cloudPlan.visible.size.toString().padStart(2)} 个 → $cCloud 字符 ≈ $kCloud token（省 ${100 - cCloud * 100 / cFull}%）")
+    println("    本地·分组    ${localPlan.visible.size.toString().padStart(2)} 个 → $cLocal 字符 ≈ $kLocal token（省 ${100 - cLocal * 100 / cFull}%）")
+    // 口径断言：token 必须落在「字符的 1/4 ~ 1 倍」之间。
+    // 早前是 `字符 / 2`——对纯中文低估一倍、对纯 ASCII 高估一倍，工具表恰好混合才凑巧接近。
+    check("token 估算落在合理区间（字符的 1/4 ~ 1 倍）", kFull in (cFull / 4)..cFull, "字符 $cFull / token $kFull")
 
     eq("forceFull 就是全量", fullPlan.visible.size, all.size)
     check("云端默认不是全量", cloudPlan.visible.size < all.size)
@@ -295,11 +333,24 @@ fun main() = runBlocking {
         fbMsg.lines().firstOrNull { "ui" in it } ?: ""
     )
 
-    // ---------- 7. 提示分段：稳定前缀是否真的稳定 ----------
+    // ---------- 7. 设置页要用的元信息 ----------
+    //
+    // 设置页「工具范围」要把「哪些组能关、每个组是干什么的」显示给用户。这些判断必须
+    // 和内核同源（都在 KernelExposure 里），不能在 UI 里再写一份组名表——两份真相
+    // 迟早会分叉，表现是「UI 上能关、关了下一轮又回来了」。
+    println("\n[7] 设置页元信息：哪些组能关、每个组是什么")
+    check("file 常驻（不给关闭入口）", KernelExposure.isPinned("file"))
+    check("misc 常驻（不认识的东西不能藏，也不该让用户关）", KernelExposure.isPinned("misc"))
+    check("ui 可关闭", !KernelExposure.isPinned("ui"))
+    check("shell 可关闭", !KernelExposure.isPinned("shell"))
+    check("组说明来自同一张表", KernelExposure.noteOf("shell").contains("命令行"), KernelExposure.noteOf("shell"))
+    eq("未知组的说明回退成组名", KernelExposure.noteOf("zzz"), "zzz")
+
+    // ---------- 8. 提示分段：稳定前缀是否真的稳定 ----------
     //
     // 原在 KernelCoreVerification（已随 `core/kernel/` 那套实现一起删除），搬过来是因为
     // PromptAssembler 仍在主链路上——RealAgentLoop 用它拼系统提示，串了就会每轮 cache miss。
-    println("\n[7] 提示分段：TURN 段变化不拖累 FROZEN/SESSION")
+    println("\n[8] 提示分段：TURN 段变化不拖累 FROZEN/SESSION")
     val base = listOf(
         Section("identity", "你是北辰", Stability.FROZEN),
         Section("rules", "规则一……", Stability.FROZEN),
@@ -321,7 +372,7 @@ fun main() = runBlocking {
     )
     eq("空白段不产生额外换行", "A", withBlank.text)
 
-    // ---------- 8. 结果 ----------
+    // ---------- 9. 结果 ----------
 
     // 结果行必须含 "0 失败"：run-all.sh 靠这个字样判 PASS，
     // 写成「0 项失败」不匹配它的正则，会被当成「跑完没有通过标记」判 FAIL。

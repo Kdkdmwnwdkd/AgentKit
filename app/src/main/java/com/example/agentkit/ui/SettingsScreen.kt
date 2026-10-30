@@ -258,6 +258,58 @@ fun SettingsScreen(
                 )
             }
 
+            // —— W-103：工具范围 ——
+            //
+            // 「粘性激活」的设计是「被叫到就开、一直开着」，但原先只有「新建会话」能清空。
+            // 用户在长会话里用完 shell，那 4 个工具（2676 字符 ≈ 1300 token）就跟着每轮
+            // 请求一直发到会话结束——这正是这轮改造想省的钱，却没有开关可关。
+            //
+            // 这里只提供「关」，不提供「开」：开组是模型自己的判断（`__use_tools`），
+            // 用户手动去开一个自己用不上的组，只会白付 token、还会占掉淘汰名额。
+            val toolGroups by vm.toolGroupsUi.collectAsStateWithLifecycle()
+            LaunchedEffect(Unit) { vm.refreshToolGroups() }
+            val activeRows = toolGroups.filter { it.active }
+            val inactiveCount = toolGroups.count { !it.active }
+            AkGroup(
+                title = "工具范围",
+                description = "每轮请求都会带上这些工具的定义。用不到的关掉，就别再为它付 token"
+            ) {
+                activeRows.forEachIndexed { i, row ->
+                    if (i > 0) AkDivider(Modifier.padding(start = AgentSpacing.space4))
+                    AkListItem(
+                        icon = null,
+                        title = row.name,
+                        description = row.note + " · " + row.count + " 个工具",
+                        trailing = {
+                            if (row.pinned) {
+                                Text(
+                                    text = "常驻",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            } else {
+                                AkTextButton(
+                                    text = "关闭",
+                                    onClick = { vm.dropToolGroup(row.name) },
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    )
+                }
+                if (inactiveCount > 0) {
+                    if (activeRows.isNotEmpty()) AkDivider(Modifier.padding(start = AgentSpacing.space4))
+                    // 不把 12 个「关着的组」逐行列出来：设置页要能一屏扫完，
+                    // 而「未启用」这个状态没有信息量——真正需要它的是模型，不是用户。
+                    AkListItem(
+                        icon = null,
+                        title = "另有 $inactiveCount 个组未启用",
+                        description = "模型需要时会自己开（`__use_tools`）；关掉的组不会自己回来",
+                        enabled = false
+                    )
+                }
+            }
+
             // —— 设备能力：自动化总开关 + 权限入口 + 存活自检 ——
             // W-68：Shizuku / 无线调试原来单独一张「调试通道」卡，和本组的「权限中心」说的是
             // 同一件事（拿 uid 2000 的权限），现在两条调试通道都收进权限中心页。
