@@ -14,6 +14,7 @@
  */
 
 import com.example.agentkit.core.*
+import com.example.agentkit.core.agent.RealAgentLoop
 import kotlinx.coroutines.*
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
@@ -347,11 +348,11 @@ private suspend fun testT03Concurrency() = runBlocking {
         val calls = delays.indices.map { ToolCall("c$it", "r$it", argsOf()) }
         val started = System.currentTimeMillis()
         val fake = FakeLlm(listOf(AssistantMessage("", calls), AssistantMessage("done")))
-        val loop = AgentLoop(
+        val loop = RealAgentLoop(
             llmProvider = { fake },
             registry = reg, maxParallelTools = 3, providerRetry = 0
         )
-        val history = loop.run("x")
+        val history = loop.send("x")
         val elapsed = System.currentTimeMillis() - started
         val ids = history.filterIsInstance<ToolMessage>().map { it.id }
         assertEquals("order", calls.map { it.id }, ids)
@@ -369,11 +370,11 @@ private suspend fun testT03Concurrency() = runBlocking {
             ToolCall("c2", "read", argsOf("path" to "c.txt"))
         )
         val fake = FakeLlm(listOf(AssistantMessage("", calls), AssistantMessage("done")))
-        val loop = AgentLoop(
+        val loop = RealAgentLoop(
             llmProvider = { fake },
             registry = reg, maxParallelTools = 5, providerRetry = 0
         )
-        loop.run("x")
+        loop.send("x")
         assertEquals("serial order", listOf("read", "write", "read"), order)
     }
 }
@@ -404,7 +405,7 @@ private suspend fun testT05CancelClosure() = runBlocking {
         )
         var lastSnapshot: List<ChatMessage> = emptyList()
         val fake = FakeLlm(listOf(AssistantMessage("", calls)))
-        val loop = AgentLoop(
+        val loop = RealAgentLoop(
             llmProvider = { fake },
             registry = reg, maxParallelTools = 5, providerRetry = 0,
             checkpoint = { lastSnapshot = it.toList() }
@@ -414,7 +415,7 @@ private suspend fun testT05CancelClosure() = runBlocking {
         runBlocking {
             val job = launch {
                 try {
-                    loop.run("x")
+                    loop.send("x")
                 } catch (t: Throwable) {
                     thrown = t
                 } finally {
@@ -444,12 +445,12 @@ private suspend fun testT05CancelClosure() = runBlocking {
         )
         var lastSnapshot: List<ChatMessage> = emptyList()
         val fake = FakeLlm(listOf(AssistantMessage("", calls), AssistantMessage("done")))
-        val loop = AgentLoop(
+        val loop = RealAgentLoop(
             llmProvider = { fake },
             registry = reg, maxParallelTools = 5, providerRetry = 0,
             checkpoint = { lastSnapshot = it.toList() }
         )
-        loop.run("x")
+        loop.send("x")
         val msgs = lastSnapshot.filterIsInstance<ToolMessage>()
         assertEquals("exactly 3 (no dup fill)", 3, msgs.size)
         assertTrue("invariant", invariantHolds(lastSnapshot))
@@ -469,13 +470,13 @@ private suspend fun testT05CancelClosure() = runBlocking {
         reg.register(tap)
         val calls = listOf(ToolCall("c0", "ui_tap", argsOf()))
         val fake = FakeLlm(listOf(AssistantMessage("", calls)))
-        val loop = AgentLoop(
+        val loop = RealAgentLoop(
             llmProvider = { fake },
             registry = reg, maxParallelTools = 5, providerRetry = 0,
             approval = { _, _ -> throw CancellationException("user left") },
             checkpoint = { lastSnapshot = it.toList() }
         )
-        val outcome = runCatching { loop.run("x") }
+        val outcome = runCatching { loop.send("x") }
         assertTrue("rethrown", outcome.exceptionOrNull() is CancellationException)
         assertTrue("invariant", invariantHolds(lastSnapshot))
         assertTrue("no approval_denied text",
@@ -486,12 +487,12 @@ private suspend fun testT05CancelClosure() = runBlocking {
         reg.register(FakeTool("r", readOnly = true))
         val calls = listOf(ToolCall("c0", "r", argsOf()))
         val fake = FakeLlm(listOf(AssistantMessage("", calls), AssistantMessage("next")))
-        val loop = AgentLoop(
+        val loop = RealAgentLoop(
             llmProvider = { fake },
             registry = reg, maxParallelTools = 5, providerRetry = 0,
             shouldContinue = { false }
         )
-        val history = loop.run("x")
+        val history = loop.send("x")
         assertContains("stop note", (history.last() as AssistantMessage).content, "已根据请求停止")
     }
 }
@@ -516,11 +517,11 @@ private suspend fun testIntegration() = runBlocking {
         }
         val reg2 = ToolRegistry().apply { register(failTool) }
         val fake = FakeLlm(List(5) { AssistantMessage("", listOf(call)) })
-        val loop = AgentLoop(
+        val loop = RealAgentLoop(
             llmProvider = { fake },
             registry = reg2, maxSteps = 5, providerRetry = 0
         )
-        val history = loop.run("x")
+        val history = loop.send("x")
         assertEquals("real executions", 2, failTool.executions) // 第 3 次起熔断
         val blocked = history.filterIsInstance<ToolMessage>().count { it.content.contains("requires_changed_call") }
         assertTrue("blocked msgs (got $blocked)", blocked >= 1)
@@ -545,12 +546,12 @@ private suspend fun testIntegration() = runBlocking {
         val calls = (0 until 15).map { ToolCall("c$it", "shot$it", argsOf()) }
         var lastSnapshot: List<ChatMessage> = emptyList()
         val fake = FakeLlm(listOf(AssistantMessage("", calls), AssistantMessage("done")))
-        val loop = AgentLoop(
+        val loop = RealAgentLoop(
             llmProvider = { fake },
             registry = reg, maxParallelTools = 5, providerRetry = 0,
             checkpoint = { lastSnapshot = it.toList() }
         )
-        loop.run("x")
+        loop.send("x")
         val visionFeed = lastSnapshot.filterIsInstance<UserMessage>().lastOrNull { it.images.isNotEmpty() }
         val imgs = visionFeed?.images ?: emptyList()
         assertEquals("no image lost", 15, imgs.size)
@@ -574,12 +575,12 @@ private suspend fun testIntegration() = runBlocking {
             val calls = (0 until 15).map { ToolCall("c$it", "shot${round}_$it", argsOf()) }
             var lastSnapshot: List<ChatMessage> = emptyList()
             val fake = FakeLlm(listOf(AssistantMessage("", calls), AssistantMessage("done")))
-            val loop = AgentLoop(
+            val loop = RealAgentLoop(
                 llmProvider = { fake },
                 registry = reg, maxParallelTools = 5, providerRetry = 0,
                 checkpoint = { lastSnapshot = it.toList() }
             )
-            loop.run("x")
+            loop.send("x")
             val imgs = lastSnapshot.filterIsInstance<UserMessage>().lastOrNull { it.images.isNotEmpty() }?.images ?: emptyList()
             if (imgs.size != 15) throw AssertionError("round $round: expected 15 images, got ${imgs.size}")
         }

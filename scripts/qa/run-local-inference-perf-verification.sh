@@ -171,7 +171,7 @@ fi
 # W-93：标题生成必须排在本轮结束之后。原来在主回答之前发起，本地模型下两个 prefill
 # 交错抢 CPU（15:33 那轮首字 9709ms）。用行号比较，比匹配文案可靠。
 _t_call=$(grep -n 'maybeGenerateTitle(_activeConversationId.value, text)' "$VM" | head -1 | cut -d: -f1)
-_t_run=$(grep -n 'val outcome = runCatching { loop.run' "$VM" | head -1 | cut -d: -f1)
+_t_run=$(grep -n 'val outcome = runCatching { loop.send' "$VM" | head -1 | cut -d: -f1)
 if [ -n "$_t_call" ] && [ -n "$_t_run" ] && [ "$_t_call" -gt "$_t_run" ]; then
   ok "标题生成排在本轮结束之后（不抢 prefill）"
 else

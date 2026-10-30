@@ -38,7 +38,6 @@ fun main() {
 
     val chatVm = read("app/src/main/java/com/example/agentkit/ui/ChatViewModel.kt")
     val loop = read("app/src/main/java/com/example/agentkit/core/agent/RealAgentLoop.kt")
-    val adapter = read("app/src/main/java/com/example/agentkit/core/AgentLoop.kt")
     val manifest = read("app/src/main/AndroidManifest.xml")
     val nsc = read("app/src/main/res/xml/network_security_config.xml")
     val llmHttp = read("app/src/main/java/com/example/agentkit/core/llm/LlmHttp.kt")
@@ -53,7 +52,7 @@ fun main() {
         assertTrue("send 未取历史", "val priorMessages = buildPriorMessages(owner)" in chatVm)
         assertTrue(
             "send 未把历史传给 loop",
-            "loop.run(fullInput, images, priorMessages)" in chatVm
+            "loop.send(fullInput, images, priorMessages)" in chatVm
         )
     }
 
@@ -82,11 +81,15 @@ fun main() {
         assertTrue("仍有裸 return messages", !loop.contains("return messages"))
     }
 
-    check("H5 适配层与接口同步（三参数）") {
+    check("H5 契约与生产实现直连（适配层已移除）") {
         assertTrue("接口未扩参", "priorMessages: List<ChatMessage> = emptyList()" in
             read("app/src/main/java/com/example/agentkit/core/agent/AgentLoop.kt"))
-        assertTrue("适配层未透传", "impl.send(userInput, images, priorMessages)" in adapter)
-        assertTrue("runAgent 未补参", "impl.send(userInput, emptyList(), emptyList())" in adapter)
+        // 生产链路必须直接构造 RealAgentLoop：曾经的薄适配层 `core.AgentLoop` 把 20 个参数
+        // 原样转发，却因「两处默认值必须一致」靠人记，先后导致 maxSteps=16 截断任务、
+        // providerRetry=2 让 429 第三档退避永不触发。删掉层比维护同步更可靠。
+        assertTrue("ChatViewModel 未直连 RealAgentLoop", "private val loop = RealAgentLoop(" in chatVm)
+        assertTrue("适配层又回来了", "class AgentLoop(" !in
+            read("app/src/main/java/com/example/agentkit/core/AgentLoop.kt"))
     }
 
     check("C1 明文端点：Manifest 引用了 networkSecurityConfig") {
@@ -108,8 +111,9 @@ fun main() {
         assertTrue("仍是 readOnly = true", "override val readOnly = false" in section)
     }
 
-    check("S2 适配层重试次数与实现层一致（429 第三档生效）") {
-        assertTrue("适配层仍是 2", "providerRetry: Int = 3" in adapter)
+    check("S2 重试次数单一真源（429 第三档生效）") {
+        // 适配层删除后只剩 RealAgentLoop 一处默认值，不再存在「两处必须一致」的同步风险。
+        assertTrue("providerRetry 默认不是 3", "private val providerRetry: Int = 3" in loop)
     }
 
     check("V1 owner 会话 id 跨线程可见") {

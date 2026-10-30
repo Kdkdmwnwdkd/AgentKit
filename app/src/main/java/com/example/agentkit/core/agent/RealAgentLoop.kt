@@ -38,8 +38,9 @@ import java.util.concurrent.atomic.AtomicBoolean
 /**
  * [AgentLoop] 的默认实现（T01）：回合主循环——规划 -> 调工具 -> 回填 -> 再规划，
  * 直到 LLM 不再请求工具调用。旧 `com.example.agentkit.core.AgentLoop` 具体类的
- * 逻辑整体迁入本类，外部行为逐条保持（见下方「保留行为」清单）；
- * 旧类名保留为薄适配层（委托本类），ChatViewModel 零改动。
+ * 逻辑整体迁入本类，外部行为逐条保持（见下方「保留行为」清单）。
+ * 那个旧具体类曾是薄适配层（原样转发 20 个构造参数），已于 2026-10-30 删除：
+ * ChatViewModel 直连本类，避免「两处默认值必须一致」靠人记而反复漏改。
  *
  * **三段式工具执行**（T01 契约化后的回合内工具阶段）：
  *  1. **解析**：registry.descriptorOf(call.name) 拿 [ToolDescriptor]（未知工具 →

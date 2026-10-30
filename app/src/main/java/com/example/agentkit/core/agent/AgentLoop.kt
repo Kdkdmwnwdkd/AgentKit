@@ -18,7 +18,8 @@ import com.example.agentkit.core.ToolRegistry
  *    换系统提示 / 记忆提供者 / 工具表 / 步数上限。
  *
  * UI 只认事件流（AgentEvent）与状态流，不认本接口的具体实现类；
- * 默认实现见 [RealAgentLoop]，兼容适配层见 `com.example.agentkit.core.AgentLoop`。
+ * 默认实现见 [RealAgentLoop]——生产链路（`ui/ChatViewModel`）直接构造它，
+ * 不再经过中间适配层。
  */
 interface AgentLoop {
 

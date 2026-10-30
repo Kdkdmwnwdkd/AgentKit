@@ -17,7 +17,6 @@
  * 运行方式见 scripts/qa/run-t01-verification.sh（kotlin-compiler-embeddable 编译 + java 运行）。
  */
 
-import com.example.agentkit.core.AgentLoop
 import com.example.agentkit.core.AgentEvent
 import com.example.agentkit.core.AgentTool
 import com.example.agentkit.core.AssistantMessage
@@ -313,14 +312,14 @@ private suspend fun testT01FullFlow() {
                 AssistantMessage("北京今天晴，气温 26℃；文本共 7 字符。")
             )
         )
-        // 走适配层（core.AgentLoop）——证明 ChatViewModel 现有调用面零改动可用
-        val loop = AgentLoop(
+        // 直连 RealAgentLoop（适配层已删）：这是 ChatViewModel 生产链路同一条构造路径
+        val loop = RealAgentLoop(
             llmProvider = { fake },
             registry = reg,
             providerRetry = 0,
             onEvent = { events += it }
         )
-        val history = loop.run("北京天气怎么样？顺便数数这句话")
+        val history = loop.send("北京天气怎么样？顺便数数这句话")
 
         // 工具真执行
         assertEquals("weather executions", 1, weather.executions)
@@ -351,13 +350,13 @@ private suspend fun testT01FullFlow() {
         )
         val events = Collections.synchronizedList(mutableListOf<AgentEvent>())
         val fake = FakeLlm(listOf(AssistantMessage("", calls), AssistantMessage("done")))
-        val loop = AgentLoop(
+        val loop = RealAgentLoop(
             llmProvider = { fake },
             registry = reg,
             providerRetry = 0,
             onEvent = { events += it }
         )
-        loop.run("x")
+        loop.send("x")
 
         val started = events.filterIsInstance<AgentEvent.ToolStarted>()
         val finished = events.filterIsInstance<AgentEvent.ToolFinished>()
@@ -373,14 +372,18 @@ private suspend fun testT01FullFlow() {
         }
     }
 
-    check("适配层 runAgent 便捷 API 保留（只返回最终文本）") {
+    check("send 返回完整历史：取最后一条 AssistantMessage 即最终回答") {
         val weather = WeatherTool()
         val reg = ToolRegistry().register(weather)
         val calls = listOf(ToolCall("call_w", "weather", argsOf("city" to "北京")))
         val fake = FakeLlm(listOf(AssistantMessage("", calls), AssistantMessage("最终回答")))
-        val loop = AgentLoop(llmProvider = { fake }, registry = reg, providerRetry = 0)
-        loop.run("x")
-        assertEquals("runAgent", "最终回答", loop.runAgent("再问一次"))
+        val loop = RealAgentLoop(llmProvider = { fake }, registry = reg, providerRetry = 0)
+        loop.send("x")
+        assertEquals(
+            "runAgent",
+            "最终回答",
+            loop.send("再问一次").filterIsInstance<AssistantMessage>().lastOrNull()?.content.orEmpty()
+        )
     }
 }
 
@@ -570,8 +573,8 @@ private suspend fun testT01BusinessFailure() {
                 AssistantMessage("recovered")
             )
         )
-        val loop = AgentLoop(llmProvider = { fake }, registry = reg, providerRetry = 0)
-        val history = loop.run("x")
+        val loop = RealAgentLoop(llmProvider = { fake }, registry = reg, providerRetry = 0)
+        val history = loop.send("x")
         val toolMsgs = history.filterIsInstance<ToolMessage>()
         assertEquals("exactly one tool message", 1, toolMsgs.size)
         assertEquals("isError", true, toolMsgs[0].isError)
@@ -703,14 +706,14 @@ private suspend fun testT01CancelClosure() = runBlocking {
         reg.register(FakeTool("r", readOnly = true))
         val calls = listOf(ToolCall("c0", "r", argsOf()))
         val fake = FakeLlm(listOf(AssistantMessage("", calls), AssistantMessage("next")))
-        val loop = AgentLoop(
+        val loop = RealAgentLoop(
             llmProvider = { fake },
             registry = reg,
             maxParallelTools = 5,
             providerRetry = 0,
             shouldContinue = { false }
         )
-        val history = loop.run("x")
+        val history = loop.send("x")
         assertContains("stop note", (history.last() as AssistantMessage).content, "已根据请求停止")
         assertTrue("invariant", invariantHolds(history))
     }
@@ -749,8 +752,8 @@ private suspend fun testT01FailureGuard() {
         val reg = ToolRegistry().apply { register(failTool) }
         val call = ToolCall("c0", "flaky", argsOf("path" to "same.txt"))
         val fake = FakeLlm(List(5) { AssistantMessage("", listOf(call)) })
-        val loop = AgentLoop(llmProvider = { fake }, registry = reg, maxSteps = 5, providerRetry = 0)
-        val history = loop.run("x")
+        val loop = RealAgentLoop(llmProvider = { fake }, registry = reg, maxSteps = 5, providerRetry = 0)
+        val history = loop.send("x")
         assertEquals("real executions", 2, failTool.executions) // 第 3 次起熔断
         val blocked = history.filterIsInstance<ToolMessage>().count { it.content.contains("requires_changed_call") }
         assertTrue("blocked msgs (got $blocked)", blocked >= 1)
@@ -775,8 +778,8 @@ private suspend fun testT01MaxStepsDefault() {
         val reg = ToolRegistry().apply { register(tool) }
         val call = ToolCall("c0", "noop", argsOf("path" to "same.txt"))
         val fake = FakeLlm(List(60) { AssistantMessage("", listOf(call)) })
-        val loop = AgentLoop(llmProvider = { fake }, registry = reg, providerRetry = 0)
-        val history = loop.run("x")
+        val loop = RealAgentLoop(llmProvider = { fake }, registry = reg, providerRetry = 0)
+        val history = loop.send("x")
         val toolMsgs = history.filterIsInstance<ToolMessage>().size
         assertEquals("default maxSteps tool executions", 60, toolMsgs)
     }
@@ -792,8 +795,8 @@ private suspend fun testT01MaxStepsDefault() {
         val reg = ToolRegistry().apply { register(tool) }
         val call = ToolCall("c0", "noop", argsOf("path" to "same.txt"))
         val fake = FakeLlm(List(20) { AssistantMessage("", listOf(call)) })
-        val loop = AgentLoop(llmProvider = { fake }, registry = reg, maxSteps = 5, providerRetry = 0)
-        val history = loop.run("x")
+        val loop = RealAgentLoop(llmProvider = { fake }, registry = reg, maxSteps = 5, providerRetry = 0)
+        val history = loop.send("x")
         val toolMsgs = history.filterIsInstance<ToolMessage>().size
         assertEquals("explicit maxSteps respected", 5, toolMsgs)
     }

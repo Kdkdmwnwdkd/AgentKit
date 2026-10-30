@@ -190,7 +190,7 @@ private fun testImageAttachment() {
         assertContains("I5", body, "val images = _pendingImages.value")
         assertContains("I5", body, "_pendingImages.value = emptyList()")
         // W-46 起 send 把历史摊平后作为第三参传入（多轮对话），断言随之更新
-        assertContains("I5", body, "loop.run(fullInput, images, priorMessages)")
+        assertContains("I5", body, "loop.send(fullInput, images, priorMessages)")
     }
     check("I6 多模态请求侧原本就支持（本次不是新造轮子）") {
         assertContains("I6", llm, "put(\"type\", \"image_url\")")
@@ -879,7 +879,6 @@ private fun testReasoningFold() {
     val claude = readSource("core/llm/ClaudeClient.kt")
     val gemini = readSource("core/llm/GeminiClient.kt")
     val realLoop = readSource("core/agent/RealAgentLoop.kt")
-    val loop = readSource("core/AgentLoop.kt")
     val contract = readSource("core/AgentContract.kt")
     val store = readSource("core/ConversationStore.kt")
     val vm = readSource("ui/ChatViewModel.kt")
@@ -922,11 +921,11 @@ private fun testReasoningFold() {
         // 注释即契约：分流防「自言自语进下一轮历史」
         assertContains("U5", gemini, "思考灌进正文会让下一轮历史带上自言自语")
     }
-    check("U6 agent 层：ReasoningDelta 事件转回调，包装层透传") {
+    check("U6 agent 层：ReasoningDelta 事件转回调，UI 直连传入") {
         assertContains("U6", realLoop, "is ChatStreamEvent.ReasoningDelta -> onReasoningDelta?.invoke(event.text)")
         assertContains("U6", realLoop, "private val onReasoningDelta: ((String) -> Unit)? = null,")
-        assertContains("U6", loop, "onReasoningDelta: ((String) -> Unit)? = null,")
-        assertContains("U6", loop, "onReasoningDelta = onReasoningDelta,")
+        // 适配层已删除：回调由 ChatViewModel 直接传给 RealAgentLoop，不再有中间透传层
+        assertContains("U6", vm, "onReasoningDelta = ::handleReasoningDelta,")
     }
     check("U7 消息模型：AssistantMessage.reasoning 与 content 分字段（默认 null）") {
         assertContains("U7", contract, "val reasoning: String? = null")

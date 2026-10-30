@@ -33,7 +33,7 @@ import com.example.agentkit.automation.UiScreenshotTool
 import com.example.agentkit.automation.UiSwipeTool
 import com.example.agentkit.automation.UiTapTool
 import com.example.agentkit.automation.UiTreeTool
-import com.example.agentkit.core.AgentLoop
+import com.example.agentkit.core.agent.RealAgentLoop
 import com.example.agentkit.core.AgentLogger
 import com.example.agentkit.core.agent.ConnectivityNetworkRecoveryWaiter
 import com.example.agentkit.core.ConfigSanitizer
@@ -1729,7 +1729,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
                 // W-46：重新生成也要带历史，但要**排除最后一轮**——那正是要重做的一轮，
                 // 把它自己的旧答案当历史会诱导模型复读原答案
                 val outcome = runCatching {
-                    loop.run(userText, emptyList(), buildPriorMessages(owner, excludeLastTurn = true))
+                    loop.send(userText, emptyList(), buildPriorMessages(owner, excludeLastTurn = true))
                 }
                 // 流式草稿使命结束：最终回答以整条变体落库，先清草稿避免与整条同时显示
                 // hotfix30：清内存缓冲，显示态经 syncDraftDisplay 投影
@@ -1998,7 +1998,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         )
     }
 
-    private val loop = AgentLoop(
+    private val loop = RealAgentLoop(
         llmProvider = { buildMainClient() },
         registry = registry,
         approval = approvalHandler,
@@ -2890,7 +2890,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
                 // 5374ms），首字被拖到 9709ms。标题是锦上添花，不值得让用户多等 9 秒。
                 // 调用点见本轮结束后（finalAnswer 落库之后）。
                 // 先拿到 Result，再在同一个挂起体里做后续 IO：Result.onSuccess 的 lambda 不是 suspend
-                val outcome = runCatching { loop.run(fullInput, images, priorMessages) }
+                val outcome = runCatching { loop.send(fullInput, images, priorMessages) }
                 // 流式草稿使命结束：最终回答以整条消息落库（防草稿与整条同时显示）。
                 // hotfix30：清内存缓冲；显示态经 syncDraftDisplay 投影（owner!=active 时本就是 null）
                 //

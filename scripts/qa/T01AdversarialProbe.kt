@@ -18,7 +18,6 @@
  * 运行方式见 scripts/qa/run-t01-probe.sh（kotlin-compiler-embeddable 离线编译 + java 运行）。
  */
 
-import com.example.agentkit.core.AgentLoop
 import com.example.agentkit.core.AgentTool
 import com.example.agentkit.core.AssistantMessage
 import com.example.agentkit.core.ChatMessage
