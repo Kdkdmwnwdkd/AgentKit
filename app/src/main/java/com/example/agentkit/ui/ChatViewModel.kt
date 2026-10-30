@@ -2028,7 +2028,11 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
 
     /** 把当前激活组落盘（失败只记日志，不打断收尾——见 ToolActivationStore 的失败模式）。 */
     private fun persistToolGroups() {
-        ToolActivationStore.save(app, activeToolGroups)
+        // 快照后落盘：集合可能正被 agent 线程改（每轮 plan 会 seed/pin/淘汰），
+        // 直接传进去会在 joinToString 里撞 ConcurrentModificationException。
+        // 锁对象就是集合本身，与 KernelExposure.plan 用同一把（见那里的 KDoc）。
+        val snapshot = synchronized(activeToolGroups) { activeToolGroups.toList() }
+        ToolActivationStore.save(app, snapshot)
         refreshToolGroups()
     }
 
@@ -2065,14 +2069,15 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
      */
     fun refreshToolGroups() {
         val counts = KernelExposure.groupsOf(registry.list()).toMap()
+        val snapshot = synchronized(activeToolGroups) { activeToolGroups.toSet() }
         _toolGroupsUi.value = counts.entries
-            .sortedWith(compareBy({ it.key !in activeToolGroups }, { -it.value }, { it.key }))
+            .sortedWith(compareBy({ it.key !in snapshot }, { -it.value }, { it.key }))
             .map { (g, n) ->
                 ToolGroupRow(
                     name = g,
                     note = KernelExposure.noteOf(g),
                     count = n,
-                    active = g in activeToolGroups,
+                    active = g in snapshot,
                     pinned = KernelExposure.isPinned(g)
                 )
             }
@@ -2091,8 +2096,14 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
      */
     fun dropToolGroup(group: String) {
         if (KernelExposure.isPinned(group)) return
-        if (!activeToolGroups.remove(group)) return
-        AgentLogger.i("ToolExposure", "用户手动关闭工具组 $group，剩余=${activeToolGroups.joinToString(",")}")
+        // 与 agent 线程共用同一把锁（集合本身）：关组时那一轮可能正在 plan 里遍历它。
+        val removed = synchronized(activeToolGroups) { activeToolGroups.remove(group) }
+        if (!removed) return
+        AgentLogger.i(
+            "ToolExposure",
+            "用户手动关闭工具组 $group，剩余=" +
+                synchronized(activeToolGroups) { activeToolGroups.joinToString(",") }
+        )
         persistToolGroups()
     }
 
@@ -2106,8 +2117,16 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
      * 等于回到刚装好的状态。
      */
     private fun resetToolGroups() {
-        if (activeToolGroups.isEmpty()) return
-        activeToolGroups.clear()
+        // 同上：清空也是一次写，必须和 agent 线程的遍历互斥。
+        val hadAny = synchronized(activeToolGroups) {
+            if (activeToolGroups.isEmpty()) {
+                false
+            } else {
+                activeToolGroups.clear()
+                true
+            }
+        }
+        if (!hadAny) return
         persistToolGroups()
     }
 

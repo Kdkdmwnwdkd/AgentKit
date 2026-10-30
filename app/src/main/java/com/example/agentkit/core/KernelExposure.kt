@@ -183,8 +183,27 @@ object KernelExposure {
      * @param all 全量工具（注册序）。
      * @param active 已激活的组（**会被就地修改**：seed、pin、淘汰都发生在这里）。
      * @param forceFull 强制全量（开发者开关）：返回全量，且不生成元工具。
+     *
+     * ## 为什么要加锁（W-103）
+     *
+     * `active` 从「一次 send 内有效」变成跨回合持有之后，它就有了**两个写入方**：
+     * agent 线程（每轮 plan、`__use_tools`）与 UI 线程（设置页「关闭」按钮）。
+     * 本函数内部有 `retainAll` / `filter` / `toSet()` 这类**复合遍历**，与一次 `remove`
+     * 交错就抛 ConcurrentModificationException。崩溃点是随机的，栈里只会指向
+     * `LinkedHashSet` 的迭代器——看不出是哪个按钮干的。
+     *
+     * 锁对象用集合本身而不是另建一把：谁操作这个集合谁就先 `synchronized(active)`，
+     * 省掉一张共享锁登记表。代价是 active 不能换成别的实例——调用方已保证如此。
      */
     fun plan(
+        all: List<AgentTool>,
+        providerId: String,
+        forceFull: Boolean,
+        active: MutableSet<String>
+    ): Plan = synchronized(active) { planLocked(all, providerId, forceFull, active) }
+
+    /** [plan] 的实现体，**不加锁**：调用方必须已持有 `active` 的监视器。 */
+    private fun planLocked(
         all: List<AgentTool>,
         providerId: String,
         forceFull: Boolean,
@@ -318,18 +337,22 @@ object KernelExposure {
                 // 后者对「本来就不在集合里」的组是空操作，于是新组停在 addAll 给的旧位置，
                 // 而顺序变成「后写的更新、先写的反而更旧」。实测 groups="ui,memory" 得到
                 // {memory,ui}——恰好与语义相反，第一次淘汰会先砍掉刚开的 memory。
-                known.forEach { active.remove(it) }
-                active.addAll(known)
-                enforceCap(active)
+                //
                 // 回执必须反映**实际生效**的组：一次开 2 个而容量只剩 1 个时，
                 // 先开的那个会被同一次调用里的滞回淘汰掉。只说「已启用」会让模型
                 // 下一轮调一个看不见的工具，然后陷入「未知工具」重试。
                 //
+                // 加锁：这个闭包在**模型调用工具时**才执行，已经脱离 plan 的临界区，
+                // 而 UI 线程此刻可能正在关组（见 plan 的 KDoc）。钥匙是同一个集合。
+                val (effective, dropped) = synchronized(active) {
+                    known.forEach { active.remove(it) }
+                    active.addAll(known)
+                    enforceCap(active)
+                    known.filter { it in active } to known.filter { it !in active }
+                }
                 // 淘汰不在这里打日志：本文件是**零 Android 依赖的纯内核**
                 // （harness 的编译单元只含 kernel + KernelExposure），引入 AgentLogger
                 // 会让 harness 缺类编译不过。日志由调用方经工具回执与 ToolExposure 日志承担。
-                val effective = known.filter { it in active }
-                val dropped = known.filter { it !in active }
                 val droppedNote = if (dropped.isEmpty()) "" else
                     "；因组上限（${MAX_ACTIVE_GROUPS}）挤掉了 ${dropped.joinToString(",")}，" +
                         "需要时再开一次（会挤掉更久未用的组）"
