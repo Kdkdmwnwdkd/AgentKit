@@ -2012,14 +2012,32 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
      * 进程内唯一实例，由 loop 的元工具 `__use_tools` 就地修改；每次回合收尾
      * 经 [persistToolGroups] 落盘，杀进程后还能带回来。
      *
-     * 为什么不放 loop 内部：loop 是「一次请求的执行器」，而「用户这台设备上开过哪些组」
-     * 是会话之间的状态。放在 ViewModel 才能跨 send 保留。
+     * 为什么不放 loop 内部：loop 是「一次请求的执行器」，而「这次任务开过哪些组」
+     * 要跨多次 send 保留——同一会话里第二次「帮我截图」不该再开一遍 ui 组。
+     *
+     * 作用域是**一次任务**，不是永久：新建会话时清空（见 [newConversation]）。
+     * 上个任务开的 ui/shell 继续挂在每轮请求里，正是「不需要它的时候它还在付钱」。
      */
     private val activeToolGroups: MutableSet<String> = ToolActivationStore.load(app)
 
     /** 把当前激活组落盘（失败只记日志，不打断收尾——见 ToolActivationStore 的失败模式）。 */
     private fun persistToolGroups() {
         ToolActivationStore.save(app, activeToolGroups)
+    }
+
+    /**
+     * 清空粘性激活（新会话时调用）。
+     *
+     * 不清会怎样：用户做完一次屏幕任务，新开一个纯聊天会话，ui 组的 9 个工具依旧
+     * 每轮随请求发出——约 4500 字符，一条都用不到。这正是「不需要它的时候它还在」。
+     *
+     * 清空不等于「一个工具都不给」：下一次 `plan()` 会自动重新种上 file 组与元工具，
+     * 等于回到刚装好的状态。
+     */
+    private fun resetToolGroups() {
+        if (activeToolGroups.isEmpty()) return
+        activeToolGroups.clear()
+        persistToolGroups()
     }
 
     private val loop = RealAgentLoop(
@@ -3475,6 +3493,10 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
      */
     fun newConversation() {
         if (isRunning.value) return
+        // W-102：新会话 = 新任务。上一个任务开过的组（ui / shell / memory…）如果继续
+        // 挂着，就是「不需要它的时候它还在每轮付钱」——正是这轮改造要消掉的东西。
+        // 粘性作用域到此为止：跨会话从 file 组重新开始，要用再开一次。
+        resetToolGroups()
         loadConversation(conversationStore.create())
     }
 
