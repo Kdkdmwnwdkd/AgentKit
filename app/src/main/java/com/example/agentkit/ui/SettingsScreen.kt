@@ -268,13 +268,18 @@ fun SettingsScreen(
             // 用户手动去开一个自己用不上的组，只会白付 token、还会占掉淘汰名额。
             val toolGroups by vm.toolGroupsUi.collectAsStateWithLifecycle()
             LaunchedEffect(Unit) { vm.refreshToolGroups() }
+            // 默认只列「现在开着的组」：15 个组全铺开要 900dp，会把下面所有设置推走，
+            // 而用户来这一行的目的通常是「关掉某个正在花钱的组」，不是浏览全部。
+            // 收起状态下误关一个组也能靠「展开」找回来，不用等模型重新开。
+            var showAllGroups by remember { mutableStateOf(false) }
             val activeRows = toolGroups.filter { it.active }
-            val inactiveCount = toolGroups.count { !it.active }
+            val inactiveRows = toolGroups.filter { !it.active }
+            val shownRows = if (showAllGroups) toolGroups else activeRows
             AkGroup(
                 title = "工具范围",
-                description = "每轮请求都会带上这些工具的定义。用不到的关掉，就别再为它付 token"
+                description = "每轮请求都会带上这些工具的定义。用不到的取消勾选，就别再为它付 token"
             ) {
-                activeRows.forEachIndexed { i, row ->
+                shownRows.forEachIndexed { i, row ->
                     if (i > 0) AkDivider(Modifier.padding(start = AgentSpacing.space4))
                     AkListItem(
                         icon = null,
@@ -282,30 +287,42 @@ fun SettingsScreen(
                         description = row.note + " · " + row.count + " 个工具",
                         trailing = {
                             if (row.pinned) {
+                                // 常驻组不给勾选框：勾选框的语义是「能取消」，而它们在
+                                // 下一轮 plan 里会被强制加回来，取消是假动作。
                                 Text(
                                     text = "常驻",
                                     style = MaterialTheme.typography.labelMedium,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             } else {
-                                AkTextButton(
-                                    text = "关闭",
-                                    onClick = { vm.dropToolGroup(row.name) },
-                                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                // 勾着 = 已启用。取消勾选 = 关掉，比一个「关闭」按钮更直白：
+                                // 用户在设置页看到勾选框，默认心智就是「不勾即不要」。
+                                AkCheckbox(
+                                    checked = row.active,
+                                    onCheckedChange = { want ->
+                                        if (want) vm.enableToolGroup(row.name) else vm.dropToolGroup(row.name)
+                                    }
                                 )
                             }
                         }
                     )
                 }
-                if (inactiveCount > 0) {
-                    if (activeRows.isNotEmpty()) AkDivider(Modifier.padding(start = AgentSpacing.space4))
-                    // 不把 12 个「关着的组」逐行列出来：设置页要能一屏扫完，
-                    // 而「未启用」这个状态没有信息量——真正需要它的是模型，不是用户。
+                if (inactiveRows.isNotEmpty()) {
+                    if (shownRows.isNotEmpty()) AkDivider(Modifier.padding(start = AgentSpacing.space4))
                     AkListItem(
                         icon = null,
-                        title = "另有 $inactiveCount 个组未启用",
-                        description = "模型需要时会自己开（`__use_tools`）；关掉的组不会自己回来",
-                        enabled = false
+                        title = if (showAllGroups) "收起未启用的 ${inactiveRows.size} 个组"
+                        else "另有 ${inactiveRows.size} 个组未启用",
+                        description = if (showAllGroups) null
+                        else "模型需要时会自己开（`__use_tools`）；展开可以手动开回来",
+                        onClick = { showAllGroups = !showAllGroups },
+                        trailing = {
+                            Text(
+                                text = if (showAllGroups) "收起" else "展开",
+                                style = MaterialTheme.typography.labelLarge,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
                     )
                 }
             }

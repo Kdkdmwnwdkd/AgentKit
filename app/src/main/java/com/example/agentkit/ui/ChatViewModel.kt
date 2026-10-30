@@ -2108,6 +2108,29 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     }
 
     /**
+     * 手动开一个工具组（用户误关了想恢复）。
+     *
+     * 和 [dropToolGroup] 共用同一把锁；顺序语义与 `__use_tools` 一致：先 remove 再 add，
+     * 让这组排到 LRU 末尾（刚用过）。超上限时 [KernelExposure.enforceCap] 会挤掉最久未用的，
+     * UI 下一帧就会看到那一行变灰——不需要额外弹窗解释。
+     */
+    fun enableToolGroup(group: String) {
+        val (ok, remaining) = synchronized(activeToolGroups) {
+            if (!activeToolGroups.remove(group)) {
+                // 已经在里面：不改变 LRU 顺序，避免「点一下已勾选的框」把它顶成最新
+                false to activeToolGroups.joinToString(",")
+            } else {
+                activeToolGroups.add(group)
+                KernelExposure.enforceCap(activeToolGroups)
+                true to activeToolGroups.joinToString(",")
+            }
+        }
+        if (!ok) return
+        AgentLogger.i("ToolExposure", "用户手动开启工具组 $group，当前=$remaining")
+        persistToolGroups()
+    }
+
+    /**
      * 清空粘性激活（新会话时调用）。
      *
      * 不清会怎样：用户做完一次屏幕任务，新开一个纯聊天会话，ui 组的 9 个工具依旧
