@@ -14,6 +14,7 @@ import com.example.agentkit.core.llm.LlmHttp
 import com.example.agentkit.core.llm.ChatStreamEvent
 import com.example.agentkit.core.llm.parseOpenAiReasoning
 import com.example.agentkit.core.llm.parseOpenAiUsage
+import com.example.agentkit.core.llm.logPromptCacheUsage
 import java.io.IOException
 import com.example.agentkit.core.llm.arrOrNull
 import com.example.agentkit.core.llm.objOrNull
@@ -427,6 +428,8 @@ class OpenAIClient(
                 return@channelFlow
             }
         }
+        // OpenAI 兼容端点的自动缓存命中量在 prompt_tokens 内部（子集），分母直接用 prompt
+        logPromptCacheUsage(usage, cachedInPrompt = true)
         send(
             ChatStreamEvent.Completed(
                 AssistantMessage(

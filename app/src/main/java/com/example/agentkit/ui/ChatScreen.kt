@@ -915,12 +915,18 @@ private fun UsageSummaryBar(usage: TokenUsage) {
             .padding(horizontal = AgentSpacing.space5, vertical = 2.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
+        // 缓存命中单独列：它是唯一能证明「省钱这件事真的生效了」的字段。
+        // 服务端不报（本地模型 / 部分中转）时不显示，不占位也不显示 0。
+        val cached = usage.cachedPromptTokens
+        val cacheHint = if (cached > 0) " · 缓存 ${formatTokens(cached)}" else ""
         Text(
             text = "本会话 tokens · ↑ ${formatTokens(usage.promptTokens)} · " +
-                "↓ ${formatTokens(usage.completionTokens)} · 共 ${formatTokens(usage.totalTokens)}",
+                "↓ ${formatTokens(usage.completionTokens)} · 共 ${formatTokens(usage.totalTokens)}" +
+                cacheHint,
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 1,
+            // 加了缓存段后单行放不下：宁可换行，也不要 Ellipsis 把「共多少」截掉
+            maxLines = 2,
             overflow = TextOverflow.Ellipsis
         )
     }

@@ -108,7 +108,23 @@ data class AssistantMessage(
  */
 data class TokenUsage(
     val promptTokens: Long = 0,
-    val completionTokens: Long = 0
+    val completionTokens: Long = 0,
+    /**
+     * 输入侧里**命中提示缓存**的部分。
+     *
+     * 它**不参与** [totalTokens]：`promptTokens` 已经是服务端的计费口径，
+     * 缓存部分在里面按各家的折扣价算，再叠一次就会把账算重。
+     * 单独留这一项只为回答「这轮到底省没省」，不用于计费。
+     *
+     * 三家口径不同，换算命中率前必须先分清（这是踩过的坑）：
+     *  - OpenAI / DeepSeek / Gemini：命中量**包含**在 `promptTokens` 里，是子集，
+     *    命中率 = cached / prompt；
+     *  - Claude：`cache_read_input_tokens` **不在** `input_tokens` 里，三段输入是
+     *    `input + cache_read + cache_creation`，分母得自己加，否则会算出 >100%。
+     *
+     * 默认 0 且排在最后：历史会话从库里读回时没有这一列，构造调用方无需改动。
+     */
+    val cachedPromptTokens: Long = 0
 ) {
     val totalTokens: Long get() = promptTokens + completionTokens
 
@@ -120,7 +136,8 @@ data class TokenUsage(
         fun sum(usages: List<TokenUsage?>): TokenUsage =
             TokenUsage(
                 promptTokens = usages.sumOf { it?.promptTokens ?: 0L },
-                completionTokens = usages.sumOf { it?.completionTokens ?: 0L }
+                completionTokens = usages.sumOf { it?.completionTokens ?: 0L },
+                cachedPromptTokens = usages.sumOf { it?.cachedPromptTokens ?: 0L }
             )
     }
 }

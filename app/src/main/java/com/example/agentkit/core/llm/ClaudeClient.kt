@@ -67,47 +67,54 @@ class ClaudeClient(
         // 图片统一成 data URI（URL 需要先下载，Claude 不认外链）
         val resolved = ImageUris.resolveImages(http, messages)
 
-        val requestJson = buildJsonObject {
-            put("model", effectiveModel())
-            put("max_tokens", maxTokens)
-            val systemText = resolved.filterIsInstance<SystemMessage>()
-                .joinToString("\n\n") { it.content }
-            if (systemText.isNotBlank()) put("system", systemText)
-            put("messages", messagesJson(resolved))
-            if (tools.isNotEmpty()) {
-                putJsonArray("tools") { tools.forEach { add(toApiTool(it)) } }
-                put("tool_choice", buildJsonObject { put("type", "auto") })
-            }
-            config.reasoningLevel?.let { put("temperature", 0.7) }
-        }
-
-        val request = buildRequest(requestJson)
         AgentLogger.llmRequest(effectiveModel(), messages.size, tools.size)
         AgentLogger.apiTrace(endpointUrl(), effectiveModel(), effectiveApiKey())
         val startedAt = System.currentTimeMillis()
 
+        val text = executeChat(bodyJson(resolved, tools, stream = false, cache = promptCacheEnabled()))
+            ?: run {
+                // 400 且错误里点到缓存字段 → 中转/兼容端点不认，摘掉标记重发一次。
+                // 宁可贵一点，不能因为「想省钱」把整条通道打死。
+                disablePromptCache("首次请求被拒")
+                executeChat(bodyJson(resolved, tools, stream = false, cache = false))
+            }
+            ?: throw IllegalStateException("Claude 请求在降级后仍未返回内容")
+
+        AgentLogger.llmResponse(
+            effectiveModel(), true,
+            System.currentTimeMillis() - startedAt,
+            "响应长度=${text.length}"
+        )
+        val message = parseResponse(text)
+        // Claude 的 input_tokens 不含命中部分，分母要自己加（见 TokenUsage.cachedPromptTokens）
+        logPromptCacheUsage(message.usage, cachedInPrompt = false)
+        message
+    }
+
+    /**
+     * 发一次请求并读回原文；成功返回 body，失败抛 [LlmHttpException]。
+     *
+     * 缓存降级需要「先拿到失败原因再决定要不要重发」，所以错误处理从 [chat] 里拆出来：
+     * 400 且响应体提到 cache_control / system 时返回 null 交给调用方重试，
+     * 其余错误照旧快速失败（401/403 重试多少次都没用）。
+     */
+    private fun executeChat(body: JsonObject): String? {
         val resp = try {
-            http.newCall(request).execute()
+            http.newCall(buildRequest(body)).execute()
         } catch (e: IOException) {
             AgentLogger.e("LLM", "Claude 网络请求异常", e)
             throw e
         }
-
-        resp.use { r ->
+        return resp.use { r ->
             if (!r.isSuccessful) {
                 // body.string() 只能读一次：先存变量；401 响应体可能回显 key，必须先脱敏
                 val errBody = runCatching { r.body?.string() }.getOrDefault("") ?: ""
                 val safeBody = AgentLogger.sanitize(errBody)
                 AgentLogger.httpError(r.code, safeBody)
+                if (r.code == 400 && looksLikeCacheRejection(safeBody)) return@use null
                 throw LlmHttpException(r.code, "Claude 请求失败 ${r.code}：${safeBody.take(300)}", safeBody)
             }
-            val text = r.body!!.string()
-            AgentLogger.llmResponse(
-                effectiveModel(), true,
-                System.currentTimeMillis() - startedAt,
-                "响应长度=${text.length}"
-            )
-            parseResponse(text)
+            r.body!!.string()
         }
     }
 
@@ -117,18 +124,7 @@ class ClaudeClient(
     ): Flow<String> = flow {
         // 流式分支的图片解析需要挂起，放到 flow 的 collect 协程里做
         val resolved = ImageUris.resolveImages(http, messages)
-        val requestJson = buildJsonObject {
-            put("model", effectiveModel())
-            put("max_tokens", maxTokens)
-            put("stream", true)
-            val systemText = resolved.filterIsInstance<SystemMessage>()
-                .joinToString("\n\n") { it.content }
-            if (systemText.isNotBlank()) put("system", systemText)
-            put("messages", messagesJson(resolved))
-            if (tools.isNotEmpty()) {
-                putJsonArray("tools") { tools.forEach { add(toApiTool(it)) } }
-            }
-        }
+        val requestJson = bodyJson(resolved, tools, stream = true, cache = promptCacheEnabled())
         val request = buildRequest(requestJson)
         AgentLogger.apiTrace(endpointUrl(), effectiveModel(), effectiveApiKey())
         http.newCall(request).execute().use { resp ->
@@ -393,6 +389,96 @@ class ClaudeClient(
         }
     }
 
+    /**
+     * 请求体。**整条链路里最省钱的一处**，改动前先读这段。
+     *
+     * 每轮请求都要重发「系统提示 + 工具定义」这两块——它们在多轮里逐字节不变，
+     * 却按全价计费。Anthropic 的 prompt caching 能把命中部分打到 0.1x，
+     * 但它**不会自动生效**：必须在内容块上显式打 `cache_control` 断点。
+     *
+     * 断点位置（官方上限 4 个，这里用 ≤2 个）：
+     *  - 最后一个 tool：缓存整个 tools 块；
+     *  - system 最后一块：缓存 tools + system（前缀顺序是 tools → system → messages）。
+     *
+     * 所以 system 从「一个字符串」变成「一个 text 块数组」——这是官方等价写法，
+     * 也是打断点的唯一方式。中转站不认时由 [executeChat] 摘掉标记重发。
+     */
+    private fun bodyJson(
+        resolved: List<ChatMessage>,
+        tools: List<AgentTool>,
+        stream: Boolean,
+        cache: Boolean
+    ): JsonObject = buildJsonObject {
+        put("model", effectiveModel())
+        put("max_tokens", maxTokens)
+        if (stream) put("stream", true)
+
+        val systemText = resolved.filterIsInstance<SystemMessage>()
+            .joinToString("\n\n") { it.content }
+        if (systemText.isNotBlank()) {
+            if (cache) {
+                putJsonArray("system") {
+                    addJsonObject {
+                        put("type", "text")
+                        put("text", systemText)
+                        putJsonObject(CACHE_CONTROL) { put("type", "ephemeral") }
+                    }
+                }
+            } else {
+                put("system", systemText)
+            }
+        }
+
+        put("messages", messagesJson(resolved))
+
+        if (tools.isNotEmpty()) {
+            putJsonArray("tools") {
+                tools.forEachIndexed { i, t ->
+                    val obj = toApiTool(t)
+                    // 断点打在**最后一个**工具上：Anthropic 的语义是「缓存到此处为止」，
+                    // 逐项打会白吃 4 个断点配额，还把缓存切成碎块，命中率反而下降。
+                    if (cache && i == tools.lastIndex) {
+                        add(
+                            JsonObject(
+                                obj + (CACHE_CONTROL to buildJsonObject { put("type", "ephemeral") })
+                            )
+                        )
+                    } else {
+                        add(obj)
+                    }
+                }
+            }
+            if (!stream) put("tool_choice", buildJsonObject { put("type", "auto") })
+        }
+        if (!stream) config.reasoningLevel?.let { put("temperature", 0.7) }
+    }
+
+    /** 本实例是否还愿意尝试提示缓存；被端点拒绝过一次就不再试，避免每轮白跑一趟 400。 */
+    @Volatile
+    private var promptCacheAllowed = true
+
+    private fun promptCacheEnabled(): Boolean = promptCacheAllowed
+
+    private fun disablePromptCache(reason: String) {
+        if (!promptCacheAllowed) return
+        promptCacheAllowed = false
+        AgentLogger.w(
+            "LLM",
+            "该端点不接受提示缓存标记（$reason），已降级为不缓存；输入费用恢复全价"
+        )
+    }
+
+    /**
+     * 400 响应体像不像「不认缓存标记」。
+     *
+     * 只在 400 上判：401/403/429 里偶尔也会出现这些词，但那种错误重发也没用，
+     * 按原错误抛出比「悄悄降级再失败」诚实得多。
+     */
+    private fun looksLikeCacheRejection(body: String): Boolean {
+        val b = body.lowercase()
+        return "cache_control" in b || "cache control" in b || "unexpected field" in b
+    }
+
     private fun toApiTool(tool: AgentTool): JsonObject = buildJsonObject {
         put("name", tool.name)
         put("description", tool.description)
@@ -417,5 +503,8 @@ class ClaudeClient(
 
         /** Anthropic API 版本头（官方要求，缺了会 400）。 */
         private const val API_VERSION = "2023-06-01"
+
+        /** 缓存断点字段名（出现两处，写成常量避免拼错——拼错不会报错，只是**悄悄不缓存**）。 */
+        private const val CACHE_CONTROL = "cache_control"
     }
 }
