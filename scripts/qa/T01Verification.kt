@@ -862,6 +862,28 @@ private suspend fun testT01Update() {
         assertContains("memory usage prompt", (history[0] as SystemMessage).content, "memory_write")
     }
 
+    check("未启用记忆：系统提示不拼记忆引导（不白占上下文）") {
+        val fake = FakeLlm(listOf(AssistantMessage("done")))
+        val loop = RealAgentLoop(llmProvider = { fake }, registry = ToolRegistry(), providerRetry = 0)
+        val history = loop.send("hi")
+        val p = (history[0] as SystemMessage).content
+        assertTrue("无 memory_usage 段", !p.contains("<memory_usage>"))
+        assertTrue("无 memory_write 引导", !p.contains("memory_write"))
+    }
+
+    check("同一会话连续两轮：系统提示逐字节一致（KV 前缀可复用）") {
+        val fake = FakeLlm(listOf(AssistantMessage("一"), AssistantMessage("二")))
+        val loop = RealAgentLoop(
+            llmProvider = { fake },
+            registry = ToolRegistry().register(WeatherTool()),
+            providerRetry = 0
+        )
+        val p1 = (loop.send("第一轮")[0] as SystemMessage).content
+        val p2 = (loop.send("第二轮")[0] as SystemMessage).content
+        assertTrue("两轮提示逐字节一致（长度 ${p1.length} vs ${p2.length}）", p1 == p2)
+        assertTrue("提示非空", p1.isNotBlank())
+    }
+
     check("update(maxSteps=1)：下一轮即按新上限收尾") {
         val reg = ToolRegistry().register(WeatherTool())
         val fake = FakeLlm(

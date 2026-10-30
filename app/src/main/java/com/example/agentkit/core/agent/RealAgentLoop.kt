@@ -19,6 +19,10 @@ import com.example.agentkit.core.ToolRegistry
 import com.example.agentkit.core.ToolResult
 import com.example.agentkit.core.UserMessage
 import com.example.agentkit.core.llm.ChatStreamEvent
+import com.example.agentkit.core.kernel.Prompt
+import com.example.agentkit.core.kernel.PromptAssembler
+import com.example.agentkit.core.kernel.Section
+import com.example.agentkit.core.kernel.Stability
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.async
@@ -267,8 +271,9 @@ class RealAgentLoop(
         logExposure(exposure0)
         // 系统提示只拼一次：它承载「身份 + 规则 + 工具用法」，逐轮重拼会让本地推理的 KV 前缀
         // 每轮失效（这正是改造前每轮都慢一截的原因之一）。后启用的组靠工具 description 自解释。
+        // 拼装按变化频率分三段（见 buildSystemPrompt），记忆摘要压在最后一段。
         val messages = mutableListOf<ChatMessage>()
-        messages.add(SystemMessage(buildSystemPrompt(exposure0.visible)))
+        messages.add(SystemMessage(buildSystemPrompt(exposure0.visible).text))
         // W-46：历史对话插在系统提示之后、当前输入之前——多点追问（「它」「继续」「第二个方案」）
         // 才有所指。priorMessages 只用于**构造请求**，返回值不含它们（调用方按返回值落盘，
         // 若把历史一并返回会被重复写入会话）。裁剪统一交给 buildRequestMessages → ContextBudget。
@@ -816,19 +821,65 @@ class RealAgentLoop(
     }
 
     /**
-     * 把「本回合暴露的」工具自带 systemPrompt 片段拼进系统提示；启用记忆时再追加当前记忆摘要与使用引导。
+     * 系统提示分段拼装（[PromptAssembler]）：按「变化频率」排三段，而不是拼成一整块。
      *
-     * Phase 2 DoD④：以 [tools]（= [ToolExposure.tools]，本地小模型已裁剪）而非全量
-     * `registry.list()` 拼接——工具被裁掉后，其 systemPrompt 片段也一并消失，
-     * 避免出现「你可以调 ui_swipe」这类已经不给的提示（否则模型会调不存在的工具）。
+     * - **FROZEN**：身份与规则（[systemPrompt]），整个会话不变，排在最前；
+     * - **SESSION**：本回合工具面的用法说明，只随工具面变（`__use_tools` 激活新组时会变）；
+     * - **TURN**：记忆摘要与使用引导，随时可能变，必须压在最后。
+     *
+     * 这样端侧推理的 KV 前缀最坏也能复用「FROZEN + SESSION」这一段；段内顺序由数据
+     * 决定（工具按暴露顺序、段按固定 key），同内容两次组装逐字节一致。
+     *
+     * 记忆段只在**确实有摘要**时才拼：没有可读记忆还教一遍 memory_usage，等于白占
+     * 上下文，小模型的注意力会被这条用不上的指令分走。
+     *
+     * Phase 2 DoD④：以 [tools]（= 本回合工具面）而非全量 `registry.list()` 拼接——
+     * 工具被裁掉后，其 systemPrompt 片段也一并消失，避免出现「你可以调 ui_swipe」这类
+     * 已经不给的提示（否则模型会调不存在的工具）。
      */
-    private fun buildSystemPrompt(tools: List<AgentTool>): String {
+    private fun buildSystemPrompt(tools: List<AgentTool>): Prompt {
+        val sections = ArrayList<Section>(4)
+        if (systemPrompt.isNotBlank()) {
+            sections += Section("identity", systemPrompt, Stability.FROZEN)
+        }
         val hints = tools.mapNotNull { it.systemPrompt.takeIf { s -> s.isNotBlank() } }
-        var prompt = if (hints.isEmpty()) systemPrompt else "$systemPrompt\n\n" + hints.joinToString("\n\n")
-        val provider = memoryProvider ?: return prompt
-        val summary = runCatching { provider() }.getOrDefault("")
-        if (summary.isNotBlank()) prompt = "$prompt\n\n$summary"
-        return "$prompt\n\n$MEMORY_USAGE_PROMPT"
+        if (hints.isNotEmpty()) {
+            sections += Section("tools", hints.joinToString("\n\n"), Stability.SESSION)
+        }
+        val summary = memoryProvider?.let { runCatching { it() }.getOrDefault("") }.orEmpty().trim()
+        if (summary.isNotEmpty()) {
+            sections += Section("memory", summary, Stability.TURN)
+            sections += Section("memory-usage", MEMORY_USAGE_PROMPT, Stability.TURN)
+        }
+        val prompt = PromptAssembler.assemble(sections)
+        logPromptPrefix(prompt)
+        return prompt
+    }
+
+    /** 上一次组装出的稳定前缀指纹（跨回合，仅本实例）。 */
+    private var lastPromptSignature: String? = null
+
+    /**
+     * 前缀指纹变化时留一条证据：用户反馈「这一轮特别慢」时，看这里就能区分
+     * 「只是 TURN 段在变（正常）」还是「规则段被改了、整段前缀作废（要查）」。
+     */
+    private fun logPromptPrefix(p: Prompt) {
+        val prev = lastPromptSignature
+        lastPromptSignature = p.signature
+        when {
+            prev == null ->
+                AgentLogger.i(
+                    "Prompt",
+                    "提示组装：${p.chars} 字符，稳定前缀 ${p.signature}（FROZEN 段 ${p.frozenChars} 字符）"
+                )
+            prev != p.signature ->
+                AgentLogger.i(
+                    "Prompt",
+                    "提示前缀已变（$prev → ${p.signature}）：KV 复用被截断在 FROZEN 之后，" +
+                        "本轮变化段=${p.turnKeys.joinToString(",").ifEmpty { "无" }}"
+                )
+            else -> AgentLogger.d("Prompt", "提示前缀未变（${p.signature}），KV 可整段复用 ${p.chars} 字符")
+        }
     }
 
     /**
