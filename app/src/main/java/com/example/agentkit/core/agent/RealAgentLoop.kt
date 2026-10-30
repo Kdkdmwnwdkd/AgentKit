@@ -912,11 +912,14 @@ class RealAgentLoop(
             maxMessages = maxHistoryMessages
         )
         if (fitted.size != pruned.size || pruned.size != messages.size) {
+            // 折叠与单纯丢弃要能分开看：前者留了摘要，后者什么也没留。用户问「它怎么忘了
+            // 前面做过什么」时，先看这一行有没有「已折叠」。
+            val folded = fitted.any { it is UserMessage && it.content.startsWith(ContextBudget.FOLD_MARK) }
             AgentLogger.i(
                 "ContextBudget",
                 "请求视图：${messages.size} 条 / 估算 ${ContextBudget.totalTokens(messages)} tok" +
                     " → ${fitted.size} 条 / 估算 ${ContextBudget.totalTokens(fitted)} tok" +
-                    "（预算 $budget tok）"
+                    "（预算 $budget tok，${if (folded) "早期对话已折叠" else "早期对话已丢弃"}）"
             )
         }
         return fitted

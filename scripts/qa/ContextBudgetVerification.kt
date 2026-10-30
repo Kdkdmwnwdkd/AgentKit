@@ -220,6 +220,42 @@ fun main() {
         assertEquals("deterministic", a, b)
     }
 
+    println("\n== W10-D 折叠：丢掉的段换成一条摘要，而不是凭空消失 ==")
+
+    check("折叠：被丢的段换成一条用户消息（不新增系统消息）") {
+        val out = ContextBudget.fitToBudget(history, budgetTokens = 6_000)
+        val notes = out.filterIsInstance<UserMessage>().filter { it.content.contains("[早前对话已折叠]") }
+        assertTrue("exactly one note: ${notes.size}", notes.size == 1)
+        assertTrue("system count unchanged", out.count { it is SystemMessage } == 1)
+    }
+    check("折叠条是摘要不是搬运：长度受控，且带工具线索") {
+        val out = ContextBudget.fitToBudget(history, budgetTokens = 6_000)
+        val note = out.filterIsInstance<UserMessage>().first { it.content.contains("[早前对话已折叠]") }
+        assertTrue("short: ${note.content.length}", note.content.length <= 320)
+        assertTrue("mentions tool: ${note.content}", note.content.contains("ui_tree"))
+    }
+    check("折叠后仍守预算、锚点与配对不变量") {
+        val out = ContextBudget.fitToBudget(history, budgetTokens = 6_000)
+        assertTrue("within: ${ContextBudget.totalTokens(out)}", ContextBudget.totalTokens(out) <= 6_000)
+        assertTrue("anchor kept", out.any { it is UserMessage && it.content.startsWith("任务：") })
+        assertTrue("pairing", pairingIntact(out))
+    }
+    check("折叠可关：fold=false 回到纯丢弃（可回滚）") {
+        val out = ContextBudget.fitToBudget(history, budgetTokens = 6_000, fold = false)
+        assertTrue("no note", out.none { it is UserMessage && it.content.contains("[早前对话已折叠]") })
+        assertTrue("pairing", pairingIntact(out))
+    }
+    check("折叠确定性：同一输入两次逐字一致（不破坏请求视图可重复性）") {
+        val a = ContextBudget.fitToBudget(history, budgetTokens = 6_000)
+        val b = ContextBudget.fitToBudget(history, budgetTokens = 6_000)
+        assertEquals("deterministic", a, b)
+    }
+    check("剩余空间不足：不硬塞摘要，退回纯丢弃") {
+        // 预算刚好卡在丢一步之后的余量上：room < 60 token，摘要塞不下
+        val tight = ContextBudget.fitToBudget(history, budgetTokens = 9_900)
+        assertTrue("no note when no room", tight.none { it is UserMessage && it.content.contains("[早前对话已折叠]") })
+    }
+
     println("\n=== 汇总: $passed passed, ${failures.size} failed ===")
     if (failures.isNotEmpty()) {
         println("失败项：")

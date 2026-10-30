@@ -206,6 +206,23 @@ object ContextBudget {
      * 本实现是无状态请求视图，每轮从完整历史重算、天然无抖动，多丢的旧历史纯属浪费。
      * 需要预留余量的调用方可显式传更小的 targetTokens。
      *
+     * ## 折叠（[fold] = true，默认）
+     *
+     * 丢掉的段不是凭空消失，而是换成**一条用户消息**说明「早前发生了什么」：条数、步数、
+     * 最初的任务、用过的工具、头两条结果的首行。这是纯结构化摘要——不调模型、不加延迟、
+     * 结果确定（同样输入必得同样字节），因此不会破坏请求视图的可重复性。
+     *
+     * 为什么是「折叠」而不是「丢弃」：直接丢，模型会突然不知道自己为什么在做这件事，
+     * 然后重复调一遍已经做过的工具——那比多带 200 字符贵得多。
+     *
+     * 为什么用 [UserMessage] 而不是 [SystemMessage]：Claude / Gemini 会把**所有**
+     * SystemMessage 拼进顶层 system 字段，插在中间会让系统提示每轮变化，刚做好的
+     * KV 分段立刻作废（见 `core/kernel/Prompt.kt`）。用户消息只会出现在它该在的位置。
+     *
+     * 折叠条本身**不额外占预算**：先按原规则丢到 ≤ [targetTokens]，再用剩下的空间写摘要
+     * （至少 [MIN_FOLD_TOKENS]，至多 [MAX_FOLD_TOKENS]）。剩余空间不够就不折——宁可少信息，
+     * 不可为了塞摘要而多丢一步真实结果。
+     *
      * 永不丢弃：首条 SystemMessage、首条 UserMessage（任务锚点）、最后一段、最后一个
      * 含工具结果的步（防止「最终文本尾随」时把当前步整步丢掉）。
      * 若丢无可丢仍超预算，返回尽力而为的结果（调用方只能接受——比整轮失败好）。
@@ -216,7 +233,8 @@ object ContextBudget {
         messages: List<ChatMessage>,
         budgetTokens: Int = DEFAULT_BUDGET_TOKENS,
         targetTokens: Int = budgetTokens,
-        maxMessages: Int = Int.MAX_VALUE
+        maxMessages: Int = Int.MAX_VALUE,
+        fold: Boolean = true
     ): List<ChatMessage> {
         if (messages.isEmpty()) return messages
         var total = totalTokens(messages)
@@ -234,6 +252,9 @@ object ContextBudget {
         val lastStepIdx = segs.indexOfLast { s ->
             (s.start until s.end).any { messages[it] is ToolMessage }
         }
+        // 折叠条**不额外占预算**：先按原规则丢到 ≤ targetTokens，再用「剩下的空间」写摘要。
+        // 反过来做（先扣预留再丢）会让边界情况多丢一步——为了塞一条摘要而丢掉一步真实结果，
+        // 是拿贵的东西换便宜的东西。
         val dropped = BooleanArray(messages.size)
         var kept = messages.size
 
@@ -246,7 +267,66 @@ object ContextBudget {
             total -= (s.start until s.end).sumOf { messageTokens(messages[it]) }
         }
         if (kept == messages.size) return messages
-        return messages.filterIndexed { i, _ -> !dropped[i] }
+
+        // 剩余空间够写一句摘要才折，否则维持纯丢弃（少信息好过爆上下文）。
+        val room = targetTokens - total
+        val note = if (fold && room >= MIN_FOLD_TOKENS && kept + 1 <= maxMessages) {
+            buildFoldNote(messages.filterIndexed { i, _ -> dropped[i] }, room)
+        } else {
+            null
+        }
+        val usable = note?.takeIf { total + messageTokens(UserMessage(it)) <= targetTokens }
+
+        val out = ArrayList<ChatMessage>(kept + 1)
+        var placed = false
+        for (i in messages.indices) {
+            if (!dropped[i]) {
+                out.add(messages[i])
+            } else if (usable != null && !placed) {
+                out.add(UserMessage(usable))
+                placed = true
+            }
+        }
+        return out
+    }
+
+    /** 折叠条的固定开头（日志与 UI 据此识别「这条不是用户说的话」）。 */
+    const val FOLD_MARK: String = "[早前对话已折叠]"
+
+    /** 折叠条至少要这么多 token 才值得写（一句任务 + 两三个工具名）。 */
+    private const val MIN_FOLD_TOKENS: Int = 60
+
+    /** 折叠条最多占多少 token（防止大预算下摘要膨胀成第二份历史）。 */
+    private const val MAX_FOLD_TOKENS: Int = 300
+
+    /**
+     * 生成折叠说明（纯函数，确定性）。
+     *
+     * 只写「这段里发生了什么」：多少条、几步、用了哪些工具、头两条结果的第一行。
+     * **不写「最初的任务」**——任务锚点（首条用户消息）永远保留在折叠条前面，
+     * 重复一遍既浪费预算，又可能把用户后来的话误当成原始意图。
+     *
+     * 过程（哪一步点了哪个坐标）一律不留：那正是被折掉的部分，留着就白折了。
+     */
+    private fun buildFoldNote(source: List<ChatMessage>, reserveTokens: Int): String? {
+        if (source.isEmpty()) return null
+        val maxChars = (reserveTokens * 9 / 10).coerceIn(80, MAX_FOLD_TOKENS)
+        val toolResults = source.filterIsInstance<ToolMessage>()
+        val steps = source.count { it is AssistantMessage && it.toolCalls.isNotEmpty() }
+        val tools = toolResults.map { it.name }.distinct().take(6)
+        val outcomes = toolResults
+            .map { it.content.lineSequence().firstOrNull()?.trim().orEmpty().take(36) }
+            .filter { it.isNotEmpty() }
+            .take(2)
+
+        val sb = StringBuilder(maxChars + 32)
+        sb.append(FOLD_MARK).append(" ").append(source.size).append(" 条")
+        if (steps > 0) sb.append("、").append(steps).append(" 步工具调用")
+        if (tools.isNotEmpty()) sb.append("（").append(tools.joinToString("、")).append("）")
+        sb.append("。")
+        if (outcomes.isNotEmpty()) sb.append("关键结果：").append(outcomes.joinToString(" | "))
+        val text = sb.toString()
+        return if (text.length <= maxChars) text else text.take(maxChars)
     }
 
     // ---- 内部分段 ----------------------------------------------------------
