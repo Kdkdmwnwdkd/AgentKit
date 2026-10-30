@@ -6,8 +6,8 @@ package com.example.agentkit.tools
  * 动机（用户真机反馈「跨应用操控不行，打开快手没成」的源码级深挖结论）：
  * 名称解析此前完全依赖 `app_list` 的 launchable 候选匹配——小模型给错名
  * （「快手极速版」「B站」）即 NotFound/Ambiguous，多耗 1-2 轮；若同时踩
- * maxSteps 截断，多步跨应用任务提前失败。参照 Operit `StandardUITools.kt:61-252`
- * 的 `APP_PACKAGES` 字典思路（设计参考，非代码复制）：**内置一份「名称→包名」
+ * maxSteps 截断，多步跨应用任务提前失败。设计参照 Operit 的 `APP_PACKAGES` 字典思路
+ * （净室实现，未复制代码）：**内置一份「名称→包名」
  * 事实数据表**，解析时优先查表，查不到再走候选匹配，最后按包名形态兜底直启。
  *
  * 设计约束（与仓库既有风格一致）：
@@ -147,7 +147,7 @@ internal object AppNameDictionary {
 /**
  * 判断 target 是否「形如包名」（**纯函数**，W-7 P0-1 包名兜底判据）。
  *
- * 规则（学 Operit `PhoneAgent.kt:1228-1242` 末尾 `?: trimmed` 的思路）：
+ * 规则（设计参照 Operit 的「包名形态兜底」做法，净室实现，未复制代码）：
  * 至少含一个 '.'、无空白、且每段都是合法标识符段（字母/数字/下划线，段首不为数字）。
  * 「快手」「打开微信」等自然语言不会误判；「com.smile.gifmaker」直接放行。
  *

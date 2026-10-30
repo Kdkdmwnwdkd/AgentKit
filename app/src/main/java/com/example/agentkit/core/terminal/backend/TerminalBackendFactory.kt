@@ -1,7 +1,7 @@
 package com.example.agentkit.core.terminal.backend
 
 /**
- * 终端后端工厂（T07，来源：zafiro B1 · libterm `createRuntimeManager`，净室重写）。
+ * 终端后端工厂（T07，设计参照：zafiro · libterm 的后端工厂形态，净室重写）。
  *
  * 职责：
  *  - **降级链** [getHighestAvailable]：proot → shizuku → 无线调试 → 本机 user

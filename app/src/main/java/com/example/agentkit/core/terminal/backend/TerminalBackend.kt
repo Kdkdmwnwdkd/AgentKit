@@ -3,7 +3,7 @@ package com.example.agentkit.core.terminal.backend
 import kotlinx.coroutines.flow.Flow
 
 /**
- * 终端后端统一接口（T07，来源：zafiro B1 · libterm `TerminalBackend`，净室重写）。
+ * 终端后端统一接口（T07，设计参照：zafiro · libterm 的后端接口划分，净室重写）。
  *
  * 契约 5 方法：`start` / `send` / `close` / `awaitExit` / `output: Flow`。
  * **上层（会话池 / shell 工具）只认本接口**，因此不存在「是容器还是本机」的分支——

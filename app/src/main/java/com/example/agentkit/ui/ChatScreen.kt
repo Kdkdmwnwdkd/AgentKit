@@ -1262,7 +1262,7 @@ private fun isErrorBubble(text: String): Boolean {
  * 规避 material-icons-extended 依赖（本模块只依赖核心图标集）。
  * 序号 1-based 展示（「2/3」比「1/2」更符合用户直觉）。
  *
- * 复制位次：放在「重新生成」**之前**（RikkaHub `ChatMessageActions.kt:99-105` 同序）——
+ * 复制位次：放在「重新生成」**之前**（与 RikkaHub 的写法同序，净室实现）——
  * 两者都是「作用于本条消息」的高频动作，复制比重新生成更常用且无副作用。
  */
 @Composable

@@ -1,7 +1,8 @@
 package com.example.agentkit.core
 
 /**
- * 工具结果统一契约（T02，来源：zafiro A3 / operit #1,#11 / aicode §3.2.4）。
+ * 工具结果统一契约（T02，设计参照：zafiro / operit / aicode 各自的「结果对象」形态，
+ * 净室实现，未复制代码）。
  *
  * 全仓所有工具（tools/ / automation/ / memory/ / skill）执行后一律返回本结构，
  * 失败时 [hint] 必填——告诉模型「下一步该调什么、怎么修」。模型越弱越依赖它。
