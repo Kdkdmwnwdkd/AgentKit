@@ -5,8 +5,11 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectDragGestures
-import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculateCentroid
+import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
@@ -36,6 +39,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Bookmark
+import androidx.compose.material.icons.outlined.CenterFocusStrong
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Edit
@@ -50,25 +54,33 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.snapshots.SnapshotStateMap
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.drawText
@@ -76,17 +88,18 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.agentkit.memory.MemoryForceLayout
 import com.example.agentkit.memory.MemoryItem
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.isActive
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
-import kotlin.math.PI
-import kotlin.math.cos
-import kotlin.math.min
 import kotlin.math.sin
 
 /**
@@ -106,9 +119,10 @@ fun MemoryScreen(vm: ChatViewModel) {
     var showAdd by remember { mutableStateOf(false) }
     var showClear by remember { mutableStateOf(false) }
     var selectedId by rememberSaveable { mutableStateOf<String?>(null) }
-    // hotfix31：列表/图谱双模式，默认列表——真机反馈「图谱只学到布局的样子，
-    // 人家可以点开可以看」：列表好扫好点（图谱节点 Canvas 命中难），图谱留着做视觉。
-    var listMode by rememberSaveable { mutableStateOf(true) }
+    // hotfix31 曾把默认模式改成列表（理由：图谱只是照着星图摆了个形状，节点难戳）。
+    // W-68 把星图换成真力导向之后，这个理由不成立了：节点按重要度放大、可按可拖、
+    // 选中后邻居高亮，图谱成了**信息量更大**的那一面，于是默认回到图谱，列表留作扫读。
+    var listMode by rememberSaveable { mutableStateOf(false) }
     // hotfix31：编辑对话框三件套草稿（content 多行 + salience 滑杆 + tags 逗号分隔）
     var showEdit by remember { mutableStateOf(false) }
     var editContent by rememberSaveable { mutableStateOf("") }
@@ -156,14 +170,14 @@ fun MemoryScreen(vm: ChatViewModel) {
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     AkChip(
-                        text = "列表",
-                        selected = listMode,
-                        onClick = { listMode = true }
-                    )
-                    AkChip(
                         text = "图谱",
                         selected = !listMode,
                         onClick = { listMode = false }
+                    )
+                    AkChip(
+                        text = "列表",
+                        selected = listMode,
+                        onClick = { listMode = true }
                     )
                     if (query.isNotBlank()) {
                         AkChip(
@@ -201,11 +215,12 @@ fun MemoryScreen(vm: ChatViewModel) {
                             .fillMaxWidth()
                     )
                 } else {
-                    // —— 图谱模式：核心视觉，吃满剩余空间；节点可拖动（hotfix31）——
+                    // —— 星图模式：核心视觉，吃满剩余空间；可拖可缩放（W-68 力导向）——
                     MemoryGraph(
                         memories = memories,
                         selectedId = selected?.id,
                         onSelect = { id -> selectedId = if (selectedId == id) null else id },
+                        onClearSelection = { selectedId = null },
                         modifier = Modifier
                             .weight(1f)
                             .fillMaxWidth()
@@ -402,35 +417,76 @@ private fun MemorySearchRow(
 }
 
 /**
- * 记忆图谱（用户反馈记忆库平庸，参照 OPeritAI 改图谱式）。
+ * 记忆星图（W-68 重做）。
  *
- * 确定性布局（禁随机）：按 createdAt 排序放进 1~3 个同心环（内环 ≤6、中环 ≤12、其余外环），
- * 环上角度均匀分布、相邻环错开半个步长；画布按 min(宽,高) 适配，右侧预留标签位。
- * 连边：两条记忆共享任一 tag 即连线；全局无 tag 时同环相邻相连（保证始终是网状不是散点），
- * 有 tag 但仍悬空的孤点也接回同环邻居。节点着色按 kind（fact/preference/event/note →
- * primary/secondary/tertiary/outline，中性区分不用 error 红）。
- * 点选：命中最近节点（阈值 = 节点半径 + 8dp）→ 选中放大 1.3 倍 + 外圈高亮 + 连边加粗。
+ * 上一版是「同心环 + 角度均匀分布」的静态图：形状是照着星图摆的，但节点被钉死在环上，
+ * 拖动只是把点搬走，边不会跟着收放。用户原话：「就像星图一样能动啊，之前他弄的就很拉」。
+ *
+ * 这一版换成真正的力导向：斥力 + 弹簧 + 向心，位置每帧由 [MemoryForceLayout] 算出。
+ * 松开手指后整张网自己找平衡；点选 / 拖动 / 数据变化都会重新加温一小段再收敛。
+ *
+ * 三个手感细节：
+ *  1. 拖一个点，邻居被弹簧拽着跟过来 —— 单点搬走不叫「能动」，网跟着变形才是；
+ *  2. 双指缩放 + 平移（以双指中心为锚），单指拖节点，点空白取消选中；
+ *  3. 静止后立刻掐掉帧循环（[MemoryForceLayout.isSettled]），不为「看起来活着」白烧 60fps。
+ *
+ * 视觉：节点半径按重要度（salience 1..10 → 8..18dp），颜色按 kind；选中时邻居高亮、
+ * 其余淡出；节点 ≤14 个时全部显示标签，多了只显示选中与邻居，避免糊成一团。
  */
 @Composable
 private fun MemoryGraph(
     memories: List<MemoryItem>,
     selectedId: String?,
     onSelect: (String) -> Unit,
+    onClearSelection: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val nodes = remember(memories) { buildMemoryNodes(memories) }
-    val edges = remember(nodes) { buildMemoryEdges(nodes) }
-    // hotfix31：节点拖拽偏移（会话内有效，不落盘）——真机反馈「人家可以移动」。
-    // key = 记忆 id；松手后位置停在新处（视图态），重启图谱回到力导布局。
-    val dragOffsets: SnapshotStateMap<String, Offset> = remember { mutableStateMapOf() }
-    var draggingId by remember { mutableStateOf<String?>(null) }
+    val density = LocalDensity.current
+    val nodes = remember(memories) { buildStarNodes(memories) }
+    val edges = remember(nodes) { buildStarEdges(nodes) }
+    val radiusPx = remember(nodes, density) {
+        FloatArray(nodes.size) { with(density) { starRadius(nodes[it].salience).toPx() } }
+    }
+    val layout = remember(nodes) { MemoryForceLayout(nodes.size, edges, radiusPx) }
+
+    var viewport by remember { mutableStateOf(IntSize.Zero) }
+    var zoom by remember { mutableFloatStateOf(1f) }
+    var pan by remember { mutableStateOf(Offset.Zero) }
+    // 每帧 +1 触发 Canvas 重绘：位置在 FloatArray 里（不是 snapshot state），
+    // 一帧写几十次 state 会让重组队列吃不消，用一个计数器当「帧号」最省
+    var frame by remember { mutableIntStateOf(0) }
+    // 叫醒信号：静止后帧循环挂起，触摸 / 归位时 +1 把它唤醒
+    var wake by remember { mutableIntStateOf(0) }
+    var draggingIndex by remember { mutableIntStateOf(-1) }
+
+    val selectedIndex = remember(nodes, selectedId) {
+        nodes.indexOfFirst { it.id == selectedId }
+    }
+    // 选中项的直接邻居：高亮它们、淡化其余，比「整张图一样亮」有用得多
+    val neighbors = remember(edges, selectedIndex) {
+        if (selectedIndex < 0) emptySet() else buildSet {
+            var e = 0
+            while (e < edges.size) {
+                val a = edges[e]
+                val b = edges[e + 1]
+                e += 2
+                if (a == selectedIndex) add(b)
+                if (b == selectedIndex) add(a)
+            }
+        }
+    }
+
+    // 手势里要读最新值，但 pointerInput 的 key 不能挂 zoom/pan（每帧变化会重启手势识别）
+    val zoomNow by rememberUpdatedState(zoom)
+    val panNow by rememberUpdatedState(pan)
+    val nodesNow by rememberUpdatedState(nodes)
+
     val measurer = rememberTextMeasurer()
     val labelStyle = MaterialTheme.typography.labelSmall
-    val outlineColor = MaterialTheme.colorScheme.outline
-    val onSurfaceVariant = MaterialTheme.colorScheme.onSurfaceVariant
-    val primaryColor = MaterialTheme.colorScheme.primary
     val scheme = MaterialTheme.colorScheme
-    // kind → 节点色：Canvas 绘制 lambda 不可组合，语义色在此一次性读出
+    val outlineColor = scheme.outline
+    val primaryColor = scheme.primary
+    val onSurfaceVariant = scheme.onSurfaceVariant
     val kindColor: (String) -> Color = { kind ->
         when (kind.lowercase()) {
             "fact" -> scheme.primary
@@ -440,127 +496,257 @@ private fun MemoryGraph(
         }
     }
 
-    Canvas(
-        modifier = modifier
-            .semantics {
-                contentDescription = "记忆图谱，共 ${nodes.size} 条；点按节点在下方查看详情，拖动可移动节点"
+    // —— 帧循环：跑物理；收敛后挂起等唤醒 ——
+    LaunchedEffect(layout, viewport) {
+        if (viewport == IntSize.Zero) return@LaunchedEffect
+        var seen = wake
+        while (isActive) {
+            if (layout.isSettled) {
+                // 静止：真正挂起（不是空转），直到有人把 wake 加一
+                snapshotFlow { wake }.first { it != seen }
+                seen = wake
+                continue
             }
-            .pointerInput(nodes) {
-                // PointerInputScope 自带 Density：dp → px 与绘制侧同源，命中阈值才不会漂移
-                val ringRadiusPx = floatArrayOf(14.dp.toPx(), 12.dp.toPx(), 10.dp.toPx())
-                val geo = memoryGeometry(
-                    size.width.toFloat(),
-                    size.height.toFloat(),
-                    ringRadiusPx[0] + 6.dp.toPx()
-                )
-                detectTapGestures { tap ->
-                    var bestId: String? = null
-                    var bestDist = Float.MAX_VALUE
-                    nodes.forEach { node ->
-                        val center = memoryNodeCenter(node.ring, node.angle, geo) +
-                            (dragOffsets[node.id] ?: Offset.Zero)
-                        val dist = (center - tap).getDistance()
-                        // 阈值 = 节点半径 + 8dp；选中态放大了 1.3 倍，一并算进取值范围
-                        if (dist <= ringRadiusPx[node.ring] * 1.3f + 8.dp.toPx() && dist < bestDist) {
-                            bestId = node.id
-                            bestDist = dist
-                        }
+            withFrameNanos {
+                layout.step()
+                frame++
+            }
+        }
+    }
+
+    Box(modifier) {
+        Canvas(
+            Modifier
+                .fillMaxSize()
+                .onSizeChanged {
+                    if (it != viewport) {
+                        viewport = it
+                        layout.setViewport(it.width.toFloat(), it.height.toFloat())
+                        wake++
                     }
-                    bestId?.let(onSelect)
                 }
-            }
-            // hotfix31：拖动手势独立挂第二个 pointerInput——tap 不消费拖动事件，
-            // 两个检测器各管各的（点击选中 / 拖动移位），不互相抢
-            .pointerInput(nodes) {
-                val ringRadiusPx = floatArrayOf(14.dp.toPx(), 12.dp.toPx(), 10.dp.toPx())
-                val geo = memoryGeometry(
-                    size.width.toFloat(),
-                    size.height.toFloat(),
-                    ringRadiusPx[0] + 6.dp.toPx()
-                )
-                detectDragGestures(
-                    onDragStart = { start ->
-                        // 抓取起始点最近的节点（同 tap 命中规则：半径 + 8dp）
-                        var bestId: String? = null
-                        var bestDist = Float.MAX_VALUE
-                        nodes.forEach { node ->
-                            val center = memoryNodeCenter(node.ring, node.angle, geo) +
-                                (dragOffsets[node.id] ?: Offset.Zero)
-                            val dist = (center - start).getDistance()
-                            if (dist <= ringRadiusPx[node.ring] * 1.3f + 8.dp.toPx() && dist < bestDist) {
-                                bestId = node.id
-                                bestDist = dist
+                .semantics {
+                    contentDescription =
+                        "记忆星图，共 ${nodes.size} 条；单指拖动节点、双指缩放，点节点看详情"
+                }
+                .pointerInput(layout, viewport) {
+                    if (viewport == IntSize.Zero) return@pointerInput
+                    val hitSlop = 16.dp.toPx()
+                    awaitEachGesture {
+                        val down = awaitFirstDown(requireUnconsumed = false)
+                        val worldX = (down.position.x - panNow.x) / zoomNow
+                        val worldY = (down.position.y - panNow.y) / zoomNow
+                        val hit = layout.nearest(worldX, worldY, hitSlop / zoomNow)
+                        var lastPos = down.position
+                        var moved = 0f
+                        if (hit >= 0) {
+                            // 按在节点上：立刻选中（拖谁选谁），后续拖动直接改这个点的位置
+                            draggingIndex = hit
+                            onSelect(nodesNow[hit].id)
+                            layout.reheat()
+                            wake++
+                        }
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            val change = event.changes.firstOrNull { it.id == down.id }
+                            if (change == null || !change.pressed) break
+                            val delta = change.position - lastPos
+                            lastPos = change.position
+                            moved += delta.getDistance()
+
+                            if (draggingIndex >= 0) {
+                                // 拖节点：手指跟到哪，点就到哪（世界坐标 = 屏幕位移 / 缩放）
+                                val idx = draggingIndex
+                                layout.dragTo(
+                                    idx,
+                                    layout.x[idx] + delta.x / zoomNow,
+                                    layout.y[idx] + delta.y / zoomNow
+                                )
+                                wake++
+                                change.consume()
+                            } else {
+                                // 空白处：双指缩放（以双指中心为锚）+ 单指/双指平移
+                                val zoomChange = event.calculateZoom()
+                                if (zoomChange != 1f) {
+                                    val centroid = event.calculateCentroid(useCurrent = false)
+                                    val newZoom = (zoomNow * zoomChange).coerceIn(MIN_GRAPH_ZOOM, MAX_GRAPH_ZOOM)
+                                    val worldFocusX = (centroid.x - panNow.x) / zoomNow
+                                    val worldFocusY = (centroid.y - panNow.y) / zoomNow
+                                    zoom = newZoom
+                                    pan = Offset(
+                                        centroid.x - worldFocusX * newZoom,
+                                        centroid.y - worldFocusY * newZoom
+                                    )
+                                }
+                                val move = event.calculatePan()
+                                if (move != Offset.Zero) pan += move
+                                change.consume()
                             }
                         }
-                        draggingId = bestId
-                    },
-                    onDragEnd = { draggingId = null },
-                    onDragCancel = { draggingId = null },
-                    onDrag = { _, dragAmount ->
-                        draggingId?.let { id ->
-                            dragOffsets[id] = (dragOffsets[id] ?: Offset.Zero) + dragAmount
+                        // 抬手：没怎么动 = 轻点；点空白清选中，拖过节点则让它继续找平衡
+                        if (moved < viewConfiguration.touchSlop) {
+                            if (hit < 0) onClearSelection()
+                        } else if (draggingIndex >= 0) {
+                            layout.reheat(0.55f)
                         }
+                        draggingIndex = -1
+                        wake++
                     }
-                )
-            }
-    ) {
-        val ringRadiusPx = floatArrayOf(14.dp.toPx(), 12.dp.toPx(), 10.dp.toPx())
-        val geo = memoryGeometry(
-            size.width.toFloat(),
-            size.height.toFloat(),
-            ringRadiusPx[0] + 6.dp.toPx()
-        )
-        fun centerOf(node: MemNode) =
-            // hotfix31：节点位置 = 力导布局基准 + 拖拽偏移（拖动过的节点停在新处，
-            // 会话内保持；edges 与标签都经此取位，边线随拖动实时重画）
-            memoryNodeCenter(node.ring, node.angle, geo) + (dragOffsets[node.id] ?: Offset.Zero)
+                }
+        ) {
+            // 读 frame：让 Canvas 每帧失效重绘（位置不在 state 里，靠它驱动）
+            @Suppress("UNUSED_VARIABLE")
+            val tick = frame
+            val z = zoom
+            val p = pan
+            val sel = selectedIndex
+            val hasSel = sel >= 0
+            // 选中态的光晕呼吸：只在还在动的时候算，静止后固定，不空转
+            val pulse = if (layout.isSettled) 0.35f else (sin(frame * 0.09f) * 0.5f + 0.5f)
 
-        // —— 连边：outline 低透明度；命中选中/拖动的节点边高亮加粗 ——
-        edges.forEach { (from, to) ->
-            val hot = from.id == selectedId || to.id == selectedId ||
-                from.id == draggingId || to.id == draggingId
-            drawLine(
-                color = if (hot) primaryColor.copy(alpha = 0.85f)
-                else outlineColor.copy(alpha = 0.28f),
-                start = centerOf(from),
-                end = centerOf(to),
-                strokeWidth = if (hot) 2.5.dp.toPx() else 1.dp.toPx()
-            )
-        }
-
-        // —— 节点 + 标签（标签截断到 8 字符放节点右侧）——
-        nodes.forEach { node ->
-            val center = centerOf(node)
-            val selected = node.id == selectedId
-            // hotfix31：拖动中的节点与选中态同倍放大（1.3x），手指下有个明确目标
-            val dragging = node.id == draggingId
-            val baseRadius = ringRadiusPx[node.ring]
-            val radius = if (selected || dragging) baseRadius * 1.3f else baseRadius
-            drawCircle(color = kindColor(node.item.kind), radius = radius, center = center)
-            drawCircle(
-                color = outlineColor.copy(alpha = 0.5f),
-                radius = radius,
-                center = center,
-                style = Stroke(width = 1.dp.toPx())
-            )
-            if (selected) {
+            // —— 背景星点：视差 0.3，不随缩放，给「夜空」一点纵深 ——
+            var s = 0
+            while (s < MEMORY_STARFIELD.size) {
+                val nx = MEMORY_STARFIELD[s]
+                val ny = MEMORY_STARFIELD[s + 1]
+                val r = MEMORY_STARFIELD[s + 2]
                 drawCircle(
-                    color = primaryColor,
-                    radius = radius + 4.dp.toPx(),
-                    center = center,
-                    style = Stroke(width = 2.dp.toPx())
+                    color = onSurfaceVariant.copy(alpha = 0.10f),
+                    radius = r,
+                    center = Offset(nx * size.width, ny * size.height) + p * 0.3f
                 )
+                s += 3
             }
-            val layout = measurer.measure(node.label, labelStyle)
-            drawText(
-                textLayoutResult = layout,
-                color = if (selected) primaryColor else onSurfaceVariant,
-                topLeft = Offset(
-                    x = center.x + radius + 4.dp.toPx(),
-                    y = center.y - layout.size.height / 2f
-                )
+
+            withTransform({
+                translate(p.x, p.y)
+                scale(z, z, pivot = Offset.Zero)
+            }) {
+                // —— 连边 ——
+                var e = 0
+                while (e < edges.size) {
+                    val a = edges[e]
+                    val b = edges[e + 1]
+                    e += 2
+                    val hot = hasSel && (a == sel || b == sel)
+                    val dim = hasSel && !hot
+                    drawLine(
+                        color = if (hot) primaryColor.copy(alpha = 0.85f)
+                        else outlineColor.copy(alpha = if (dim) 0.05f else 0.22f),
+                        start = Offset(layout.x[a], layout.y[a]),
+                        end = Offset(layout.x[b], layout.y[b]),
+                        strokeWidth = (if (hot) 1.8.dp.toPx() else 1.dp.toPx()) / z
+                    )
+                }
+
+                // —— 节点 ——
+                for (idx in nodes.indices) {
+                    val node = nodes[idx]
+                    val center = Offset(layout.x[idx], layout.y[idx])
+                    val isSel = idx == sel
+                    val isNeighbor = hasSel && idx in neighbors
+                    val alpha = when {
+                        !hasSel -> 1f
+                        isSel -> 1f
+                        isNeighbor -> 0.95f
+                        else -> 0.26f
+                    }
+                    val r = radiusPx[idx] * when {
+                        isSel -> 1.35f
+                        idx == draggingIndex -> 1.25f
+                        else -> 1f
+                    }
+                    if (isSel) {
+                        // 选中光晕：外扩一圈低透明度，随呼吸微变
+                        drawCircle(
+                            color = primaryColor.copy(alpha = 0.10f + 0.10f * pulse),
+                            radius = r + 9.dp.toPx(),
+                            center = center
+                        )
+                    }
+                    drawCircle(
+                        color = kindColor(node.kind).copy(alpha = alpha),
+                        radius = r,
+                        center = center
+                    )
+                    drawCircle(
+                        color = outlineColor.copy(alpha = 0.45f * alpha),
+                        radius = r,
+                        center = center,
+                        style = Stroke(width = 1.dp.toPx() / z)
+                    )
+                }
+
+                // —— 标签：单独一遍画，带避让 ——
+                //
+                // 上一版是「画完节点顺手画字」，22 条记忆直接叠成一团黑。
+                // 这里按优先级（选中 → 邻居 → 其余）逐个尝试：与已放置的标签重叠就跳过，
+                // 宁可少显示几个字，也不让文字糊住图。标签朝外（右半边写左侧），
+                // 从中心向外发散，进一步减少碰撞。
+                val order = nodes.indices.sortedByDescending { idx ->
+                    when {
+                        idx == sel -> 2
+                        hasSel && idx in neighbors -> 1
+                        else -> 0
+                    }
+                }
+                val placed = ArrayList<Rect>(nodes.size)
+                for (idx in order) {
+                    val node = nodes[idx]
+                    val isSel = idx == sel
+                    val isNeighbor = hasSel && idx in neighbors
+                    if (hasSel && !isSel && !isNeighbor) continue
+                    if (!hasSel && nodes.size > 14) continue
+                    val cx = layout.x[idx]
+                    val cy = layout.y[idx]
+                    val rr = radiusPx[idx] * if (isSel) 1.35f else 1f
+                    val text = measurer.measure(node.label, labelStyle)
+                    val tw = text.size.width.toFloat()
+                    val th = text.size.height.toFloat()
+                    val onRight = cx < size.width / 2f
+                    val left = if (onRight) cx + rr + 5.dp.toPx() else cx - rr - 5.dp.toPx() - tw
+                    val top = cy - th / 2f
+                    val rect = Rect(left, top, left + tw, top + th)
+                    if (placed.any { it.overlaps(rect) }) continue
+                    placed += rect
+                    drawText(
+                        textLayoutResult = text,
+                        color = if (isSel) primaryColor
+                        else onSurfaceVariant.copy(alpha = 0.55f + 0.4f * (if (hasSel) 0.95f else 1f)),
+                        topLeft = Offset(left, top)
+                    )
+                }
+            }
+        }
+
+        // —— 右上角：归位（重置缩放平移 + 重新布局）——
+        Column(
+            Modifier
+                .align(Alignment.TopEnd)
+                .padding(AgentSpacing.space3)
+        ) {
+            AkCircleIconButton(
+                icon = Icons.Outlined.CenterFocusStrong,
+                description = "归位：重置缩放并重新布局",
+                iconSize = 20.dp,
+                onClick = {
+                    zoom = 1f
+                    pan = Offset.Zero
+                    layout.reset()
+                    wake++
+                }
             )
         }
+
+        // —— 左下角操作提示：第一次看星图的人不知道该干嘛 ——
+        Text(
+            text = "拖动节点 · 双指缩放 · 点空白取消",
+            style = MaterialTheme.typography.labelSmall,
+            color = onSurfaceVariant.copy(alpha = 0.55f),
+            modifier = Modifier
+                .align(Alignment.BottomStart)
+                .padding(start = AgentSpacing.space5, bottom = AgentSpacing.space2)
+        )
     }
 }
 
@@ -923,125 +1109,117 @@ private fun MemoryFab(
     }
 }
 
-/** 图谱节点：确定性布局产物（禁随机——同一份记忆每次画在同一位置）。 */
-private data class MemNode(
+/**
+ * 星图节点：只保留渲染与连边需要的东西，位置交给 [MemoryForceLayout]。
+ *
+ * 与旧版 MemNode 的区别：不再有 ring/angle —— 位置是模拟出来的，不是摆出来的。
+ */
+private data class StarNode(
     val id: String,
-    /** 环号：0 内环 / 1 中环 / 2 外环。 */
-    val ring: Int,
-    /** 弧度；-π/2 起（正上方），相邻环错开半个步长避免径向对齐。 */
-    val angle: Float,
-    /** 截断到 8 字符的右侧标签。 */
     val label: String,
-    val item: MemoryItem
+    val kind: String,
+    val tags: List<String>,
+    val salience: Int
 )
 
-/** 环容量：内环 ≤6、中环 ≤12、其余外环。 */
-private const val MEMORY_INNER_CAP = 6
-private const val MEMORY_MID_CAP = 12
+/** 节点半径：重要度 1..10 映射到 7..14dp（重要的记忆更显眼，但不至于糊成一片）。 */
+private fun starRadius(salience: Int): Dp =
+    (7f + (salience.coerceIn(1, 10) - 1) * 7f / 9f).dp
 
-/** 右侧预留标签宽度占比：外环右侧节点的 8 字符标签不越出画布。 */
-private const val MEMORY_LABEL_RESERVE = 0.16f
-
-/** 环半径占比（内 / 中 / 外）：外环贴适配圈，内环留白给标签呼吸。 */
-private val MEMORY_RING_FRACTIONS = floatArrayOf(0.36f, 0.66f, 0.94f)
-
-/** 图谱几何：圆心与最大环半径（画布按 min(宽,高) 适配，右侧预留标签位）。 */
-private data class MemoryGeometry(val cx: Float, val cy: Float, val maxR: Float)
-
-private fun memoryGeometry(
-    canvasW: Float,
-    canvasH: Float,
-    insetPx: Float
-): MemoryGeometry {
-    val usableW = canvasW * (1f - MEMORY_LABEL_RESERVE)
-    return MemoryGeometry(
-        cx = usableW / 2f,
-        cy = canvasH / 2f,
-        // 外环节点 + 选中外圈都不能出画布：最大半径先扣掉内缩量
-        maxR = (min(usableW, canvasH) / 2f - insetPx).coerceAtLeast(0f)
-    )
-}
-
-private fun memoryNodeCenter(ring: Int, angle: Float, geo: MemoryGeometry): Offset {
-    val r = geo.maxR * MEMORY_RING_FRACTIONS[ring]
-    return Offset(geo.cx + r * cos(angle), geo.cy + r * sin(angle))
-}
-
-/**
- * 排序建环：按 createdAt 老的在内环（最稳定），新的外扩；
- * 环上角度均匀分布，相邻环错开半个步长（内外环节点不在同一径向上，连边不重叠）。
- */
-private fun buildMemoryNodes(memories: List<MemoryItem>): List<MemNode> {
-    val sorted = memories.sortedBy { it.createdAt }
-    val innerCount = minOf(sorted.size, MEMORY_INNER_CAP)
-    val midCount = minOf(maxOf(sorted.size - MEMORY_INNER_CAP, 0), MEMORY_MID_CAP)
-    val outerCount = maxOf(sorted.size - MEMORY_INNER_CAP - MEMORY_MID_CAP, 0)
-    return sorted.mapIndexed { index, item ->
-        val ring = when {
-            index < innerCount -> 0
-            index < innerCount + midCount -> 1
-            else -> 2
-        }
-        val ringStart = when (ring) {
-            0 -> 0
-            1 -> MEMORY_INNER_CAP
-            else -> MEMORY_INNER_CAP + MEMORY_MID_CAP
-        }
-        val ringCount = when (ring) {
-            0 -> innerCount
-            1 -> midCount
-            else -> outerCount
-        }
-        val step = (2.0 * PI / ringCount).toFloat()
-        val angle = (-PI / 2f).toFloat() + (index - ringStart) * step + ring * step / 2f
+/** 标签截断：超过 10 字符加省略号（星图里标签是提示不是正文）。 */
+private fun buildStarNodes(memories: List<MemoryItem>): List<StarNode> =
+    memories.map { item ->
         val text = item.content.trim().replace("\n", " ")
-        MemNode(
+        StarNode(
             id = item.id,
-            ring = ring,
-            angle = angle,
-            label = if (text.length > 8) text.take(8) + "…" else text,
-            item = item
+            label = if (text.length > 10) text.take(10) + "…" else text,
+            kind = item.kind,
+            tags = item.tags,
+            salience = item.salience
         )
     }
-}
 
 /**
- * 连边：优先「共享任一 tag」；全局一个 tag 都没有时同环相邻相连（保证始终是网状不是散点）；
- * 有 tag 但仍悬空的孤点也接回同环邻居——图谱不允许出现散点。
+ * 连边规则（按优先级，去重、限度）：
+ *  1. 共享任一 tag 就连 —— 这是「记忆之间真实的关系」；
+ *  2. 一条边都没有的节点，连到同类（kind）里最早的一个 —— 不让孤立条目飘成散沙；
+ *  3. 同类只有它自己，接到 0 号 —— 至少保证整张图是连通的星图，不是随机点云。
+ *
+ * 限度 6：50 条记忆如果 tag 高度重合，全连会产生上千条边，糊成一团黑。
+ * 宁可少连几条，也要看得清结构。
  */
-private fun buildMemoryEdges(nodes: List<MemNode>): List<Pair<MemNode, MemNode>> {
-    val edges = mutableListOf<Pair<MemNode, MemNode>>()
-    val anyTag = nodes.any { it.item.tags.isNotEmpty() }
-    if (anyTag) {
-        for (i in nodes.indices) {
-            val tagsI = nodes[i].item.tags.toSet()
-            for (j in i + 1 until nodes.size) {
-                if (nodes[j].item.tags.any { it in tagsI }) edges += nodes[i] to nodes[j]
-            }
-        }
-    } else {
-        nodes.groupBy { it.ring }.values.forEach { ringNodes ->
-            for (i in ringNodes.indices) edges += ringNodes[i] to ringNodes[(i + 1) % ringNodes.size]
-        }
-        return edges
+private fun buildStarEdges(nodes: List<StarNode>): IntArray {
+    if (nodes.size < 2) return IntArray(0)
+    val out = ArrayList<Int>(nodes.size * 3)
+    val degree = IntArray(nodes.size)
+
+    fun link(a: Int, b: Int) {
+        if (a == b) return
+        if (degree[a] >= MAX_STAR_DEGREE || degree[b] >= MAX_STAR_DEGREE) return
+        out += a
+        out += b
+        degree[a]++
+        degree[b]++
     }
-    // 兜底：悬空孤点接回同环邻居（去重，避免两节点环互连出重复边）
-    val linked = edges.flatMap { listOf(it.first.id, it.second.id) }.toSet()
-    nodes.groupBy { it.ring }.values.forEach { ringNodes ->
-        if (ringNodes.size <= 1) return@forEach
-        ringNodes.forEachIndexed { i, node ->
-            if (node.id !in linked) {
-                val next = ringNodes[(i + 1) % ringNodes.size]
-                val exists = edges.any {
-                    (it.first.id == node.id && it.second.id == next.id) ||
-                        (it.first.id == next.id && it.second.id == node.id)
-                }
-                if (!exists) edges += node to next
-            }
+
+    // 1. 共享 tag
+    for (i in nodes.indices) {
+        val tags = nodes[i].tags.toSet()
+        if (tags.isEmpty()) continue
+        for (j in i + 1 until nodes.size) {
+            if (nodes[j].tags.any { it in tags }) link(i, j)
         }
     }
-    return edges
+
+    // 2. 孤立节点 → 同 kind 的第一个
+    val byKind = HashMap<String, Int>()
+    nodes.forEachIndexed { index, node ->
+        if (degree[index] == 0) byKind.getOrPut(node.kind) { index }
+    }
+    nodes.forEachIndexed { index, node ->
+        if (degree[index] == 0) {
+            val anchor = byKind[node.kind]
+            if (anchor != null && anchor != index) link(index, anchor!!)
+        }
+    }
+
+    // 3. 仍然孤立 → 接到 0 号，保证连通
+    nodes.indices.forEach { index ->
+        if (degree[index] == 0 && index != 0) link(index, 0)
+    }
+
+    return out.toIntArray()
 }
+
+/** 每个节点最多连 6 条边（限度，防止 tag 高度重合时连成毛球）。 */
+private const val MAX_STAR_DEGREE = 6
+
+/** 星图缩放的上下限：太小点不着，太大只剩几个点。 */
+private const val MIN_GRAPH_ZOOM = 0.55f
+private const val MAX_GRAPH_ZOOM = 2.6f
+
+/**
+ * 背景星点（归一化坐标 + 半径，三个一组）。
+ *
+ * 用固定种子的 LCG 生成，不用 Random：同一台机器每次进页面星点位置一致，
+ * 否则「星星在跳」会像渲染 bug。
+ */
+private val MEMORY_STARFIELD: FloatArray = run {
+    var state = 0x2F6E_2B1DL
+    val out = FloatArray(STARFIELD_COUNT * 3)
+    for (i in 0 until STARFIELD_COUNT) {
+        fun next(): Float {
+            state = state * 6364136223846793005L + 1442695040888963407L
+            return ((state ushr 33) and 0xFFFF).toFloat() / 0xFFFF
+        }
+        out[i * 3] = next()
+        out[i * 3 + 1] = next()
+        out[i * 3 + 2] = 0.5f + next() * 1.4f
+    }
+    out
+}
+
+private const val STARFIELD_COUNT = 46
 
 /** 记忆 kind（英文枚举）→ 中文展示名（规范 §4.1 纯中文；未知值原样透传，不吞数据）。 */
 private fun kindLabel(kind: String): String = when (kind.lowercase()) {

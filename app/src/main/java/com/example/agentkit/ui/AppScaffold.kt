@@ -769,8 +769,6 @@ private fun DrawerContent(
     var deleteConvId by remember { mutableStateOf<String?>(null) }
     // hotfix30：删除在途会话的 Toast 反馈（VM 静默拒绝，UI 补一句人话）
     val context = LocalContext.current
-    // 功能五（P1-3）：会话搜索关键词（纯本地状态，不落盘——搜索是一次性动作）
-    var convQuery by remember { mutableStateOf("") }
 
     // 设置入口固定在底部，不随「最近对话」条数下移。
     //
@@ -817,36 +815,16 @@ private fun DrawerContent(
             }
 
             // 功能三：最近对话组（录屏反馈「人家都有聊天记录对话记录，你这都没有」）。
-            // 最多 8 条 + 相对时间；点选切换（运行中由 VM 守卫拒绝），长按出管理菜单
+            //
+            // 这里**故意不放搜索框**（W-68 删掉了功能五留下的那个 AkTextField）：
+            // 抽屉一有输入框，点一下键盘就弹起来，抽屉被 IME 压到只剩 400 多 px，
+            // 固定在底部的「设置」就贴在键盘上沿——用户原话「感觉怪怪的」。
+            // 他想找的是**内容**不是标题，而内容检索在记忆库（那边自带搜索）；
+            // 标题筛选的收益撑不起这个副作用，于是整块拿掉，抽屉永远不会弹键盘。
             if (conversations.isNotEmpty()) {
                 Spacer(Modifier.height(AgentSpacing.space5))
                 DrawerGroupTitle("最近对话")
-                // 功能五（P1-3）：会话搜索——会话一多，靠滚动找太慢
-                // （对标 RikkaHub HistoryPage 的搜索；置顶项在无关键词时自然排在列表最前）
-                AkTextField(
-                    value = convQuery,
-                    onValueChange = { convQuery = it },
-                    label = "搜索对话",
-                    modifier = Modifier.padding(horizontal = AgentSpacing.space2),
-                    placeholder = "输入标题关键词…"
-                )
-                Spacer(Modifier.height(AgentSpacing.space2))
-                // 有关键词：在**全部**会话里过滤（不受 8 条上限限制）；
-                // 无关键词：维持「最近 8 条」的紧凑列表（抽屉不是全量列表页）
-                val visibleConvs = if (convQuery.isBlank()) {
-                    conversations.take(MAX_RECENT_CONVERSATIONS)
-                } else {
-                    conversations.filter { it.title.contains(convQuery.trim(), ignoreCase = true) }
-                }
-                if (visibleConvs.isEmpty()) {
-                    Text(
-                        text = "没有匹配的对话",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(horizontal = AgentSpacing.space4, vertical = AgentSpacing.space2)
-                    )
-                }
-                visibleConvs.forEach { conv ->
+                conversations.take(MAX_RECENT_CONVERSATIONS).forEach { conv ->
                     DrawerConversationRow(
                         conversation = conv,
                         isActive = conv.id == activeConversationId,
