@@ -170,6 +170,14 @@ private val PrimaryGroup = listOf(
 private val BottomGroup = listOf(AppDest.SETTINGS)
 
 /**
+ * 抽屉底部固定栏的高度：分隔线 1dp + 抽屉项 52dp + 末尾留白 12dp。
+ *
+ * 滚动内容末尾要按它让位（底栏是叠在滚动内容上层的），所以两边必须同源；
+ * 分散写两个魔数，早晚会出现「改了一边，最后一项被压住半个」。
+ */
+private val DrawerBottomBarHeight = 65.dp
+
+/**
  * 功能一：返回栈上限（录屏反馈「别人按返回的返回到上一个地方，你这个是直接退出」）。
  * 超过上限丢最旧——最近的导航历史才有参考价值，也防无限增长。
  */
@@ -764,90 +772,129 @@ private fun DrawerContent(
     // 功能五（P1-3）：会话搜索关键词（纯本地状态，不落盘——搜索是一次性动作）
     var convQuery by remember { mutableStateOf("") }
 
-    Column(
+    // 设置入口固定在底部，不随「最近对话」条数下移。
+    //
+    // 之前整列一起 verticalScroll，于是设置排在会话列表之后跟着走：对话一多，
+    // 最后一项被顶到导航栏底下（小屏 720x1280 上 bounds 直接是 0，点不到）。
+    // 改成「底层：整块滚动内容 + 顶层：贴底固定栏」，滚动区仍是 fillMaxSize + verticalScroll，
+    // 与改造前的测量路径一致。
+    //
+    // 不走「Column 分两段 + weight(1f)」：最初那么写过，结果是滚动区整块空白、
+    // 只剩底栏一项挂在半空。真正的原因不在 weight，而在 DrawerItem 里的 Row 用了
+    // fillMaxSize()——底栏一旦有了确定高度，它就被撑到满屏（见 DrawerItem 处的注释）。
+    // 换成叠加后，底栏高度只由自己的内容决定，不再受兄弟节点影响。
+    Box(
         Modifier
             .fillMaxSize()
             .statusBarsPadding()
-            .navigationBarsPadding()
-            // 内容高 <740dp 的老旧小屏允许抽屉内部滚动：不加折叠、不加「查看更多」（§6.5.2）
-            .verticalScroll(rememberPersistentScrollState())
     ) {
-        DrawerHeader(
-            serviceConnected = serviceConnected,
-            pendingGrants = pendingGrants,
-            onReadyClick = { onSelect(AppDest.PERMISSIONS) }
-        )
-        Spacer(Modifier.height(AgentSpacing.space5))
-
-        DrawerGroupTitle("主要")
-        PrimaryGroup.forEach { item ->
-            DrawerItem(
-                dest = item,
-                isSelected = dest == item,
-                talkBack = item.label,
-                onClick = { onSelect(item) },
-                modifier = if (item == PrimaryGroup.first() && firstItemFocus != null)
-                    Modifier.focusRequester(firstItemFocus) else Modifier
+        Column(
+            Modifier
+                .fillMaxSize()
+                // 导航栏高度先扣掉，滚动区才不会伸到导航栏底下：
+                // 底栏自己也有 navigationBarsPadding，两者相加才是整块高度
+                .navigationBarsPadding()
+                // 内容高 <740dp 的老旧小屏允许抽屉内部滚动：不加折叠、不加「查看更多」（§6.5.2）
+                .verticalScroll(rememberPersistentScrollState())
+        ) {
+            DrawerHeader(
+                serviceConnected = serviceConnected,
+                pendingGrants = pendingGrants,
+                onReadyClick = { onSelect(AppDest.PERMISSIONS) }
             )
-        }
-
-        // 功能三：最近对话组（录屏反馈「人家都有聊天记录对话记录，你这都没有」）。
-        // 最多 8 条 + 相对时间；点选切换（运行中由 VM 守卫拒绝），长按出管理菜单
-        if (conversations.isNotEmpty()) {
             Spacer(Modifier.height(AgentSpacing.space5))
-            DrawerGroupTitle("最近对话")
-            // 功能五（P1-3）：会话搜索——会话一多，靠滚动找太慢
-            // （对标 RikkaHub HistoryPage 的搜索；置顶项在无关键词时自然排在列表最前）
-            AkTextField(
-                value = convQuery,
-                onValueChange = { convQuery = it },
-                label = "搜索对话",
-                modifier = Modifier.padding(horizontal = AgentSpacing.space2),
-                placeholder = "输入标题关键词…"
-            )
-            Spacer(Modifier.height(AgentSpacing.space2))
-            // 有关键词：在**全部**会话里过滤（不受 8 条上限限制）；
-            // 无关键词：维持「最近 8 条」的紧凑列表（抽屉不是全量列表页）
-            val visibleConvs = if (convQuery.isBlank()) {
-                conversations.take(MAX_RECENT_CONVERSATIONS)
-            } else {
-                conversations.filter { it.title.contains(convQuery.trim(), ignoreCase = true) }
-            }
-            if (visibleConvs.isEmpty()) {
-                Text(
-                    text = "没有匹配的对话",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(horizontal = AgentSpacing.space4, vertical = AgentSpacing.space2)
+
+            DrawerGroupTitle("主要")
+            PrimaryGroup.forEach { item ->
+                DrawerItem(
+                    dest = item,
+                    isSelected = dest == item,
+                    talkBack = item.label,
+                    onClick = { onSelect(item) },
+                    modifier = if (item == PrimaryGroup.first() && firstItemFocus != null)
+                        Modifier.focusRequester(firstItemFocus) else Modifier
                 )
             }
-            visibleConvs.forEach { conv ->
-                DrawerConversationRow(
-                    conversation = conv,
-                    isActive = conv.id == activeConversationId,
-                    isGenerating = conv.id == generatingConvId,
-                    onClick = { onSelectConversation(conv.id) },
-                    onLongClick = { menuConvId = conv.id }
+
+            // 功能三：最近对话组（录屏反馈「人家都有聊天记录对话记录，你这都没有」）。
+            // 最多 8 条 + 相对时间；点选切换（运行中由 VM 守卫拒绝），长按出管理菜单
+            if (conversations.isNotEmpty()) {
+                Spacer(Modifier.height(AgentSpacing.space5))
+                DrawerGroupTitle("最近对话")
+                // 功能五（P1-3）：会话搜索——会话一多，靠滚动找太慢
+                // （对标 RikkaHub HistoryPage 的搜索；置顶项在无关键词时自然排在列表最前）
+                AkTextField(
+                    value = convQuery,
+                    onValueChange = { convQuery = it },
+                    label = "搜索对话",
+                    modifier = Modifier.padding(horizontal = AgentSpacing.space2),
+                    placeholder = "输入标题关键词…"
+                )
+                Spacer(Modifier.height(AgentSpacing.space2))
+                // 有关键词：在**全部**会话里过滤（不受 8 条上限限制）；
+                // 无关键词：维持「最近 8 条」的紧凑列表（抽屉不是全量列表页）
+                val visibleConvs = if (convQuery.isBlank()) {
+                    conversations.take(MAX_RECENT_CONVERSATIONS)
+                } else {
+                    conversations.filter { it.title.contains(convQuery.trim(), ignoreCase = true) }
+                }
+                if (visibleConvs.isEmpty()) {
+                    Text(
+                        text = "没有匹配的对话",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = AgentSpacing.space4, vertical = AgentSpacing.space2)
+                    )
+                }
+                visibleConvs.forEach { conv ->
+                    DrawerConversationRow(
+                        conversation = conv,
+                        isActive = conv.id == activeConversationId,
+                        isGenerating = conv.id == generatingConvId,
+                        onClick = { onSelectConversation(conv.id) },
+                        onLongClick = { menuConvId = conv.id }
+                    )
+                }
+                AkListItem(
+                    icon = Icons.Outlined.Add,
+                    title = "新对话",
+                    onClick = onNewConversation
                 )
             }
-            AkListItem(
-                icon = Icons.Outlined.Add,
-                title = "新对话",
-                onClick = onNewConversation
-            )
+
+            // 滚动区末尾的呼吸间距（原先这段在「设置」上方，设置已移出，留给自己）
+            Spacer(Modifier.height(AgentSpacing.space4))
+            // 再让出固定底栏的高度：底栏盖在滚动内容之上，不让位的话
+            // 最后一项（「新对话」）永远压在底栏底下，滚不出来。
+            Spacer(Modifier.height(DrawerBottomBarHeight))
         }
 
-        // 底部位：与上方间距 20dp，不加分隔线、不配分组标题（§6.5.2）
-        Spacer(Modifier.height(AgentSpacing.space5))
-        BottomGroup.forEach { item ->
-            DrawerItem(
-                dest = item,
-                isSelected = dest == item,
-                talkBack = item.label,
-                onClick = { onSelect(item) }
-            )
+        // 固定底栏：设置常驻此处，不随对话数量下移。
+        //
+        // navigationBarsPadding 从外层挪到这里，而不是继续留在最外层：
+        // 留在外层会让整块（含滚动区）一起被抬起，滚动区白白少一截；
+        // 只给底栏加，等于把导航栏高度当作底栏的内边距吃掉，滚动区可以一直用到分界线。
+        Column(
+            Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                // 必须不透明：滚动内容是叠在它下面的，透明底会把「新对话」透出来
+                .background(LocalAkColors.surface1)
+                .navigationBarsPadding()
+        ) {
+            // 分隔线是必需的：滚动内容在它上面被裁切，没有这条线，
+            // 用户会把「被截断的半个对话项」当成渲染错误。
+            AkDivider(Modifier.padding(horizontal = AgentSpacing.space4))
+            BottomGroup.forEach { item ->
+                DrawerItem(
+                    dest = item,
+                    isSelected = dest == item,
+                    talkBack = item.label,
+                    onClick = { onSelect(item) }
+                )
+            }
+            Spacer(Modifier.height(AgentSpacing.space3))
         }
-        Spacer(Modifier.height(AgentSpacing.space3))
     }
 
     // —— 功能三：长按菜单 / 重命名 / 删除确认（Dialog 独立窗口，浮于 scrim 之上）——
@@ -1323,7 +1370,12 @@ private fun DrawerItem(
         )
         Row(
             modifier = Modifier
-                .fillMaxSize()
+                // 原为 fillMaxSize()。本意「铺满这一行」，但在**有限高**的父（如抽屉底部固定栏）里
+                // 它会填满父给的最大高度；而本 Box 只靠 heightIn(min = 52dp) 兜底、没有确定高度内容，
+                // 于是一个菜单项就能把整条底栏顶成全屏高（实测 590x1039，与整块抽屉等高）。
+                // 在 verticalScroll（无限高）里看不出来：无限约束下 fillMaxSize 退回最小高度，恰好 52dp。
+                // matchParentSize 取 Box 的最终尺寸，两种父约束下都是 52dp。
+                .matchParentSize()
                 .clip(RoundedCornerShape(14.dp))
                 .background(bg)
                 .clickable(
