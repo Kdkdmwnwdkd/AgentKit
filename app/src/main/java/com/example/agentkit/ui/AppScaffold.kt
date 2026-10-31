@@ -820,7 +820,10 @@ private fun DrawerContent(
                 pendingGrants = pendingGrants,
                 onReadyClick = { onSelect(AppDest.PERMISSIONS) }
             )
-            Spacer(Modifier.height(AgentSpacing.space5))
+            // 20dp → 16dp：720x1280 上抽屉可视高度只有 903px，头部 + 五个导航项
+            // 就吃掉 650px，会话列表一条都露不出来（只剩标题行下面的空白）。
+            // 三处 space5 各收 4dp，刚好能露出第一条会话。
+            Spacer(Modifier.height(AgentSpacing.space4))
 
             DrawerGroupTitle("主要")
             PrimaryGroup.forEach { item ->
@@ -842,7 +845,7 @@ private fun DrawerContent(
             // 他想找的是**内容**不是标题，而内容检索在记忆库（那边自带搜索）；
             // 标题筛选的收益撑不起这个副作用，于是整块拿掉，抽屉永远不会弹键盘。
             if (conversations.isNotEmpty()) {
-                Spacer(Modifier.height(AgentSpacing.space5))
+                Spacer(Modifier.height(AgentSpacing.space4))
                 DrawerGroupTitle("最近对话") {
                     // W-69：入口放在标题行右侧，跟着列表一起滚，但永远在「最近对话」
                     // 的第一屏里——不依赖滚到底。
@@ -1294,7 +1297,8 @@ private fun DrawerHeader(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(AgentSpacing.space5),
+            // 竖直内边距 20dp → 12dp：小屏上抽屉要先把会话列表露出来
+            .padding(horizontal = AgentSpacing.space5, vertical = AgentSpacing.space3),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Surface(
@@ -1341,7 +1345,7 @@ private fun DrawerGroupTitle(text: String, trailing: (@Composable () -> Unit)? =
     Row(
         Modifier
             .fillMaxWidth()
-            .padding(start = AgentSpacing.space5, end = AgentSpacing.space4, bottom = AgentSpacing.space2),
+            .padding(start = AgentSpacing.space5, end = AgentSpacing.space4, bottom = AgentSpacing.space1),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Text(
