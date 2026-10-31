@@ -275,10 +275,16 @@ private fun testConversationPinAndSearch() {
         assertContains("K4", fn, "conversationStore.setPinned(id, pinned)")
         assertContains("K4", fn, "refreshConversations()")
     }
-    check("K5 抽屉搜索：关键词过滤全部会话（不受最近 8 条上限）") {
-        assertContains("K5", scaffold, "var convQuery by remember")
-        assertContains("K5", scaffold, "conversations.filter { it.title.contains(convQuery.trim(), ignoreCase = true) }")
-        assertContains("K5", scaffold, "没有匹配的对话")
+    // W-68 把抽屉里的搜索框整块删掉：一有输入框，点一下键盘就弹起来，抽屉被 IME
+    // 压到 400 多 px，固定在底栏的「设置」贴到键盘上沿（用户原话「感觉怪怪的」）。
+    // 所以这条从「搜索能过滤」反过来守「抽屉里不许再出现输入框」，并把完整列表交给
+    // W-69 的独立页面。写成正向断言（含某段代码）守不住删除类改动——删掉的那一刻它就红了。
+    check("K5 抽屉不设输入框：搜索挪到独立页，抽屉永不弹键盘") {
+        assertTrue("K5 抽屉不得残留会话搜索输入框", !scaffold.contains("convQuery"))
+        assertTrue("K5 抽屉不得残留「搜索对话」标题", !scaffold.contains("搜索对话"))
+        assertContains("K5", scaffold, "故意不放搜索框")
+        assertContains("K5", scaffold, "onOpenAllConversations")
+        assertContains("K5", scaffold, "AppDest.CONVERSATIONS -> ConversationsScreen(")
     }
     check("K6 长按菜单有置顶项，文案随状态反转 + 说明后果") {
         assertContains("K6", scaffold, "onTogglePin = {")
@@ -1270,8 +1276,10 @@ private fun testMemoryInteraction() {
     val store = readSource("memory/MemoryStore.kt")
     val vm = readSource("ui/ChatViewModel.kt")
 
-    check("Z1 双模式：默认列表 + 模式 chip 行 + LazyColumn 列表") {
-        assertContains("Z1", screen, "var listMode by rememberSaveable { mutableStateOf(true) }")
+    // W-68 起默认回到图谱：上一版默认列表的前提是「图谱只是摆好的环、不能动」，
+    // 现在图谱是真力导向（可拖可缩、邻居会跟着走），视觉与交互都成立，没必要再藏起来。
+    check("Z1 双模式：默认图谱 + 模式 chip 行 + LazyColumn 列表") {
+        assertContains("Z1", screen, "var listMode by rememberSaveable { mutableStateOf(false) }")
         assertContains("Z1", screen, "text = \"列表\",")
         assertContains("Z1", screen, "text = \"图谱\",")
         assertContains("Z1", screen, "private fun MemoryList(")
@@ -1298,15 +1306,22 @@ private fun testMemoryInteraction() {
         assertContains("Z3", screen, "Toast.makeText(context, \"内容不能为空\", Toast.LENGTH_SHORT).show()")
         assertContains("Z3", screen, "vm.updateMemory(")
     }
-    check("Z4 图谱拖动：dragOffsets 偏移 + 动态 centerOf + 双 pointerInput") {
-        assertContains("Z4", screen, "val dragOffsets: SnapshotStateMap<String, Offset> = remember { mutableStateMapOf() }")
-        assertContains("Z4", screen, "var draggingId by remember { mutableStateOf<String?>(null) }")
-        assertContains("Z4", screen, "detectDragGestures(")
-        assertContains("Z4", screen, "onDrag = { _, dragAmount ->")
-        assertContains("Z4", screen, "dragOffsets[node.id] ?: Offset.Zero")
-        // 绘制与命中两侧都用动态位置（边随拖动实时重画）
-        val drawSide = screen.substringAfter("fun centerOf(node: MemNode) =")
-        assertContains("Z4", drawSide.substringBefore("\n        // —— 连边"), "dragOffsets[node.id] ?: Offset.Zero")
+    // W-68：拖动不再靠「给节点加一个偏移量」——那样边不知道点被搬走了，看着像贴纸。
+    // 现在是布局引擎持有坐标：拖动直接写世界坐标并重新加热，邻居被弹簧拉着动。
+    check("Z4 图谱拖动：布局引擎持有坐标（dragTo）+ 邻居被弹簧带动 + 收敛后停帧") {
+        assertContains("Z4", screen, "val layout = remember(nodes) { MemoryForceLayout(nodes.size, edges, radiusPx) }")
+        assertContains("Z4", screen, "var draggingIndex by remember { mutableIntStateOf(-1) }")
+        // 命中与拖动都问引擎要坐标，不再有第二份「偏移量」
+        assertContains("Z4", screen, "layout.nearest(")
+        assertContains("Z4", screen, "layout.dragTo(")
+        assertContains("Z4", screen, "layout.reheat()")
+        // 每帧推进布局，且**静止时挂起**：snapshotFlow 等 wake，不空转 60fps
+        assertContains("Z4", screen, "layout.step()")
+        assertContains("Z4", screen, "snapshotFlow { wake }.first { it != seen }")
+        // 双指缩放/平移：以双指中心为锚
+        assertContains("Z4", screen, "calculateZoom()")
+        assertContains("Z4", screen, "calculatePan()")
+        assertTrue("Z4 不得残留 dragOffsets（旧的手动偏移模型）", !screen.contains("dragOffsets"))
     }
     check("Z5 详情卡：编辑按钮 alongside 忘记（error 色只留给危险动作）") {
         assertContains("Z5", screen, "AkTextButton(text = \"编辑\", onClick = onEdit)")

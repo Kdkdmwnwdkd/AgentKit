@@ -5,7 +5,7 @@ Android 本地 AI Agent —— Kotlin / Jetpack Compose，原创实现，四层�
 一个跑在手机上的 AI 助手：多轮工具调用、三家大模型协议原生适配、屏幕理解与操控、
 终端与容器能力、跨会话长期记忆。**零第三方新增依赖**，视觉与交互按自研规范落地。
 
-> 规模：Kotlin 源码 **249 文件 / 65,313 行** ｜ 源码级 QA **68 个 harness** ｜ 版本号 = CI 构建号（`1.N`）
+> 规模：Kotlin 源码 **252 文件 / 66,621 行** ｜ 源码级 QA **69 个 harness** ｜ 版本号 = CI 构建号（`1.N`）
 >
 > 上面这两个数字会随提交漂移，别当契约看：`find app/src/main -name '*.kt' | wc -l` 自己数一遍更快。
 
@@ -47,7 +47,7 @@ bash scripts/qa/run-hotfix11-verification.sh
 # 工具面成本审计（真实工具描述，不是 harness 里的假数据）
 python3 scripts/tool-surface-audit.py --verbose
 
-# 全套回归（68 个 harness）
+# 全套回归（69 个 harness）
 for f in scripts/qa/run-*.sh; do bash "$f" || echo "FAIL $f"; done
 ```
 

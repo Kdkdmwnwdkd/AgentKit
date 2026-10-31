@@ -54,6 +54,7 @@ import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Extension
 import androidx.compose.material.icons.outlined.Schedule
+import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Palette
 import androidx.compose.material.icons.outlined.Settings
@@ -141,6 +142,8 @@ enum class AppDest(
     MEMORY("memory", "记忆库", "记忆库", Icons.Outlined.Storage),
     PROMPTS("prompts", "提示词库", "提示词库", Icons.Outlined.AutoAwesome),
     BOOKMARKS("bookmarks", "收藏", "收藏", Icons.Outlined.Bookmark),
+    /** W-69：全部对话——抽屉只留最近 8 条，旧的按标题找不到了，补一个完整列表页。 */
+    CONVERSATIONS("conversations", "全部对话", "全部对话", Icons.Outlined.History),
     SETTINGS("settings", "设置", "设置", Icons.Outlined.Settings),
     /** W-67：外观子页——壁纸与颜色原来在设置页占掉一整屏，拆成独立页。 */
     APPEARANCE("appearance", "壁纸与颜色", "壁纸与颜色", Icons.Outlined.Palette),
@@ -432,6 +435,7 @@ fun AppScaffold(
                             activeConversationId = activeConversationId,
                             onSelect = onSelect,
                             onNewConversation = onNewConversation,
+                            onOpenAllConversations = { navigateTo(AppDest.CONVERSATIONS) },
                             onSelectConversation = onSelectConversation,
                             onRenameConversation = { id, title -> vm.renameConversation(id, title) },
                             onDeleteConversation = { id -> vm.deleteConversation(id) },
@@ -551,6 +555,7 @@ onExportConversation = { id ->
                                 activeConversationId = activeConversationId,
                                 onSelect = onSelect,
                                 onNewConversation = onNewConversation,
+                                onOpenAllConversations = { navigateTo(AppDest.CONVERSATIONS) },
                                 onSelectConversation = onSelectConversation,
                                 onRenameConversation = { id, title ->
                                     vm.renameConversation(id, title)
@@ -674,6 +679,19 @@ private fun ScreenHost(
                     AppDest.MEMORY -> MemoryScreen(vm)
                     AppDest.PROMPTS -> PromptLibraryScreen(vm)
                     AppDest.BOOKMARKS -> BookmarkScreen(vm)
+                    // W-69：列表状态从 vm 自己收（ScreenHost 拿不到抽屉那份局部状态），
+                    // 打开会话与新建都要顺手导航回对话页——留在列表页会看着像「没反应」
+                    AppDest.CONVERSATIONS -> ConversationsScreen(
+                        vm = vm,
+                        onOpen = { id ->
+                            vm.switchConversation(id)
+                            onNavigate(AppDest.CHAT)
+                        },
+                        onNew = {
+                            vm.newConversation()
+                            onNavigate(AppDest.CHAT)
+                        }
+                    )
                     AppDest.SETTINGS -> SettingsScreen(
                         vm = vm,
                         themeMode = themeMode,
@@ -747,6 +765,8 @@ private fun DrawerContent(
     activeConversationId: String?,
     onSelect: (AppDest) -> Unit,
     onNewConversation: () -> Unit,
+    /** W-69：打开「全部对话」页（抽屉只放最近几条，完整列表在独立页）。 */
+    onOpenAllConversations: () -> Unit,
     onSelectConversation: (String) -> Unit,
     onRenameConversation: (String, String) -> Unit,
     onDeleteConversation: (String) -> Unit,
@@ -837,6 +857,14 @@ private fun DrawerContent(
                     icon = Icons.Outlined.Add,
                     title = "新对话",
                     onClick = onNewConversation
+                )
+                // W-69：抽屉只放最近 8 条，再往下就找不到了——给一个通往完整列表的门。
+                // 不做「超过 8 条才显示」：会话少的时候这一项看着冗余，但入口忽隐忽现更难理解。
+                AkListItem(
+                    icon = Icons.Outlined.History,
+                    title = "全部对话",
+                    description = "${conversations.size} 个会话",
+                    onClick = onOpenAllConversations
                 )
             }
 
@@ -991,8 +1019,11 @@ private fun DrawerConversationRow(
             animationSpec = AkMotionFastColor
         )
         Row(
+            // matchParentSize：外层 Box 只给了 heightIn(min = 52dp)，高度是**有限**的；
+            // 用 fillMaxSize 会去争父容器的最大高度，在某些父里直接把行撑到整屏
+            // （W-68 抽屉底栏那个 bug 就是同一行代码引发的，这里一并改掉）。
             modifier = Modifier
-                .fillMaxSize()
+                .matchParentSize()
                 .clip(RoundedCornerShape(14.dp))
                 .background(bg)
                 .combinedClickable(
@@ -1072,7 +1103,7 @@ private fun DrawerConversationRow(
  * 344dp 白卡 + scale/fade 出入场；删除是危险动作，但红色只留给确认弹窗，菜单项保持中性（§3.1）。
  */
 @Composable
-private fun ConversationMenuDialog(
+internal fun ConversationMenuDialog(
     title: String,
     visible: Boolean,
     pinned: Boolean,
@@ -1161,7 +1192,7 @@ private fun ConversationMenuDialog(
  * 提交空名由 VM 忽略（renameConversation 对 blank 直接 return），此处按钮同步禁用。
  */
 @Composable
-private fun RenameConversationDialog(
+internal fun RenameConversationDialog(
     name: String,
     onNameChange: (String) -> Unit,
     visible: Boolean,
