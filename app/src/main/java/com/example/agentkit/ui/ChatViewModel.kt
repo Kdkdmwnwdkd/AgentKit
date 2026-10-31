@@ -2071,7 +2071,17 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         val counts = KernelExposure.groupsOf(registry.list()).toMap()
         val snapshot = synchronized(activeToolGroups) { activeToolGroups.toSet() }
         _toolGroupsUi.value = counts.entries
-            .sortedWith(compareBy({ it.key !in snapshot }, { -it.value }, { it.key }))
+            // 排序：常驻 → 其它已启用 → 未启用；同档按工具数从多到少。
+            // 「常驻」必须排在「已启用」之前：file 永远是启用态，若只按启用与否排，
+            // 用户勾上一个 9 个工具的组，那一行就会插到 file 上方，看起来像 file 掉了。
+            .sortedWith(
+                compareBy(
+                    { it.key !in snapshot },
+                    { !KernelExposure.isPinned(it.key) },
+                    { -it.value },
+                    { it.key }
+                )
+            )
             .map { (g, n) ->
                 ToolGroupRow(
                     name = g,
@@ -2115,18 +2125,28 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
      * UI 下一帧就会看到那一行变灰——不需要额外弹窗解释。
      */
     fun enableToolGroup(group: String) {
-        val (ok, remaining) = synchronized(activeToolGroups) {
-            if (!activeToolGroups.remove(group)) {
-                // 已经在里面：不改变 LRU 顺序，避免「点一下已勾选的框」把它顶成最新
-                false to activeToolGroups.joinToString(",")
+        // 判存在要用 `in`，不能用 `!remove(...)`：
+        // remove 返回 true 表示「原本就在、已经被我拿掉了」——依据它分支会把
+        // 「不存在」当成「已在」，然后**一个组也加不进去**（设置页勾选框点了没反应）。
+        val (changed, effective, remaining) = synchronized(activeToolGroups) {
+            if (group in activeToolGroups) {
+                // 已经开着：不改变 LRU 顺序，避免「点一下已勾选的框」把它顶成最新
+                Triple(false, true, activeToolGroups.joinToString(","))
             } else {
+                // remove + add 与 `__use_tools` 同形：让这组排到 LRU 末尾（刚用过）。
+                // 本来就不在里面，remove 是空操作，保留只为两条路径写法一致。
+                activeToolGroups.remove(group)
                 activeToolGroups.add(group)
                 KernelExposure.enforceCap(activeToolGroups)
-                true to activeToolGroups.joinToString(",")
+                // 回执写**实际结果**：容量满时本次加入可能立刻被滞回淘汰掉。
+                Triple(true, group in activeToolGroups, activeToolGroups.joinToString(","))
             }
         }
-        if (!ok) return
-        AgentLogger.i("ToolExposure", "用户手动开启工具组 $group，当前=$remaining")
+        if (!changed) return
+        AgentLogger.i(
+            "ToolExposure",
+            "用户手动开启工具组 $group（" + (if (effective) "已生效" else "被上限挤掉") + "），当前=$remaining"
+        )
         persistToolGroups()
     }
 
