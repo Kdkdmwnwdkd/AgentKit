@@ -86,6 +86,16 @@ android {
     packaging {
         jniLibs {
             useLegacyPackaging = true
+            // `-PnoNative` 还要把 src/main/jniLibs 里预置的 .so（proot / busybox 等，
+            // 都是 arm64）一起排掉。
+            //
+            // 只跳过 CMake 是不够的：那些 so 是仓库里的成品，不经过 externalNativeBuild，
+            // 照样会打进 lib/arm64-v8a/，于是 APK 仍声明 arm64 —— 装到 x86_64 模拟器上
+            // 直接 INSTALL_FAILED_NO_MATCHING_ABIS。上一轮我是手工「解包 → 删 lib/
+            // → zipalign → 重签」才装进去的，这套动作本来就该由构建脚本负责。
+            //
+            // 排掉之后 APK 没有 lib/ 目录，任何 ABI 都能装，这正是 noNative 的唯一用途。
+            if (skipNative) excludes += "**/*.so"
         }
     }
 
