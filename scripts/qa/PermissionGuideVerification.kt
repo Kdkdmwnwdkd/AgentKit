@@ -284,8 +284,14 @@ fun main() {
 
     check("首启弹窗小屏可滚动且按钮固定底部（720x1280 实测「先自己看看」被裁掉）") {
         val src = read("app/src/main/java/com/example/agentkit/ui/ChatScreen.kt")
-        assertTrue("内容区未限制高度", src.contains("heightIn(max = 520.dp)"))
+        // 2026-10-31 在云端 720x1280 模拟器上复测：上一版写死 heightIn(max = 520.dp)，
+        // 卡片居中后底部两个按钮落到屏幕外——「先自己看看」的 bounds 是 [0,0][0,0]，
+        // 第一次打开的人只能按返回键关。上限必须由 BoxWithConstraints 的 maxHeight 推出来，
+        // 且 Dialog 是独立窗口，得先让出系统栏，否则 maxHeight 仍是整屏 640dp。
+        assertTrue("卡片高度上限未跟随可用高度", src.contains("maxHeight * 0.88f"))
+        assertTrue("Dialog 未让出系统栏", src.contains("systemBarsPadding()"))
         assertTrue("上半区未可滚动", src.contains("weight(1f, fill = false).verticalScroll"))
+        assertTrue("不得再写死卡片高度", !src.contains(".heightIn(max = 520.dp)"))
     }
 
     check("模型页三个 Tab 都在（下划线按文字宽度画，不能用 fillMaxWidth）") {

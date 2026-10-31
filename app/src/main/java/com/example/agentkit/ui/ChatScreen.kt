@@ -42,6 +42,7 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -1624,27 +1625,39 @@ private fun OnboardingDialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false)
     ) {
-        Box(
+        BoxWithConstraints(
             Modifier
                 .fillMaxSize()
+                // Dialog 是独立窗口，fillMaxSize 拿到的是**整屏**（含状态栏与导航栏）：
+                // 不把这些系统栏让出来，下面的 maxHeight 仍是 640dp，减 16dp 之后
+                // 卡片照样溢出屏幕（实测按钮只剩底部 21px 可点）。
+                .systemBarsPadding()
                 .padding(horizontal = 24.dp),
             contentAlignment = Alignment.Center
         ) {
+            // 卡片高度跟着**实测可用高度**走。
+            //
+            // 之前写死 520dp，注释按「可用 592dp」估的——那是把 720x1280 @320dpi
+            // 当成 360x640dp 后只扣了状态栏，漏掉三键导航栏还要吃掉 ~116dp。
+            // 云端 720x1280 实测：卡片居中后底部两个按钮被推出屏幕，
+            // uiautomator 里「先自己看看」的 bounds 是 [0,0][0,0]，只能按返回键关。
+            //
+            // 这里不用 maxHeight - 固定值：Dialog 窗口的 insets 在不同 targetSdk 上
+            // 报得不一样（实测 maxHeight 比真实可视区还大 ~74px），减固定值仍会溢出。
+            // 取 0.88 留够余量，内容更少时 Surface 自己 wrapContent 缩小。
+            val cardMax = (maxHeight * 0.88f).coerceAtLeast(240.dp)
             Surface(
                 shape = RoundedCornerShape(20.dp),
                 color = MaterialTheme.colorScheme.surface,
                 modifier = Modifier
                     .widthIn(max = 348.dp)
+                    .heightIn(max = cardMax)
                     .scale(scale)
                     .alpha(alpha)
             ) {
                 Column(
                     Modifier
                         .padding(22.dp)
-                        // 上限 520dp：真机（720x1280 @320dpi）可用高度只有 ~592dp，
-                        // 不封顶时三步正文会把两个按钮推出屏幕（「先自己看看」直接看不见）。
-                        // 封顶后：上半区滚动，底部按钮永远贴在卡片底、永远可点。
-                        .heightIn(max = 520.dp)
                 ) {
                   Column(Modifier.weight(1f, fill = false).verticalScroll(rememberPersistentScrollState())) {
                     Text(

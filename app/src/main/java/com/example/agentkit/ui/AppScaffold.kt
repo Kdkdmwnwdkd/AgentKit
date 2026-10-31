@@ -843,7 +843,21 @@ private fun DrawerContent(
             // 标题筛选的收益撑不起这个副作用，于是整块拿掉，抽屉永远不会弹键盘。
             if (conversations.isNotEmpty()) {
                 Spacer(Modifier.height(AgentSpacing.space5))
-                DrawerGroupTitle("最近对话")
+                DrawerGroupTitle("最近对话") {
+                    // W-69：入口放在标题行右侧，跟着列表一起滚，但永远在「最近对话」
+                    // 的第一屏里——不依赖滚到底。
+                    Text(
+                        text = "全部 ${conversations.size}",
+                        style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Medium),
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable(onClick = onOpenAllConversations)
+                            // 触控目标撑到 48dp 高（可见文字仍是一行 13sp）
+                            .padding(horizontal = AgentSpacing.space2, vertical = 10.dp)
+                            .semantics { contentDescription = "查看全部对话，共 ${conversations.size} 个" }
+                    )
+                }
                 conversations.take(MAX_RECENT_CONVERSATIONS).forEach { conv ->
                     DrawerConversationRow(
                         conversation = conv,
@@ -857,14 +871,6 @@ private fun DrawerContent(
                     icon = Icons.Outlined.Add,
                     title = "新对话",
                     onClick = onNewConversation
-                )
-                // W-69：抽屉只放最近 8 条，再往下就找不到了——给一个通往完整列表的门。
-                // 不做「超过 8 条才显示」：会话少的时候这一项看着冗余，但入口忽隐忽现更难理解。
-                AkListItem(
-                    icon = Icons.Outlined.History,
-                    title = "全部对话",
-                    description = "${conversations.size} 个会话",
-                    onClick = onOpenAllConversations
                 )
             }
 
@@ -1323,16 +1329,30 @@ private fun DrawerHeader(
     }
 }
 
-/** 抽屉分组标题：单行中文 13sp w500 on-surface-var，无英文微标签（§6.5.2）。 */
+/**
+ * 抽屉分组标题：单行中文 13sp w500 on-surface-var，无英文微标签（§6.5.2）。
+ *
+ * 右侧可挂一个行内动作（目前只有「最近对话」的「全部 N」入口）。挂在标题行而不是
+ * 列表尾部，是因为 720x1280 上抽屉可视高度只有 ~451dp：五个主导航项就吃掉 260dp，
+ * 会话列表里最后那一行永远压在固定底栏底下——想进「全部对话」得先盲滚一段。
+ */
 @Composable
-private fun DrawerGroupTitle(text: String) {
-    Text(
-        text = text,
-        // Type.kt 九 slot 无 13sp 级：复用 bodySmall(13sp) 提字重，保持 noFontPadding 一致
-        style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Medium),
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-        modifier = Modifier.padding(start = AgentSpacing.space5, bottom = AgentSpacing.space2)
-    )
+private fun DrawerGroupTitle(text: String, trailing: (@Composable () -> Unit)? = null) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(start = AgentSpacing.space5, end = AgentSpacing.space4, bottom = AgentSpacing.space2),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = text,
+            // Type.kt 九 slot 无 13sp 级：复用 bodySmall(13sp) 提字重，保持 noFontPadding 一致
+            style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Medium),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.weight(1f)
+        )
+        trailing?.invoke()
+    }
 }
 
 /**

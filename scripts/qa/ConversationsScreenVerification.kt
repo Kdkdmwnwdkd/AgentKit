@@ -152,7 +152,10 @@ fun main() {
     check("B6 抽屉有入口 + 路由接上（否则页面存在也进不去）") {
         assertContains(scaffold, "CONVERSATIONS(\"conversations\"")
         assertContains(scaffold, "AppDest.CONVERSATIONS -> ConversationsScreen(")
-        assertContains(scaffold, "title = \"全部对话\"")
+        // 入口挂在「最近对话」标题行右侧（720x1280 上抽屉只有 ~451dp 高，
+        // 放列表尾部会被固定底栏永久压住），TalkBack 描述写作「查看全部对话，共 N 个」。
+        assertContains(scaffold, "DrawerGroupTitle(\"最近对话\") {")
+        assertContains(scaffold, "查看全部对话，共")
         assertContains(scaffold, "onOpenAllConversations")
         // 抽屉本身仍然不许有输入框——搜索挪走了，别又搬回来
         val drawer = scaffold.substringAfter("private fun DrawerContent(")
