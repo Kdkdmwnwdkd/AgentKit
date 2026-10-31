@@ -462,6 +462,19 @@ private fun MemoryGraph(
     val selectedIndex = remember(nodes, selectedId) {
         nodes.indexOfFirst { it.id == selectedId }
     }
+    // 每个节点的度数：没有选中项时用它挑「枢纽节点」显示标签——
+    // 22 条记忆全标会糊，全不标又像一堆没名字的点
+    val degrees = remember(edges, nodes.size) {
+        IntArray(nodes.size).also { deg ->
+            var e = 0
+            while (e < edges.size) {
+                deg[edges[e]]++
+                deg[edges[e + 1]]++
+                e += 2
+            }
+        }
+    }
+
     // 选中项的直接邻居：高亮它们、淡化其余，比「整张图一样亮」有用得多
     val neighbors = remember(edges, selectedIndex) {
         if (selectedIndex < 0) emptySet() else buildSet {
@@ -696,7 +709,7 @@ private fun MemoryGraph(
                     val isSel = idx == sel
                     val isNeighbor = hasSel && idx in neighbors
                     if (hasSel && !isSel && !isNeighbor) continue
-                    if (!hasSel && nodes.size > 14) continue
+                    if (!hasSel && nodes.size > 14 && degrees[idx] < 2) continue
                     val cx = layout.x[idx]
                     val cy = layout.y[idx]
                     val rr = radiusPx[idx] * if (isSel) 1.35f else 1f
@@ -708,6 +721,19 @@ private fun MemoryGraph(
                     val top = cy - th / 2f
                     val rect = Rect(left, top, left + tw, top + th)
                     if (placed.any { it.overlaps(rect) }) continue
+                    // 除了不压标签，也不许压到别的节点：圆与矩形相交即放弃这条标签
+                    val hitsNode = nodes.indices.any { j ->
+                        if (j == idx) return@any false
+                        val nx = layout.x[j]
+                        val ny = layout.y[j]
+                        val nr = radiusPx[j]
+                        val closestX = nx.coerceIn(rect.left, rect.right)
+                        val closestY = ny.coerceIn(rect.top, rect.bottom)
+                        val dx = nx - closestX
+                        val dy = ny - closestY
+                        dx * dx + dy * dy < nr * nr
+                    }
+                    if (hitsNode) continue
                     placed += rect
                     drawText(
                         textLayoutResult = text,
