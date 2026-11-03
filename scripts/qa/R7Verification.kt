@@ -104,6 +104,22 @@ private class FakeTool(
     }
 }
 
+/**
+ * 模拟 `read_file`：`message` 是「已读取 …（本次 N 字符）」，`data` 才是正文。
+ *
+ * 真实工具就是这么返回的（[com.example.agentkit.tools.ReadFileTool]），
+ * 而脚本需要的是 `data`。
+ */
+private class RawReadFile : AgentTool {
+    override val name: String = "read_file"
+    override val description: String = "read a file"
+    override val parameters: JsonSchema = JsonSchema.objectSchema()
+    override val readOnly: Boolean = true
+
+    override suspend fun execute(args: JsonObject): ToolResult =
+        ToolResult.ok(code = "read_ok", message = "已读取 notes.txt（本次 11 字符）", data = "hello world")
+}
+
 /** 只回固定答复的假模型。 */
 private class FakeClient(private val responses: List<AssistantMessage>) : LLMClient {
     override val id: String = "fake"
@@ -547,6 +563,46 @@ fun main() = runBlocking {
             lines.indexOfFirst { it.contains("\"turn\":\"turn-A1\"") } <
                 lines.indexOfFirst { it.contains("\"turn\":\"turn-A2\"") }
         )
+    }
+
+    check("R7-13 内置技能按资源目录名定位，不用包名式 id") {
+        // 真机 bug：wordcount 的 id 是 com.you.wordcount，资源目录是 wordcount。
+        // 用 id 拼 "assets/skills/<id>/main.js" 必然落空 → entry 读不到 →
+        // 脚本形态静默退化成提示词形态，skill: 作用域一条都不会产生。
+        assertEquals(
+            "R7-13 内置技能取 assetDir",
+            "wordcount",
+            com.example.agentkit.skill.skillResourceDir("wordcount", "com.you.wordcount")
+        )
+        assertEquals(
+            "R7-13 导入技能回退到 id（其目录就是 id）",
+            "my.skill",
+            com.example.agentkit.skill.skillResourceDir("", "my.skill")
+        )
+        assertEquals(
+            "R7-13 缺省 assetDir 也回退 id",
+            "my.skill",
+            com.example.agentkit.skill.skillResourceDir(null, "my.skill")
+        )
+    }
+
+    check("R7-14 脚本读到的是文件原文，不是给模型看的包装文本") {
+        // 真机 bug：read_file 的 ToolResult 是 message + data，content 会把
+        // "已读取 notes.txt（本次 74 字符…）" 拼在正文前面。脚本拿 content 去统计，
+        // 22 词 / 6 行——实际文件只有 13 词 / 3 行。
+        val registry = ToolRegistry().apply { register(RawReadFile()) }
+        val bridge = com.example.agentkit.skill.SkillRuntimeBridge(
+            registry = registry,
+            skill = com.example.agentkit.skill.SkillManifest(
+                id = "com.you.wordcount", name = "单词统计", version = "1.0.0",
+                tools = listOf("read_file"), trust = "packaged",
+            ),
+            workspace = java.io.File("/tmp"),
+            executor = RegistryToolExecutor(registry, FailureGuard()),
+        )
+        val got = bridge.readFile("notes.txt")
+        assertEquals("R7-14 必须是原文", "hello world", got)
+        assertTrue("R7-14 不得混入 message", !got.contains("已读取"))
     }
 
     println()

@@ -121,6 +121,25 @@ private class FakeTool(
     }
 }
 
+/**
+ * 模拟「按旧版 [AgentTool] 编译、未重新编译」的实现。
+ *
+ * 接口新增默认方法后，旧实现的 class 没有对应桥接，`invokeinterface` 会抛
+ * [AbstractMethodError]。这里直接抛，精确复现该故障形态。
+ */
+private class LegacyTool(override val name: String) : AgentTool {
+    override val description = "legacy"
+    override val parameters = JsonSchema.objectSchema()
+
+    override val timeoutBudgetMs: Long?
+        get() = throw AbstractMethodError("getTimeoutBudgetMs()")
+
+    override val readOnly: Boolean
+        get() = throw AbstractMethodError("getReadOnly()")
+
+    override suspend fun execute(args: JsonObject): ToolResult = ToolResult.ok(message = "done")
+}
+
 private fun main2() = runBlocking {
     println("\n[R6] 运行层判据收口 + 工具预算分级")
 
@@ -287,6 +306,30 @@ private fun main2() = runBlocking {
         assertTrue("不应被预算掐断，实际耗时 ${cost}ms", cost < 1_000L)
         val completed = outcome as ToolCallOutcome.Completed
         assertEquals("应正常完成", "ok", completed.code)
+    }
+
+    check("R6-12 预算声明不可读时退回分档默认，不让工具整调用崩掉") {
+        // 真实故障：接口新增默认方法后，某个实现类没有重新编译（增量构建的典型产物），
+        // 它的 class 里没有 getTimeoutBudgetMs 桥接，invokeinterface 抛 AbstractMethodError。
+        // R7 真机上 use_skill 就是这样整调用失败的——日志看起来像技能执行失败，实际是二进制不兼容。
+        val legacy = LegacyTool("r6-legacy")
+        assertEquals(
+            "读不到声明应退回写档默认（readOnly 也读不到 → 按写处理，更保守）",
+            600_000L,
+            ToolBudget.resolve(legacy, readOnlyBudgetMs = 90_000L, writeBudgetMs = 600_000L)
+        )
+    }
+
+    check("R6-13 不兼容工具经 executor 仍能正常执行（护栏降级而非阻断）") {
+        val legacy = LegacyTool("r6-legacy-e2e")
+        val reg = ToolRegistry().apply { register(legacy) }
+        val exec = RegistryToolExecutor(reg, FailureGuard())
+        val outcome = exec.execute(
+            ToolCall("c3", "r6-legacy-e2e", JsonObject(emptyMap())),
+            ToolDescriptor("r6-legacy-e2e", "r6-legacy-e2e", "{}")
+        )
+        val completed = outcome as ToolCallOutcome.Completed
+        assertEquals("预算读不到不该影响业务执行", "ok", completed.code)
     }
 }
 

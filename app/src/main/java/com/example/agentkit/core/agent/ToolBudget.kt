@@ -63,16 +63,65 @@ object ToolBudget {
         writeBudgetMs: Long,
         maxBudgetMs: Long = MAX_DECLARED_BUDGET_MS,
     ): Long {
-        val declared = tool.timeoutBudgetMs
+        val declared = declaredBudgetOf(tool)
         if (declared == null) {
             // 未声明：分档默认**原样使用**（测试注入的极小值必须原样生效）
-            return if (tool.readOnly) readOnlyBudgetMs else writeBudgetMs
+            return if (readOnlyOf(tool)) readOnlyBudgetMs else writeBudgetMs
         }
         // 自声明：夹到安全区间
         val lower = MIN_DECLARED_BUDGET_MS
         val upper = maxOf(maxBudgetMs, lower)
         return declared.coerceIn(lower, upper)
     }
+
+    /**
+     * 读工具自声明的预算；读不到时退回 `null`（= 用分档默认）。
+     *
+     * 公开是因为 [RegistryToolExecutor] 还要用它决定「要不要报夹紧警告」——
+     * 那条警告必须拿原始声明值比对，不能再走一次 [resolve]。
+     */
+    fun declaredBudgetOf(tool: AgentTool): Long? = safeMeta(tool, null) { it.timeoutBudgetMs }
+
+    /** 读只读标记；理由见 [safeMeta]。读不到按**写**处理（更保守）。 */
+    fun readOnlyOf(tool: AgentTool): Boolean = safeMeta(tool, false) { it.readOnly }
+
+    /** 读「是否在等用户」；理由见 [safeMeta]。读不到按**不等**处理（走超时护栏）。 */
+    fun awaitsUserOf(tool: AgentTool): Boolean = safeMeta(tool, false) { it.awaitsUser }
+
+    /**
+     * 读工具的元数据属性，容忍**二进制不兼容**。
+     *
+     * ## 为什么要吞 [LinkageError]
+     * `timeoutBudgetMs` / `readOnly` / `awaitsUser` 都是**接口默认方法**。Kotlin 在
+     * `-Xjvm-default=disable`（默认模式）下把它们编译成「接口里的抽象方法 +
+     * `AgentTool$DefaultImpls` 静态实现」，由每个实现类生成桥接转发。
+     *
+     * 于是存在一种真实的二进制不兼容：接口新增默认方法后，若某个实现类**没有重新编译**
+     * （增量构建的典型产物：改接口的那次没带上这个包），它的 class 里没有对应桥接，
+     * `invokeinterface` 直接抛 [AbstractMethodError]。
+     *
+     * 这不是理论风险——R7 真机验证时 `use_skill` 就栽在这里：工具本身完好，
+     * 却在「读预算」这一步让整个调用崩掉，日志只有一行
+     * `use_skill 执行异常 / AbstractMethodError`，看起来像技能执行失败。
+     *
+     * 这三项都是**护栏参数**，不是业务逻辑。读不到就退回最保守的一侧
+     * （写操作、有超时），让工具照常执行，比让整个调用死在一个可选属性上合理。
+     * 记 warn 是为了不静默：这种不兼容说明构建产物陈旧，需要 clean 重建。
+     */
+    private fun <T> safeMeta(tool: AgentTool, fallback: T, read: (AgentTool) -> T): T =
+        try {
+            read(tool)
+        } catch (e: LinkageError) {
+            AgentLogger.w(
+                "Tool",
+                "工具 ${safeName(tool)} 的元数据不可读（${e::class.java.simpleName}）：" +
+                    "实现类可能按旧版 AgentTool 编译，已退回最保守默认；建议 clean 重建"
+            )
+            fallback
+        }
+
+    /** 工具名本身也可能因同类不兼容读不到，取不到就给个占位，别让日志再抛一次。 */
+    private fun safeName(tool: AgentTool): String = safeMeta(tool, "<unnamed>") { it.name }
 
     /**
      * 夹紧后的值与原值不同时记一条警告——静默改写预算会让排障时对不上数。

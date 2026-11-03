@@ -49,8 +49,32 @@ data class SkillManifest(
      * 经开发者审计。导入技能由 [com.example.agentkit.skill.SkillImportRepository]
      * 依据本地授权记录写 packaged/imported，不采信 zip 自带声明。
      */
-    val trust: String = ""
+    val trust: String = "",
+
+    /**
+     * 资源目录名（assets/skills/<assetDir>），**不是** [id]。
+     *
+     * 内置技能的 [id] 是包名式唯一标识（`com.you.wordcount`），而资源目录用的是短名
+     * （`wordcount`）。两者不一致，所以「读正文/读脚本」不能拿 [id] 拼路径——
+     * 那样 `assets.open("skills/com.you.wordcount/main.js")` 必然落空，
+     * 结果是脚本形态技能静默退化成提示词形态（R7 真机验证就是这么发现的：
+     * `use_skill` 返回的是 manifest 里的短 prompt，`skill:` 作用域一条都没产生）。
+     *
+     * 导入技能从 `filesDir/skills/imported/<id>` 读，不填这个字段，
+     * 走 [com.example.agentkit.skill.SkillLoader.readImportedBody] 的另一条路径。
+     */
+    @kotlinx.serialization.Transient
+    val assetDir: String = ""
 )
+
+/**
+ * 技能资源所在的目录名：内置技能用 [SkillManifest.assetDir]，导入技能回退到 [SkillManifest.id]。
+ *
+ * 抽成函数是为了能被 QA harness 直接断言——它不依赖 Android `Context`，
+ * 而真正的 assets 读取必须依赖，测不到。
+ */
+internal fun skillResourceDir(assetDir: String?, id: String): String =
+    (assetDir ?: "").ifBlank { id }
 
 /**
  * 项目（Project）= 一组 Skill + 工具白名单 + 模型配置 + 工作目录。
@@ -222,7 +246,8 @@ object SkillLoader {
                 // B 批：内置技能显式标为 packaged。
                 // 它们随 APK 打包、经开发者审计，是「可信」这一判断的真正依据——
                 // 而不是 manifest 里恰好没写 trust 字段。
-                out += json.decodeFromString<SkillManifest>(text).copy(trust = "packaged")
+                out += json.decodeFromString<SkillManifest>(text)
+                    .copy(trust = "packaged", assetDir = id)
             }
         }
         return out
@@ -232,7 +257,7 @@ object SkillLoader {
     fun readSkillBody(context: Context, skill: SkillManifest): String {
         for (fileName in listOf("SKILL.md", "prompt.md")) {
             runCatching {
-                context.assets.open("skills/${skill.id}/$fileName")
+                context.assets.open("skills/${skillResourceDir(skill.assetDir, skill.id)}/$fileName")
                     .bufferedReader().use { it.readText() }
             }.getOrNull()?.let { return it }
         }
@@ -243,7 +268,7 @@ object SkillLoader {
     fun readEntry(context: Context, skill: SkillManifest): String? {
         val entry = skill.entry ?: return null
         return runCatching {
-            context.assets.open("skills/${skill.id}/$entry")
+            context.assets.open("skills/${skillResourceDir(skill.assetDir, skill.id)}/$entry")
                 .bufferedReader().use { it.readText() }
         }.getOrNull()
     }

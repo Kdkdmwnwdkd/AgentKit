@@ -3,6 +3,7 @@ package com.example.agentkit.skill
 import com.example.agentkit.core.AgentLogger
 import com.example.agentkit.core.FailureGuard
 import com.example.agentkit.core.ToolCall
+import com.example.agentkit.core.ToolResult
 import com.example.agentkit.core.ToolRegistry
 import com.example.agentkit.core.agent.AgentScope
 import com.example.agentkit.core.agent.DEFAULT_READ_ONLY_BUDGET_MS
@@ -84,26 +85,34 @@ class RhinoJsEngine : JsEngine {
                 try {
                     cx.languageVersion = org.mozilla.javascript.Context.VERSION_ES6
                     cx.optimizationLevel = -1
-                    // 注入给脚本的宿主对象（agent 桥）必须放行：Rhino 在把 Java 对象包装进 JS 作用域时
-                    // 就会对它的类做 shutter 校验，一刀切屏蔽 com.example.agentkit.* 会让脚本形态彻底失效
-                    // （连 agent.http / agent.tool 都用不了）。因此这里只放行真正注入进来的那些类。
-                    val injectedClasses = bindings.values
-                        .filterNotNull()
-                        .map { it.javaClass.name }
-                        .filterNot { name -> BLOCKED_CLASS_PREFIXES.any { p -> name.startsWith(p) } }
-                        .toSet() + SkillRuntimeBridge::class.java.name
+                    // 脚本唯一能碰到的宿主对象是 [buildAgentObject] 现搭的纯 JS 对象，
+                    // 不再是 Java 反射封装——所以这里可以一刀切：任何宿主类名都不放行。
                     cx.setClassShutter(ClassShutter { className ->
-                        className in injectedClasses ||
-                            !BLOCKED_CLASS_PREFIXES.any { p -> className.startsWith(p) }
+                        !BLOCKED_CLASS_PREFIXES.any { p -> className.startsWith(p) }
                     })
                     val scope = cx.initStandardObjects()
-                    for ((k, v) in bindings) scope.put(k, scope, org.mozilla.javascript.Context.javaToJS(v, scope))
+                    // 桥接对象必须**逐方法**转成 JS 函数，不能交给 Context.javaToJS：
+                    // 它走 Rhino 的 JavaMembers 反射封装，而 JavaMembers 类里引用了
+                    // `javax.lang.model.SourceVersion`——那是 JDK 编译器 API，Android 没有。
+                    // 类解析失败会抛 NoClassDefFoundError，脚本直接执行不了（真机已复现：
+                    // `技能脚本执行失败：Failed resolution of: Ljavax/lang/model/SourceVersion;`）。
+                    // 顺带的好处是能力面从「bridge 的全部 public 方法」收窄到下面这 6 个。
+                    val jsBindings = HashMap<String, Any?>(bindings.size)
+                    for ((k, v) in bindings) {
+                        jsBindings[k] = if (v is SkillRuntimeBridge) {
+                            buildAgentObject(cx, scope, v)
+                        } else {
+                            org.mozilla.javascript.Context.javaToJS(v, scope)
+                        }
+                    }
+                    for ((k, v) in jsBindings) scope.put(k, scope, v)
                     // 包成函数表达式：(source)；若求值结果是个函数，则注入 (input, agent) 调用
                     val value = cx.evaluateString(scope, "($source)", "skill.js", 1, null)
                     if (value is org.mozilla.javascript.Function) {
-                        val input = bindings["input"]
-                        val agent = bindings["agent"]
-                        return@withContext value.call(cx, scope, scope, arrayOf(input, agent))
+                        return@withContext value.call(
+                            cx, scope, scope,
+                            arrayOf(jsBindings["input"], jsBindings["agent"])
+                        )
                     }
                     return@withContext value
                 } finally {
@@ -111,6 +120,64 @@ class RhinoJsEngine : JsEngine {
                 }
             }
         }
+
+    /**
+     * 把 [SkillRuntimeBridge] 摊成纯 JS 对象：六个函数，别的一概没有。
+     *
+     * 参数一律用 `Context.toString` 取值，对象参数由 [org.mozilla.javascript.NativeJSON]
+     * 序列化后再交给桥——桥那边只认 String / Map / JsonObject，直接喂 NativeObject
+     * 会得到「参数无法解析为对象」。
+     */
+    private fun buildAgentObject(
+        cx: org.mozilla.javascript.Context,
+        scope: org.mozilla.javascript.Scriptable,
+        bridge: SkillRuntimeBridge,
+    ): org.mozilla.javascript.Scriptable {
+        val obj = cx.newObject(scope)
+
+        fun arg(args: Array<Any?>, i: Int): String =
+            org.mozilla.javascript.Context.toString(args.getOrNull(i))
+
+        fun define(name: String, fn: (Array<Any?>) -> Any?) {
+            obj.put(
+                name, obj,
+                object : org.mozilla.javascript.BaseFunction() {
+                    override fun getFunctionName(): String = name
+                    override fun call(
+                        cx: org.mozilla.javascript.Context,
+                        scope: org.mozilla.javascript.Scriptable,
+                        thisObj: org.mozilla.javascript.Scriptable,
+                        args: Array<Any?>,
+                    ): Any? = fn(args)
+                }
+            )
+        }
+
+        define("readFile") { a -> bridge.readFile(arg(a, 0)) }
+        define("writeFile") { a -> bridge.writeFile(arg(a, 0), arg(a, 1)) }
+        define("notify") { a -> bridge.notify(arg(a, 0), arg(a, 1)) }
+        define("log") { a ->
+            bridge.log(if (a.isEmpty()) null else arg(a, 0))
+            org.mozilla.javascript.Undefined.instance
+        }
+        define("http") { a ->
+            bridge.http(
+                method = arg(a, 0),
+                url = arg(a, 1),
+                body = a.getOrNull(2)?.let { org.mozilla.javascript.Context.toString(it) },
+            )
+        }
+        define("tool") { a ->
+            val raw = a.getOrNull(1)
+            val payload = if (raw == null || raw === org.mozilla.javascript.Undefined.instance) {
+                null
+            } else {
+                org.mozilla.javascript.NativeJSON.stringify(cx, scope, raw, null, null) as? String
+            }
+            bridge.tool(arg(a, 0), payload)
+        }
+        return obj
+    }
 
     override fun close() {}
 }
@@ -165,15 +232,40 @@ class SkillRuntimeBridge(
     private val callSeq = java.util.concurrent.atomic.AtomicInteger(0)
 
     /** 调用已注册工具。脚本中：agent.tool('http_request', {...}) */
-    fun tool(name: String, args: Any?): String {
+    fun tool(name: String, args: Any?): String = invoke(name, args).content
+
+    /**
+     * 校验链 + 执行，返回完整 [ToolResult]。
+     *
+     * 拆出这一层是为了让 [raw] 能拿到 `data`：脚本要的是文件原文 / 响应体，
+     * 而 [ToolResult.content] 会把 `message`（"已读取 notes.txt（本次 74 字符…）"）
+     * 拼在前面。真机就是这么踩到的——wordcount 报 22 词 / 6 行，文件实际只有
+     * 13 词 / 3 行，多出来的全是这句说明。
+     */
+    private fun invoke(name: String, args: Any?): ToolResult {
         // 第一道：manifest 白名单（fail-closed；空表 = 不允许任何工具，要全量必须显式 "*"）
         if (!isToolAllowedByWhitelist(skill.tools, name)) {
-            return "⛔ 技能「${skill.name}」无权使用工具 $name（白名单：" +
-                (skill.tools.joinToString().ifBlank { "空" }) + "）"
+            return ToolResult.fail(
+                code = "tool_not_allowed",
+                message = "⛔ 技能「${skill.name}」无权使用工具 $name（白名单：" +
+                    (skill.tools.joinToString().ifBlank { "空" }) + "）",
+                hint = "在技能 manifest 的 tools 白名单里声明该工具，或改用已授权的工具。"
+            )
         }
         // 第二道：全局能力门（应用内置真相源，防「自证白名单」越权拿高危权限）
-        checkCapabilityGate(name, skill.trust)?.let { return it }
-        val obj = toJsonObject(args) ?: return "⛔ 参数无法解析为对象：$args"
+        checkCapabilityGate(name, skill.trust)?.let {
+            return ToolResult.fail(
+                code = "capability_denied",
+                message = it,
+                hint = "换用能力档位更低的工具，或把技能来源改为可信来源后重试。"
+            )
+        }
+        val obj = toJsonObject(args)
+            ?: return ToolResult.fail(
+                code = "bad_args",
+                message = "⛔ 参数无法解析为对象：$args",
+                hint = "传一个普通对象字面量，例如 {path: 'a.txt'}。"
+            )
         // 第三道：需要人工确认的工具，脚本**不得代调用**。
         //
         // 不做「脚本内弹审批」的原因：JS 求值在非挂起的 Rhino 线程里，审批是 suspend 的；
@@ -187,11 +279,26 @@ class SkillRuntimeBridge(
         // （[com.example.agentkit.core.agent.ShellCommandRules]），不会出现两处口径不一。
         val target = registry.get(name)
         if (target?.needsApprovalFor(obj) == true) {
-            return "⛔ 工具 $name 需要用户逐次确认，脚本不能代为调用。" +
-                "请在主对话中直接调用该工具（Agent 会弹出确认框）。"
+            return ToolResult.fail(
+                code = "script_approval_denied",
+                message = "⛔ 工具 $name 需要用户逐次确认，脚本不能代为调用。" +
+                    "请在主对话中直接调用该工具（Agent 会弹出确认框）。",
+                hint = "回到主对话，由用户确认后再发起该工具调用。"
+            )
         }
         val call = ToolCall(nextCallId(name), name, obj)
         return runBlocking { executeWithJournal(call, obj) }
+    }
+
+    /**
+     * 取工具的**原始负载**（[ToolResult.data]）；没有 data 或失败时退回完整文本。
+     *
+     * 脚本做的是「拿数据做事」，不是「读给人看」——包装文本混进去会让所有
+     * 文本处理类技能的结果系统性偏大。
+     */
+    private fun raw(name: String, args: Any?): String {
+        val r = invoke(name, args)
+        return if (r.ok) (r.data ?: r.message) else r.content
     }
 
     /**
@@ -206,7 +313,7 @@ class SkillRuntimeBridge(
      *
      * 与主路径保持同一套时序：熔断判定 → 审批 → 写 DISP → 真正执行 → 写 SETTLE。
      */
-    private suspend fun executeWithJournal(call: ToolCall, args: JsonObject): String {
+    private suspend fun executeWithJournal(call: ToolCall, args: JsonObject): ToolResult {
         val scope = agentScope
         val turn = scope?.turn
         val step = dispatchedStep.get()
@@ -219,7 +326,11 @@ class SkillRuntimeBridge(
             throw cancel
         } catch (e: Throwable) {
             turn?.toolSettled(step, call.id, ToolSettleStatus.FAILED)
-            return "⛔ 工具 ${call.name} 执行异常：${e.message}"
+            return ToolResult.fail(
+                code = "exception",
+                message = "⛔ 工具 ${call.name} 执行异常：${e.message}",
+                hint = "检查参数与前置条件；持续失败请换用其他工具或告知用户。"
+            )
         }
 
         val status = if (outcome is ToolCallOutcome.Completed && outcome.message.isError) {
@@ -230,14 +341,24 @@ class SkillRuntimeBridge(
         turn?.toolSettled(step, call.id, status)
 
         return when (outcome) {
-            is ToolCallOutcome.Completed -> outcome.message.content
-            ToolCallOutcome.Interrupted ->
-                "⛔ 工具 ${call.name} 被中断（只读调用，确定未完成，可以直接重试）。"
-            ToolCallOutcome.Unknown ->
-                "⛔ 工具 ${call.name} 被中断（写操作，状态未知——请先用只读方式核对结果，" +
-                    "确认没有生效再决定是否重做；无法确认时告知用户）。"
-            ToolCallOutcome.NotDispatched ->
-                "⛔ 工具 ${call.name} 未被派发（未执行，可以重试）。"
+            is ToolCallOutcome.Completed -> outcome.result
+                ?: ToolResult.ok(code = outcome.code, message = outcome.message.content)
+            ToolCallOutcome.Interrupted -> ToolResult.fail(
+                code = "interrupted",
+                message = "⛔ 工具 ${call.name} 被中断（只读调用，确定未完成，可以直接重试）。",
+                hint = "直接重试该工具调用。"
+            )
+            ToolCallOutcome.Unknown -> ToolResult.fail(
+                code = "unknown",
+                message = "⛔ 工具 ${call.name} 被中断（写操作，状态未知——请先用只读方式核对结果，" +
+                    "确认没有生效再决定是否重做；无法确认时告知用户）。",
+                hint = "先用只读工具核对副作用是否已发生，再决定是否重做。"
+            )
+            ToolCallOutcome.NotDispatched -> ToolResult.fail(
+                code = "not_dispatched",
+                message = "⛔ 工具 ${call.name} 未被派发（未执行，可以重试）。",
+                hint = "直接重试该工具调用。"
+            )
         }
     }
 
@@ -246,7 +367,7 @@ class SkillRuntimeBridge(
         "skill:${skill.id}:$toolName#${callSeq.incrementAndGet()}"
 
     /** 读取工作区文件。脚本中：agent.readFile('notes.txt') */
-    fun readFile(path: String): String = tool("read_file", mapOf("path" to path))
+    fun readFile(path: String): String = raw("read_file", mapOf("path" to path))
 
     /** 写入工作区文件。脚本中：agent.writeFile('out.txt', 'hi') */
     fun writeFile(path: String, content: String): String = tool("write_file", mapOf("path" to path, "content" to content))
@@ -256,7 +377,7 @@ class SkillRuntimeBridge(
         val args = mutableMapOf<String, Any?>("method" to method, "url" to url)
         if (body != null) args["body"] = body
         if (headers.isNotEmpty()) args["headers"] = headers
-        return tool("http_request", args)
+        return raw("http_request", args)
     }
 
     /** 发送通知。脚本中：agent.notify('标题', '内容') */
