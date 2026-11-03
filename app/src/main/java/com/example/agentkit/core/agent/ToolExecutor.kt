@@ -60,7 +60,18 @@ sealed interface ToolCallOutcome {
      */
     data class Completed(
         val message: ToolMessage,
-        val images: List<String>
+        val images: List<String>,
+        /**
+         * R5：结果码（如 "ok" / "approval_denied" / "tool_timeout_unknown"）。
+         *
+         * 为什么要单独带一个码，而不是从 [ToolMessage.content] 里解析：
+         * content 是**给人看**的格式化文本（"[ok] code=xxx\nmessage: ..."），
+         * 解析它等于把排障能力绑在展示格式上——改一次文案就断一次排障。
+         *
+         * 失败原因千差万别（审批被拒 / 超时未生效 / 熔断 / 未知工具 / 工具异常），
+         * 只记 isError 等于没记。
+         */
+        val code: String = "ok"
     ) : ToolCallOutcome
 
     /** 确定未完成、无副作用（只读工具被 kill）。 */
@@ -243,7 +254,8 @@ class RegistryToolExecutor(
                             hint = "从当前可用工具列表中选择正确名称重新调用；若任务无法完成请直接告知用户。"
                         )
                     ),
-                    emptyList()
+                    emptyList(),
+                    code = "unknown_tool"
                 )
             }
 
@@ -257,7 +269,8 @@ class RegistryToolExecutor(
                         call,
                         ToolResult.fail(verdict.code, verdict.message, verdict.hint)
                     ),
-                    emptyList()
+                    emptyList(),
+                    code = verdict.code
                 )
             }
             GuardVerdict.Allow -> Unit
@@ -287,7 +300,8 @@ class RegistryToolExecutor(
                             hint = "不要重复发起相同调用；可改换非危险工具完成，或向用户说明需要该操作的原因。"
                         )
                     ),
-                    emptyList()
+                    emptyList(),
+                    code = "approval_denied"
                 )
             }
         }
@@ -345,7 +359,8 @@ class RegistryToolExecutor(
             AgentLogger.toolResult(call.name, !result.isError, cost, text.take(300))
             ToolCallOutcome.Completed(
                 ToolMessage(call.id, tool.name, call.arguments, text, result.isError, imgUrls),
-                imgUrls
+                imgUrls,
+                code = result.code
             )
         } catch (cancel: CancellationException) {
             // 取消不是失败：不上计数、不造假结果，直接上抛由树尾闭合补全
@@ -362,7 +377,8 @@ class RegistryToolExecutor(
                         hint = "检查参数格式与取值；如持续失败请换用其他工具或告知用户。"
                     )
                 ),
-                emptyList()
+                emptyList(),
+                code = "exception"
             )
         }
     }
@@ -409,7 +425,7 @@ class RegistryToolExecutor(
             )
         }
         AgentLogger.toolResult(toolName, false, costMs, result.message)
-        return ToolCallOutcome.Completed(toolMessageOf(call, result), emptyList())
+        return ToolCallOutcome.Completed(toolMessageOf(call, result), emptyList(), code = result.code)
     }
 
     /**

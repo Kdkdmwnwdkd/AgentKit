@@ -167,6 +167,15 @@ class RealAgentLoop(
     /** 功能五（P1-9）：推理过程增量回调（null = 关闭）。与 [onTextDelta] 分流。 */
     private val onReasoningDelta: ((String) -> Unit)? = null,
     private val hooks: Hooks = NoopHooks,
+    /**
+     * R5：回合结构化事件观察者（null = 关闭）。
+     *
+     * 与 [hooks] / [onEvent] 的分工见 [TurnEvent] 的类注释：Hooks 面向执行器观测，
+     * AgentEvent 面向 UI 驱动，本观察者面向**排障**——一条带回合号与耗时的完整时间线。
+     *
+     * 判据：用户报「卡住了」时，能定位到最后一个 `tool.start`。
+     */
+    private val observer: TurnObserver = NoopTurnObserver,
     private val executorFactory: (() -> ToolExecutor)? = null,
     private val forceFullTools: Boolean = false,
     /**
@@ -317,22 +326,48 @@ class RealAgentLoop(
         images: List<String> = emptyList(),
         priorMessages: List<ChatMessage> = emptyList()
     ): List<ChatMessage> {
+        // R5：turnId **无条件**生成。
+        //
+        // 改造前 turnId 只在有日志时生成（`journal.begin(newTurnId())`），没日志的
+        // 链路（harness、子代理）就没有回合号——而 R5 的排障价值恰恰依赖「跨回合
+        // 可对照」：多个回合交错时，没有回合号的时间线等于没有时间线。
+        // 所以这里先造号，再按有无日志分别使用。
+        val turnId = newTurnId()
+        val clock = TurnClock(turnId)
+        // R5：回合结束状态。由 [TurnClock] 记录、各出口设置，finally 统一发事件——
+        // 保证「有且只有一条 turn.end」（漏发就看不出回合是被取消还是卡死）。
+        val status = TurnEndStatus()
         // 未注入日志：直接跑，行为与改造前逐字节一致（harness 与子代理走这条）。
-        val j = journal ?: return runTurnBody(userInput, images, priorMessages, null)
-        val turn = j.begin(newTurnId())
+        val j = journal ?: run {
+            try {
+                return runTurnBody(userInput, images, priorMessages, null, clock, status)
+            } catch (cancel: CancellationException) {
+                status.set("cancelled")
+                throw cancel
+            } catch (e: Throwable) {
+                status.set("failed")
+                throw e
+            } finally {
+                clock.emitTurnEnd(status.value)
+            }
+        }
+        val turn = j.begin(turnId)
         var reason = TurnJournal.REASON_COMPLETED
         try {
-            return runTurnBody(userInput, images, priorMessages, turn)
+            return runTurnBody(userInput, images, priorMessages, turn, clock, status)
         } catch (cancel: CancellationException) {
             reason = TurnJournal.REASON_CANCELLED
+            status.set("cancelled")
             throw cancel
         } catch (e: Throwable) {
             reason = TurnJournal.REASON_FAILED
+            status.set("failed")
             throw e
         } finally {
             // NonCancellable：取消路径上直接写会立刻再抛一次，日志就断在最后一步。
             // 收尾本身很快（一次 fsync），代价可以接受。
             withContext(NonCancellable) {
+                clock.emitTurnEnd(status.value)
                 turn.turnClosed(reason)
                 j.prune()
             }
@@ -344,16 +379,86 @@ class RealAgentLoop(
         "${System.currentTimeMillis().toString(36)}-${java.util.UUID.randomUUID().toString().take(8)}"
 
     /**
+     * 回合内的时间基准（R5）。
+     *
+     * 事件里的 [TurnEvent.elapsedMs] 是**相对回合开始**的毫秒数。用相对时间而非
+     * 墙钟有两个理由：日志跨设备对照时不会因时区/自动校时错位；回合中途改系统时间
+     * 也不会让时间线出现负数或跳跃。
+     *
+     * 顺带把「回合状态」也放这里——三个出口（正常结束 / 取消 / 失败）都要写
+     * `turn.end`，放在一个地方能保证**有且只有一条**。
+     */
+    private inner class TurnClock(val turnId: String) {
+        private val startMs = System.currentTimeMillis()
+        private var lastStep = 0
+
+        fun elapsed(): Long = System.currentTimeMillis() - startMs
+
+        fun step(n: Int): Int {
+            lastStep = n
+            return n
+        }
+
+        fun currentStep(): Int = lastStep
+
+        /** 发出一个事件。观察者抛异常也不能影响回合——观测不该有副作用能力。 */
+        fun emit(event: TurnEvent) {
+            runCatching { observer.onEvent(event) }
+        }
+
+        /** 发回合结束事件（整个回合唯一一条）。 */
+        fun emitTurnEnd(status: String) {
+            emit(
+                TurnEvent.TurnEnded(
+                    turnId = turnId,
+                    step = currentStep(),
+                    elapsedMs = elapsed(),
+                    status = status,
+                    steps = currentStep() + 1,
+                )
+            )
+        }
+    }
+
+    /**
+     * 回合结束状态（R5）。
+     *
+     * 为什么不用一个局部 `var`：`runTurn` 的 finally 与 `runTurnBody` 的多个 return
+     * 出口都要写它，跨方法用局部变量需要传出参数，啰嗦且容易漏。封成一个小对象后，
+     * 每个出口只调 [set]，最后由 finally 统一发事件。
+     *
+     * 状态值的意义（排障时能直接看出回合是怎么结束的）：
+     * - `completed`：模型正常给完了回答；
+     * - `cancelled`：用户点了停止，或协程被取消；
+     * - `failed`：异常（模型调用失败、executor 违约等）；
+     * - `budget_exceeded`：超出回合总预算，优雅收尾；
+     * - `max_steps`：用满步数上限；
+     * - `stopped`：中途收到停止请求（优雅停止通道）。
+     */
+    private class TurnEndStatus {
+        @Volatile
+        var value: String = "completed"
+            private set
+
+        fun set(status: String) {
+            value = status
+        }
+    }
+
+    /**
      * [runTurn] 的回合体（包一层是为了让日志的「开/关」包住所有出口，
      * 包括三个正常 return 与两条异常路径）。
      *
      * @param turn 本回合的日志句柄，null = 不记录。
+     * @param clock R5 的时间基准与回合号锚点。
      */
     private suspend fun runTurnBody(
         userInput: String,
         images: List<String>,
         priorMessages: List<ChatMessage>,
-        turn: TurnJournal.Turn?
+        turn: TurnJournal.Turn?,
+        clock: TurnClock,
+        status: TurnEndStatus
     ): List<ChatMessage> {
         val loopStart = System.currentTimeMillis()
         // 内核暴露（core/KernelExposure）：按能力档位选工具面——W-102 起云端与端侧都只默认
@@ -386,7 +491,20 @@ class RealAgentLoop(
         fun turnResult(): List<ChatMessage> = messages.drop(priorMessages.size)
         checkpoint?.invoke(messages)
 
+        // R5：回合开始事件。工具面规模取「当前暴露面」的可见工具数——
+        // 用户报「模型没按我说的做」时，第一眼要确认的就是「它到底看得见哪些工具」。
+        clock.emit(
+            TurnEvent.TurnStarted(
+                turnId = clock.turnId,
+                step = 0,
+                elapsedMs = clock.elapsed(),
+                inputChars = userInput.length,
+                visibleToolCount = exposure0.visible.size,
+            )
+        )
+
         repeat(maxSteps) { step ->
+            clock.step(step)
             // T05：每轮开始复查取消——UI 点「停止」后 ≤1 轮内退出
             currentCoroutineContext().ensureActive()
             // R2 第三层：回合总预算软截止。只在**步边界**判，不在工具执行中途打断——
@@ -399,6 +517,7 @@ class RealAgentLoop(
                     "回合超时：已运行 ${elapsed}ms（预算 ${turnBudgetMs}ms），在第 $step 步前优雅收尾"
                 )
                 hooks.beforeStop()
+                status.set("budget_exceeded")
                 messages.add(
                     AssistantMessage(
                         "⏱ 本次任务已连续运行 ${turnBudgetMs / 60_000} 分钟，先停在这里（防止一直占着设备）。\n" +
@@ -420,9 +539,47 @@ class RealAgentLoop(
             // messages 本身保持完整（UI 工具卡片与落盘历史不受影响）。
             // 视图在重试循环外算一次：同一请求的多次重试必须发完全相同的载荷。
             val requestMessages = buildRequestMessages(messages, turnInputIndex)
+            // R5：请求视图算完（暴露 + 预算 + 截断）→ prompt.plan。
+            // 记估算 token 是为了回答「是不是上下文撑爆了」——这类问题在改代码时看不出来，
+            // 只有把当次的估算值与可见工具数放在一起看才有意义。
+            clock.emit(
+                TurnEvent.PromptPlanned(
+                    turnId = clock.turnId,
+                    step = step,
+                    elapsedMs = clock.elapsed(),
+                    visibleToolCount = exposure.visible.size,
+                    estimatedTokens = requestMessages.sumOf { ContextBudget.messageTokens(it) },
+                    groups = exposure.groups.map { it.first },
+                )
+            )
+            // R5：llm.call。重试循环在 callWithRetry 内部，因此这里发的是**首次尝试**；
+            // 重试由 callWithRetry 自己发 RetryStarted（既有通道），不重复计入时间线——
+            // 时间线的粒度是「一次请求往返」，重试属于同一次往返的内部行为。
+            clock.emit(
+                TurnEvent.LlmCallStarted(
+                    turnId = clock.turnId,
+                    step = step,
+                    elapsedMs = clock.elapsed(),
+                    attempt = 1,
+                )
+            )
+            val llmStart = System.currentTimeMillis()
             val resp = try {
                 callWithRetry { chatOnce(requestMessages, exposure) }
             } catch (e: Throwable) {
+                // R5：失败也要留一条 llm.end ——「卡住」与「失败了」在用户嘴里是一样的
+                // （都是没回话），必须能从时间线区分开。
+                clock.emit(
+                    TurnEvent.LlmCallEnded(
+                        turnId = clock.turnId,
+                        step = step,
+                        elapsedMs = clock.elapsed(),
+                        attempt = 1,
+                        durationMs = System.currentTimeMillis() - llmStart,
+                        success = false,
+                        code = if (e is CancellationException) "cancelled" else "llm_error",
+                    )
+                )
                 // 取消不是失败。点「停止」会取消本协程，CancellationException 从这里穿出去；
                 // 原来一律打 ERROR，真机日志就留下「ERROR [LLM] 调用失败
                 // kotlinx.coroutines.JobCancellationException」——用户看到红色 ERROR，
@@ -434,6 +591,17 @@ class RealAgentLoop(
                 }
                 throw e
             }
+            clock.emit(
+                TurnEvent.LlmCallEnded(
+                    turnId = clock.turnId,
+                    step = step,
+                    elapsedMs = clock.elapsed(),
+                    attempt = 1,
+                    durationMs = System.currentTimeMillis() - llmStart,
+                    success = true,
+                    toolCallCount = resp.toolCalls.size,
+                )
+            )
             AgentLogger.i(
                 "AgentLoop",
                 "LLM 返回：${System.currentTimeMillis() - stepStart}ms，toolCalls=${resp.toolCalls.size}"
@@ -448,6 +616,7 @@ class RealAgentLoop(
                     "运行结束：${System.currentTimeMillis() - loopStart}ms，消息数=${messages.size}"
                 )
                 hooks.beforeStop()
+                status.set("completed")
                 return turnResult()
             }
 
@@ -459,13 +628,13 @@ class RealAgentLoop(
             // T01 三段式之执行 + commit：本批工具执行（T03 并发判据在 executor/loop 协作下生效）
             val stepImages = mutableListOf<String>()
             val results = try {
-                executeBatch(resp.toolCalls, stepImages, turnRegistry, turn, step)
+                executeBatch(resp.toolCalls, stepImages, turnRegistry, turn, step, clock)
             } catch (cancel: CancellationException) {
                 // T05 树尾闭合：不信任取消时 execute() 的返回值——工具被 kill 后可能返回假成功。
                 // 在 NonCancellable 内给本 Assistant 里所有**未配对**的 ToolCall 补错误 ToolResult，
                 // 保证「已 commit 的 ToolCall 必有配对 ToolResult」，再重抛取消。
                 withContext(NonCancellable) {
-                    closePendingToolResults(resp.toolCalls, messages, turnRegistry, turn, step)
+                    closePendingToolResults(resp.toolCalls, messages, turnRegistry, turn, step, clock)
                 }
                 throw cancel
             }
@@ -483,6 +652,16 @@ class RealAgentLoop(
 
             // R1：本步所有调用都已应答，关闭该步。修复器据此不再往这个步里补结果。
             turn?.stepClosed(step)
+            // R5：本步收口事件。工具事件已成对发出（每个 tool.start 都有 tool.end），
+            // 这一条把「本步一共跑了几个工具」标出来——排障时能一眼看出是哪一批卡住。
+            clock.emit(
+                TurnEvent.StepClosed(
+                    turnId = clock.turnId,
+                    step = step,
+                    elapsedMs = clock.elapsed(),
+                    toolCount = resp.toolCalls.size,
+                )
+            )
 
             // T05：每轮结束再复查一次（工具批可能执行很久，结束时 UI 可能已点停止）
             currentCoroutineContext().ensureActive()
@@ -490,6 +669,7 @@ class RealAgentLoop(
             if (!shouldContinueNow()) {
                 AgentLogger.i("AgentLoop", "shouldContinue 返回 false 或收到 stop() 请求，中途停止")
                 hooks.beforeStop()
+                status.set("stopped")
                 messages.add(AssistantMessage("⏹ 已根据请求停止。"))
                 return turnResult()
             }
@@ -497,6 +677,7 @@ class RealAgentLoop(
 
         AgentLogger.w("AgentLoop", "达到最大步数 $maxSteps，任务可能未完成")
         hooks.beforeStop()
+        status.set("max_steps")
         messages.add(
             AssistantMessage(
                 "⚠️ 本次任务已用满 $maxSteps 步（防止无限打转的硬上限），不是字数或 token 用完。\n" +
@@ -565,7 +746,8 @@ class RealAgentLoop(
         images: MutableList<String>,
         turnRegistry: ToolRegistry,
         turn: TurnJournal.Turn?,
-        step: Int
+        step: Int,
+        clock: TurnClock
     ): List<ToolMessage> {
         val seenFingerprints = HashSet<String>()
         val duplicateFlags = calls.map { call ->
@@ -598,7 +780,7 @@ class RealAgentLoop(
             // 便于日志审计与用户预期
             calls.mapIndexed { i, call ->
                 executeOne(
-                    executor, call, descriptors[i], duplicateFlags[i], images, turn, step
+                    executor, call, descriptors[i], duplicateFlags[i], images, turn, step, clock
                 ).message
             }
         } else {
@@ -617,7 +799,7 @@ class RealAgentLoop(
                                 val localImages = mutableListOf<String>()
                                 executeOne(
                                     executor, call, descriptors[i], duplicateFlags[i], localImages,
-                                    turn, step
+                                    turn, step, clock
                                 ) to localImages
                             }
                         }.awaitAll()
@@ -647,9 +829,25 @@ class RealAgentLoop(
         duplicateInBatch: Boolean,
         images: MutableList<String>,
         turn: TurnJournal.Turn?,
-        step: Int
+        step: Int,
+        clock: TurnClock
     ): ToolCallOutcome.Completed {
         onEvent?.invoke(AgentEvent.ToolStarted(call))
+        // R5：tool.start —— 排在**执行之前**。
+        //
+        // 位置很关键：排障要回答「卡在哪一次调用」，而「卡住」的表现恰恰是
+        // 「只有 start 没有 end」。若 start 排在执行之后，卡住时就只剩上一条 end，
+        // 定位到的会是**上一次成功的调用**——指向错误的现场。
+        clock.emit(
+            TurnEvent.ToolCallStarted(
+                turnId = clock.turnId,
+                step = step,
+                elapsedMs = clock.elapsed(),
+                tool = call.name,
+                argsSummary = call.arguments.toString().take(120),
+            )
+        )
+        val toolStart = System.currentTimeMillis()
         val outcome = try {
             val d = descriptor ?: ToolDescriptor(call.name, call.name, "{}")
             if (executor is BatchToolExecutor) {
@@ -668,6 +866,18 @@ class RealAgentLoop(
         if (outcome is ToolCallOutcome.Completed) {
             images.addAll(outcome.images)
             onEvent?.invoke(AgentEvent.ToolFinished(outcome.message))
+            // R5：tool.end —— 与上面的 tool.start 配对。
+            clock.emit(
+                TurnEvent.ToolCallEnded(
+                    turnId = clock.turnId,
+                    step = step,
+                    elapsedMs = clock.elapsed(),
+                    tool = call.name,
+                    code = outcome.code,
+                    isError = outcome.message.isError,
+                    durationMs = System.currentTimeMillis() - toolStart,
+                )
+            )
             // R1：有结局就落盘。业务失败也算「有结局」——日志层只关心「这条调用还会不会被补」，
             // 失败原因由 ToolMessage 携带，不进日志（日志是恢复依据，不是排障全文）。
             turn?.toolSettled(
@@ -683,6 +893,19 @@ class RealAgentLoop(
         AgentLogger.w("AgentLoop", "executor 对 ${call.name} 返回了中断态 outcome，按闭合语义补齐")
         val filled = interruptToolMessage(call, outcome)
         onEvent?.invoke(AgentEvent.ToolFinished(filled))
+        // R5：这条也要补 tool.end，否则时间线里留下一个没有终态的 start——
+        // 而「有 start 无 end」正是「卡住」的判据，不能被防御路径污染。
+        clock.emit(
+            TurnEvent.ToolCallEnded(
+                turnId = clock.turnId,
+                step = step,
+                elapsedMs = clock.elapsed(),
+                tool = call.name,
+                code = if (outcome is ToolCallOutcome.Unknown) "cancelled_unknown" else "cancelled",
+                isError = true,
+                durationMs = System.currentTimeMillis() - toolStart,
+            )
+        )
         return ToolCallOutcome.Completed(filled, filled.images)
     }
 
@@ -704,7 +927,8 @@ class RealAgentLoop(
         messages: MutableList<ChatMessage>,
         turnRegistry: ToolRegistry,
         turn: TurnJournal.Turn?,
-        step: Int
+        step: Int,
+        clock: TurnClock
     ) {
         val paired = messages.filterIsInstance<ToolMessage>().mapTo(HashSet()) { it.id }
         val executor = toolExecutor(turnRegistry)
@@ -716,6 +940,20 @@ class RealAgentLoop(
             val msg = interruptToolMessage(call, verdict)
             messages.add(msg)
             onEvent?.invoke(AgentEvent.ToolFinished(msg))
+            // R5：取消闭合也要补 tool.end。这些调用在时间线里已经有 tool.start
+            // （执行前埋的），若这里不补终态，时间线就会留下「有 start 无 end」的
+            // 假卡点——把「用户点了停止」误报成「卡住了」。
+            clock.emit(
+                TurnEvent.ToolCallEnded(
+                    turnId = clock.turnId,
+                    step = step,
+                    elapsedMs = clock.elapsed(),
+                    tool = call.name,
+                    code = if (verdict is ToolCallOutcome.Unknown) "cancelled_unknown" else "cancelled",
+                    isError = true,
+                    durationMs = 0L,
+                )
+            )
             // R1：取消也要落终态。否则重启后修复器看到「已派发、无结果」，
             // 会把它判成 OUTCOME_UNKNOWN——用户明明点了停止，下一轮却被要求「先核对」。
             // 执行层已经给出判定（只读确定未完成 / 写操作结局未知），日志照抄即可。

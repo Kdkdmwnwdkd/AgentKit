@@ -34,6 +34,7 @@ import com.example.agentkit.automation.UiSwipeTool
 import com.example.agentkit.automation.UiTapTool
 import com.example.agentkit.automation.UiTreeTool
 import com.example.agentkit.core.agent.RealAgentLoop
+import com.example.agentkit.core.agent.LoggingTurnObserver
 import com.example.agentkit.core.capability.ToolActivationStore
 import com.example.agentkit.core.AgentLogger
 import com.example.agentkit.core.KernelExposure
@@ -2268,6 +2269,9 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         // Hotfix2：工具调用过程实时上屏（执行中卡 → 终态卡），
         // 修掉「AI 干完什么都在黑盒里、跑完才甩结果」的体验缺陷
         onEvent = ::handleAgentEvent,
+        // R5：回合结构化事件 → 日志。一条带回合号与耗时的完整时间线，
+        // 用户报「卡住了」时据此定位到最后一个 tool.start（没配对 end 的那条）。
+        observer = LoggingTurnObserver(),
         // Phase 2 DoD②：T01 流式文本增量 → 打字机草稿气泡（重新生成的新变体流式填入）
         onTextDelta = ::handleTextDelta,
         // 功能五（P1-9）：推理过程增量 → handleReasoningDelta（与正文分流，UI 折叠块）
