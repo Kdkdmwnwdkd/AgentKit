@@ -47,3 +47,23 @@ ADB=… bash r1-interrupt.sh verify     # 重启后检查修复结果
 ANR 时应用主线程栈是空的（`Looper.pollOnce` 空转），是**输入进不来**，不是应用卡住；
 同一台机器上未改动的 1.14 版本表现一致。自动化脚本要多留重试与等待，别把这类超时
 当成被测代码的问题。
+
+## 2026-11-03 复跑结果（R2/R4 落地后）
+
+`r1-approval-window.sh` 的两条判据在真机上手工走通，可作对照基线：
+
+```
+发 write（mock 触发 write_file）→ 审批弹窗期间 am force-stop
+  杀前：  OPEN → ASSIST 0 write_file:call_mock_1        ← 无 DISP
+  重启后：SETTLE 0 call_mock_1 NOT_DISPATCHED journal_not_dispatched
+          STEP 0
+          CLOSE interrupted
+
+对照组：同一条 write，审批等 30 秒超时被拒
+  OPEN → ASSIST → SETTLE 0 call_mock_1 FAILED           ← 同样无 DISP
+  ASSIST 与 SETTLE 相隔 33.4 秒，正好是审批等待窗口
+```
+
+两条路径都说明记账点在审批之后：弹窗期间无论拒绝还是被杀，都不会留下
+「已派发」的假记录。自动化脚本若跑不出这个结果，先检查 `write` 是否真的
+触发了审批（mock 的 `write` 分支按 tool 消息数递增内容，重复发也能触发）。
