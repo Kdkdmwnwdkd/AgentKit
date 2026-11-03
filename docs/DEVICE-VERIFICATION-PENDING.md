@@ -112,6 +112,9 @@
 | O4 | 聚合商换上游重试（R10） | 用 OpenRouter / 硅基流动连续请求，撞到 429 或 402 | 日志应有 `第 N 次调用失败，准备重试`，且 N 最多到 4（官方直连只到 3）。若 402 一次就失败，说明档位没生效 |
 | O5 | 长对话不再「忘了前面」（R10） | 接 deepseek（64k）把上下文预算调到 100k，聊到 60k+ token | 实际预算应被压到 32k（窗口一半）；表现为压缩提前发生，而不是请求 400 或静默截断 |
 | O6 | 第三层归一化有没有乱判（R10） | 任何失败后看日志 | `provider.misclassified` 若频繁出现且 evidence 不相干，说明关键词表需要收窄——这是唯一能发现误判的入口 |
+| O7 | 长对话不再越聊越卡（R13） | 一次连续对话拉到 100+ 条消息，全程流式输出 | 滚动与输入应保持跟手。会话写入已改成 400ms 去抖（`ConversationStore.persistCount` 可查写盘次数）：100 条消息的写入次数应在个位数，而不是 100 次 |
+| O8 | 工具数组参数在三家都能用（R11） | 用 OpenAI / Claude / Gemini 各发一次「并行查三个文件」触发 `spawn_agents` | 模型应正确产出 `tasks` 数组。修前 schema 里 `items` 是空的，严格实现（Gemini）会拒掉整个工具声明，表现为「这个工具像不存在」 |
+| O9 | 断电不丢会话（R12） | 非必做：写入过程中强杀进程（`am force-stop`）后重进 | 会话要么是完整的一条，要么回到上一版；**不能**是空文件或半截 JSON。空文件说明 fsync 没生效 |
 
 ---
 
@@ -124,6 +127,10 @@
 | 回合事件 / 崩溃恢复 | `run-r7-verification.sh` | 20/0 |
 | 技能脚本链路 | `run-batchb-verification.sh` | 89/0 |
 | 工具预算 / 作用域 | `run-runtime-capability-verification.sh` | 46/0 |
+| 工具 schema 单点序列化 | `run-r11-verification.sh` | 11/0 |
+| 原子写（真文件 / 真并发） | `run-r12-verification.sh` | 13/0 |
+| 会话落盘去抖 | `run-r13-verification.sh` | 8/0 |
+| 架构守卫（分层 / 行数 / 单点） | `run-arch-guard-verification.sh` | 5/0 |
 
 真机验的是**这些断言覆盖不到的那一层**：真实 proot 进程的生死、真实 Compose 生命周期、
 真实分享面板。断言通过不代表真机通过，反之亦然——两边都要，但不用重复。

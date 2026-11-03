@@ -11,6 +11,7 @@ import com.example.agentkit.core.LLMConfig
 import com.example.agentkit.core.PingResult
 import com.example.agentkit.core.SystemMessage
 import com.example.agentkit.core.ToolCall
+import com.example.agentkit.core.ToolSchemaJson
 import com.example.agentkit.core.ToolMessage
 import com.example.agentkit.core.UserMessage
 import kotlinx.coroutines.Dispatchers
@@ -386,20 +387,8 @@ class GeminiClient(
     private fun toApiTool(tool: AgentTool): JsonObject = buildJsonObject {
         put("name", tool.name)
         put("description", tool.description)
-        putJsonObject("parameters") {
-            put("type", "object")
-            putJsonObject("properties") {
-                val s = tool.parameters
-                s.properties.forEach { (k, p) ->
-                    putJsonObject(k) {
-                        put("type", p.type)
-                        if (p.description.isNotBlank()) put("description", p.description)
-                        p.enum?.let { e -> putJsonArray("enum") { e.forEach { add(it) } } }
-                    }
-                }
-            }
-            putJsonArray("required") { tool.parameters.required.forEach { add(it) } }
-        }
+        // Gemini 用 parameters（且对 schema 校验最严：array 无 items 会拒整个声明）
+        put("parameters", ToolSchemaJson.objectSchema(tool.parameters))
     }
 
     companion object {

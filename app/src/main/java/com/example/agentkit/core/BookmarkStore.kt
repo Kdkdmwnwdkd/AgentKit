@@ -1,5 +1,6 @@
 package com.example.agentkit.core
 
+import com.example.agentkit.core.io.AtomicJsonFile
 import java.io.File
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
@@ -119,13 +120,8 @@ class BookmarkStore(private val file: File) {
 
     private fun persist(items: List<Bookmark>) {
         cache = items.toMutableList()
-        runCatching {
-            file.parentFile?.mkdirs()
-            val tmp = File(file.parentFile, "${file.name}.tmp")
-            tmp.writeText(json.encodeToString(items))
-            if (file.exists()) file.delete()
-            tmp.renameTo(file)
-        }
+        // 旧写法先 delete 再 rename：rename 失败就彻底丢光收藏。改走统一原子写
+        AtomicJsonFile.write(file, json.encodeToString(items))
     }
 
     companion object {

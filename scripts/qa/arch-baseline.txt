@@ -1,0 +1,29 @@
+# 架构基线（arch guard 的唯一白名单）
+#
+# 由 `scripts/qa/run-arch-guard-verification.sh` 读取。规则只有一条：
+# **只减不增**。加条目等于当场把一条已知违规合法化，加之前先想清楚「为什么现在不能修」。
+#
+# 三种条目：
+#   layer <path>            core 内部允许 import ui / tools / MainActivity 的文件（分层豁免）
+#   lines <path> <max>      >1500 行的存量文件，max = 冻结上限（行数超过即红）
+#
+# 语法：字段用空格分隔；# 开头为注释；空行忽略。
+
+# ── 分层豁免 ─────────────────────────────────────────────────────────────
+# 曾经这里是 ConversationStore.kt（core → ui.UiItem）。P4-1 把 UiItem 下沉到
+# core/UiItem.kt 后条目已删除——这条记录留着，是为了说明「豁免可以有，但必须还」。
+# 三个 Service/Notifier 用 MainActivity 只是为了「点通知回主界面」这一个动作。
+# 正解是抽 `launchIntent(): Intent` 到 app 层注入，但那是 P4 的结构工作；
+# 现在冻结，防止第四个文件也这么写。
+layer app/src/main/java/com/example/agentkit/core/agent/AgentRunService.kt
+layer app/src/main/java/com/example/agentkit/core/agent/SurvivalCheckService.kt
+layer app/src/main/java/com/example/agentkit/core/job/JobNotifier.kt
+
+# ── 行数冻结 ─────────────────────────────────────────────────────────────
+# 超标原因各不相同，共同点是「拆分需要一天以上、且拆分本身没有行为收益」。
+# 上限是冻结时的实际行数，只准往下调：改小了就同步改小这里的数字。
+lines app/src/main/java/com/example/agentkit/ui/ChatViewModel.kt 4363
+lines app/src/main/java/com/example/agentkit/ui/ChatScreen.kt 3160
+lines app/src/main/java/com/example/agentkit/ui/ModelConfigScreen.kt 2309
+lines app/src/main/java/com/example/agentkit/core/agent/RealAgentLoop.kt 1560
+lines app/src/main/java/com/example/agentkit/ui/AppScaffold.kt 1516

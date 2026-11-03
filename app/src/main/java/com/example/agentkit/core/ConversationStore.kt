@@ -1,7 +1,8 @@
 package com.example.agentkit.core
 
+import com.example.agentkit.core.io.AtomicJsonFile
 import com.example.agentkit.core.llm.objOrNull
-import com.example.agentkit.ui.UiItem
+import com.example.agentkit.core.UiItem
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
@@ -267,14 +268,39 @@ class ConversationStore(file: File) {
     private val items = mutableListOf<ConversationRecord>()
 
     /**
-     * 落盘执行器：单线程 + daemon，FIFO 串行。
+     * 落盘执行器：**单线程 + 延迟调度**（去抖），daemon。
+     *
      * 为什么异步：工具事件（开始/结束）每次都会追加消息，主线程同步重写整个
-     * conversations.json 会 jank；串行执行器保证写序不乱、不会两个 persist 交叉。
-     * daemon 线程不拖住进程退出；进程被杀时最多丢失「最后一次预约还没执行」的少量消息。
+     * conversations.json 会 jank；单线程保证写序不乱、不会两个 persist 交叉。
+     *
+     * 为什么要去抖（R12 补）：流式输出时每个 token 都会追加一条 assistant 消息，
+     * 旧实现是「每次变更排一次全量写」。会话到几万字时，一次全量序列化 + 写盘
+     * 要几十毫秒，而 token 每秒来几十个——写盘直接把写线程压满，越聊越卡。
+     * 加了 fsync 之后这个代价更明显（每次都要等磁盘确认）。
+     *
+     * 现在：变更只置脏标记并把「400ms 后写」的任务往后推；窗口内的 N 次变更
+     * 合并成一次写。进程被杀最多丢最后 400ms 的增量（流式输出中断本来就会丢当前
+     * 那段没写完的回复，不会额外损失）。
      */
-    private val persistExecutor = Executors.newSingleThreadExecutor { r ->
+    private val persistScheduler = Executors.newSingleThreadScheduledExecutor { r ->
         Thread(r, "conversation-store-writer").apply { isDaemon = true }
     }
+
+    /**
+     * 已执行的全量写次数（诊断用）。
+     *
+     * 为什么要暴露：用户报「聊久了变卡」时，先看这个数是每秒几次。没有它只能
+     * 凭感觉猜「是不是写盘太频繁」，而写盘是最容易被误当成嫌疑人的一项。
+     */
+    @Volatile
+    var persistCount: Long = 0L
+        private set
+
+    /** 有未落盘的变更。 */
+    private val persistDirty = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /** 已排的延迟任务，用来在下次变更时取消旧的（这就是「去抖」本身）。 */
+    private val pendingPersist = java.util.concurrent.atomic.AtomicReference<java.util.concurrent.ScheduledFuture<*>?>(null)
 
     init {
         runCatching { file.parentFile?.mkdirs() }
@@ -342,7 +368,7 @@ class ConversationStore(file: File) {
             messages = emptyList()
         )
         synchronized(lock) { items.add(rec) }
-        schedulePersist()
+        schedulePersist(urgent = true)
         return rec.id
     }
 
@@ -518,7 +544,7 @@ class ConversationStore(file: File) {
     /** 删除会话（含其全部消息，不可恢复——UI 层已有二次确认）。 */
     fun delete(convId: String) {
         synchronized(lock) { items.removeAll { it.id == convId } }
-        schedulePersist()
+        schedulePersist(urgent = true)
     }
 
     /**
@@ -552,7 +578,7 @@ class ConversationStore(file: File) {
             items.clear()
             items.addAll(list.map { migrate(it) })
         }
-        schedulePersist()
+        schedulePersist(urgent = true)
     }
 
     /* ------------------------------ 内部实现 ------------------------------ */
@@ -598,13 +624,52 @@ class ConversationStore(file: File) {
         return rec.copy(messages = messages, turns = turns)
     }
 
-    /** 预约一次异步落盘（执行器 FIFO，多次预约变成有序的多次全量写，最终态一致）。 */
-    private fun schedulePersist() {
-        runCatching {
-            persistExecutor.execute {
-                runCatching { persist() }
-            }
+    /**
+     * 预约一次异步落盘。
+     *
+     * @param urgent true = 立即写（结构性变更：新建/删除/整库恢复）。
+     *   这类操作 400ms 内被杀会「看起来没生效」——删掉的会话又回来了，
+     *   比丢一条流式增量难解释得多，所以不吃去抖窗口。
+     */
+    private fun schedulePersist(urgent: Boolean = false) {
+        persistDirty.set(true)
+        if (urgent) {
+            runCatching { pendingPersist.getAndSet(null)?.cancel(false) }
+            runCatching { persistScheduler.execute { flushNow() } }
+            return
         }
+        runCatching {
+            val next = persistScheduler.schedule(
+                { flushNow() },
+                PERSIST_DEBOUNCE_MS,
+                java.util.concurrent.TimeUnit.MILLISECONDS
+            )
+            pendingPersist.getAndSet(next)?.cancel(false)
+        }
+    }
+
+    /**
+     * 把脏数据写下去（幂等：没有脏标记就直接返回）。
+     *
+     * 标志在写之前清除——写的过程中产生的新变更会重新置脏并排下一轮，
+     * 不会因为「清得太晚」被吞掉。
+     */
+    private fun flushNow() {
+        if (!persistDirty.getAndSet(false)) return
+        runCatching {
+            persist()
+            persistCount++
+        }
+    }
+
+    /**
+     * 立即落盘（App 切后台 / 进程即将退出 / 用户点了「导出」时调用）。
+     *
+     * 不去抖窗口里干等：把写任务直接插到调度器队列，会在 400ms 内完成。
+     */
+    fun flush() {
+        if (!persistDirty.get()) return
+        runCatching { persistScheduler.execute { flushNow() } }
     }
 
     /**
@@ -613,21 +678,10 @@ class ConversationStore(file: File) {
      */
     private fun persist() {
         val snapshot = synchronized(lock) { items.toList() }
-        runCatching {
-            val payload = json.encodeToString(snapshot)
-            tmpFile.writeText(payload)
-            if (file.exists()) {
-                runCatching {
-                    if (bakFile.exists()) bakFile.delete()
-                    file.copyTo(bakFile, overwrite = true)
-                }
-            }
-            if (!tmpFile.renameTo(file)) {
-                // 极少数文件系统 rename 失败：退化为直接写，保证至少有一份可读数据
-                file.writeText(payload)
-                runCatching { tmpFile.delete() }
-            }
-        }
+        val payload = runCatching { json.encodeToString(snapshot) }.getOrNull() ?: return
+        // 会话是最贵的数据：丢了不是「少一条记录」，是整段对话蒸发。
+        // 统一原子写保证「写完 → fsync → rename」，断电最差回到上一版。
+        AtomicJsonFile.write(file, payload)
     }
 
     private fun readTextOrEmpty(f: File): String =
@@ -638,6 +692,9 @@ class ConversationStore(file: File) {
         else runCatching { json.decodeFromString<List<ConversationRecord>>(text) }.getOrNull()
 
     private companion object {
+        /** 去抖窗口：足够合并一次流式输出的高频追加，又短到用户感知不到「刚发的话没存」。 */
+        const val PERSIST_DEBOUNCE_MS = 400L
+
         /** 单会话消息数封顶（超出丢最旧）。 */
         const val MAX_MESSAGES = 200
 

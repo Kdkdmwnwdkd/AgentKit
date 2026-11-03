@@ -1,5 +1,6 @@
 package com.example.agentkit.memory
 
+import com.example.agentkit.core.io.AtomicJsonFile
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
@@ -251,22 +252,10 @@ class MemoryStore(private val dir: File) {
      * rename（同一目录）是原子的，写一半被杀进程也不会把 memory.json 打成半截 JSON。
      */
     private fun persist() {
-        runCatching {
-            if (!dir.exists()) dir.mkdirs()
-            val payload = json.encodeToString(items.toList())
-            tmpFile.writeText(payload)
-            if (file.exists()) {
-                runCatching {
-                    if (bakFile.exists()) bakFile.delete()
-                    file.copyTo(bakFile, overwrite = true)
-                }
-            }
-            if (!tmpFile.renameTo(file)) {
-                // 极少数文件系统 rename 失败：退化为直接写，保证至少有一份可读数据
-                file.writeText(payload)
-                runCatching { tmpFile.delete() }
-            }
-        }
+        // 编码失败（理论上不该发生）不让 add/remove 崩：记忆是辅助能力，
+        // 写不进去最多是这条记不住，不该把整个对话打挂
+        val payload = runCatching { json.encodeToString(items.toList()) }.getOrNull() ?: return
+        AtomicJsonFile.write(file, payload)
     }
 
     private fun readTextOrEmpty(f: File): String =

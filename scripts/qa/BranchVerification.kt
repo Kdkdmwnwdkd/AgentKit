@@ -342,7 +342,7 @@ private fun testSelectedVariantWritesHistory() {
     check("ConversationRecord.toUiItems：助手气泡带变体游标元数据（variantIndex/Count/turnIndex）") {
         val rec = sampleRecord()
         val items = rec.toUiItems()
-        val asst = items.filterIsInstance<com.example.agentkit.ui.UiItem.Assistant>()
+        val asst = items.filterIsInstance<com.example.agentkit.core.UiItem.Assistant>()
         assertTrue("has assistant", asst.isNotEmpty())
         val first = asst.first()
         assertEquals("variantIndex", 1, first.variantIndex)

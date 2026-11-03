@@ -1,5 +1,6 @@
 package com.example.agentkit.core.agent
 
+import com.example.agentkit.core.io.AtomicJsonFile
 import java.io.File
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
@@ -69,19 +70,27 @@ class AgentRunStateStore(private val file: File) {
 
     /** 读当前状态；没有或损坏返回 null。 */
     fun load(): AgentRunState? = runCatching {
-        if (!file.isFile) return null
-        json.decodeFromString<AgentRunState>(file.readText())
+        // 主文件坏了回退 .bak：此处丢状态等于「忘了上次做到哪」，
+        // 比丢一条会话更难受——用户会看到助手从第一步重新开始。
+        val text = AtomicJsonFile.readWithBackupOrNull(file) { decodeOrNull(it) != null }
+            ?: return null
+        json.decodeFromString<AgentRunState>(text)
     }.getOrNull()
 
-    /** 写状态（原子：先写 tmp 再 rename，避免进程被杀时留下半个文件）。 */
+    /**
+     * 写状态（原子：tmp → fsync → rename）。
+     *
+     * 这里**不再先 delete 主文件**：旧写法 `file.delete(); tmp.renameTo(file)` 一旦
+     * rename 失败（存储满、只读挂载、外部存储异常），主文件已删、tmp 还在，
+     * 下次启动读到的就是 null——等于把「有进度可续」变成「什么都没发生」。
+     * rename 本身是原子覆盖，先删是纯粹的自伤。
+     */
     fun save(state: AgentRunState) {
-        runCatching {
-            val tmp = File(file.parentFile, "${file.name}.tmp")
-            tmp.writeText(json.encodeToString(state))
-            if (file.exists()) file.delete()
-            tmp.renameTo(file)
-        }
+        AtomicJsonFile.write(file, json.encodeToString(state))
     }
+
+    private fun decodeOrNull(text: String): AgentRunState? =
+        runCatching { json.decodeFromString<AgentRunState>(text) }.getOrNull()
 
     /** 清空（任务正常结束后调用）。 */
     fun clear() {

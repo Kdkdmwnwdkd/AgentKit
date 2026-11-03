@@ -42,6 +42,9 @@ DEPS="$STDLIB:$SERIALIZATION:$SER_CORE"
 
 SRC="$ROOT/app/src/main/java/com/example/agentkit"
 SRCS=(
+  "$SRC/core/AgentContract.kt"
+  "$SRC/core/UiItem.kt"
+  "$SRC/core/ToolResult.kt"
   "$SRC/core/BackupModels.kt"
   "$SRC/core/BackupArchive.kt"
   "$SRC/core/llm/JsonSafe.kt"

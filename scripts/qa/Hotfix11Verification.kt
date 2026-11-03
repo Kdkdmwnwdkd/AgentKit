@@ -783,8 +783,14 @@ private fun testPromptLibrary() {
     }
     check("S5 PromptStore 持久化纪律：原子写 tmp+bak + 首次种内置 + 补种不覆盖用户数据") {
         assertContains("S5", store, "class PromptStore(file: File)")
-        assertContains("S5", store, "tmpFile.renameTo(file)")
-        assertContains("S5", store, "file.copyTo(bakFile, overwrite = true)")
+        // R12 起原子写收敛到 AtomicJsonFile（tmp → fsync → rename，默认留 .bak）。
+        // 原先断言 `tmpFile.renameTo(file)` 是把「怎么实现」写死：换实现就必须改断言，
+        // 而它真正要守的是「不得直接 writeText 覆盖主文件」这条纪律。
+        assertContains("S5", store, "AtomicJsonFile.write(file, payload)")
+        assertTrue(
+            "S5: PromptStore 不得绕过原子写直接覆盖主文件",
+            !store.contains("file.writeText(payload)")
+        )
         assertContains("S5", store, "val merged = mergeWithBuiltins(parsed ?: emptyList())")
         assertContains("S5", store, "val missing = BUILTIN_PROMPTS.filter { it.id !in have }")
         assertContains("S5", store, "return missing + cleaned")

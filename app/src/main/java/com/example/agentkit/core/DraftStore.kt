@@ -1,5 +1,6 @@
 package com.example.agentkit.core
 
+import com.example.agentkit.core.io.AtomicJsonFile
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -74,13 +75,10 @@ class DraftStore(file: File) {
     }
 
     private fun persist() {
-        runCatching {
-            val payload = json.encodeToString(synchronized(lock) { drafts.toMap() })
-            tmpFile.writeText(payload)
-            if (!tmpFile.renameTo(file)) {
-                file.writeText(payload)
-                runCatching { tmpFile.delete() }
-            }
-        }
+        // 草稿是「用户刚打的字」，丢一次就是一次实打实的体验事故——必须带 fsync
+        val payload = runCatching {
+            json.encodeToString(synchronized(lock) { drafts.toMap() })
+        }.getOrNull() ?: return
+        AtomicJsonFile.write(file, payload)
     }
 }

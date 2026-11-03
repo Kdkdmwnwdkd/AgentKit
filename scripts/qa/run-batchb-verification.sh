@@ -44,6 +44,7 @@ DEPS="$STDLIB:$SERIALIZATION:$SER_CORE"
 
 SRC="$ROOT/app/src/main/java/com/example/agentkit"
 SRCS=(
+  "$SRC/core/io/AtomicJsonFile.kt"
   "$SRC/core/agent/AgentRunStateStore.kt"
   "$SRC/core/agent/ApprovalGrouping.kt"
   "$SRC/core/container/ToolchainInstaller.kt"
