@@ -2293,6 +2293,9 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         onReasoningDelta = ::handleReasoningDelta,
         // 真机第三轮 Bug A2：退避期间监听网络恢复——关掉飞行模式后「秒续」而不是干等满额
         networkRecovery = ConnectivityNetworkRecoveryWaiter(app),
+        // R10：重试档位跟着当前供应商走。lambda 而不是构造时取值——
+        // 用户在模型页切换供应商不必重启 App，下一次调用就该用新档位。
+        retryProfileProvider = { ProviderCatalog.retryOf(_config.value.providerId) },
         // W-102：粘性激活——同一会话第二次问「帮我截图」不必再开一遍 ui 组
         activeGroups = activeToolGroups
     )

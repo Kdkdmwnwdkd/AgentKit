@@ -117,8 +117,16 @@ fun main() {
     }
 
     check("S2 重试次数单一真源（429 第三档生效）") {
-        // 适配层删除后只剩 RealAgentLoop 一处默认值，不再存在「两处必须一致」的同步风险。
-        assertTrue("providerRetry 默认不是 3", "private val providerRetry: Int = 3" in loop)
+        // R10：次数真源从「RealAgentLoop 的构造参数默认值」搬到 RetryProfile。
+        // 默认 -1 表示「跟随档位」，档位默认 3——仍然只有一处定义次数，
+        // 只是那处现在住在档位里（35 家供应商可以各自覆盖，不用改循环）。
+        assertTrue(
+            "providerRetry 默认不是 -1（应跟随档位）",
+            "private val providerRetry: Int = -1" in loop
+        )
+        val retry = read("app/src/main/java/com/example/agentkit/core/llm/RetryProfile.kt")
+        assertTrue("官方档 maxRetries 不是 3", "maxRetries = 3" in retry)
+        assertTrue("循环没有跟随档位", "else profile.maxRetries" in loop)
     }
 
     check("V1 owner 会话 id 跨线程可见") {

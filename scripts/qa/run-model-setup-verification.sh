@@ -32,6 +32,7 @@ fi
 
 SRC="
 $ROOT/app/src/main/java/com/example/agentkit/core/llm/ConnectionDiagnosis.kt
+$ROOT/app/src/main/java/com/example/agentkit/core/llm/RetryProfile.kt
 $ROOT/app/src/main/java/com/example/agentkit/core/llm/ProviderCatalog.kt
 $ROOT/scripts/qa/ModelSetupVerification.kt
 "
