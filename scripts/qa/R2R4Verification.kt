@@ -9,9 +9,10 @@
  * 覆盖：
  *  R2-1 只读工具超时 → 错误结果 + 「可安全重试」措辞 + 不毒化熔断
  *  R2-2 写工具超时   → 错误结果 + 「状态未知，先核对」措辞 + 计入熔断
- *  R2-3 正常工具不受预算影响（不误杀）
- *  R2-4 LLM 单次调用超时 → 抛 LlmCallTimeoutException 且**只请求 1 次**（不重试）
- *  R2-5 回合总预算到点 → 步边界优雅收尾，补一条「回复继续」的助手消息
+ *  R2-3 等用户的工具（ask_user/plan_propose）不受只读预算影响
+ *  R2-4 正常工具不受预算影响（不误杀）
+ *  R2-5 LLM 单次调用超时 → 抛 LlmCallTimeoutException 且**只请求 1 次**（不重试）
+ *  R2-6 回合总预算到点 → 步边界优雅收尾，补一条「回复继续」的助手消息
  *  R4-1 子代理白名单不含 http_request / 任何写工具
  *  R4-2 MCP 外部工具必须走审批（并保守按写操作串行）
  *  R4-3 shell_run 参数级判据：只读命令免审、破坏性命令必审
@@ -92,6 +93,20 @@ private class SlowTool(
     }
 }
 
+/** 模拟 ask_user / plan_propose：readOnly 但会挂起等用户，执行器不应加预算。 */
+private class AwaitingTool(private val costMs: Long) : AgentTool {
+    override val name: String = "wait_user"
+    override val description: String = "测试用等用户工具"
+    override val parameters: JsonSchema = JsonSchema()
+    override val readOnly: Boolean = true
+    override val awaitsUser: Boolean = true
+
+    override suspend fun execute(args: JsonObject): ToolResult {
+        delay(costMs)
+        return ToolResult.ok(message = "用户已回答")
+    }
+}
+
 /** 记录调用次数、可配置每次耗时的假客户端（用于断言「超时不重试」）。 */
 private class ScriptedClient(
     override val id: String,
@@ -159,7 +174,23 @@ private suspend fun testToolTimeout() = runBlocking {
         assertContains("应要求先核对", msg.content, "不要直接重试")
     }
 
-    check("R2-3 正常工具不被预算误杀") {
+    check("R2-3 等用户的工具不受只读预算影响（ask_user 不能被 90s 掐断）") {
+        val registry = ToolRegistry().apply { register(AwaitingTool(costMs = 300)) }
+        val exec = RegistryToolExecutor(
+            registry = registry,
+            failureGuard = FailureGuard(),
+            hooks = NoopHooks,
+            readOnlyBudgetMs = 80,
+            writeBudgetMs = 80
+        )
+        val outcome = exec.execute(ToolCall("c4", "wait_user", buildJsonObject {}), descriptor("wait_user"))
+        val msg = (outcome as? ToolCallOutcome.Completed)?.message
+            ?: throw AssertionError("应是 Completed")
+        assertTrue("不应被判超时", !msg.isError)
+        assertContains("应拿到用户回答", msg.content, "用户已回答")
+    }
+
+    check("R2-4 正常工具不被预算误杀") {
         val registry = ToolRegistry().apply { register(SlowTool("fast_read", readOnly = true, costMs = 10)) }
         val exec = RegistryToolExecutor(
             registry = registry,
@@ -179,7 +210,7 @@ private suspend fun testToolTimeout() = runBlocking {
 private suspend fun testLlmAndTurnBudget() = runBlocking {
     println("\n[R2 第一层] LLM 单次调用 / [第三层] 回合总预算")
 
-    check("R2-4 LLM 超时只请求 1 次（不重试）") {
+    check("R2-5 LLM 超时只请求 1 次（不重试）") {
         val client = ScriptedClient("fake-hang", hangMs = 10_000)
         val loop = RealAgentLoop(
             llmProvider = { client },
@@ -203,7 +234,7 @@ private suspend fun testLlmAndTurnBudget() = runBlocking {
         assertTrue("只能请求 1 次，实际 ${client.streamCalls}", client.streamCalls == 1)
     }
 
-    check("R2-5 回合预算到点 → 步边界优雅收尾") {
+    check("R2-6 回合预算到点 → 步边界优雅收尾") {
         val client = ScriptedClient(
             "fake-reply", hangMs = 0,
             reply = AssistantMessage(content = "不该被调用")

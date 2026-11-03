@@ -63,6 +63,9 @@ class PlanTool(
     /** 只读：提交计划本身不改设备状态（批准后的执行才由其他工具完成）。 */
     override val readOnly = true
 
+    /** R2：等用户批准不算「工具卡死」，执行器不加预算（本工具自己有 300s 等待上限）。 */
+    override val awaitsUser = true
+
     override suspend fun execute(args: JsonObject): ToolResult {
         val summary = args["summary"]?.primOrNull()?.contentOrNull.orEmpty().trim()
         val steps = PlanLogic.parseSteps(args["steps"]?.primOrNull()?.contentOrNull.orEmpty())

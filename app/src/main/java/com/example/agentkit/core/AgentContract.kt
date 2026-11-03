@@ -43,6 +43,16 @@ interface AgentTool {
      */
     val readOnly: Boolean get() = false
 
+    /**
+     * 执行期间是否在**等用户**（R2）。
+     *
+     * `ask_user` / `plan_propose` 这类工具会挂起等待人回答，它们本身没有副作用，
+     * 因此标了 `readOnly = true`——但执行器的「只读 90 秒预算」对它们是错的：
+     * 用户思考三分钟不是「工具卡死」。标了本位的工具，执行器不加超时，
+     * 由工具自己的等待超时（`ask_user` 180s / `plan_propose` 300s）负责收尾。
+     */
+    val awaitsUser: Boolean get() = false
+
     /** 执行工具，返回统一契约结果（T02）。 */
     suspend fun execute(args: JsonObject): ToolResult
 }

@@ -45,6 +45,9 @@ class AskUserTool(
 
     override val readOnly = true
 
+    /** R2：等用户回答不算「工具卡死」，执行器不加预算（本工具自己有 180s 等待上限）。 */
+    override val awaitsUser = true
+
     override suspend fun execute(args: JsonObject): ToolResult {
         val question = args["question"]?.primOrNull()?.contentOrNull?.trim().orEmpty()
         if (question.isBlank()) {

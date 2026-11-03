@@ -319,11 +319,18 @@ class RegistryToolExecutor(
             // TimeoutCancellationException 也会被这里吞成 null，同样按超时处理）；
             // 其余 CancellationException 原样传播——用户点停止是取消，不是超时。
             val budget = if (tool.readOnly) readOnlyBudgetMs else writeBudgetMs
-            val result = withTimeoutOrNull(budget) { tool.execute(call.arguments) }
-                ?: return timeoutOutcome(
-                    call, tool.name, tool.readOnly, fingerprint, budget,
-                    System.currentTimeMillis() - start
-                )
+            // 等用户的工具不加预算：`ask_user` / `plan_propose` 标了 readOnly（确实无副作用），
+            // 但它们挂起时是在等人思考，不是卡死。用 90 秒把用户的问题掐掉是纯回归。
+            // 这两类工具自己有等待上限（180s / 300s），超时文案也更准确。
+            val result = if (tool.awaitsUser) {
+                tool.execute(call.arguments)
+            } else {
+                withTimeoutOrNull(budget) { tool.execute(call.arguments) }
+                    ?: return timeoutOutcome(
+                        call, tool.name, tool.readOnly, fingerprint, budget,
+                        System.currentTimeMillis() - start
+                    )
+            }
             val cost = System.currentTimeMillis() - start
             val imgUrls = result.parts.filterIsInstance<ToolPart.Image>().map { it.url }
             // T04：成功清指纹，失败累加计数；W-8：瞬时故障（服务未就绪等）三不——
