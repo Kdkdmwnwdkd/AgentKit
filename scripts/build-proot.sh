@@ -64,7 +64,10 @@ build_abi() {
   local abi="$1" api=26 deb fmt arch
   case "$abi" in
     aarch64) deb="libtalloc_2.5.0_aarch64.deb"; fmt="elf64-littleaarch64"; arch="aarch64" ;;
-    x86_64)  deb="libtalloc_2.5.0_x86_64.deb";  fmt="elf64-little";        arch="i386:x86-64" ;;
+    # fmt 必须用 llvm-objcopy 认识的 ELF 机器名：GNU objcopy 接受 elf64-little，
+    # LLVM 的只认 elf64-x86-64，写错会在 loader-wrapped.o 一步报
+    # "invalid output format: 'elf64-little'"，看起来像编译错误其实是格式串错。
+    x86_64)  deb="libtalloc_2.5.0_x86_64.deb";  fmt="elf64-x86-64";        arch="i386:x86-64" ;;
     *) echo "不支持的 ABI：$abi" >&2; return 1 ;;
   esac
 
@@ -103,8 +106,18 @@ PY
     LDFLAGS="-L$libdir -ltalloc" \
     loader/loader
 
-  # 原 makefile 用 awk 的 strtonum（gawk 专有），这里用 python 等价实现
-  python3 - "$src/loader/loader" <<'PY'
+  # 原 makefile 用 awk 的 strtonum（gawk 专有），这里用 python 等价实现。
+  #
+  # x86_64 不能走这段：pokedata_workaround 是 **ARM64 专用**的 loader 注入桩
+  # （loader/assembly.S 里整段在 `#if defined(__aarch64__)` 内），x86_64 的
+  # loader 只有 _start 一个符号，解析必然拿到 None 而中止。它在 x86_64 上也
+  # 根本不会被引用——mem.c 里那处 extern 连同调用点都在
+  # `#ifdef HAS_POKEDATA_WORKAROUND` 内。这里给个定义只为让链接期有符号可找。
+  if [ "$abi" = "x86_64" ]; then
+    printf '#include <unistd.h>\nconst ssize_t offset_to_pokedata_workaround = 0;\n' \
+      > "$src/loader/loader-info.c"
+  else
+    python3 - "$src/loader/loader" <<'PY'
 import subprocess, sys
 out = subprocess.run(['readelf', '-s', sys.argv[1]], capture_output=True, text=True).stdout
 def find(name):
@@ -121,6 +134,7 @@ open('loader/loader-info.c', 'w').write(
     'const ssize_t offset_to_pokedata_workaround=%d;\n' % (pw - st)
 )
 PY
+  fi
 
   # objcopy 的目标格式：llvm-objdump 与 GNU objdump 输出串不一致，直接写死
   make -j4 \
