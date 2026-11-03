@@ -75,6 +75,15 @@ class AgentKitApplication : Application() {
         // 运行层（Runtime）：能力注册与空闲释放策略。只建 SharedPreferences、
         // 注册能力、起一个 30 秒一轮的节拍协程——全是轻操作，不影响冷启动。
         // 失败不影响启动：本地模型的空闲释放退化为「常驻不卸载」，其余照常。
+        // 日志目录就绪——**必须早于运行层初始化**。
+        //
+        // 原先 `AgentLogger.init` 在 ChatViewModel 的 init 块里，而运行层
+        // （LocalLlmRuntime / LeaseRegistry）在 Application.onCreate 更早跑——
+        // 那段时间的日志全部落不了盘：租约登记、空闲回收、崩溃捕获器的安装
+        // 记录都查不到，排障时等于那段时间是黑的。
+        //
+        // 挪到这里之前先确认目录可用（runCatching 兜住：日志坏了不该阻止启动）。
+        runCatching { AgentLogger.init(File(filesDir, "logs")) }
         runCatching { LocalLlmRuntime.init(this) }
         // R3：租约回收节拍器（统一管理本地模型 / 终端 / 容器三类重资源的空闲释放）。
         // 启动失败不影响任何功能：各资源自己的释放路径仍可用，只是少了统一回收。

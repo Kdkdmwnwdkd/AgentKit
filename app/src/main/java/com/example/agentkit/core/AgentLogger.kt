@@ -137,7 +137,29 @@ object AgentLogger {
     }
 
     /** 初始化落盘目录、清理历史日志并启动异步写盘（幂等，可重复调用切换到新目录）。 */
+    /**
+     * 初始化日志目录。**幂等**——重复调用是 no-op。
+     *
+     * 幂等是必需的：`init` 会回读上一次运行的尾巴追加进内存缓冲，
+     * 调两次就把同一段历史**追加两遍**，UI 上看到的日志会重复。
+     *
+     * （R3 把首次调用从 ChatViewModel 挪到了 Application.onCreate，
+     * 那里是进程级最早点；ChatViewModel 里保留一次调用作兜底。）
+     */
     fun init(dir: File) {
+        if (initialized.compareAndSet(false, true)) {
+            doInit(dir)
+            return
+        }
+        // 已初始化：只补目录（万一首次 init 失败过），不重复回读历史
+        runCatching { if (!dir.exists()) dir.mkdirs() }
+        logDir = dir
+    }
+
+    /** 初始化标记（保证 [init] 只真正执行一次）。 */
+    private val initialized = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    private fun doInit(dir: File) {
         runCatching { if (!dir.exists()) dir.mkdirs() }
         logDir = dir
         // 先回读上一次运行的尾巴，再写本次启动的第一条。

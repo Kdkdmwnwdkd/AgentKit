@@ -1149,8 +1149,12 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     )
 
     init {
-        // L8：日志目录就绪后才能记录后续任何一行
-        AgentLogger.init(logDir)
+        // L8：日志目录就绪后才能记录后续任何一行。
+        //
+        // R3：日志初始化已挪到 `AgentKitApplication.onCreate`——运行层（租约登记、
+        // 空闲回收）比 ViewModel 更早跑，那段时间的日志必须能落盘。
+        // 这里保留调用是**幂等兜底**（Application 初始化失败时仍能补上）。
+        runCatching { AgentLogger.init(logDir) }
         // W-33：上次进程被杀时残留的 running 任务标为「结果未知」，不假装还在跑
         runCatching { jobStore.reconcile(System.currentTimeMillis()) }
         // B 批：Agent 长任务运行态对账——残留 running 说明上次进程被系统回收了，
