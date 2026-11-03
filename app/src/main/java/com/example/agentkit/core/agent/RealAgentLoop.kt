@@ -22,6 +22,8 @@ import com.example.agentkit.core.agent.journal.RunScope
 import com.example.agentkit.core.agent.journal.ToolSettleStatus
 import com.example.agentkit.core.agent.journal.TurnJournal
 import com.example.agentkit.core.llm.ChatStreamEvent
+import com.example.agentkit.core.llm.ErrorNormalizer
+import com.example.agentkit.core.llm.RetryProfile
 import com.example.agentkit.core.Prompt
 import com.example.agentkit.core.PromptAssembler
 import com.example.agentkit.core.Section
@@ -145,7 +147,23 @@ class RealAgentLoop(
     systemPrompt: String = DEFAULT_SYSTEM_PROMPT,
     maxSteps: Int = 60,
     private val maxParallelTools: Int = 5,
-    private val providerRetry: Int = 3,
+    /**
+     * 供应商瞬时失败重试次数（不含首次）。
+     *
+     * **`-1` = 跟随 [retryProfileProvider] 的档位**（R10 起的默认）。显式传非负值可覆盖，
+     * 主要给 harness 用（`providerRetry = 2` 让它精确控制尝试次数）。
+     *
+     * 改成一枚哨兵而不是继续写 3：35 家供应商共用同一个次数是 R10 修掉的缺陷——
+     * 官方直连 3 次够用，聚合中转商高峰期 3 次不够；而本地推理一次都不该重试。
+     * 用 -1 表示「没意见」，比用 3 表示「没意见」诚实：3 是一个具体主张，会被误读成
+     * 「所有供应商都该重试 3 次」。
+     */
+    private val providerRetry: Int = -1,
+    /**
+     * 当前供应商的重试档位（R10）。lambda 而非值：模型配置可在运行时切换，
+     * 档位必须跟着变，否则切到聚合商之后还在用官方档的次数。
+     */
+    private val retryProfileProvider: () -> RetryProfile = { RetryProfile.DEFAULT },
     private val maxHistoryMessages: Int = 40,
     /**
      * W-10 上下文预算（估算 token）。每轮请求前按此预算构建**请求视图**：
@@ -1131,11 +1149,14 @@ class RealAgentLoop(
      * 让它多跑一次无用请求（T05：点停止不得残留「正在恢复」，也不得多等）。
      */
     private suspend fun <T> callWithRetry(block: suspend () -> T): T {
+        val profile = retryProfileProvider()
+        // R10：次数来自档位；显式传非负值可以覆盖（harness 靠它精确控制尝试次数）
+        val maxRetries = if (providerRetry >= 0) providerRetry else profile.maxRetries
         var last: Throwable? = null
         // 本轮是否对外抛出过重试状态（决定收尾是否要抛 RetryFinished）
         var retrying = false
         try {
-            repeat(providerRetry + 1) { attempt ->
+            repeat(maxRetries + 1) { attempt ->
                 try {
                     return block()
                 } catch (cancel: CancellationException) {
@@ -1143,7 +1164,7 @@ class RealAgentLoop(
                     throw cancel
                 } catch (e: Throwable) {
                     last = e
-                    if (!isRetryable(e)) {
+                    if (!isRetryable(e, profile)) {
                         AgentLogger.w(
                             "LLM",
                             "不可重试错误，快速失败（第 ${attempt + 1} 次尝试）：${e.message?.take(160)}"
@@ -1155,9 +1176,9 @@ class RealAgentLoop(
                         "第 ${attempt + 1} 次调用失败，准备重试：${e.message?.take(160)}"
                     )
                     // 仅当确实还有下一次尝试时才通知 UI「准备重试」（attempt 为 1-based 重试序号）
-                    if (attempt < providerRetry) {
+                    if (attempt < maxRetries) {
                         onEvent?.invoke(
-                            AgentEvent.RetryStarted(attempt + 1, providerRetry, retryReason(e))
+                            AgentEvent.RetryStarted(attempt + 1, maxRetries, retryReason(e))
                         )
                         retrying = true
                         // 先公告再退避：让「正在恢复（n/N）」有稳定可见时长，并留出恢复窗口
@@ -1206,13 +1227,44 @@ class RealAgentLoop(
      * 是否值得重试：[LlmHttpException] 自身决定（429/5xx 可重试，401/403/400 不可），
      * 其余（超时、DNS、连接中断等网络 IO 异常）一律视为可重试。
      */
-    private fun isRetryable(e: Throwable): Boolean = when (e) {
+    /**
+     * 这个异常值不值得重试（R10：按当前供应商的档位判定）。
+     *
+     * 三层判据，顺序不能换：
+     *  1. 明确不该重试的异常类型（调用超时 / 本地推理）直接否——它们与供应商无关；
+     *  2. HTTP 错误先经 [ErrorNormalizer] 归一化成类别（状态码 → 结构化字段 → 关键词）；
+     *  3. 类别落到档位上：额度类看 `allowQuotaRetry`，其余类别默认可否，
+     *     但**档位的码集合是逃生门**——判成 UNKNOWN/BAD_REQUEST 而原始状态码在集合里时仍重试。
+     *
+     * 为什么要有逃生门：归一化是新逻辑，误判的代价是「本该重试的被快败」。
+     * 留一条「档位说这个码可以重试」的后路，比让新逻辑单点决定更安全。
+     */
+    private fun isRetryable(e: Throwable, profile: RetryProfile): Boolean = when (e) {
         // R2：一次调用超时说明连接已挂死，重试只会把 300 秒再等一遍（×4 = 20 分钟）。
         is LlmCallTimeoutException -> false
         // 本地推理失败是确定性的：同一段 prompt + 同一个 native 库，重试只是再失败一次。
         // 走退避重试会让用户干等 3s+10s 才看到一句「出错了」。
         is com.example.agentkit.core.llm.local.LocalInferenceException -> false
-        is LlmHttpException -> e.retryable
+        is LlmHttpException -> {
+            val verdict = ErrorNormalizer.classify(e.code, e.serverBody)
+            // 第三层（关键词）命中时记一条：这一层最容易误判，没有这条日志就永远不知道
+            // 它是救过命还是在乱判。provider 取不到时降级成 "?"，绝不因为记日志而抛异常。
+            if (verdict.fromKeyword) {
+                val pid = runCatching { llmProvider().id }.getOrDefault("?")
+                AgentLogger.w(
+                    "LLM",
+                    "provider.misclassified id=$pid code=${e.code} class=${verdict.cls} " +
+                        "evidence=${verdict.evidence.take(40)}"
+                )
+            }
+            when {
+                verdict.cls == ErrorNormalizer.FailureClass.QUOTA -> profile.allowQuotaRetry
+                // 逃生门：归一化说「不该重试」，但档位认这个状态码
+                !ErrorNormalizer.isRetryableByDefault(verdict.cls) ->
+                    profile.isRetryableCode(e.code)
+                else -> true
+            }
+        }
         else -> true
     }
 
@@ -1365,7 +1417,11 @@ class RealAgentLoop(
         turnInputIndex: Int? = null
     ): List<ChatMessage> {
         // 本地 llama.cpp 默认 n_ctx=4096，不能用云端预算——按通道自适应（见 ContextBudget）
-        val budget = ContextBudget.budgetForProvider(llmProvider().id, contextBudgetTokens)
+        // R10：云端再按模型窗口收敛（窗口未知时 contextWindowOf 返回 0，行为不变）
+        val pid = llmProvider().id
+        val budget = ContextBudget.budgetForProvider(
+            pid, contextBudgetTokens, com.example.agentkit.core.llm.ProviderCatalog.contextWindowOf(pid)
+        )
         val pruned = ContextBudget.pruneImages(
             messages,
             keepLast = keepRecentImages,

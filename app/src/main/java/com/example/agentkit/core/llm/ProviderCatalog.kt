@@ -39,7 +39,29 @@ data class LlmProvider(
     /** 是否必须填 API Key（本地部署为 false）。 */
     val requiresApiKey: Boolean = true,
     /** 一句话说明（UI 辅助文案）。 */
-    val note: String = ""
+    val note: String = "",
+    /**
+     * 上下文窗口（token）。**0 = 未知**，按全局预算走（R10）。
+     *
+     * 为什么要有：35 家共用一个 24k 预算，两边都吃亏——1M 窗口的模型浪费 97%
+     * 的上下文，8k 窗口的小模型直接溢出，靠 `maybeCompact` 兜底，
+     * 用户看到的是「聊到一半忘了前面」。有了这个字段，预算可以按窗口收敛。
+     *
+     * 填**保守值**：宁可少用，不能溢出。溢出表现为请求被服务端直接拒绝（400）
+     * 或静默截断，比「少带了几条历史」难排查得多。未确认的一律留 0。
+     */
+    val contextWindow: Int = 0,
+    /**
+     * 重试档位（R10）：这家愿意重试几次、认哪些码。
+     *
+     * 默认按**分组 + 协议风格**推导：聚合组走 [RetryProfile.AGGREGATOR]（多一次、
+     * 且认 402/403——它们常是「换个上游就好」），本地推理走 [RetryProfile.LOCAL]（不重试），
+     * 其余官方直连走 [RetryProfile.OFFICIAL]。个别条目仍可显式覆盖。
+     */
+    val retry: RetryProfile = when (group) {
+        ProviderGroup.AGGREGATOR -> RetryProfile.AGGREGATOR
+        else -> RetryProfile.byStyle(style)
+    },
 )
 
 /** 供应商分组（仅影响 UI 分段展示顺序）。 */
@@ -75,6 +97,7 @@ object ProviderCatalog {
             style = STYLE_OPENAI, defaultBaseUrl = "https://api.deepseek.com/v1",
             defaultModel = "deepseek-chat",
             popularModels = listOf("deepseek-chat", "deepseek-reasoner"),
+            contextWindow = 64_000,
             note = "深度求索官方；reasoner 支持思维链"
         ),
         LlmProvider(
@@ -82,6 +105,7 @@ object ProviderCatalog {
             style = STYLE_OPENAI, defaultBaseUrl = "https://api.moonshot.cn/v1",
             defaultModel = "kimi-k2-0905-preview",
             popularModels = listOf("kimi-k2-0905-preview", "moonshot-v1-128k", "moonshot-v1-32k"),
+            contextWindow = 128_000,
             note = "长上下文见长"
         ),
         LlmProvider(
@@ -89,6 +113,7 @@ object ProviderCatalog {
             style = STYLE_OPENAI, defaultBaseUrl = "https://open.bigmodel.cn/api/paas/v4",
             defaultModel = "glm-4.6",
             popularModels = listOf("glm-4.6", "glm-4.5", "glm-4.5-air", "glm-4-plus"),
+            contextWindow = 128_000,
             note = "清华系；glm-4.5+ 系列支持思维链"
         ),
         LlmProvider(
@@ -103,6 +128,7 @@ object ProviderCatalog {
             style = STYLE_CLAUDE, defaultBaseUrl = "https://api.anthropic.com",
             defaultModel = "claude-sonnet-4-5",
             popularModels = listOf("claude-sonnet-4-5", "claude-opus-4-1", "claude-haiku-4-5"),
+            contextWindow = 200_000,
             note = "Anthropic 原生协议（含 extended thinking）"
         ),
         LlmProvider(
@@ -323,6 +349,22 @@ object ProviderCatalog {
 
     /** id → 供应商。 */
     fun byId(id: String): LlmProvider? = all.firstOrNull { it.id == id }
+
+    /**
+     * id → 上下文窗口（0 = 未知）。
+     *
+     * 未收录的 id 也返回 0 而不是某个默认值：自定义端点的窗口只有用户自己知道，
+     * 猜一个数会让预算按猜测收敛——猜大了溢出，猜小了白丢历史，两种都比「不收敛」坏。
+     */
+    fun contextWindowOf(id: String): Int = byId(id)?.contextWindow ?: 0
+
+    /**
+     * id → 重试档位。未收录的 id 走 [RetryProfile.DEFAULT]（官方档）。
+     *
+     * 兜底选官方档而不是聚合档：自定义端点更可能是官方直连（用户自己填的官方地址），
+     * 聚合商已经在目录里显式标好了。多给两次重试对官方直连是纯粹的白等。
+     */
+    fun retryOf(id: String): RetryProfile = byId(id)?.retry ?: RetryProfile.DEFAULT
 
     /**
      * id → 协议风格。**未收录的 id 一律按 OpenAI 兼容兜底**——这是「全量适配」的

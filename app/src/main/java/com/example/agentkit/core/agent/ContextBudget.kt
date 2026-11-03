@@ -57,10 +57,35 @@ object ContextBudget {
 
     /**
      * 按通道取实际预算：本地小模型取 [LOCAL_LLAMA_BUDGET_TOKENS] 与配置值的较小者
-     * （配置更小则尊重配置，绝不上调）；云端模型直接用配置值。
+     * （配置更小则尊重配置，绝不上调）；云端模型再按模型窗口收敛（R10）。
+     *
+     * ## 为什么云端也要收敛
+     *
+     * 35 家共用一个 24k 预算，两边都吃亏：1M 窗口的模型浪费 97% 的上下文；
+     * 8k 窗口的小模型直接溢出，靠上层 `maybeCompact` 兜底，用户看到的是
+     * 「聊到一半忘了前面」。有了 [LlmProvider.contextWindow] 之后，预算至少
+     * 不会超过「窗口的一半」。
+     *
+     * ## 为什么是一半，不是「窗口减去输出」
+     *
+     * 输出上限、工具定义、系统提示、以及**估算误差**都在这条链路上。给一半是
+     * 经验上的安全边际：token 估算按字符数折算，中文 1:1、英文 4:1，
+     * 混排时误差可达 ±30%。宁可少带几条历史，也不能让服务端拒掉整个请求——
+     * 溢出表现为 400 或静默截断，比「上下文短一点」难排查得多。
+     *
+     * @param contextWindow 模型窗口（token）。**0 = 未知**，保持改造前行为（只用
+     *   [configured]），不能因为「不知道」就把预算砍半——那会让所有未收录的供应商
+     *   一起退化。
      */
-    fun budgetForProvider(providerId: String, configured: Int = DEFAULT_BUDGET_TOKENS): Int =
-        if (providerId == LOCAL_LLAMA_PROVIDER_ID) minOf(configured, LOCAL_LLAMA_BUDGET_TOKENS) else configured
+    fun budgetForProvider(
+        providerId: String,
+        configured: Int = DEFAULT_BUDGET_TOKENS,
+        contextWindow: Int = 0,
+    ): Int {
+        if (providerId == LOCAL_LLAMA_PROVIDER_ID) return minOf(configured, LOCAL_LLAMA_BUDGET_TOKENS)
+        if (contextWindow <= 0) return configured
+        return minOf(configured, contextWindow / 2)
+    }
 
     /**
      * 单条工具结果的字符上限（W-11）：与上下文预算对齐。
