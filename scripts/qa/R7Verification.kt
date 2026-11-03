@@ -448,6 +448,32 @@ fun main() = runBlocking {
         assertEquals("R7-11 只有一个 CLOSE", 1, events.count { it is RunEvent.TurnClosed })
     }
 
+    check("R7-12 技能的失败熔断不跨执行累积") {
+        val dir = java.io.File(base, "skill-guard2")
+        val journal = TurnJournal(com.example.agentkit.core.agent.journal.RunJournal(dir))
+        val registry = ToolRegistry().apply {
+            register(FakeTool("fake_fail", readOnly = true, failCode = "boom"))
+        }
+
+        // 第一次执行：连调 3 次 → 第 3 次被熔断（只派发 2 次）
+        val turn1 = journal.begin("turn-G1")
+        val b1 = buildSkillBridge(registry, turn1)
+        repeat(3) { b1.tool("fake_fail", mapOf("x" to 1)) }
+        val d1 = com.example.agentkit.core.agent.journal.RunJournal(dir).load("turn-G1")
+            .filterIsInstance<RunEvent.ToolDispatched>()
+        assertEquals("R7-12 第一次执行熔断生效（2 次派发）", 2, d1.size)
+
+        // 第二次执行：同样的工具应当能重新执行。
+        // 主路径的熔断器是**回合作用域**的（每回合 resetForTurn），
+        // 技能若跨执行累积，某次失败就会让该技能的工具在此后所有回合里被永久熔断。
+        val turn2 = journal.begin("turn-G2")
+        val b2 = buildSkillBridge(registry, turn2)
+        b2.tool("fake_fail", mapOf("x" to 1))
+        val d2 = com.example.agentkit.core.agent.journal.RunJournal(dir).load("turn-G2")
+            .filterIsInstance<RunEvent.ToolDispatched>()
+        assertEquals("R7-12 第二次执行未被上次的熔断挡住", 1, d2.size)
+    }
+
     // ——————————————————————— R7-10 NDJSON 导出 ———————————————————————
 
     check("R7-10 NDJSON 一行一对象、字段自解释") {

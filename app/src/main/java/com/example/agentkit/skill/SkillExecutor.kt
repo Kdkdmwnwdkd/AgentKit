@@ -276,8 +276,11 @@ data class SkillRunResult(val text: String, val scriptExecuted: Boolean)
  * @param jsEngine 可用的 JS 引擎；为 null 时所有技能回退为 prompt 形态。
  * @param readBody 读取技能指令正文（Android 侧从 assets 读取）。
  * @param readEntry 读取技能脚本源码（assets/skills/<id>/<entry>）。
- * @param failureGuard 失败熔断器（R7）。脚本内反复调同一个必失败的工具要被熔断，
- *   否则脚本能把整轮预算耗光。默认新建一个，语义上「技能内自洽」。
+ *
+ * 失败熔断器（R7）**每次技能执行现建**：脚本是一次性执行域，
+ * 失败指纹不该跨执行累积——否则某次失败会让该技能的工具在此后所有回合里
+ * 都被熔断（主路径的熔断器是回合作用域的，技能必须对齐这个语义）。
+ * 同一次执行内脚本反复调同一个必失败的工具仍会被熔断。
  */
 class SkillExecutor(
     private val registry: ToolRegistry,
@@ -285,7 +288,6 @@ class SkillExecutor(
     private val jsEngine: JsEngine? = null,
     private val readBody: (SkillManifest) -> String,
     private val readEntry: (SkillManifest) -> String?,
-    private val failureGuard: FailureGuard = FailureGuard()
 ) {
 
     /**
@@ -305,6 +307,7 @@ class SkillExecutor(
     internal fun buildToolExecutor(
         scope: AgentScope?,
         dispatchedStep: java.util.concurrent.atomic.AtomicInteger,
+        failureGuard: FailureGuard = FailureGuard(),
         readOnlyBudgetMs: Long = DEFAULT_READ_ONLY_BUDGET_MS,
         writeBudgetMs: Long = DEFAULT_WRITE_BUDGET_MS
     ): ToolExecutor = RegistryToolExecutor(
@@ -338,7 +341,10 @@ class SkillExecutor(
             // SETTLE 由脚本侧写（执行后），中间主回合可能已经推进到下一步。
             // 用这个共享计数器把 DISP 的步号传给 SETTLE。
             val dispatchedStep = java.util.concurrent.atomic.AtomicInteger(0)
-            val toolExecutor = buildToolExecutor(scope, dispatchedStep)
+            // R7：每次技能执行现建熔断器（见构造注释）。
+            val toolExecutor = buildToolExecutor(
+                scope, dispatchedStep, failureGuard = FailureGuard()
+            )
             return runCatching {
                 val bridge = SkillRuntimeBridge(
                     registry, skill, workspace, toolExecutor, scope, dispatchedStep
