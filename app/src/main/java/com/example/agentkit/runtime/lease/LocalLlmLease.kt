@@ -29,6 +29,17 @@ class LocalLlmLease(
         const val TAG = "LocalLlmLease"
     }
 
+    /**
+     * R6：空闲回收阈值（毫秒）。null = 跟随 [LeaseRegistry.idleTimeoutMs] 全局默认。
+     *
+     * 做成可变而非构造参数，是因为它跟着**用户设置**走：用户在设置页调空闲时长
+     * （或直接关掉空闲释放）时，要能立刻生效，不必重启进程。
+     *
+     * 语义与全局一致：负数 = 禁用本租约的空闲回收。
+     */
+    @Volatile
+    override var idleTimeoutMs: Long? = null
+
     /** 活跃引用数（= 在途推理数）。 */
     private val active = java.util.concurrent.atomic.AtomicInteger(0)
 

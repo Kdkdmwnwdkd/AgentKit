@@ -1,0 +1,265 @@
+# 容器安装的两个真机故障：exit 99 抢锁 与 900 秒超时（2026-10-25）
+
+> 同一功能连续踩了两个坑，都出在**执行通道**上，不是网络、不是 rootfs、不是版本映射。
+>
+> - 故障一（14:00）：`安装失败（exit 99）：ERROR: Unable to lock database: temporary error (try again later)`
+> - 故障二（14:31）：`安装失败（exit -1）：命令超时（15 分钟）已终止`，日志 `耗时=900s`，全过程零输出
+
+---
+
+## 故障一：exit 99 —— 我们自己让两个 apk 同时跑
+
+### 现场证据（17431.mp4 + 同批日志）
+
+日志里 40 秒内出现了 **5 次** `ContainerNetwork: resolv.conf 已写入`：
+
+```
+14:00:03.931  resolv.conf 已写入   ← 终端会话（后面有 invocation 自检）
+14:00:11.149  resolv.conf 已写入   ← 无任何后续日志
+14:00:16.996  resolv.conf 已写入   ← 无
+14:00:29.681  resolv.conf 已写入   ← 无
+14:00:35.928  resolv.conf 已写入   ← 无
+14:00:39.089  resolv.conf 已写入   ← 终端会话（自检通过）
+```
+
+`resolv.conf` 只在两处写：`ContainerSession.create()`（开交互终端）和
+`ContainerCommandRunner.run()`（跑一次性命令）。中间四次是一次性命令，而旧版执行器
+**只在失败时打日志**，所以它们全程静默——从日志看不出有人在并发跑 `apk add`。
+
+`ContainerScreen` 旧代码：
+
+```kotlin
+scope.launch(Dispatchers.IO) { runInstallInContainer(context, id, cmd) }
+```
+
+按钮没有运行态、不禁用、不去重。点一下起一个 proot，连点五下就是五个 `apk` 同时跑。
+
+### 根因
+
+apk 用 `/lib/apk/db/lock`（flock）做进程间互斥。拿不到锁的那个立即退出，退出码 **99**。
+包管理器是单写者模型，**并发本身就是 bug**。
+
+### 修复
+
+- `ContainerCommandRunner` 加进程级**公平锁**，所有容器命令串行；
+- **同命令去重**：完全相同的命令在飞时返回 `EXIT_BUSY(-2)`，不排队、不重复下载；
+- 抢锁**原地重试**（2s / 5s），判据 `ToolchainInstaller.isLockConflict()`；
+- `ContainerScreen` 加 `installing` 运行态（按钮禁用 + 秒数）；
+- `ContainerToolchainTool` 单独识别 `EXIT_BUSY`，不再报「安装失败（exit -2）」。
+
+---
+
+## 故障二：900 秒超时 —— 先 waitFor 再 readText，父子进程互锁
+
+### 现场证据（14:31 日志 + 17436.png）
+
+```
+14:31:37.655 容器命令开始：distro=alpine cmd=... apk add --no-cache openjdk17 openjdk17-jdk
+14:31:37.666 resolv.conf 已写入
+14:46:37.675 容器命令结束：distro=alpine exit=-1 耗时=900s
+```
+
+两件事同时说明问题：
+
+1. **整整 900 秒（正好 15 分钟超时上限）**，一个字节输出都没有；
+2. 同一台机器上 `Node.js`、`Python 3` 之前是装成功的（截图卡片显示「已安装」）——
+   说明 proot、rootfs、DNS、apk 源都是好的。
+
+### 根因：管道缓冲区写满，双方互等
+
+旧实现的顺序是「**先 `waitFor`，再读 `inputStream`**」：
+
+```kotlin
+val finished = process.waitFor(timeoutMinutes, TimeUnit.MINUTES)      // ① 等进程退出
+val out = process.inputStream.bufferedReader().use { it.readText() }  // ② 才读输出
+```
+
+管道缓冲区只有约 **64 KB**。`apk add openjdk17 openjdk17-jdk`（aarch64 上约 200 MB，
+要逐个解包几百个文件）的输出很快写满它，子进程阻塞在 `write(2)` 上等我们读；
+而我们在 ① 等它退出。**双方互等，直到超时**。
+
+为什么 Node/Python「看着正常」：它们输出少（< 64 KB），缓冲区没写满，进程能正常退出。
+不是没问题，是没撞上——**任何输出超过 64 KB 的容器命令都会卡死**。
+
+这也解释了「已安装但报失败」：`Python 3` 那次文件其实已经落地（所以卡片显示已安装），
+但进程卡在写 stdout 上，15 分钟后被我们杀掉，于是 UI 报超时。
+
+### 修复
+
+1. **并发抽干输出**：起一条守护线程持续 `read`，主线程只负责 `waitFor`，不再互锁；
+2. **只保留尾部 64 KB**：apk/apt 的失败原因和成功摘要都在最后，开头的进度行没有诊断价值；
+3. **超时带上最后一行输出**：日志现在会记
+   `容器命令超时（30min）已终止；最后输出=(1/12) Installing openjdk17` ——
+   下次一眼能分清是「在下载」「在解包」还是「压根没启动」；
+4. **零输出单独提示**：15 分钟一个字节都没有，更像卡在启动阶段，不该让用户以为是网慢；
+5. **按包大小给超时**：`openjdk*`/`jdk` → 30 分钟，`nodejs` → 20 分钟，其余 15 分钟。
+   200 MB 的包在 200 KB/s 下光下载就要 17 分钟；把「还在下」判成「卡死」会逼用户重试，
+   而重试要从零开始；
+6. **UI 显示已运行秒数**：按钮文案变成 `正在安装 Java (JRE + JDK)… 65s`，
+   数字在跳至少说明流程还活着。
+
+---
+
+## 故障三（15:26 真机）：exit 1 —— 包全装完了，它还是报错
+
+### 现场
+
+```
+17:26:03 容器命令开始：... apk add --no-cache openjdk17 openjdk17-jdk
+17:29:29 容器命令结束：exit=1 耗时=206s
+```
+
+**206 秒**（不再是 900s）——说明管道死锁的修复生效了，输出被正常读走。
+
+但退出码是 1。截图里的尾部输出：
+
+```
+Executing busybox-1.36.1-r29.trigger
+Executing ca-certificates-20261020-r0.trigger
+Executing java-common-0.5-r0.trigger
+1 error: 424 MiB in 77 packages
+```
+
+同时卡片顶部写着「已安装：Node.js、Python 3、**Java (JRE + JDK)**」——`detect` 在 rootfs 里
+找到了 `java` / `javac`。
+
+### 根因：退出码 ≠ 能力
+
+`424 MiB in 77 packages` 是 apk 的**成功摘要**（装了多少），`1 error` 是某一个
+trigger 脚本在 proot 下返回了非 0（proot 没有真正的 root，某些 trigger 里的
+`chown`/`ldconfig` 会失败）。包一个没少装，但 apk 整体退出码变成 1。
+
+旧逻辑直接把退出码当结论，于是「明明能跑 javac」却显示「安装失败」。
+
+### 修复：装完自检，以能力判定
+
+- `ToolchainInstaller.verifyScript()`：逐语言跑真实命令，成功打 `OK:<id>`、失败打 `FAIL:<id>`；
+- `ToolchainInstaller.verifiedLangs()` / `failedLangs()`：纯函数解析，JVM harness 可测；
+- 安装命令**失败时**补一次自检（一次容器命令，约 2 秒）：
+  - 自检通过 → 卡片显示「**已就位**：包管理器报了错误，但自检通过（Java 可执行）」；
+  - 自检不通过 → 才显示「安装失败」，并列出错误行 + 尾部 12 行。
+- Java 的自检是 `java -version && javac -version`：卡片标题写着「JRE + JDK」，
+  只验 `java` 会把「JRE 在、JDK 缺」当成成功。
+- 失败输出**完整落盘**到 `files/logs/container-fail-<ts>.log`（保留 5 份，卡片上提示路径）：
+  卡片只放得下十来行，而 `1 error` 上面几十行才是真因。
+
+---
+
+## 故障四（视频 17440 暴露）：容器里其实不是 root
+
+### 现场
+
+进容器后提示符是 `~ $` 而不是 `~ #`；同时之前装 JDK 报 `1 error`。
+两件事是同一个原因。
+
+### 根因：`-L` 不是 fake root
+
+`ProotRunner.prootOptions` 里只给了 `-L`，而它的 KDoc 写着「`-L`：fake_id0 扩展」——
+**注释是错的**。从实际使用的二进制确认（`strings libproot.so`）：
+
+| 选项 | 长形式 | 真实作用 |
+|------|--------|----------|
+| `-L` | `--link2symlink` | 硬链接降级成符号链接（跨设备必需） |
+| `-0` | `--root-id` | **fake root**，容器内 uid/gid 映射成 0 |
+| `-k` | `--kill-on-exit` | proot 退出时杀掉所有 tracee |
+
+于是容器里一直是普通 app uid：提示符是 `$`；包管理器的 trigger 脚本里
+`chown root:root` 直接失败——`1 error: 424 MiB in 77 packages` 里那唯一一个 error
+很可能就是它（77 个包本身全装上了）。
+
+### 修复
+
+- `prootOptions` 显式给 `--link2symlink` / `--root-id` / `--kill-on-exit`（长选项，可读性优先）；
+- `--kill-on-exit` 顺手解决「超时后 destroyForcibly 只杀 proot，残留的 apk 继续占
+  `/lib/apk/db/lock` → 下一次安装 exit 99」的隐患；
+- 修正 KDoc 里写错的 `-L` 说明。
+
+三个选项均已在实际二进制里确认存在，不是盲加。
+
+---
+
+## 顺带修的一个交互缺口
+
+三个运行时全装上之后，「指定版本安装」整块会消失（条件是
+`missing.isNotEmpty()`），用户想「换 node 22」或「JDK 坏了重装」时没有任何入口
+（视频 17440 里卡片只剩一行「已安装：Node.js、Python 3、Java」）。
+现在这块始终显示，已装语言的按钮变成「重装」。
+
+---
+
+## 全部改动清单
+
+| # | 位置 | 改动 | 解决什么 |
+|---|------|------|----------|
+| 1 | `ContainerCommandRunner` | 进程级公平锁，容器命令串行 | 两个 apk 不再可能同时跑 |
+| 2 | `ContainerCommandRunner` | 同命令去重 → `EXIT_BUSY(-2)` | 连点十下不会攒出十个下载任务 |
+| 3 | `ContainerCommandRunner` | 抢锁原地重试（2s/5s） | 上一次安装被杀、锁还没释放的窗口 |
+| 4 | `ContainerCommandRunner` | **并发读输出 + 尾部保留** | 修 900 秒互锁死等（本次核心） |
+| 5 | `ContainerCommandRunner` | 超时按包大小估算 + 日志带最后一行 | 大包不再被误判为卡死；卡住时知道卡在哪 |
+| 6 | `ContainerScreen` | `installing` 运行态：禁用按钮 + 秒数 + 结果内联常驻 | 点下去有反馈；失败信息不被 Toast 截断 |
+| 7 | `ContainerToolchainTool` | 识别 `EXIT_BUSY` | 不再出现「安装失败（exit -2）」 |
+| 8 | `TerminalSession` | 主动销毁不再把 137 当退出码上报 | 去掉与真崩溃（LMK）混淆的误报 |
+| 9 | `ToolchainInstaller` | `verifyScript` / `verifiedLangs` / `failedLangs` | 装完以能力判定，不再被 apk 的 trigger 错误误报 |
+| 10 | `ContainerCommandRunner` | 失败输出完整落盘（保留 5 份） | 卡片放不下的错误行能导出，不用反复截图 |
+| 11 | `ProotRunner` | 显式 `--link2symlink` / `--root-id` / `--kill-on-exit` | 容器内才是 root（trigger 不再失败）；退出时杀掉 tracee，杜绝残留 apk 占锁 |
+| 12 | `ContainerScreen` | 「指定版本安装」不再要求有缺失语言，已装的显示「重装」 | 装全之后仍有换版本 / 重装入口 |
+
+### 为什么退出码用 -2 而不是复用 -1
+
+`-1` 是「前置条件不满足 / 超时」——要用户去修环境或重试；`-2` 是「等一会儿」。
+UI 上一个是红色报错，一个是「等它结束再点」，混用会让用户以为容器坏了。
+
+### 为什么锁判据放在 `ToolchainInstaller`
+
+执行器带 `android.content.Context`，进不了 JVM harness；判据写错（只认 99、不认 apt 的
+`lock-frontend`）的后果是「重试逻辑静默失效」。放到纯逻辑层后，
+`scripts/qa/BatchBVerification.kt` 在 JVM 上就能断言，含反例（网络失败不能被判成抢锁）。
+
+---
+
+## 验证
+
+### 对照实验（服务器上直接复现，不依赖真机）
+
+用同一段管道语义（`stdout=PIPE`，输出约 2 MB）对比两种读法：
+
+```
+旧实现（先 wait 后 read）: DEADLOCK: still running after 5.00s (output not drained)
+新实现（并发抽干）      : finished in 0.00s, 1988895 bytes
+```
+
+旧写法在 5 秒内**一个字节都没读**，进程卡在 `write` 上；新写法 0.00s 收完 1.98 MB。
+这就是真机上「15 分钟零输出」的机理——不是网慢，是我们自己没读。
+
+### 其它
+
+- 本地 `kotlinc` 编译 `ToolchainInstaller` + `ContainerCommandRunner`（Android 桩）通过；
+  锁判据 6 条断言全过（apk 99 / apk 文本 / apt 文本 / 网络反例 / 成功反例 / 包不存在反例）。
+- `BatchBVerification` 新增 B4-12..B4-17：判据正确性、串行闸门、UI 防重入、
+  **读操作必须早于 `waitFor`**（900 秒死锁的回归测试）、**自检脚本与解析**
+  （含「Java 必须同时验 javac」这条）、**proot 三个选项必须在位**。
+- CI：编译 + 全量 QA + 门禁（run 376 全绿：`PASS=50 FAIL=0`，门禁 4/4）。
+
+## 还没验证的（真机待确认）
+
+1. **`--root-id` 的副作用**：容器内变成 root 后，trigger 里的 `chown` 会「成功」
+   （proot 拦下并假装成功），`1 error` 大概率随之消失——这是推断，要真机确认。
+   风险是少数脚本见到 root 会走不同分支；若装完出现新报错，先回退这一个选项。
+2. **装 Java 到底要多久**：修复后理论上会正常下载解包，但 200 MB 在真机网络下的实际耗时
+   只能实测。日志会记 `容器命令结束：exit=0 耗时=xxxs`，留意这个数。
+2. **超时被杀后有没有残留 apk**：`destroyForcibly` 只杀 proot，其 tracee（apk）可能被 detach
+   继续跑并占锁。现在有重试兜底，但如果真机上反复出现「重试 2 次仍被占用」，下一步要给
+   proot 加 `--kill-on-exit`（需先确认 termux 版 proot 支持该选项，不能盲加）。
+3. **容器内终端提示符**：14:31 那次会话存活 9 秒（用户主动退出），日志已正确记为
+   `已主动结束（code=137，kill 进程组的预期结果）`，但「进容器后多久出提示符」仍缺干净样本。
+
+## 自查手册
+
+真机再遇到安装失败，按顺序看：
+
+1. 日志搜 `容器命令开始` / `容器命令结束`：每条都会记，含 exit 与耗时。
+   - `exit=99` 且只有一条 → 有外部进程占着 apk 锁（不是本 App 触发的并发）。
+   - `exit=-1` 且 `耗时≈超时上限` → 超时；看同一行的「最后输出」判断卡在哪。
+2. 搜 `拒绝重复命令` → 用户连点了；按钮禁用生效的话不该出现。
+3. 搜 `包管理器被占用` → 触发了重试。
+4. 卡片里的失败文本保留**最后 3–4 行**输出——apk 的真实原因几乎总在最后。

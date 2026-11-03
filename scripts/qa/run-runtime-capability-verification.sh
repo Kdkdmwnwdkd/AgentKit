@@ -1,27 +1,36 @@
 #!/usr/bin/env bash
-# 运行层能力契约 harness（W-RT1 合入版）。
+# 运行层契约静态 harness（R6 重写版）。
 #
-# 背景：runtime/idle-unload-w1 分支被摘进 main 时改了三处（详见
-# docs/运行层第一块-接线说明.md 第七节），这三处全是「看不见的坑」，
-# 真机上不跑几千次碰不到，只能靠断言锁住：
-#   1. 注册表必须叫 CapabilityHost——仓库里已有一个 skill.CapabilityRegistry
-#      （工具权限 fail-closed 真相源），同名不同义会让 grep / 自动导入互相误伤；
-#   2. 启动期等待必须有超时——原实现是无超时 while 轮询，谁 start() 抛异常
-#      又把状态留在 STARTING，后来所有调用就永久挂住（死锁，不是变慢）；
-#   3. 空闲阈值必须是 30 分钟——3B 冷加载实测约 14 秒，5 分钟一卸等于拿首字
-#      延迟换 2GB 内存，划不来。
+# ## 为什么重写
+# 本脚本原先断言的是 R3 收缩**之前**的运行层 API：
+#   `CapabilityHost`（通用能力注册表）、`AgentCapability.onUse()`、
+#   `inFlight` 手工计数、`CapabilityStartException`。
+# R3 把通用能力框架整体删除（1 个实现、0 个消费方），这些断言随之失效——
+# 脚本变成「永远红的死门禁」：它不在 known-broken.txt 里，
+# run-all.sh 会把它判为 FAIL 并**阻塞 CI**，而失败原因与产品代码无关。
 #
-# 静态锁接线，行为真编真跑（有 stdlib + coroutines 才跑，CI 里由 gradle 真编）。
+# 重写后的断言对象是 **R6 收口后的真实契约**：
+#   1. 空闲释放只有一个判据源（LeaseRegistry），不再有第二个节拍器；
+#   2. `idleTimeoutMs` 语义两侧一致（0=立即满足 / 负数=禁用）；
+#   3. 工具预算可按工具覆盖，且自声明值被夹在安全区间。
+#
+# 这些同样是「看不见的坑」：改错一处不会编译失败，只会让用户的设置失效、
+# 或让长任务被误杀。必须靠断言锁住。
 set -uo pipefail
 cd "$(dirname "$0")/../.." || exit 1
 ROOT=$(pwd)
 
 RT="$ROOT/app/src/main/java/com/example/agentkit/runtime"
+LEASE="$RT/lease"
 CAP="$RT/AgentCapability.kt"
 LLM="$RT/LocalLlmRuntime.kt"
-POLICY="$RT/IdleUnloadPolicy.kt"
+REG="$LEASE/LeaseRegistry.kt"
+LEASE_IF="$LEASE/RuntimeLease.kt"
+LOCAL_LEASE="$LEASE/LocalLlmLease.kt"
+BUDGET="$ROOT/app/src/main/java/com/example/agentkit/core/agent/ToolBudget.kt"
+CONTRACT="$ROOT/app/src/main/java/com/example/agentkit/core/AgentContract.kt"
+EXECUTOR="$ROOT/app/src/main/java/com/example/agentkit/core/agent/ToolExecutor.kt"
 APP="$ROOT/app/src/main/java/com/example/agentkit/AgentKitApplication.kt"
-VM="$ROOT/app/src/main/java/com/example/agentkit/ui/ChatViewModel.kt"
 
 pass=0
 fail=0
@@ -42,218 +51,82 @@ reject() {
   if [ -f "$file" ] && grep -qF -- "$needle" "$file"; then bad "$name（不该有：$needle）"; else ok "$name"; fi
 }
 
+# 整个目录里不得再出现某段字面量
+reject_in() {
+  local name="$1" dir="$2" needle="$3"
+  if [ -d "$dir" ] && grep -rqF -- "$needle" "$dir" 2>/dev/null; then
+    bad "$name（不该有：$needle）"
+  else
+    ok "$name"
+  fi
+}
+
 echo "== 静态：文件与契约 =="
-for f in "$CAP" "$LLM" "$POLICY"; do
+for f in "$CAP" "$LLM" "$REG" "$LEASE_IF" "$LOCAL_LEASE" "$BUDGET"; do
   [ -f "$f" ] && ok "存在 $(basename "$f")" || bad "缺失 $f"
 done
 
 expect "接口声明 start"            "$CAP" 'suspend fun start()'
 expect "接口声明 stop"             "$CAP" 'suspend fun stop()'
 expect "接口声明 state"            "$CAP" 'val state: StateFlow<CapabilityState>'
-expect "接口有使用心跳 onUse"      "$CAP" 'fun onUse()'
 expect "状态含 FAILED"             "$CAP" 'FAILED'
 
 echo
-echo "== 静态：注册表命名（与 skill.CapabilityRegistry 不撞车） =="
-expect "注册表叫 CapabilityHost"   "$CAP" 'object CapabilityHost'
-if [ -d "$RT" ] && grep -rq 'object CapabilityRegistry' "$RT" 2>/dev/null; then
-  bad "runtime 包内仍有同名 CapabilityRegistry"
-else
-  ok "runtime 包内无同名 CapabilityRegistry"
-fi
-expect "本地模型运行时用 CapabilityHost 注册" "$LLM" 'CapabilityHost.register(this)'
-reject "本地模型运行时不再引用旧名"            "$LLM" 'CapabilityRegistry.register'
+echo "== 静态：空闲释放只有一个判据源（R6 核心） =="
+# 旧的双节拍器：IdleUnloadPolicy 与 LeaseRegistry 各有一套 idleTimeoutMs，
+# 且语义相反（policy 0=永不释放 / registry 0=立即回收）。
+reject_in "runtime 包内不再有第二个节拍器 IdleUnloadPolicy" "$RT" 'class IdleUnloadPolicy'
+reject_in "runtime 包内不再有 IdleReleasable"               "$RT" 'interface IdleReleasable'
+reject "本地模型运行时不再建 policy"      "$LLM" 'IdleUnloadPolicy('
+reject "本地模型运行时不再建 releasable"  "$LLM" 'IdleReleasable'
+# 租约侧是唯一判据源：阈值挂在租约上
+expect "租约接口声明 idleTimeoutMs"      "$LEASE_IF" 'val idleTimeoutMs: Long? get() = null'
+expect "注册表按租约阈值取值"            "$REG" 'lease.idleTimeoutMs ?: idleTimeoutMs'
+expect "注册表有禁用常量"                "$REG" 'DISABLED_IDLE_TIMEOUT_MS'
+expect "禁用常量为负数"                  "$REG" 'const val DISABLED_IDLE_TIMEOUT_MS: Long = -1L'
+expect "注册表禁用判断用 < 0"            "$REG" 'if (timeout < 0L) continue'
+expect "本地模型租约阈值可覆盖"          "$LOCAL_LEASE" 'override var idleTimeoutMs: Long?'
 
 echo
-echo "== 静态：启动期必须有上限（不许无超时死等） =="
-expect "声明了等待上限常量"        "$CAP" 'START_WAIT_TIMEOUT_MS'
-expect "用 withTimeoutOrNull 兜住" "$CAP" 'withTimeoutOrNull(START_WAIT_TIMEOUT_MS)'
-reject "没有裸的 while 轮询"       "$CAP" 'while (state.value == CapabilityState.STARTING) {'
-expect "启动失败包装成有类型异常"  "$CAP" 'CapabilityStartException'
-expect "异常里带能力 id"           "$CAP" 'val capabilityId: String'
-expect "依赖递归拉起"              "$CAP" 'for (dep in capability.dependsOn) startIfNeeded(dep)'
-expect "启动后核对状态"            "$CAP" 'start 必须把状态置为 READY'
-
-echo
-echo "== 静态：空闲阈值 30 分钟 =="
-expect "默认 30 分钟"              "$LLM" 'const val DEFAULT_IDLE_MINUTES = 30'
-expect "策略层同步 30 分钟"        "$POLICY" 'DEFAULT_IDLE_TIMEOUT_MS: Long = 30 * 60_000L'
-reject "没有残留 5 分钟默认值"      "$LLM" 'DEFAULT_IDLE_MINUTES = 5'
+echo "== 静态：用户设置真的作用到回收上（R6 修掉的真实 bug） =="
+# R6 之前：enabled/idleTimeoutMinutes 只写旧 policy，registry 照旧按全局 30 分钟回收，
+# 用户关掉「空闲释放」形同虚设。
+expect "设置下发到租约阈值"              "$LLM" 'lease.idleTimeoutMs = timeout'
+expect "关闭时用禁用常量"                "$LLM" 'DISABLED_IDLE_TIMEOUT_MS'
+reject "关闭时不再用 0 表示禁用"         "$LLM" 'policy.idleTimeoutMs = if (value) timeoutMsFromPrefs() else 0L'
+reject "初始化不再单独设 policy 阈值"    "$LLM" 'policy.idleTimeoutMs = if (enabled) timeoutMsFromPrefs() else 0L'
+expect "本地模型默认 30 分钟"            "$LLM" 'const val DEFAULT_IDLE_MINUTES = 30'
+reject "没有残留 5 分钟默认值"            "$LLM" 'DEFAULT_IDLE_MINUTES = 5'
 
 echo
 echo "== 静态：接线与两道闸门 =="
 expect "Application 启动运行层"    "$APP" 'LocalLlmRuntime.init(this)'
-expect "provider 工厂包了装饰器"   "$VM" 'wrapLocalLlm(LocalLlamaClient('
-expect "释放前问能否安全释放"      "$LLM" 'override val isSafeToRelease: Boolean'
-expect "在途计数 +1"               "$LLM" 'inFlight.incrementAndGet()'
-expect "在途计数 -1"               "$LLM" 'inFlight.decrementAndGet()'
-expect "流式记账不丢（onCompletion）" "$LLM" '.onCompletion { LocalLlmRuntime.endUse() }'
-expect "chat 走 try/finally"       "$LLM" '} finally {'
+expect "Application 启动租约节拍"  "$APP" 'LeaseRegistry.start()'
+expect "本地模型登记租约"          "$LLM" 'LeaseRegistry.register(lease)'
+expect "本地模型注册空闲释放器"    "$LLM" 'LeaseRegistry.registerIdleReleaser(lease.id)'
+expect "释放前问能否安全释放"      "$LEASE_IF" 'val isSafeToRelease: Boolean'
 expect "释放日志说清代价"          "$LLM" '下次对话会自动重载'
-expect "stop 取消事件协程"         "$LLM" 'eventJob?.cancel()'
 
 echo
-echo "== 行为：契约真编真跑 =="
-KOTLINC=$(command -v kotlinc 2>/dev/null || true)
-if [ -z "$KOTLINC" ]; then
-  echo "  SKIP  本机无 kotlinc，行为断言交 CI（静态断言已全跑）"
-else
-  # 两套编译方式自适应，顺序有讲究（2026-10-30 CI run 40988894534 教的）：
-  #   1. 首选 `-include-runtime` 打自包含 jar —— stdlib 由 kotlinc 自己决定，
-  #      不会挑错版本。运行时另外挂 coroutines（`-include-runtime` 只打 stdlib）。
-  #   2. 失败（本沙箱这种精简 kotlinc 没有 lib/，报 "Couldn't find kotlin-stdlib"）
-  #      才退回显式 `-cp stdlib:coroutines`，输出到目录。
-  # 为什么不能反过来：CI 的 gradle 缓存里有多个 stdlib 版本，`ls | head -1`
-  # 挑到旧的那个，编译用新、运行用旧，就会在运行时炸
-  # `NoClassDefFoundError: kotlin/coroutines/jvm/internal/SpillingKt`
-  # （SpillingKt 是 stdlib 里的类，不是 coroutines 的）。
-  # 取版本也一律 sort -V | tail -1（要最新的），不用 head -1。
-  newest() { ls -1 $1 2>/dev/null | sort -V | tail -1; }
-  CORO=$(newest "$HOME/.gradle/caches/modules-2/files-2.1/org.jetbrains.kotlinx/kotlinx-coroutines-core-jvm/*/*/kotlinx-coroutines-core-jvm-*.jar")
-  [ -n "$CORO" ] || CORO=$(newest "/tmp/kc/kotlinx-coroutines-core-jvm-*.jar")
-  [ -n "$CORO" ] || CORO=$(newest "/root/.gradle/caches/modules-2/files-2.1/org.jetbrains.kotlinx/kotlinx-coroutines-core-jvm/*/*/*.jar")
-  STDLIB=$(newest "$HOME/.gradle/caches/modules-2/files-2.1/org.jetbrains.kotlin/kotlin-stdlib/*/*/kotlin-stdlib-*.jar")
-  [ -n "$STDLIB" ] || STDLIB=$(newest "/tmp/khome/lib/kotlin-stdlib.jar")
+echo "== 静态：工具预算可按工具覆盖（R6） =="
+expect "工具接口声明 timeoutBudgetMs"   "$CONTRACT" 'val timeoutBudgetMs: Long? get() = null'
+expect "预算解析器存在"                 "$BUDGET" 'object ToolBudget'
+expect "解析优先级：自声明 > 分档"       "$BUDGET" 'tool.timeoutBudgetMs'
+expect "自声明值被夹紧"                 "$BUDGET" 'declared.coerceIn(lower, upper)'
+expect "下界 1 秒"                      "$BUDGET" 'MIN_DECLARED_BUDGET_MS: Long = 1_000L'
+expect "上界为回合软截止"                "$BUDGET" 'MAX_DECLARED_BUDGET_MS: Long = 30 * 60_000L'
+expect "executor 走预算解析"            "$EXECUTOR" 'ToolBudget.resolve(tool'
+# 分档默认必须原样使用——测试注入 80ms 断言超时路径，夹住就永远测不到
+expect "分档默认原样使用"               "$BUDGET" 'return if (tool.readOnly) readOnlyBudgetMs else writeBudgetMs'
+reject "分档默认不得被夹紧"             "$BUDGET" 'readOnlyBudgetMs.coerceIn'
+# 等用户的工具不吃预算（awaitsUser 优先于自声明）
+expect "executor 尊重 awaitsUser"       "$EXECUTOR" 'tool.awaitsUser'
 
-  TMP=$(mktemp -d)
-  cat > "$TMP/check.kt" <<'EOF'
-package qa
-
-import com.example.agentkit.runtime.AgentCapability
-import com.example.agentkit.runtime.CapabilityHost
-import com.example.agentkit.runtime.CapabilityStartException
-import com.example.agentkit.runtime.CapabilityState
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.runBlocking
-
-var passN = 0
-var failN = 0
-fun ok(c: Boolean, n: String) {
-    if (c) { passN++; println("  PASS  $n") } else { failN++; println("  FAIL  $n") }
-}
-
-/** 假能力：把「启动几次 / 什么顺序 / 什么状态」全部显式化。 */
-class Fake(
-    override val id: String,
-    override val dependsOn: List<String> = emptyList(),
-    private val boom: Boolean = false,
-    private val endState: CapabilityState = CapabilityState.READY,
-    private val shared: MutableList<String>? = null,
-    private val anotherBoom: java.lang.Runnable? = null,
-) : AgentCapability {
-    override val displayName: String = id
-    private val s = MutableStateFlow(CapabilityState.REGISTERED)
-    override val state: StateFlow<CapabilityState> = s
-    var starts = 0
-
-    override suspend fun start() {
-        starts++
-        shared?.add(id)
-        if (boom) {
-            s.value = CapabilityState.STARTING
-            anotherBoom?.run()
-            throw IllegalStateException("boom-on-purpose")
-        }
-        s.value = endState
-    }
-
-    override suspend fun stop() { s.value = CapabilityState.STOPPED }
-}
-
-fun main() = runBlocking {
-    // 1. 幂等：连调两次只启动一次
-    val a = Fake("t-idem")
-    CapabilityHost.register(a)
-    CapabilityHost.startIfNeeded("t-idem")
-    CapabilityHost.startIfNeeded("t-idem")
-    ok(a.starts == 1, "已就绪再调只返回，不重复启动")
-    ok(a.state.value == CapabilityState.READY, "启动后状态为 READY")
-
-    // 2. 依赖先于自己启动
-    val order = mutableListOf<String>()
-    val base = Fake("t-base", shared = order)
-    val child = Fake("t-child", dependsOn = listOf("t-base"), shared = order)
-    CapabilityHost.register(base)
-    CapabilityHost.register(child)
-    CapabilityHost.startIfNeeded("t-child")
-    ok(order == listOf("t-base", "t-child"), "依赖先启动（实际顺序 $order）")
-
-    // 3. start 抛异常 → 有类型异常，带能力 id，且不吞
-    val boom = Fake("t-boom", boom = true)
-    CapabilityHost.register(boom)
-    var caught: CapabilityStartException? = null
-    try { CapabilityHost.startIfNeeded("t-boom") } catch (e: CapabilityStartException) { caught = e }
-    ok(caught != null, "start 抛异常时抛 CapabilityStartException")
-    ok(caught?.capabilityId == "t-boom", "异常能定位到能力 id")
-    ok(caught?.cause?.message == "boom-on-purpose", "原始异常保留在 cause 里")
-
-    // 4. start 返回但没置 READY → 判失败（防「假装启动成功」）
-    val lazyCap = Fake("t-lazy", endState = CapabilityState.REGISTERED)
-    CapabilityHost.register(lazyCap)
-    var lazyCaught = false
-    try { CapabilityHost.startIfNeeded("t-lazy") } catch (e: CapabilityStartException) { lazyCaught = true }
-    ok(lazyCaught, "start 返回但状态未就绪 → 判失败")
-
-    // 5. 未注册 → 明确报错，不是静默
-    var missing = false
-    try { CapabilityHost.startIfNeeded("t-nope") } catch (e: IllegalStateException) { missing = true }
-    ok(missing, "未注册能力明确报错")
-
-    // 6. 停掉后能重新启动（幂等 stop 之后的可用性）
-    val again = Fake("t-again")
-    CapabilityHost.register(again)
-    CapabilityHost.startIfNeeded("t-again")
-    again.stop()
-    CapabilityHost.startIfNeeded("t-again")
-    ok(again.starts == 2, "stop 后可重新启动")
-
-    // 7. 重复注册必须被拒（防止两个实例抢同一个 id）
-    var dup = false
-    try { CapabilityHost.register(Fake("t-idem")) } catch (e: IllegalArgumentException) { dup = true }
-    ok(dup, "重复 id 注册被拒")
-
-    println("RESULT: PASS=$passN FAIL=$failN")
-    if (failN > 0) kotlin.system.exitProcess(1)
-}
-EOF
-
-  compiled=0
-  OUT=""
-  # 方式 A（首选）：自包含 jar。stdlib 由 kotlinc 自己打，版本不会错；
-  # coroutines 单独在编译期给 classpath、运行时挂上（-include-runtime 只管 stdlib）。
-  if [ -n "$CORO" ]; then
-    if "$KOTLINC" "$CAP" "$TMP/check.kt" -cp "$CORO" -d "$TMP/check.jar" -include-runtime >"$TMP/kc.log" 2>&1; then
-      compiled=1
-      OUT=$(java -cp "$TMP/check.jar:$CORO" qa.CheckKt 2>"$TMP/run.err")
-    fi
-  fi
-  # 方式 B（退路）：本地精简 kotlinc 没有 lib/，-include-runtime 会报
-  # "Couldn't find kotlin-stdlib"，改为显式指定 stdlib，输出到目录。
-  if [ "$compiled" -eq 0 ] && [ -n "$STDLIB" ] && [ -n "$CORO" ]; then
-    if "$KOTLINC" "$CAP" "$TMP/check.kt" -cp "$STDLIB:$CORO" -d "$TMP/out" >"$TMP/kc2.log" 2>&1; then
-      compiled=1
-      OUT=$(java -cp "$TMP/out:$STDLIB:$CORO" qa.CheckKt 2>"$TMP/run.err")
-    fi
-  fi
-
-  if [ "$compiled" -eq 0 ]; then
-    echo "  SKIP  本机 kotlinc 缺 stdlib/coroutines，行为断言交 CI（静态断言已全跑）"
-    echo "        编译器输出前 3 行："
-    cat "$TMP"/kc*.log 2>/dev/null | head -3 | sed 's/^/        /'
-  else
-    echo "$OUT"
-    # 编译成功但一行输出都没有 = JVM 静默崩（stderr 被吞过，这里补打）
-    if ! echo "$OUT" | grep -q "RESULT:"; then
-      bad "行为断言无输出（JVM 崩了），stderr：$(head -2 "$TMP/run.err" 2>/dev/null | tr '\n' ' ')"
-    elif echo "$OUT" | grep -q "FAIL=0"; then
-      ok "行为断言全过"
-    else
-      bad "行为断言有红"
-    fi
-  fi
-  rm -rf "$TMP"
-fi
+echo
+echo "== 静态：失效断言不得复活 =="
+reject_in "runtime 包内不再有 CapabilityHost" "$RT" 'object CapabilityHost'
+reject_in "runtime 包内不再有 CapabilityRegistry" "$RT" 'object CapabilityRegistry'
+expect "能力契约没有 onUse（已由租约取代）" "$CAP" 'val state: StateFlow<CapabilityState>'
 
 echo
 if [ "$fail" -eq 0 ]; then

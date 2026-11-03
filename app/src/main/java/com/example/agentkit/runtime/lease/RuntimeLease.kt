@@ -20,9 +20,9 @@ package com.example.agentkit.runtime.lease
  * 浏览器、技能、记忆、工作流**不进租约**——它们没有「重资源常驻」的问题，
  * 把它们拉进来就是重造 `CapabilityHost`。
  *
- * ## 与 [com.example.agentkit.runtime.IdleReleasable] 的关系
- * [IdleReleasable] 回答「能不能安全释放、怎么释放」；本契约回答「**谁在用**」。
- * 两者正交：租约管引用计数，IdleReleasable 管释放的安全性。
+ * ## 与释放安全性的关系
+ * [isSafeToRelease] 回答「能不能安全释放」；本契约回答「**谁在用**」。
+ * 两者正交：租约管引用计数，isSafeToRelease 管释放的安全性。
  *
  * ## 使用形状
  * ```
@@ -44,6 +44,26 @@ interface RuntimeLease {
      * - 容器会话：`"container:<distroId>"`
      */
     val id: String
+
+    /**
+     * 本租约的空闲回收阈值（毫秒）。null = 跟随 [LeaseRegistry.idleTimeoutMs] 全局值。
+     *
+     * ## 为什么阈值要挂在租约上而不是只放全局
+     * R6 之前空闲判据有**两个来源**：[com.example.agentkit.runtime.IdleUnloadPolicy]
+     * 的实例字段（本地模型用，用户可配）与 [LeaseRegistry.idleTimeoutMs]（全局默认）。
+     * 两者语义还**相反**——policy 里 `0` 表示「永不释放」，registry 里 `0` 表示
+     * 「立即回收」。结果是：用户在设置里关掉空闲释放，policy 停了，registry 照旧按
+     * 全局 30 分钟回收——**用户的设置形同虚设**。
+     *
+     * 挂到租约上之后，全局值只作为**默认值**，每个租约可覆盖；
+     * [LeaseRegistry] 是唯一的判据与执行处，不再有第二个节拍器。
+     *
+     * **取值语义**（与 [LeaseRegistry.idleTimeoutMs] 一致）：
+     * - `> 0`：空闲超过该毫秒数才回收；
+     * - `== 0`：**立即**满足空闲条件（仅测试用）；
+     * - `< 0`：禁用本租约的空闲回收。
+     */
+    val idleTimeoutMs: Long? get() = null
 
     /**
      * 借用资源。返回的句柄**必须**在用完后归还（`close()`）。

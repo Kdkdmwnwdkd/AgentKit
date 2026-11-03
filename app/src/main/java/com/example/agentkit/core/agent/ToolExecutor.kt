@@ -207,7 +207,13 @@ class RegistryToolExecutor(
      * R2：单次调用预算（毫秒），按副作用分档。测试注入小值（如 50ms）即可断言超时路径。
      */
     private val readOnlyBudgetMs: Long = DEFAULT_READ_ONLY_BUDGET_MS,
-    private val writeBudgetMs: Long = DEFAULT_WRITE_BUDGET_MS
+    private val writeBudgetMs: Long = DEFAULT_WRITE_BUDGET_MS,
+    /**
+     * R6：工具自声明预算的上界（毫秒）。默认回合软截止（30 分钟）。
+     *
+     * 超过它的自声明预算毫无意义——回合早就在步边界收尾了。
+     */
+    private val maxDeclaredBudgetMs: Long = ToolBudget.MAX_DECLARED_BUDGET_MS
 ) : BatchToolExecutor {
 
     /** 基础契约入口：duplicateInBatch 缺省 false（单发调用无同批前驱）。 */
@@ -332,7 +338,11 @@ class RegistryToolExecutor(
             // R2 第二层：工具级预算。null = 本层超时（工具内部自己抛的
             // TimeoutCancellationException 也会被这里吞成 null，同样按超时处理）；
             // 其余 CancellationException 原样传播——用户点停止是取消，不是超时。
-            val budget = if (tool.readOnly) readOnlyBudgetMs else writeBudgetMs
+            // R6：预算按「工具自声明 > 只读/写分档」解析，自声明值夹在安全区间内。
+            val budget = ToolBudget.resolve(tool, readOnlyBudgetMs, writeBudgetMs, maxDeclaredBudgetMs)
+            tool.timeoutBudgetMs?.let { declared ->
+                ToolBudget.warnIfClamped(tool.name, declared, budget)
+            }
             // 等用户的工具不加预算：`ask_user` / `plan_propose` 标了 readOnly（确实无副作用），
             // 但它们挂起时是在等人思考，不是卡死。用 90 秒把用户的问题掐掉是纯回归。
             // 这两类工具自己有等待上限（180s / 300s），超时文案也更准确。

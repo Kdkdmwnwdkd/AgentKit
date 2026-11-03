@@ -159,6 +159,15 @@ class ShellRunTool(
     override val needsApproval = true
 
     /**
+     * R6：shell 命令的耗时完全由命令决定——`ls` 是毫秒级，`gradle build` 要好几分钟。
+     *
+     * 写预算默认 600s 对多数命令够用，但编译/打包类命令在慢机器上会超；
+     * 超时对写操作意味着「状态未知」（可能已经改了东西），模型不敢重试。
+     * 这里给到 20 分钟，仍不够就说明该用 `shell_background`（独立作业通道，不占回合预算）。
+     */
+    override val timeoutBudgetMs: Long = 20 * 60_000L
+
+    /**
      * W-79：审批细化到命令内容。
      *
      * `needsApproval = true` 是兜底（规则看不懂的命令一律问）；但 `ls`/`cat`/`grep`/`pwd`

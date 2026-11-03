@@ -53,6 +53,23 @@ interface AgentTool {
      */
     val awaitsUser: Boolean get() = false
 
+    /**
+     * 本工具的单次调用预算（毫秒）。null = 用执行器的分档默认（R2）。
+     *
+     * ## 为什么工具能自声明预算
+     * R2 的分档只区分「只读 vs 写」，但**同一个工具在不同时长下差别巨大**：
+     * `shell_run` 执行 `ls` 是毫秒级，执行 `gradle build` 要好几分钟；
+     * `http_request` 正常几十秒，网络黑洞时会一直挂着。
+     * 分档解决不了这种粒度——工具作者最清楚自己要跑多久，所以由工具自声明。
+     *
+     * 声明值会被 [com.example.agentkit.core.agent.ToolBudget.resolve] 夹到安全区间
+     * （下界 1 秒，上界为回合软截止），避免把预算写错导致「立刻判死」或「永远不超时」。
+     *
+     * 注意本属性**不覆盖** [awaitsUser]：等用户的工具（`ask_user` / `plan_propose`）
+     * 不吃工具级预算——用户思考三分钟不是「工具卡死」，它们的等待上限由工具自己负责。
+     */
+    val timeoutBudgetMs: Long? get() = null
+
     /** 执行工具，返回统一契约结果（T02）。 */
     suspend fun execute(args: JsonObject): ToolResult
 }

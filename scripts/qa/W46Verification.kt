@@ -49,7 +49,12 @@ fun main() {
 
     check("H1 历史被摊平并随请求下发（send 路径）") {
         assertTrue("缺 buildPriorMessages 定义", "private fun buildPriorMessages(" in chatVm)
-        assertTrue("send 未取历史", "val priorMessages = buildPriorMessages(owner)" in chatVm)
+        // R1 起 priorMessages 多了一条「恢复提示」分支：
+        //   val priorMessages = if (recoveryNote.isNullOrBlank()) buildPriorMessages(owner)
+        //                       else buildPriorMessages(owner) + AssistantMessage(recoveryNote)
+        // 行为没变（都取自 buildPriorMessages(owner)），只是不再是单行字面量。
+        // 因此这里断言**语义**而非字面量：历史确实来自 buildPriorMessages 且传给了 loop。
+        assertTrue("send 未取历史", "buildPriorMessages(owner)" in chatVm)
         assertTrue(
             "send 未把历史传给 loop",
             "loop.send(fullInput, images, priorMessages)" in chatVm

@@ -11,12 +11,10 @@ import com.example.agentkit.core.ModelInfo
 import com.example.agentkit.core.PingResult
 import com.example.agentkit.core.llm.ChatStreamEvent
 import com.example.agentkit.core.llm.local.LocalLlamaEngine
+import com.example.agentkit.runtime.lease.DISABLED_IDLE_TIMEOUT_MS
 import com.example.agentkit.runtime.lease.LeaseHandle
 import com.example.agentkit.runtime.lease.LeaseRegistry
 import com.example.agentkit.runtime.lease.LocalLlmLease
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -24,7 +22,6 @@ import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.onCompletion
 import kotlinx.coroutines.flow.onStart
-import kotlinx.coroutines.launch
 
 /**
  * 本地模型的生命周期运行时：运行层第一个落地能力。
@@ -64,18 +61,21 @@ object LocalLlmRuntime : AgentCapability {
     private val stateFlow = MutableStateFlow(CapabilityState.REGISTERED)
     override val state: StateFlow<CapabilityState> = stateFlow
 
-    private val policy = IdleUnloadPolicy(id)
-
-    private val policyScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-
     private lateinit var prefs: SharedPreferences
 
-    /** 空闲释放开关。默认开；UI 可直接绑定这对存取器。 */
+    /**
+     * R6：空闲释放开关。默认开；UI 可直接绑定这对存取器。
+     *
+     * **关键**：本开关必须真正作用到 [LeaseRegistry] 一侧。
+     * R6 之前这里只写旧 policy 的字段，而实际回收由 registry 按全局 30 分钟执行——
+     * 用户关掉开关，模型照样 30 分钟后被卸，**设置形同虚设**。
+     * 现在改为下发到租约自身的阈值（负数 = 禁用回收），设置即刻生效。
+     */
     var enabled: Boolean
         get() = prefs.getBoolean(KEY_ENABLED, true)
         set(value) {
             prefs.edit().putBoolean(KEY_ENABLED, value).apply()
-            policy.idleTimeoutMs = if (value) timeoutMsFromPrefs() else 0L
+            applyIdlePolicy()
             AgentLogger.i(TAG, if (value) "空闲释放已开启" else "空闲释放已关闭")
         }
 
@@ -84,39 +84,48 @@ object LocalLlmRuntime : AgentCapability {
         get() = prefs.getInt(KEY_IDLE_MINUTES, DEFAULT_IDLE_MINUTES)
         set(value) {
             prefs.edit().putInt(KEY_IDLE_MINUTES, value.coerceIn(1, 120)).apply()
-            policy.idleTimeoutMs = timeoutMsFromPrefs()
+            applyIdlePolicy()
         }
+
+    /**
+     * 把用户设置下发到租约侧。
+     *
+     * 「关闭」映射为**负数**（禁用回收），不是 0——
+     * 0 在 [LeaseRegistry] 的语义里是「立即满足空闲条件」（测试用），
+     * 拿它表示「禁用」会让模型每次检查都被回收。
+     */
+    private fun applyIdlePolicy() {
+        val timeout = if (enabled) timeoutMsFromPrefs() else DISABLED_IDLE_TIMEOUT_MS
+        lease.idleTimeoutMs = timeout
+        AgentLogger.i(
+            TAG,
+            if (enabled) "空闲释放阈值：${idleTimeoutMinutes} 分钟" else "空闲释放已禁用（租约 ${lease.id}）"
+        )
+    }
 
     // ———— AgentCapability ————————————————————————————————————
 
     override suspend fun start() = startWatch()
 
-    private var eventJob: kotlinx.coroutines.Job? = null
-
     /**
-     * 启动空闲节拍（幂等）。[init] 里会顺手调一次——Application 没有现成的协程
-     * 作用域，注册处不该被迫写协程样板；真正的挂起点由 policy 内部自己开。
+     * 启动空闲节拍（幂等）。
+     *
+     * R6：这里**不再自己起节拍器**。回收统一由 [LeaseRegistry] 执行——
+     * 本类只负责「租约已登记 + 阈值已按用户设置下发」，不再有第二个判据源。
+     * 双节拍器的问题是真实存在过的：旧 policy 与 registry 各有一套
+     * `idleTimeoutMs` 且语义相反（0 = 永不释放 vs 0 = 立即回收），
+     * 用户关掉空闲释放时 registry 照旧回收，设置形同虚设。
      */
     private fun startWatch() {
         if (stateFlow.value == CapabilityState.READY) return
         stateFlow.value = CapabilityState.STARTING
-        // 只订阅一次：stop 后再 start 时，上一轮的收集协程必须先取消，
-        // 否则每启停一次就多一个永远挂在 events 上的协程（泄漏）。
-        if (eventJob?.isActive != true) {
-            eventJob = policyScope.launch {
-                policy.events.collect { AgentLogger.i(TAG, it) }
-            }
-        }
-        policy.start(releasable)
+        applyIdlePolicy()
         stateFlow.value = CapabilityState.READY
         val mode = if (enabled) "开，${idleTimeoutMinutes} 分钟" else "关"
         AgentLogger.i(TAG, "本地模型能力就绪（空闲释放：$mode）")
     }
 
     override suspend fun stop() {
-        policy.stop()
-        eventJob?.cancel()
-        eventJob = null
         releaseIfLoaded("运行层主动停止")
         stateFlow.value = CapabilityState.STOPPED
     }
@@ -138,9 +147,12 @@ object LocalLlmRuntime : AgentCapability {
      * R3：改为**挂起**函数，借一个租约句柄；[endUse] 关闭它。
      * 挂起是必要的——租约的 acquire 是挂起操作，而 `runBlocking` 在这里
      * 有死锁风险（调用点可能在持有锁的协程里）。所有调用点本来就在挂起上下文。
+     *
+     * R6：不再单独调 `policy.touch()`——租约的 acquire / release 已各自
+     * 刷新 [LeaseRegistry] 的使用时刻，心跳是租约契约的一部分，
+     * 不该再有第二个心跳源。
      */
     suspend fun beginUse() {
-        policy.touch()
         val handle = lease.acquire()
         // 句柄存起来供 endUse 归还。用队列而非集合：同一时刻可能有多个在途推理，
         // 归还时按「后进先出」对应即可——每次推理独立借还，句柄之间无区别。
@@ -155,28 +167,12 @@ object LocalLlmRuntime : AgentCapability {
         // 句柄之间无区别，取哪个都一样——每次推理独立借还。
         val handle = handleQueue.poll()
         handle?.close()
-        policy.touch()
     }
 
     /** 在途推理的租约句柄队列（先进先出地归还即可，句柄之间无区别）。 */
     private val handleQueue = java.util.concurrent.ConcurrentLinkedQueue<LeaseHandle>()
 
     // ———— 空闲释放 ————————————————————————————————————————————
-
-    /**
-     * R3：空闲释放改由租约接管。
-     *
-     * 改造前这里靠 [inFlight] 计数（手工加减），现在计数在 [lease] 里，
-     * 两处判据必须用**同一个源**——否则「租约说没人用、旧节拍器说有在途」
-     * 这种漂移会让释放时机变得不可预测。
-     */
-    private val releasable = object : IdleReleasable {
-        override val isSafeToRelease: Boolean get() = lease.isSafeToRelease
-
-        override fun releaseNow(reason: String) {
-            lease.releaseIdle(reason)
-        }
-    }
 
     private fun releaseIfLoaded(reason: String) {
         if (!LocalLlamaEngine.isLoaded) return
@@ -194,20 +190,19 @@ object LocalLlmRuntime : AgentCapability {
     // ———— 初始化 ——————————————————————————————————————————————
 
     /**
-     * Application.onCreate 调一次：建配置存储、登记租约，并启动空闲节拍。
+     * Application.onCreate 调一次：建配置存储、登记租约，并把用户设置下发到租约。
      *
      * R3：原先这里调 `CapabilityHost.register(this)`——那是「通用能力注册表」，
      * 全仓只有这一处调用，其余方法零消费，已随通用能力框架一起删除。
      * 现在登记的是 [LeaseRegistry]（真有人用的统一回收器）。
+     *
+     * R6：这里**不再并存第二个节拍器**。空闲回收只有 [LeaseRegistry] 一个执行处，
+     * 本类的设置通过 [applyIdlePolicy] 下发到租约自身的阈值上。
      */
     fun init(context: Context) {
         if (this::prefs.isInitialized) return
         prefs = context.applicationContext
             .getSharedPreferences(SP_NAME, Context.MODE_PRIVATE)
-        policy.idleTimeoutMs = if (enabled) timeoutMsFromPrefs() else 0L
-        // R3：登记租约并注册空闲释放动作。回收由 [LeaseRegistry] 的统一节拍器执行，
-        // 与旧的 [policy] 节拍器并存——两者都只释放「无人使用 + 可安全释放」的资源，
-        // 重复释放由 lease.releaseIdle 的「模型未加载则直接返回」保证无害。
         LeaseRegistry.register(lease)
         LeaseRegistry.registerIdleReleaser(lease.id) { lease.releaseIdle("租约空闲回收") }
         startWatch()

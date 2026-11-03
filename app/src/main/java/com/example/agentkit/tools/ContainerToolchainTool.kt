@@ -67,6 +67,14 @@ class ContainerToolchainTool(
     /** 安装动作要下载并写入容器，需人工确认。 */
     override val needsApproval = true
 
+    /**
+     * R6：安装语言运行时要从源下载并解包（node/python/java 各几十到上百 MB）。
+     *
+     * 写预算默认 600s 在慢速镜像下不够，而超时的代价是「状态未知」——
+     * 装到一半的运行时留在容器里，重装又说不清状态。
+     */
+    override val timeoutBudgetMs: Long = 20 * 60_000L
+
     override suspend fun execute(args: JsonObject): ToolResult = withContext(Dispatchers.IO) {
         // 用 JsonSafe 的软转换（primOrNull）而非 kotlinx 的硬转换：
         // 模型下发 `"action": null` 时硬转换会抛 IllegalArgumentException，整轮回答直接崩。

@@ -12,6 +12,18 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 
 /**
+ * 「禁用空闲回收」的阈值取值。
+ *
+ * R6：必须是**负数**。本注册表的取值语义里 `0` 表示「立即满足空闲条件」
+ * （测试用的快进档），拿它表示「禁用」会让资源每次检查都被回收——
+ * 这正是 R6 修掉的那个 bug 的同一族错误（旧 policy 里 `0` 才是「永不释放」）。
+ *
+ * 单独命名而不是写 `-1` 字面量：调用方（用户设置关闭空闲释放）读代码时
+ * 一眼能看出意图，而不是去查「这里为什么是 -1」。
+ */
+const val DISABLED_IDLE_TIMEOUT_MS: Long = -1L
+
+/**
  * 租约注册表（R3）：登记三类资源 + 统一空闲回收 + 泄漏检测。
  *
  * ## 为什么要有注册表
@@ -44,18 +56,20 @@ object LeaseRegistry {
     private val outstanding = ConcurrentHashMap<String, AtomicLong>()
 
     /**
-     * 空闲阈值（毫秒）。默认 30 分钟。
+     * 空闲阈值（毫秒）——**全局默认值**。
      *
      * 取 30 分钟的理由与本地模型一致：覆盖「聊—查资料—回来继续聊」的常见节奏，
      * 同时仍能让长时间闲置的机器真正降温。
      *
-     * **取值语义**：
+     * **取值语义**（与 [RuntimeLease.idleTimeoutMs] 一致）：
      * - `> 0`：空闲超过该毫秒数才回收；
      * - `== 0`：**立即**满足空闲条件（测试用——harness 借此免去真实等待）；
      * - `< 0`：禁用回收（永久保留）。
      *
      * `0` 与负号必须区分开：把 0 当成「禁用」会让 harness 没法测回收路径，
      * 而把负号当成立即回收则会让「临时禁用回收」变成「疯狂回收」。
+     *
+     * 租约可用 [RuntimeLease.idleTimeoutMs] 覆盖本值（如本地模型跟随用户设置）。
      */
     @Volatile
     var idleTimeoutMs: Long = 30 * 60_000L
@@ -168,7 +182,9 @@ object LeaseRegistry {
         for (lease in leases.values) {
             val used = lastUsed[lease.id]?.get() ?: continue
             val idleFor = now - used
-            val timeout = idleTimeoutMs
+            // R6：阈值取「租约自身覆盖 ?: 全局默认」。租约覆盖优先——
+            // 用户在设置里改的空闲时长必须真的作用到这一类资源上。
+            val timeout = lease.idleTimeoutMs ?: idleTimeoutMs
             // 引用数为 0：没人显式持有
             if (lease.activeCount > 0) continue
             // 空闲超阈值。timeout == 0 表示「立即满足」（测试用），负数表示禁用回收

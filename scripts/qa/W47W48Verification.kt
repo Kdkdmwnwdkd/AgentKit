@@ -285,7 +285,18 @@ fun main() {
     check("S7 技能白名单 fail-closed：空表不再等于全放行") {
         assertTrue("仍在用 isNotEmpty 旧判定", "tools.isNotEmpty() && name !in skill.tools" !in executor)
         assertTrue("未使用统一判定", "isToolAllowedByWhitelist(skill.tools" in executor)
-        assertTrue("未阻断需审批工具", "needsApproval == true" in executor)
+        // R4 起审批判据从「工具级 needsApproval」细化为「参数级 needsApprovalFor(args)」
+        // （shell_run 的 `ls` 无副作用不必拦，`rm -rf` 必须拦）。
+        // 断言原先盯的是工具级字面量 `needsApproval == true`，
+        // R4 之后它已不成立——这是**断言陈旧**而非产品缺陷：
+        // 阻断行为由 needsApprovalFor 承担，且判据比工具级更细。
+        assertTrue(
+            "未用参数级审批判据阻断需确认工具",
+            "needsApprovalFor(obj) == true" in executor
+        )
+        // 反向断言：不能退回工具级判据——那会把「参数级更细」的优势丢掉，
+        // 且与主对话的审批口径不一致（两处判据必须同源）。
+        assertTrue("退回了工具级审批判据", "target?.needsApproval == true" !in executor)
     }
 
     check("S8 高危工具必须挂人工审批（shell / 写文件 / 推仓库）") {

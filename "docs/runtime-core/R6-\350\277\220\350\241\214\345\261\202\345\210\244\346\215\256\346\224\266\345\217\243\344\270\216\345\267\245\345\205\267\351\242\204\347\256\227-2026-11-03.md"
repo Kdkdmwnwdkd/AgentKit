@@ -1,0 +1,265 @@
+# R6 · 运行层判据收口与工具预算分级
+
+> 2026-11-03 ｜ 净线实现 ｜ 分支 `main` ｜ 编译通过 · 全量 QA `PASS=73 SKIP=1 XFAIL=0 FAIL=0` · 门禁四条全过
+
+## 一、结论先说
+
+R6 修掉的是**两个语义冲突类缺陷**和**一个失效门禁**。它们的共同点是：编译不报错、
+功能不崩溃，但**行为与用户的预期相反**——是那种「改了没感觉、真出事时才发现」的坑。
+
+| 缺陷 | 根因 | 用户可见后果 |
+|---|---|---|
+| 空闲释放有两个判据源 | `IdleUnloadPolicy` 与 `LeaseRegistry` 各有一套 `idleTimeoutMs`，**语义相反** | **用户关掉「空闲释放」无效**，本地模型照样 30 分钟后被卸载 |
+| 工具预算只有一个粒度 | R2 只有「只读 90s / 写 600s」两档 | `gradle build` 被误杀（超时=状态未知），`http_request` 白等 90 秒 |
+| 运行层门禁断言已删 API | R3 收缩删掉 `CapabilityHost`，断言没跟着更新 | 该 harness 在 `run-all.sh` 里被判 **FAIL 并阻塞 CI**，失败原因与产品无关 |
+
+第三条是顺手发现的：R3 那次收缩改动了 `runtime/` 包，但**没同步改它的验证脚本**。
+脚本从「守门」退化成「挡路」——CI 长期红灯，而红灯指向的是不存在的 API。
+
+---
+
+## 二、缺陷一：空闲释放的判据漂移
+
+### 2.1 症状
+
+用户在设置里关闭「空闲释放」，本地模型**仍然**在 30 分钟后被卸载。
+反过来，把空闲时长从 30 分钟改成 5 分钟，实际行为也不跟着变。
+
+### 2.2 根因：两套阈值 + 相反的语义
+
+R3 引入了租约体系 `LeaseRegistry`（统一回收器），但**没有下线旧的
+`IdleUnloadPolicy`**。于是空闲回收有两个执行处：
+
+```
+旧：IdleUnloadPolicy  ──┐
+                        ├── LocalLlmRuntime（本地模型）
+新：LeaseRegistry      ──┘
+```
+
+两者的阈值字段**同名不同义**，这是最危险的一种冲突：
+
+| | `idleTimeoutMs == 0` | `idleTimeoutMs < 0` | 阈值字段的写入方 |
+|---|---|---|---|
+| `IdleUnloadPolicy` | **永不释放** | 同左（`<= 0` 都退出） | 用户设置（`enabled` / `idleTimeoutMinutes`） |
+| `LeaseRegistry` | **立即回收** | 禁用回收 | 只有全局默认值 30 分钟 |
+
+于是用户设置的流向是：
+
+```
+用户设置 → LocalLlmRuntime.enabled / idleTimeoutMinutes
+        → policy.idleTimeoutMs        ← 设置到这里
+        → LeaseRegistry                ← 设置**没到这里**
+        → registry 按全局 30 分钟回收   ← 用户设置被完全绕过
+```
+
+**设置形同虚设**——这是本缺陷的实质。
+
+### 2.3 修法：判据收敛到一处
+
+R6 的做法是**删掉旧节拍器，把阈值下沉到租约自身**：
+
+1. `RuntimeLease` 增加 `idleTimeoutMs: Long?`（null = 跟随全局默认）；
+2. `LeaseRegistry.checkOnce()` 取 `lease.idleTimeoutMs ?: idleTimeoutMs`；
+3. `LocalLlmRuntime` 的用户设置**下发到租约**（`lease.idleTimeoutMs = timeout`）；
+4. 删除 `IdleUnloadPolicy` 与 `IdleReleasable`（零消费方，全仓只剩 `LocalLlmRuntime` 一处）。
+
+关键设计：**关闭空闲释放用「负数」而不是「0」**。
+
+因为 `LeaseRegistry` 里 `0` 表示「立即满足空闲条件」（测试用的快进档），
+拿它表示「禁用」会让模型**每次检查都被回收**——这正是原 bug 的同一族错误。
+所以定义了一个具名常量，把意图写死：
+
+```kotlin
+/** 「禁用空闲回收」的阈值取值。必须是负数——0 在本注册表里是「立即回收」。 */
+const val DISABLED_IDLE_TIMEOUT_MS: Long = -1L
+```
+
+### 2.4 净减代码
+
+删掉 `IdleUnloadPolicy`（103 行）后，本次改动净减 **110 行**。
+运行层少了一个节拍器、一次心跳、一个事件流——判据从「两处」变「一处」。
+
+---
+
+## 三、缺陷二：工具预算的粒度
+
+### 3.1 症状
+
+- `shell_run` 跑 `gradle build`：写预算 600s 不够 → 超时 → **状态未知**
+  （模型不敢重试，用户也不敢确认，因为「可能已经改了东西」）；
+- `http_request`：只读 90s 干等——正常请求几十秒就完了。
+
+### 3.2 根因：分档只解决了一个维度
+
+R2 的两档（只读 / 写）回答的是「这个操作**有没有副作用**」，
+但**同一个工具在不同时长下差别巨大**：
+
+| 工具 | 快的用法 | 慢的用法 |
+|---|---|---|
+| `shell_run` | `ls`（毫秒级） | `gradle build`（几分钟） |
+| `http_request` | 正常接口（几秒） | 网络黑洞（永远） |
+
+分档解决不了这种粒度。**工具作者最清楚自己要跑多久**，所以由工具自声明。
+
+### 3.3 修法：自声明 + 夹紧
+
+新增 `AgentTool.timeoutBudgetMs: Long?`（默认 null）与 `core/agent/ToolBudget.kt`：
+
+```
+预算 = 工具自声明（若有，夹紧）  ?:  只读/写分档默认（原样使用）
+```
+
+**两条夹紧规则**（自声明值来自代码，也可能写错）：
+
+| 边界 | 值 | 理由 |
+|---|---|---|
+| 下界 | 1 秒 | 小于 1 秒等于「立刻判死」，多半是秒/毫秒写错 |
+| 上界 | 30 分钟 | 与回合软截止一致；超过它回合早收尾了，工具挂着只是拖 |
+
+**分档默认不夹紧**——测试要靠注入 `80ms` 这样的极小值断言超时路径，
+夹住它，超时分支就永远测不到。这条写进了 `ToolBudget.resolve` 的注释。
+
+### 3.4 已声明预算的工具
+
+| 工具 | 预算 | 理由 |
+|---|---|---|
+| `shell_run` | 20 分钟 | 命令耗时从毫秒到编译级别不等 |
+| `github_clone` | 20 分钟 | 下载+解压整个仓库，随体积线性增长 |
+| `container_toolchain` | 20 分钟 | 下载 node/python/java 运行时（几十到上百 MB） |
+| `http_request` | 90 秒 | 因支持 POST 被标为写操作而吃 600s，但 HTTP 往返不该跑十分钟 |
+
+---
+
+## 四、缺陷三：失效的运行层门禁
+
+### 4.1 症状
+
+`scripts/qa/run-runtime-capability-verification.sh` 断言的是 R3 收缩**之前**的 API：
+
+```
+CapabilityHost / AgentCapability.onUse() / inFlight / CapabilityStartException
+```
+
+这些在 R3 已被整体删除，脚本变成「永远红的死门禁」：
+它不在 `known-broken.txt` 里 → `run-all.sh` 判 FAIL → **阻塞 CI**。
+
+实测：R6 开工前 `PASS=21 FAIL=10`。
+
+### 4.2 修法
+
+重写为断言 **R6 收口后的真实契约**（45 项断言）：
+
+- 空闲释放只有一个判据源（`IdleUnloadPolicy` / `IdleReleasable` 不得复活）；
+- 阈值语义两侧一致（`0`=立即满足 / 负数=禁用）；
+- 用户设置真的作用到租约上；
+- 工具预算可按工具覆盖，且分档默认不被夹紧。
+
+外加「失效断言不得复活」一段：防止 `CapabilityHost` 这类死 API 被重新引入。
+
+---
+
+## 五、顺带修掉的两条陈旧断言
+
+跑全量 QA 时另外发现两条断言与主代码脱节。它们**不是本次改动引入的**
+（用 `git stash` 对比基线确认过），但同样会让 CI 长期红灯：
+
+| 断言 | 陈旧原因 | 修法 |
+|---|---|---|
+| `W47W48` S7「技能白名单 fail-closed」 | R4 把审批判据从工具级 `needsApproval` 细化为参数级 `needsApprovalFor(args)`，断言仍盯旧字面量 | 改为断言参数级判据 + 反向断言「不得退回工具级」 |
+| `W46` H1「历史随请求下发」 | R1 起 `priorMessages` 多了「恢复提示」分支，不再是单行字面量 | 改为断言**语义**（历史取自 `buildPriorMessages` 且传给 loop） |
+
+两条的**产品行为本来就是对的**，坏的是断言的字面量。
+
+---
+
+## 六、验证
+
+### 6.1 新增 harness
+
+`scripts/qa/R6Verification.kt`（11 项行为断言）+ `scripts/qa/run-r6-verification.sh`：
+
+```
+R6-1  租约自身阈值覆盖全局值
+R6-2  关闭空闲释放 = 阈值置负数 → 回收器跳过该租约
+R6-3  阈值语义统一：0=立即满足，负数=禁用
+R6-4  空闲释放关闭时，即便全局阈值为 0 也不回收      ← 直接对应原 bug
+R6-5  关闭空闲释放后重新开启，回收恢复
+R6-6  工具自声明预算生效（覆盖分档默认）
+R6-7  未声明的工具走分档默认
+R6-8  自声明预算越界被夹紧（下界 1s / 上界 max）
+R6-9  分档默认不被夹紧（测试注入的 80ms 原样生效）
+R6-10 executor 实际按自声明预算超时（端到端）
+R6-11 等用户的工具不吃预算（awaitsUser 优先）
+```
+
+### 6.2 回归结果
+
+| 范围 | 结果 |
+|---|---|
+| R6 新增 | **11 / 0** |
+| 运行层静态门禁（重写后） | **45 / 0** |
+| R2R4（三层超时+审批） | 9 / 0 |
+| R3（租约） | 9 / 0 |
+| R5（回合时间线） | 9 / 0 |
+| journal（回合日志） | 29 / 0 |
+| T01（执行器契约） | 39 / 0 |
+| Retry（重试） | 9 / 0 |
+| W31（子代理） | 18 / 0 |
+| **全量 QA** | **PASS=73 SKIP=1 XFAIL=0 FAIL=0** |
+| **QA 硬门禁** | **四条全过** |
+| `compileDebugKotlin` | 通过 |
+
+### 6.3 全量 QA 的前后对比
+
+R6 开工前（补齐 kotlinc 环境后实测）：
+
+```
+PASS=58 SKIP=1 XFAIL=0 FAIL=15
+```
+
+R6 完成后：
+
+```
+PASS=73 SKIP=1 XFAIL=0 FAIL=0
+```
+
+15 条 FAIL 的构成：
+- **14 条**：`kotlinc` 不在 `/tmp/kotlinc`（沙箱环境问题，与代码无关）。
+  按 CI 的 shim 构造步骤在沙箱复现后全部通过；
+- **1 条**：`W47W48` S7（断言陈旧，R4 遗留）——已修。
+
+---
+
+## 七、本轮没做的
+
+留到后续批次，按价值排序：
+
+| 项 | 为什么没做 |
+|---|---|
+| 技能脚本写入回合日志 | 技能脚本里的工具调用目前不进回合日志，崩溃恢复看不到它们 |
+| NDJSON 事件流 | 回合日志是自定义 TSV，跨工具消费需要 NDJSON |
+| 子代理时间线 | 子代理的步骤不在主回合时间线上，定位不到「卡在哪个子任务」 |
+| 容器独立租约 ID | 容器复用 `terminal:proot`，两者回收时机无法分别控制 |
+| 观察 UI 重资源 | 需要 UI 改造，与本轮运行层收口正交 |
+
+---
+
+## 八、附：本轮改动清单
+
+**新增**
+- `app/src/main/java/com/example/agentkit/core/agent/ToolBudget.kt` —— 预算解析与夹紧
+- `scripts/qa/R6Verification.kt` + `scripts/qa/run-r6-verification.sh`
+
+**删除**
+- `app/src/main/java/com/example/agentkit/runtime/IdleUnloadPolicy.kt`（103 行）
+
+**修改**
+- `core/AgentContract.kt` —— `AgentTool.timeoutBudgetMs`
+- `core/agent/ToolExecutor.kt` —— 走 `ToolBudget.resolve`
+- `runtime/LocalLlmRuntime.kt` —— 设置下发到租约，去掉 policy
+- `runtime/lease/RuntimeLease.kt` —— `idleTimeoutMs` 契约
+- `runtime/lease/LeaseRegistry.kt` —— 单一判据源 + `DISABLED_IDLE_TIMEOUT_MS`
+- `runtime/lease/LocalLlmLease.kt` —— 阈值可覆盖
+- `tools/{ShellTool,BuiltInTools,GitHubGitTools,ContainerToolchainTool}.kt` —— 自声明预算
+- `scripts/qa/run-runtime-capability-verification.sh` —— 重写
+- `scripts/qa/{W46,W47W48}Verification.kt` —— 修正陈旧断言

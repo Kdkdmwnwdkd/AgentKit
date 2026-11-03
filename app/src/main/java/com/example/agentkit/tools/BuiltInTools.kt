@@ -63,6 +63,15 @@ class HttpRequestTool(
      */
     override val readOnly = false
 
+    /**
+     * R6：HTTP 往返的网络等待，给 90 秒。
+     *
+     * 本工具因支持 POST/PUT 被标为**写操作**（见上方 W-46 说明），因而吃 600s 的写预算——
+     * 但一次 HTTP 请求不管什么方法都不该跑十分钟。90 秒足够覆盖慢网络与重定向，
+     * 再长就是黑洞（连不上却不断重试），早点超时早反馈。
+     */
+    override val timeoutBudgetMs: Long = 90_000L
+
     override suspend fun execute(args: JsonObject): ToolResult = withContext(Dispatchers.IO) {
         runCatching {
             val method = args["method"]?.primOrNull()?.contentOrNull ?: "GET"

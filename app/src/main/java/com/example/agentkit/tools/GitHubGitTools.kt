@@ -423,6 +423,15 @@ class GitHubCloneTool(private val app: Application) : AgentTool {
 
     override val readOnly = false
 
+    /**
+     * R6：下载 + 解压整个仓库，耗时随仓库体积线性增长。
+     *
+     * 写预算默认 600s 够多数仓库，但大仓库（几百 MB、几万个文件）会超——
+     * 超时的代价是「状态未知」：解压中断可能留下半成品目录，
+     * 模型不敢重试、用户也不敢确认。所以给它 20 分钟。
+     */
+    override val timeoutBudgetMs: Long = 20 * 60_000L
+
     override suspend fun execute(args: JsonObject): ToolResult = withContext(Dispatchers.IO) {
         val cfg = loadConfig(app) ?: return@withContext notConfigured()
         val branch = branchOf(args)
