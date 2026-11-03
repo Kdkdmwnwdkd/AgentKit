@@ -38,6 +38,30 @@ DEPS=$CLASSES:$STDLIB:$COROUTINES:$SERIALIZATION:$SER_CORE:$OKHTTP:$OKIO
 
 rm -rf "$OUT" && mkdir -p "$OUT"
 
+# R3-15（静态）：容器「借租约」必须发生在会话 start 成功之后。
+#
+# 这条不进 Kotlin harness：holder 是 Compose object，依赖 Context/Looper，
+# JVM 里实例化不了。但它是租约唯一的**失效方式**——若在 start 前 borrow，
+# 启动失败的会话会让 activeCount 卡在 1，空闲回收永远等不到归零，
+# 表现为「容器页从未打开过，却一直显示有容器会话在运行」。
+# 用源码顺序把不变式钉住，改 UI 时不必靠人记得上一次为什么这么排。
+python3 - "$ROOT/app/src/main/java/com/example/agentkit/ui/ContainerScreen.kt" <<'PY'
+import sys
+path = sys.argv[1]
+src = open(path, encoding='utf-8').read()
+start_at = src.find('runCatching { s.start() }')
+borrow_at = src.find('ContainerLeases.forDistro(')
+if start_at < 0 or borrow_at < 0:
+    sys.exit('R3-15 失败：ContainerScreen 里找不到 start() 或 forDistro() 调用点'
+             '（start=%d borrow=%d）' % (start_at, borrow_at))
+if borrow_at < start_at:
+    sys.exit('R3-15 失败：借租约出现在 start() 之前——启动失败会让 activeCount 虚高，'
+             '空闲回收将永远等不到归零')
+if 'refs--' not in src[start_at:]:
+    sys.exit('R3-15 失败：start 失败分支没有回滚 refs（会话计数泄漏）')
+print('  ok  R3-15 容器租约只在会话 start 成功后才借出（源码顺序 + 失败回滚）')
+PY
+
 echo "[1/2] compiling harness ..."
 java -cp "$KOTLINC:$STDLIB:$TROVE:$JB_ANNOTATIONS" org.jetbrains.kotlin.cli.jvm.K2JVMCompiler \
   -no-stdlib -no-reflect \
