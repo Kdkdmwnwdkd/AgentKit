@@ -49,8 +49,8 @@ interface RuntimeLease {
      * 本租约的空闲回收阈值（毫秒）。null = 跟随 [LeaseRegistry.idleTimeoutMs] 全局值。
      *
      * ## 为什么阈值要挂在租约上而不是只放全局
-     * R6 之前空闲判据有**两个来源**：[com.example.agentkit.runtime.IdleUnloadPolicy]
-     * 的实例字段（本地模型用，用户可配）与 [LeaseRegistry.idleTimeoutMs]（全局默认）。
+     * R6 之前空闲判据有**两个来源**：本地模型那套可配的实例字段（原 `IdleUnloadPolicy`，
+     * 已删除）与 [LeaseRegistry.idleTimeoutMs]（全局默认）。
      * 两者语义还**相反**——policy 里 `0` 表示「永不释放」，registry 里 `0` 表示
      * 「立即回收」。结果是：用户在设置里关掉空闲释放，policy 停了，registry 照旧按
      * 全局 30 分钟回收——**用户的设置形同虚设**。

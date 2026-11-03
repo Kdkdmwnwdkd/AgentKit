@@ -62,7 +62,13 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import android.widget.Toast
 import com.example.agentkit.core.agent.SurvivalCheckService
+import com.example.agentkit.runtime.lease.LeaseRegistry
+import com.example.agentkit.runtime.lease.LeaseSnapshot
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * 设置页（UX v1 §1.8）：自动化、设备能力、各处入口的收纳页。
@@ -326,6 +332,16 @@ fun SettingsScreen(
                     )
                 }
             }
+
+            // —— R8：重资源观察面 ——
+            //
+            // 租约管的是「看不见的东西」：本地模型、终端会话、容器会话分别占着内存/进程，
+            // 空闲了会被回收器带走。在此之前这些状态只落在 logcat 里，用户想知道
+            // 「我的手机为什么一直发热」得会看 adb——观测面缺失，护栏等于没有。
+            //
+            // 放在「工具范围」后面：上一组管 token 成本，这一组管内存成本，
+            // 两者都是「你现在在为什么付代价」，挨着读才连得上。
+            ResourceLeaseSection()
 
             // —— 设备能力：自动化总开关 + 权限入口 + 存活自检 ——
             // W-68：Shizuku / 无线调试原来单独一张「调试通道」卡，和本组的「权限中心」说的是
@@ -693,4 +709,86 @@ private fun BackupKeySection(vm: ChatViewModel) {
             )
         }
     }
+}
+
+/**
+ * 重资源租约观察面（R8）。
+ *
+ * ## 为什么放在设置页而不是新开一页
+ * 三行信息（本地模型 / 终端 / 容器）不足以撑起一个页面，而设置页恰好是用户
+ * 「想知道 App 在后台干什么」时会来的地方。新开一页还要多一次点击才看得到。
+ *
+ * ## 为什么每 2 秒采样一次
+ * 回收器的节拍是 30 秒（[LeaseRegistry.checkIntervalMs]），2 秒足够让
+ * 「退出容器页 → 容器会话销毁」这类变化在用户离开设置页之前可见，
+ * 又不会让滚动列表每帧都去遍历三张表。采到空表就整块不显示，
+ * 避免在什么都没跑的时候摆一张「暂无数据」的空卡。
+ */
+@Composable
+private fun ResourceLeaseSection() {
+    var snapshots by remember { mutableStateOf(LeaseRegistry.snapshot()) }
+    LaunchedEffect(Unit) {
+        while (isActive) {
+            // 放 IO：snapshot 要读会话池的锁（TerminalPoolLease 靠它数存活会话），
+            // 主线程顺手拿别人的锁是 ANR 的经典起点。
+            snapshots = withContext(Dispatchers.IO) { LeaseRegistry.snapshot() }
+            delay(2_000L)
+        }
+    }
+    if (snapshots.isEmpty()) return
+
+    AkGroup(
+        title = "重资源",
+        description = "本地模型、终端与容器会话的占用；空闲超时的会被自动回收"
+    ) {
+        snapshots.forEachIndexed { index, lease ->
+            if (index > 0) AkDivider(Modifier.padding(start = AgentSpacing.space4))
+            AkListItem(
+                icon = null,
+                title = lease.title,
+                description = leaseStatusText(lease),
+                trailing = {
+                    Text(
+                        text = if (lease.activeCount > 0) "使用中" else "空闲",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = if (lease.activeCount > 0) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            )
+        }
+    }
+}
+
+/**
+ * 一条租约的状态说明。
+ *
+ * 只显示**能被用户理解的异常**：
+ * - 「句柄未归还」= 有代码借了没还，日志里会有泄漏警告，用户至少知道内存为什么没降；
+ * - 「未注册释放器」= 回收器会跳过它，这类资源**永远不会**被空闲回收（配置错误）。
+ *
+ * 不显示 outstanding 为 0 的正常情况——每个正常租约都写「无泄漏」纯属噪音。
+ */
+private fun leaseStatusText(lease: LeaseSnapshot): String = buildString {
+    if (lease.activeCount > 0) {
+        append("${lease.activeCount} 个持有者")
+    } else {
+        append("空闲 ")
+        append(formatIdle(lease.idleForMs))
+    }
+    if (lease.idleTimeoutMs < 0L) {
+        append(" · 不自动回收")
+    } else {
+        append(" · 超 ")
+        append(formatIdle(lease.idleTimeoutMs))
+        append(" 回收")
+    }
+    if (lease.outstanding > 0L) append(" · ${lease.outstanding} 个句柄未归还")
+    if (!lease.releaserRegistered) append(" · 未注册释放器")
+}
+
+private fun formatIdle(ms: Long): String = when {
+    ms < 60_000L -> "${ms / 1000L} 秒"
+    ms < 3_600_000L -> "${ms / 60_000L} 分钟"
+    else -> "${ms / 3_600_000L} 小时"
 }

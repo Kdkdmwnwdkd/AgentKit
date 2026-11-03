@@ -50,6 +50,22 @@ interface JsEngine {
 /** 脚本单次求值超时上限（毫秒）：超过即放弃脚本结果、回退提示词形态。 */
 private const val SCRIPT_TIMEOUT_MS = 10_000L
 
+/**
+ * 外层 `withTimeoutOrNull` 在脚本截止之上多等的宽限（毫秒）。
+ *
+ * 内层指令看门狗负责精确中断；外层只兜「卡在桥调用里」——那种情况脚本没在执行指令，
+ * 看门狗没有机会触发。留 5 秒足以让看门狗先动手，避免两个超时同时生效时日志自相矛盾。
+ */
+private const val OUTER_GRACE_MS = 5_000L
+
+/**
+ * 指令看门狗的检查间隔（解释执行的指令条数）。
+ *
+ * 1 万条：单次 `currentTimeMillis` 的开销摊薄到可忽略，而在低端机上执行 1 万条指令
+ * 也只要几毫秒，超时精度足够。调小会让长脚本多花几个百分点，调大会让中断变迟钝。
+ */
+private const val INSTRUCTION_CHECK_INTERVAL = 10_000
+
 /** 脚本一律禁止触碰的 Java 包名前缀：JDK（反射/IO/网络）、Rhino 自身、宿主 App 内部类。 */
 private val BLOCKED_CLASS_PREFIXES = arrayOf(
     "java.",
@@ -68,20 +84,59 @@ private val BLOCKED_CLASS_PREFIXES = arrayOf(
  * 沙箱加固（L11）：
  *  1. ClassShutter 屏蔽上表中的包：脚本拿不到 Packages.java.net.Socket / Class.forName / 宿主内部类，
  *     唯一出口是注入的 agent 桥（其工具调用受 manifest 白名单 + L5 全局能力门双重约束）。
- *  2. optimizationLevel = -1（解释执行），为后续接入指令计数看门狗留口子。
- *  3. withTimeoutOrNull(SCRIPT_TIMEOUT_MS) 超时看门狗。
+ *  2. optimizationLevel = -1（解释执行）——这不是性能取舍，是**中断能力的前提**：
+ *     只有解释执行才会按指令数回调 [DeadlineContext.observeInstructionCount]。
+ *  3. 指令数看门狗：见 [DeadlineContext]。
  *
- * ⚠️ 超时语义说明：Rhino 1.7.14 **无法强制中断一个已经在跑的死循环求值线程**——
- * 超时只会取消协程、让本函数立刻返回 null 放弃结果，Rhino 那个线程仍会继续空转（可能永不结束，
- * 线程与 Context 都会泄漏）。所以这里的策略是「不等它」：由 [SkillExecutor.runSkill]
- * 记 ERROR 日志并回退提示词形态，保证用户侧不会被卡死。
- * 真正可强 kill 的中断需要后续换成 QuickJS（有原生中断钩子）才能做到。
+ * ## 超时语义（R8 修复）
+ * R7 之前这里写着「Rhino 无法强制中断死循环，只能不等它」。那句话在当时是对的——
+ * 只靠 `withTimeoutOrNull` 确实只能放弃结果，`evaluateString` 是阻塞调用、不响应协程取消，
+ * `while(true){}` 会把 `Dispatchers.Default` 的一个 worker 永久占住（技能多来自市场导入，
+ * 质量不可控，一次死循环就少一个调度线程，直到进程重启）。
+ *
+ * 现在用 Rhino 自带的指令观察钩子真正杀掉脚本线程，不需要换引擎：
+ * 解释执行模式下每 N 条指令回调一次，在里面查墙钟即可抛异常。
+ * 外层 `withTimeoutOrNull` 保留为**兜底**（阈值放宽），覆盖「卡在桥调用里」的情况——
+ * 那种时候脚本根本没在执行指令，指令看门狗看不到它。
  */
 class RhinoJsEngine : JsEngine {
+
+    /**
+     * 带墙钟截止的 Rhino 上下文：**能真正中断死循环**。
+     *
+     * ## 为什么查墙钟而不是数指令
+     * 不同脚本每毫秒执行的指令数差两个数量级（空循环 vs 大量字符串拼接）。
+     * 按指令数设上限，要么把正常脚本切得太早，要么对慢脚本形同虚设。
+     * 指令计数只用来控制**检查频率**（每 1 万条查一次，单次开销摊薄到可忽略，
+     * 而 1 万条指令在低端机上也只要几毫秒，超时精度足够）。
+     *
+     * ## 为什么必须继承 Context 而不是用 `Context.enter()`
+     * [observeInstructionCount] 是 protected 方法，只有子类能覆盖；
+     * `Context.enter()` 走工厂创建的是基类实例，钩子永远不会被调到。
+     * 用 `Context.enter(cx)` 把自建实例挂到当前线程——它是公开的静态方法，
+     * 不需要替换全局 `ContextFactory`（那会影响进程内所有 Rhino 使用者）。
+     */
+    private class DeadlineContext(private val deadlineMs: Long) : org.mozilla.javascript.Context() {
+        init { setInstructionObserverThreshold(INSTRUCTION_CHECK_INTERVAL) }
+
+        override fun observeInstructionCount(instructionCount: Int) {
+            if (System.currentTimeMillis() >= deadlineMs) throw ScriptTimeout()
+        }
+    }
+
+    /** 脚本超时的内部信号：不暴露给调用方，[eval] 把它折成 `null`（= 回退提示词形态）。 */
+    private class ScriptTimeout : RuntimeException("技能脚本执行超时")
+
     override suspend fun eval(source: String, bindings: Map<String, Any?>): Any? =
-        withTimeoutOrNull(SCRIPT_TIMEOUT_MS) {
+        // 外层只是兜底：脚本卡在桥调用里（http_request / tool 执行）时指令看门狗看不到它——
+        // 那会儿根本没有解释器指令在跑。阈值必须**大于**内层截止，否则外层先返回 null，
+        // 日志里会出现「已判超时但线程还在跑」的假象，排障时对不上。
+        withTimeoutOrNull(SCRIPT_TIMEOUT_MS + OUTER_GRACE_MS) {
             withContext(Dispatchers.Default) {
-                val cx = org.mozilla.javascript.Context.enter()
+                // 截止时间在进入 Default 之后才算：排队等 worker 的时间不该算进脚本预算
+                val deadline = System.currentTimeMillis() + SCRIPT_TIMEOUT_MS
+                val cx = DeadlineContext(deadline)
+                org.mozilla.javascript.Context.enter(cx)
                 try {
                     cx.languageVersion = org.mozilla.javascript.Context.VERSION_ES6
                     cx.optimizationLevel = -1
@@ -115,6 +170,14 @@ class RhinoJsEngine : JsEngine {
                         )
                     }
                     return@withContext value
+                } catch (e: ScriptTimeout) {
+                    // 到这里说明看门狗真的把脚本线程打断了——与「放弃等待但线程还在转」不同，
+                    // 这次线程会正常退到 finally 并 exit()，不会泄漏 worker。
+                    AgentLogger.w(
+                        "Skill",
+                        "脚本超过 ${SCRIPT_TIMEOUT_MS}ms，已强制中断：${source.take(80).replace('\n', ' ')}"
+                    )
+                    return@withContext null
                 } finally {
                     org.mozilla.javascript.Context.exit()
                 }

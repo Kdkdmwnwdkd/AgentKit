@@ -247,4 +247,101 @@ object LeaseRegistry {
             }
         }
     }
+
+    /**
+     * 当前**全部租约的只读快照**（观察面）。
+     *
+     * ## 为什么要有它
+     * 租约管的是「看不见的东西」：谁在占内存、谁空闲多久、回收器会不会动它。
+     * 这些答案此前只散落在日志里，用户想知道「我的手机为什么发热」得会看 adb。
+     * 快照把三张表（登记表 / 最后使用 / 未归还）拼成一行行可读状态。
+     *
+     * ## 为什么字段是「算好的」而不是直接暴露租约对象
+     * UI 拿到的应当是**某一瞬间**的事实，而不是一个会继续变化的活对象——
+     * 否则 Compose 重组时两次读取不一致（第一行显示 0 引用，第二行显示回收已发生）。
+     *
+     * ## 单个租约出错不能拖垮整张表
+     * [RuntimeLease.activeCount] / [isSafeToRelease] 是各实现自己算的，
+     * 某个实现抛异常（会话池正在关闭、底层句柄已释放）时，
+     * 观察面应当显示「这一条算不出来」，而不是整页崩掉——观测代码不能成为新的故障源。
+     */
+    fun snapshot(): List<LeaseSnapshot> {
+        val now = System.currentTimeMillis()
+        return leases.values.map { lease ->
+            val used = lastUsed[lease.id]?.get() ?: now
+            LeaseSnapshot(
+                id = lease.id,
+                kind = LeaseKind.of(lease.id),
+                activeCount = runCatching { lease.activeCount }.getOrDefault(0),
+                outstanding = outstanding[lease.id]?.get() ?: 0L,
+                idleForMs = (now - used).coerceAtLeast(0L),
+                // 与 checkOnce 同一条取值规则：租约覆盖优先，全局默认兜底
+                idleTimeoutMs = runCatching { lease.idleTimeoutMs }.getOrNull() ?: idleTimeoutMs,
+                safeToRelease = runCatching { lease.isSafeToRelease }.getOrDefault(false),
+                releaserRegistered = idleReleasers.containsKey(lease.id),
+            )
+        }.sortedWith(compareBy({ it.kind.ordinal }, { it.id }))
+    }
+
+    /** 当前是否已有租约登记（观察面据此决定要不要显示这一块）。 */
+    fun isEmpty(): Boolean = leases.isEmpty()
+}
+
+/**
+ * 租约类别。用枚举而不是让 UI 去 `id.startsWith`——
+ * id 的形状是各实现自定的（`terminal:user`、`container:alpine`），
+ * 解析规则必须与登记处待在一起，否则新增一类资源时 UI 会静默归到「其他」。
+ */
+enum class LeaseKind(val label: String) {
+    /** 本地模型：权重 + KV cache，数百 MB 起。 */
+    LOCAL_LLM("本地模型"),
+
+    /** 终端会话：按后端分池（user / proot）。 */
+    TERMINAL("终端会话"),
+
+    /** 容器会话：按发行版独立（proot + rootfs 视图）。 */
+    CONTAINER("容器会话"),
+
+    /** 未识别的租约（新类型忘了登记到本枚举时的兜底，不静默丢弃）。 */
+    UNKNOWN("其他资源");
+
+    companion object {
+        fun of(id: String): LeaseKind = when {
+            id == "local-llm" -> LOCAL_LLM
+            id.startsWith("terminal:") -> TERMINAL
+            id.startsWith("container:") -> CONTAINER
+            else -> UNKNOWN
+        }
+    }
+}
+
+/**
+ * 一条租约在某一瞬间的状态（观察面渲染用）。
+ *
+ * @param activeCount        显式持有者数量（> 0 表示正在被使用）
+ * @param outstanding        借出未归还的句柄数（与 activeCount 不同源，用于发现泄漏）
+ * @param idleForMs          距最后一次 acquire/release 的毫秒数
+ * @param idleTimeoutMs      本租约生效的空闲阈值（`0` 立即 / 负极禁用）
+ * @param safeToRelease      实现方自报的释放安全闸门
+ * @param releaserRegistered 是否注册了空闲释放动作（没注册 = 回收器会跳过并告警）
+ */
+data class LeaseSnapshot(
+    val id: String,
+    val kind: LeaseKind,
+    val activeCount: Int,
+    val outstanding: Long,
+    val idleForMs: Long,
+    val idleTimeoutMs: Long,
+    val safeToRelease: Boolean,
+    val releaserRegistered: Boolean,
+) {
+    /** 人类可读的名字：`容器会话 · alpine`。 */
+    val title: String
+        get() {
+            val suffix = id.substringAfter(':', "")
+            return if (suffix.isBlank()) kind.label else "${kind.label} · $suffix"
+        }
+
+    /** 空闲秒数（向下取整）。UI 显示「空闲 42 秒」比「空闲 42317 毫秒」可读。 */
+    val idleSeconds: Long get() = idleForMs / 1000L
 }
