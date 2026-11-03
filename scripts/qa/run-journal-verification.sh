@@ -48,7 +48,7 @@ if ! java -cp "$KOTLINC:$STDLIB:$COROUTINES:$TROVE:$JB_ANNOTATIONS" \
     -d "$OUT" \
     "$JV/stubs/AgentLogger.kt" "$JV/stubs/ToolCall.kt" "$JV/stubs/ToolCallOutcome.kt" \
     "$JV/RepairVerification.kt" "$JV/JournalIoVerification.kt" "$JV/TurnJournalVerification.kt" \
-    "$SRC/RunEvent.kt" "$SRC/RunJournalRepair.kt" "$SRC/RunJournal.kt" "$SRC/TurnJournal.kt" \
+    "$SRC/RunEvent.kt" "$SRC/RunScope.kt" "$SRC/RunEventJson.kt" "$SRC/RunJournalRepair.kt" "$SRC/RunJournal.kt" "$SRC/TurnJournal.kt" \
     > "$COMPILE_LOG" 2>&1; then
   echo "编译失败：" >&2
   grep -v '^warning:' "$COMPILE_LOG" | tail -30 >&2

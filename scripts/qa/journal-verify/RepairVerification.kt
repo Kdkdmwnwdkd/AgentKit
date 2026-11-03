@@ -1,6 +1,7 @@
 import com.example.agentkit.core.agent.journal.RunEvent
 import com.example.agentkit.core.agent.journal.RunEventCodec
 import com.example.agentkit.core.agent.journal.RunJournalRepair
+import com.example.agentkit.core.agent.journal.RunScope
 import com.example.agentkit.core.agent.journal.ToolCallRef
 import com.example.agentkit.core.agent.journal.ToolSettleStatus
 
@@ -113,8 +114,30 @@ fun main() {
     run {
         val dirty = RunEvent.TurnClosed(1, 100, "t\turn", "clo\nsed")
         val line = RunEventCodec.encode(dirty)
-        check("U9 净化后仍单行", line.count { it == '\n' } == 0 && line.split('\t').size == 6)
+        // R7：v2 在版本头后多一列 scope，列数由 6 变 7
+        check("U9 净化后仍单行", line.count { it == '\n' } == 0 && line.split('\t').size == 7)
         check("U9 可解回", RunEventCodec.decode(line) != null)
+    }
+
+    // R7：v1 老文件仍可读。崩溃恢复的依据是历史日志，读不懂等于让旧设备上的
+    // 未闭合回合永远补不上尾。v1 没有 scope 列，读出时归 main。
+    run {
+        val legacy = RunEventCodec.decode("v1\t1\t100\tt1\tOPEN")
+        check("R7-1 v1 仍可读", legacy != null)
+        check("R7-1 v1 scope 归 main", legacy?.scope == RunScope.MAIN)
+        val legacyTool = RunEventCodec.decode("v1\t2\t100\tt1\tDISP\t3\tcall-1")
+        check("R7-1 v1 工具事件可读", legacyTool is RunEvent.ToolDispatched &&
+            legacyTool.callId == "call-1" && legacyTool.scope == RunScope.MAIN)
+        check("R7-1 未知版本仍拒绝", RunEventCodec.decode("v9\t1\t100\tt1\tmain\tOPEN") == null)
+    }
+
+    // R7：v2 的 scope 列真的落盘并读回
+    run {
+        val scoped = RunEvent.ToolDispatched(3, 100, "t1", 2, "call-9", RunScope.skill("demo"))
+        val line = RunEventCodec.encode(scoped)
+        val back = RunEventCodec.decode(line)
+        check("R7-1 scope 往返一致", back == scoped)
+        check("R7-1 scope 类别可判", RunScope.kindOf(RunScope.skill("demo")) == RunScope.KIND_SKILL)
     }
 
     println()

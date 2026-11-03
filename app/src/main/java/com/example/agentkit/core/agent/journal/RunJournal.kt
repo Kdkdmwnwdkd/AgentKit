@@ -104,19 +104,68 @@ class RunJournal(private val dir: File) {
     }
 
     /**
+     * 导出某个回合的事件为 NDJSON（R7）：一行一个 JSON 对象。
+     *
+     * 存储格式仍是 TSV —— 崩溃恢复走的是「同进程反复读回」这条路，
+     * split 比解析 JSON 便宜。NDJSON 是**导出格式**，给跨工具消费用：
+     * 诊断打包、日志分析、跨设备对照，都想要「一行一个自解释对象」。
+     *
+     * @return NDJSON 文本；回合不存在时返回空串。
+     */
+    fun exportNdjson(turnId: String): String {
+        val events = load(turnId)
+        if (events.isEmpty()) return ""
+        return buildString {
+            events.forEach { append(RunEventJson.encode(it)).append('\n') }
+        }
+    }
+
+    /**
+     * 导出全部回合为 NDJSON（R7），按文件修改时间**从旧到新**排列。
+     *
+     * 排序方向与 [prune] 相反：prune 关心「谁最新」，导出关心「事件的时间顺序」。
+     * 跨回合对照时，顺序错乱比缺字段更误导人。
+     */
+    fun exportAllNdjson(): String {
+        val files = dir.listFiles { f -> f.isFile && f.name.endsWith(".$EXT") } ?: return ""
+        val builder = StringBuilder()
+        files.sortedBy { it.lastModified() }.forEach { f ->
+            val turnId = f.name.removeSuffix(".$EXT")
+            load(turnId).forEach { builder.append(RunEventJson.encode(it)).append('\n') }
+        }
+        return builder.toString()
+    }
+
+    /**
      * 单个回合的写入句柄。
      *
      * 非线程安全：一个回合只应有一个写入者。跨回合并发不冲突（不同文件）。
+     *
+     * R7：写入器带**作用域**（[RunScope]），同一文件可以有多个作用域的写入器
+     * （主代理 / 技能脚本 / 子代理）。它们**共享同一个序号计数器**——
+     * 序号必须全局唯一，否则恢复器按 seq 排序时会把两个作用域的事件交错错乱。
      */
     inner class Writer internal constructor(
         private val file: File,
         private val turnId: String,
-        startSeq: Long
+        startSeq: Long,
+        /** 本写入器产生的事件的作用域（R7）。 */
+        val scope: String = RunScope.MAIN,
+        /** 共享序号状态（R7）：派生写入器与本写入器共用，保证同一文件内 seq 唯一。 */
+        private val seqState: java.util.concurrent.atomic.AtomicLong =
+            java.util.concurrent.atomic.AtomicLong(startSeq)
     ) {
-        private var seq: Long = startSeq
+        /**
+         * 派生一个同文件、不同作用域的写入器。
+         *
+         * 共享序号 → 两个作用域的事件在文件里仍是一条单调递增的序列，
+         * 读回时按 seq 排序即可还原真实先后顺序。
+         */
+        fun scoped(scope: String): Writer =
+            Writer(file, turnId, seqState.get(), scope, seqState)
 
         /** 当前已分配的最大序号，调用方拼装后续事件时用。 */
-        val lastSeq: Long get() = seq
+        val lastSeq: Long get() = seqState.get()
 
         /**
          * 追加一条事件并落盘。
@@ -125,27 +174,26 @@ class RunJournal(private val dir: File) {
          * @throws IOException 写盘或 fsync 失败——**故意不吞**，见类注释。
          */
         fun append(build: (seq: Long, atMs: Long) -> RunEvent, atMs: Long): RunEvent {
-            val event = build(seq + 1, atMs)
+            val event = build(seqState.incrementAndGet(), atMs)
             val line = RunEventCodec.encode(event)
             FileOutputStream(file, true).use { fos ->
                 fos.write((line + "\n").toByteArray(Charsets.UTF_8))
                 fos.flush()
                 fos.fd.sync()
             }
-            seq = event.seq
             return event
         }
 
         // —— 六个便捷方法，避免调用点反复写 build lambda ——
 
         fun turnOpened(atMs: Long): RunEvent =
-            append({ s, t -> RunEvent.TurnOpened(s, t, turnId) }, atMs)
+            append({ s, t -> RunEvent.TurnOpened(s, t, turnId, scope) }, atMs)
 
         fun assistantCommitted(atMs: Long, step: Int, calls: List<ToolCallRef>): RunEvent =
-            append({ s, t -> RunEvent.AssistantCommitted(s, t, turnId, step, calls) }, atMs)
+            append({ s, t -> RunEvent.AssistantCommitted(s, t, turnId, step, calls, scope) }, atMs)
 
         fun toolDispatched(atMs: Long, step: Int, callId: String): RunEvent =
-            append({ s, t -> RunEvent.ToolDispatched(s, t, turnId, step, callId) }, atMs)
+            append({ s, t -> RunEvent.ToolDispatched(s, t, turnId, step, callId, scope) }, atMs)
 
         fun toolSettled(
             atMs: Long,
@@ -154,14 +202,14 @@ class RunJournal(private val dir: File) {
             status: ToolSettleStatus,
             errorCode: String? = null
         ): RunEvent = append({ s, t ->
-            RunEvent.ToolSettled(s, t, turnId, step, callId, status, errorCode)
+            RunEvent.ToolSettled(s, t, turnId, step, callId, status, errorCode, scope)
         }, atMs)
 
         fun stepClosed(atMs: Long, step: Int): RunEvent =
-            append({ s, t -> RunEvent.StepClosed(s, t, turnId, step) }, atMs)
+            append({ s, t -> RunEvent.StepClosed(s, t, turnId, step, scope) }, atMs)
 
         fun turnClosed(atMs: Long, reason: String): RunEvent =
-            append({ s, t -> RunEvent.TurnClosed(s, t, turnId, reason) }, atMs)
+            append({ s, t -> RunEvent.TurnClosed(s, t, turnId, reason, scope) }, atMs)
 
         /**
          * 批量追加**已经算好 seq** 的事件（修复器合成的补全事件走这条）。
@@ -178,7 +226,8 @@ class RunJournal(private val dir: File) {
                 fos.flush()
                 fos.fd.sync()
             }
-            seq = maxOf(seq, events.maxOf { it.seq })
+            val maxSeq = events.maxOf { it.seq }
+            seqState.updateAndGet { current -> maxOf(current, maxSeq) }
         }
     }
 
@@ -195,17 +244,28 @@ class RunJournal(private val dir: File) {
 /**
  * 日志行编解码。
  *
- * 格式：`v1 \t seq \t atMs \t turnId \t TYPE \t 字段…`
- *  - 版本号放在第一位，将来改格式时老文件仍可读（不认识就丢弃，不猜）。
- *  - 行内字段一律净化掉 `\t` 与 `\n`，写入侧保证，读取侧不再做容错解析。
+ * ## 格式版本
+ *
+ * - `v1`：`v1 \t seq \t atMs \t turnId \t TYPE \t 字段…`
+ * - `v2`：`v2 \t seq \t atMs \t turnId \t scope \t TYPE \t 字段…`（R7：增加作用域列）
+ *
+ * v2 只在 v1 的头部多插一列 `scope`，其余字段位置不变——所以读的时候把
+ * 版本头剥掉，两种格式的 TYPE 与字段是同一套相对布局，读侧代码不用分叉。
+ *
+ * v1 文件（改造前产生）必须仍能读：崩溃恢复的依据是历史日志，
+ * 读不懂等于让旧设备上的未闭合回合永远补不上尾。scope 缺省为 [RunScope.MAIN]。
+ *
+ * 行内字段一律净化掉 `\t` 与 `\n`，写入侧保证，读取侧不再做容错解析。
  */
 internal object RunEventCodec {
 
-    private const val VERSION = "v1"
+    private const val VERSION_V1 = "v1"
+    private const val VERSION_V2 = "v2"
     private const val SEP = "\t"
 
     fun encode(event: RunEvent): String {
-        val head = "$VERSION$SEP${event.seq}$SEP${event.atMs}$SEP${clean(event.turnId)}"
+        val head = "$VERSION_V2$SEP${event.seq}$SEP${event.atMs}$SEP${clean(event.turnId)}" +
+            "$SEP${clean(event.scope)}"
         return when (event) {
             is RunEvent.TurnOpened -> "$head${SEP}OPEN"
             is RunEvent.TurnClosed -> "$head${SEP}CLOSE${SEP}${clean(event.reason)}"
@@ -229,23 +289,39 @@ internal object RunEventCodec {
     /** 解析失败返回 null（坏行），不抛——读取方按"丢弃"处理。 */
     fun decode(line: String): RunEvent? {
         val f = line.split(SEP)
-        if (f.size < 5 || f[0] != VERSION) return null
+        if (f.size < 5) return null
+        // 剥掉版本头：rest[0] 是 TYPE，其后是各事件自己的字段（v1/v2 布局一致）。
+        val scope: String
+        val rest: List<String>
+        when (f[0]) {
+            VERSION_V1 -> {
+                scope = RunScope.MAIN
+                rest = f.subList(4, f.size)
+            }
+            VERSION_V2 -> {
+                if (f.size < 6) return null
+                scope = f[4]
+                rest = f.subList(5, f.size)
+            }
+            else -> return null
+        }
         val seq = f[1].toLongOrNull() ?: return null
         val atMs = f[2].toLongOrNull() ?: return null
         val turnId = f[3]
         return try {
-            when (f[4]) {
-                "OPEN" -> RunEvent.TurnOpened(seq, atMs, turnId)
-                "CLOSE" -> RunEvent.TurnClosed(seq, atMs, turnId, f[5])
-                "STEP" -> RunEvent.StepClosed(seq, atMs, turnId, f[5].toInt())
-                "DISP" -> RunEvent.ToolDispatched(seq, atMs, turnId, f[5].toInt(), f[6])
+            when (rest[0]) {
+                "OPEN" -> RunEvent.TurnOpened(seq, atMs, turnId, scope)
+                "CLOSE" -> RunEvent.TurnClosed(seq, atMs, turnId, rest[1], scope)
+                "STEP" -> RunEvent.StepClosed(seq, atMs, turnId, rest[1].toInt(), scope)
+                "DISP" -> RunEvent.ToolDispatched(seq, atMs, turnId, rest[1].toInt(), rest[2], scope)
                 "SETTLE" -> RunEvent.ToolSettled(
-                    seq, atMs, turnId, f[5].toInt(), f[6],
-                    ToolSettleStatus.valueOf(f[7]),
-                    f[8].ifEmpty { null }
+                    seq, atMs, turnId, rest[1].toInt(), rest[2],
+                    ToolSettleStatus.valueOf(rest[3]),
+                    rest[4].ifEmpty { null },
+                    scope
                 )
                 "ASSIST" -> RunEvent.AssistantCommitted(
-                    seq, atMs, turnId, f[5].toInt(), decodeCalls(f[6])
+                    seq, atMs, turnId, rest[1].toInt(), decodeCalls(rest[2]), scope
                 )
                 else -> null
             }
