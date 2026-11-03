@@ -1,5 +1,6 @@
 package com.example.agentkit.ui
 
+import com.example.agentkit.core.UiItem
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Icon

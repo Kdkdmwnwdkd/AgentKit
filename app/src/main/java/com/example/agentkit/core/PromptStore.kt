@@ -1,5 +1,6 @@
 package com.example.agentkit.core
 
+import com.example.agentkit.core.io.AtomicJsonFile
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -121,20 +122,8 @@ class PromptStore(file: File) {
 
     /** 原子写：完整快照 → .tmp；上一版备份为 .bak；rename 替换主文件。 */
     private fun persist() {
-        runCatching {
-            val payload = json.encodeToString(snapshotForPure())
-            tmpFile.writeText(payload)
-            if (file.exists()) {
-                runCatching {
-                    if (bakFile.exists()) bakFile.delete()
-                    file.copyTo(bakFile, overwrite = true)
-                }
-            }
-            if (!tmpFile.renameTo(file)) {
-                file.writeText(payload)
-                runCatching { tmpFile.delete() }
-            }
-        }
+        val payload = runCatching { json.encodeToString(snapshotForPure()) }.getOrNull() ?: return
+        AtomicJsonFile.write(file, payload)
     }
 
     private fun readTextOrEmpty(f: File): String =

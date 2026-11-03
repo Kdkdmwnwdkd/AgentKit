@@ -718,20 +718,8 @@ class OpenAIClient(
         putJsonObject("function") {
             put("name", tool.name)
             put("description", tool.description)
-            putJsonObject("parameters") {
-                val s = tool.parameters
-                put("type", "object")
-                putJsonObject("properties") {
-                    s.properties.forEach { (k, p) ->
-                        putJsonObject(k) {
-                            put("type", p.type)
-                            if (p.description.isNotBlank()) put("description", p.description)
-                            p.enum?.let { e -> putJsonArray("enum") { e.forEach { add(it) } } }
-                        }
-                    }
-                }
-                putJsonArray("required") { s.required.forEach { add(it) } }
-            }
+            // schema 序列化全仓唯一实现在 ToolSchemaJson（递归写 items / 嵌套 properties）
+            put("parameters", ToolSchemaJson.objectSchema(tool.parameters))
         }
     }
 

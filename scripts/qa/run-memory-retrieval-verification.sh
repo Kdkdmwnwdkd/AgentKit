@@ -18,6 +18,10 @@ SERIALIZATION=$(find "$CACHE/org.jetbrains.kotlinx/kotlinx-serialization-json-jv
 SER_CORE=$(find "$CACHE/org.jetbrains.kotlinx/kotlinx-serialization-core-jvm" -name "*.jar" 2>/dev/null | grep -v sources | head -1) || true
 TROVE=$(find "$CACHE/org.jetbrains.intellij.deps/trove4j" -name "trove4j-*.jar" 2>/dev/null | head -1) || true
 JB_ANNOTATIONS=$(find "$CACHE/org.jetbrains/annotations" -name "annotations-*.jar" 2>/dev/null | head -1) || true
+# 序列化插件：MemoryStore 用 @Serializable 落盘，缺了插件会在运行期抛
+# "Serializer for class 'MemoryItem' is not found"——而此前它被 persist 里的
+# runCatching 吞掉，harness 一直是假绿（断言只看内存态）。
+SER_PLUGIN=$(find "$CACHE/org.jetbrains.kotlin" -name "kotlin-serialization-compiler-plugin*.jar" 2>/dev/null | grep -v sources | head -1) || true
 
 # 沙箱回落：完整 kotlinc 发行版 + 预置 jar
 if [ -z "${KOTLINC_JAR:-}" ] || [ -z "${STDLIB:-}" ] || [ -z "${SERIALIZATION:-}" ]; then
@@ -46,7 +50,8 @@ rm -rf "$OUT" && mkdir -p "$OUT"
 compile_ctx() {
   local attempt=$1 out
   if [ -n "${KOTLINC_BIN:-}" ]; then
-    out=$("$KOTLINC_BIN" -classpath "$DEPS" -d "$OUT" \
+    out=$("$KOTLINC_BIN" ${SER_PLUGIN:+-Xplugin="$SER_PLUGIN"} -classpath "$DEPS" -d "$OUT" \
+      "$ROOT/app/src/main/java/com/example/agentkit/core/io/AtomicJsonFile.kt" \
       "$ROOT/app/src/main/java/com/example/agentkit/memory/MemoryStore.kt" \
       "$ROOT/app/src/main/java/com/example/agentkit/memory/MemoryAutoCapture.kt" \
       "$ROOT/scripts/qa/MemoryRetrievalVerification.kt" 2>&1) || true
@@ -55,7 +60,8 @@ compile_ctx() {
     if [ -n "${TROVE:-}" ] && [ -f "${TROVE:-}" ]; then kcp=$kcp:$TROVE; fi
     if [ -n "${JB_ANNOTATIONS:-}" ] && [ -f "${JB_ANNOTATIONS:-}" ]; then kcp=$kcp:$JB_ANNOTATIONS; fi
     out=$(java -cp "$kcp" org.jetbrains.kotlin.cli.jvm.K2JVMCompiler \
-      -no-stdlib -no-reflect -classpath "$DEPS" -d "$OUT" \
+      -no-stdlib -no-reflect ${SER_PLUGIN:+-Xplugin="$SER_PLUGIN"} -classpath "$DEPS" -d "$OUT" \
+      "$ROOT/app/src/main/java/com/example/agentkit/core/io/AtomicJsonFile.kt" \
       "$ROOT/app/src/main/java/com/example/agentkit/memory/MemoryStore.kt" \
       "$ROOT/app/src/main/java/com/example/agentkit/memory/MemoryAutoCapture.kt" \
       "$ROOT/scripts/qa/MemoryRetrievalVerification.kt" 2>&1) || true

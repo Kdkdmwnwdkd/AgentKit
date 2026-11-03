@@ -11,6 +11,7 @@ import androidx.core.app.NotificationCompat
 import com.example.agentkit.core.AgentTool
 import com.example.agentkit.core.JsonSchema
 import com.example.agentkit.core.ToolResult
+import com.example.agentkit.core.io.AtomicJsonFile
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonObject
@@ -136,15 +137,13 @@ fun interface WriteBackupHook {
 
 /**
  * 原子写（W-20）：先写同目录临时文件再 rename，避免写一半崩溃把原文件写坏。
- * rename 失败（个别文件系统限制）时退回直接覆写。
+ *
+ * 收敛到 [AtomicJsonFile] 后多了 `fd.sync()`：写用户文件同样怕「rename 了、内容还是 0」。
+ * 保留 `.akitmp` 后缀——`WorkspaceStore` 的文件列表按它跳过半成品，换后缀会让
+ * 崩溃残留的临时文件出现在用户工作区里。
  */
 internal fun File.atomicWriteText(text: String) {
-    val tmp = File(parentFile, "${name}.akitmp")
-    tmp.writeText(text)
-    if (!tmp.renameTo(this)) {
-        writeText(text)
-        tmp.delete()
-    }
+    AtomicJsonFile.write(this, text, keepBackup = false, tmpSuffix = ".akitmp")
 }
 
 /**

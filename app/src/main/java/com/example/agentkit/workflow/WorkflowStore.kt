@@ -1,5 +1,6 @@
 package com.example.agentkit.workflow
 
+import com.example.agentkit.core.io.AtomicJsonFile
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -96,12 +97,8 @@ class WorkflowStore(private val dir: File) {
     }.getOrDefault(mutableListOf())
 
     private fun persist(all: List<Workflow>) {
-        runCatching {
-            val text = json.encodeToString(all)
-            tmp.writeText(text)
-            if (file.exists()) runCatching { file.copyTo(bak, overwrite = true) }
-            tmp.renameTo(file)
-        }
+        val payload = runCatching { json.encodeToString(all) }.getOrNull() ?: return
+        AtomicJsonFile.write(file, payload)
     }
 
     private companion object {

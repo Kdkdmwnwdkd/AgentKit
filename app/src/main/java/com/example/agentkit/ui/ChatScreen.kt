@@ -1,5 +1,6 @@
 package com.example.agentkit.ui
 
+import com.example.agentkit.core.UiItem
 import android.app.Activity
 import android.content.ClipData
 import android.content.ClipboardManager
@@ -3139,7 +3140,6 @@ private fun AskUserCard(
         }
     }
 }
-
 
 /** 首次启动引导的落盘位置（v6）：关掉一次就不再弹，不需要"已配置"再判一次。 */
 private const val ONBOARDING_PREFS = "agentkit.onboarding"

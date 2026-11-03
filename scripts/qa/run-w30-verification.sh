@@ -16,13 +16,14 @@ SRC1="$ROOT/app/src/main/java/com/example/agentkit/core/text/ChatTime.kt"
 SRC2="$ROOT/app/src/main/java/com/example/agentkit/core/text/ChatAssistLogic.kt"
 SRC3="$ROOT/app/src/main/java/com/example/agentkit/core/text/SyntaxHighlighter.kt"
 SRC4="$ROOT/app/src/main/java/com/example/agentkit/core/BookmarkStore.kt"
+SRC4B="$ROOT/app/src/main/java/com/example/agentkit/core/io/AtomicJsonFile.kt"
 SRC5="$ROOT/scripts/qa/W30Verification.kt"
 
 if [ ! -x "$KC_HOME/bin/kotlinc" ]; then
   echo "FATAL: 找不到 kotlinc（$KC_HOME/bin/kotlinc）" >&2
   exit 1
 fi
-for f in "$STDLIB" "$SER" "$SERCORE" "$SRC1" "$SRC2" "$SRC3" "$SRC4" "$SRC5"; do
+for f in "$STDLIB" "$SER" "$SERCORE" "$SRC1" "$SRC2" "$SRC3" "$SRC4" "$SRC4B" "$SRC5"; do
   [ -f "$f" ] || { echo "FATAL: 缺少 $f" >&2; exit 1; }
 done
 
@@ -31,7 +32,7 @@ DEPS="$STDLIB:$SER:$SERCORE"
 
 echo "[1/2] compiling w30 harness ..."
 "$KC_HOME/bin/kotlinc" -Xplugin="$KC_HOME/lib/kotlinx-serialization-compiler-plugin.jar" -classpath "$DEPS" -d "$OUT" \
-  "$SRC1" "$SRC2" "$SRC3" "$SRC4" "$SRC5"
+  "$SRC1" "$SRC2" "$SRC3" "$SRC4" "$SRC4B" "$SRC5"
 
 echo "[2/2] running ..."
 java -cp "$OUT:$DEPS" W30VerificationKt

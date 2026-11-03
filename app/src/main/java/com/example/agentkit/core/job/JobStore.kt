@@ -1,5 +1,6 @@
 package com.example.agentkit.core.job
 
+import com.example.agentkit.core.io.AtomicJsonFile
 import java.io.File
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -33,13 +34,9 @@ class JobStore(private val dir: File) {
     fun get(id: String): JobInfo? = readFile(File(dir, "$id.json"))
 
     fun save(job: JobInfo) {
-        runCatching {
-            val target = File(dir, "${job.id}.json")
-            val tmp = File(dir, "${job.id}.json.tmp")
-            tmp.writeText(json.encodeToString(job))
-            if (target.exists()) target.delete()
-            tmp.renameTo(target)
-        }
+        // 不保留 .bak：任务目录里每个 id 一个文件，旧版任务记录价值低，
+        // 而目录里多出一倍的 .bak 会让 listFiles 的扫描成本白白翻倍。
+        AtomicJsonFile.write(File(dir, "${job.id}.json"), json.encodeToString(job), keepBackup = false)
     }
 
     /** 日志文件（可能还不存在）。 */

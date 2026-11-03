@@ -78,6 +78,7 @@ import com.example.agentkit.core.llm.KeyPoolRuntime
 import com.example.agentkit.core.llm.KeyPoolStore
 import com.example.agentkit.core.AgentEvent
 import com.example.agentkit.core.ToolCall
+import com.example.agentkit.core.UiItem
 import com.example.agentkit.core.ToolMessage
 import com.example.agentkit.core.ToolApproval
 import com.example.agentkit.core.ToolRegistry
@@ -257,55 +258,7 @@ data class SkillUiInfo(
     val tools: List<SkillToolInfo>
 )
 
-/** UI 渲染用的消息项（与核心层 ChatMessage 解耦）。 */
-sealed interface UiItem {
-    /**
-     * 用户气泡。
-     * @param turnIndex 该提问所属轮次下标；重新发问（截断其后轮次）按它定位；< 0 表示未归属（实时上屏的草稿）。
-     */
-    data class User(
-        val text: String,
-        val turnIndex: Int = -1,
-        /** W-30：消息时间（epoch 毫秒）；0 = 未记录，UI 不显示时间行。 */
-        val timeMs: Long = 0
-    ) : UiItem
 
-    /**
-     * 助手气泡。
-     *
-     * Phase 2 DoD②：额外携带「变体游标」元数据，供气泡旁切换器 `← 2/3 →` 消费。
-     * 默认值保证旧构造点（只有 text）零改动即兼容——单变体、无切换器。
-     *
-     * @param variantIndex 当前选中变体下标（0-based）；< 0 表示非分叉消息（旧数据/中间助手）。
-     * @param variantCount 该轮变体总数；<= 1 时不显示切换器。
-     * @param turnIndex 该轮在会话 [com.example.agentkit.core.TurnRecord] 列表中的下标；
-     *   重新生成 / 切换 / 重新发问都按它定位轮次；< 0 表示未归属任何轮。
-     * @param usage 功能五（P1-5）：本条回答的 token 用量（一个回合多次 LLM 往返的合计；
-     *   null = 服务端没给 usage，UI 不显示而非猜一个数）。
-     * @param reasoning 功能五（P1-9）：本条回答的推理过程（思维链全文）；
-     *   null = 模型没给思考，UI 不渲染折叠块而非摆个空框。
-     */
-    data class Assistant(
-        val text: String,
-        val variantIndex: Int = -1,
-        val variantCount: Int = 1,
-        val turnIndex: Int = -1,
-        val usage: TokenUsage? = null,
-        val reasoning: String? = null,
-        /** W-30：消息时间（epoch 毫秒）；0 = 未记录，UI 不显示时间行。 */
-        val timeMs: Long = 0
-    ) : UiItem
-
-    data class Tool(
-        val call: ToolCall,
-        val result: String,
-        val isError: Boolean,
-        /** 工具返回的图片（data URL 列表），如 ui_screenshot 截图，直接渲染在对话中。 */
-        val images: List<String> = emptyList(),
-        /** Hotfix2：执行中态（AgentEvent.ToolStarted 已上报、ToolFinished 未到）。 */
-        val running: Boolean = false
-    ) : UiItem
-}
 
 /**
  * W-30：一条消息的翻译状态。

@@ -1,5 +1,6 @@
 package com.example.agentkit.skill.market
 
+import com.example.agentkit.core.UiItem
 import kotlinx.serialization.Serializable
 import java.net.URI
 

@@ -11,6 +11,7 @@ import com.example.agentkit.core.LLMConfig
 import com.example.agentkit.core.PingResult
 import com.example.agentkit.core.SystemMessage
 import com.example.agentkit.core.ToolCall
+import com.example.agentkit.core.ToolSchemaJson
 import com.example.agentkit.core.ToolMessage
 import com.example.agentkit.core.UserMessage
 import kotlinx.coroutines.Dispatchers
@@ -493,20 +494,8 @@ class ClaudeClient(
     private fun toApiTool(tool: AgentTool): JsonObject = buildJsonObject {
         put("name", tool.name)
         put("description", tool.description)
-        putJsonObject("input_schema") {
-            put("type", "object")
-            putJsonObject("properties") {
-                val s = tool.parameters
-                s.properties.forEach { (k, p) ->
-                    putJsonObject(k) {
-                        put("type", p.type)
-                        if (p.description.isNotBlank()) put("description", p.description)
-                        p.enum?.let { e -> putJsonArray("enum") { e.forEach { add(it) } } }
-                    }
-                }
-            }
-            putJsonArray("required") { tool.parameters.required.forEach { add(it) } }
-        }
+        // Anthropic 叫 input_schema，结构与非递归写法一致——统一走 ToolSchemaJson
+        put("input_schema", ToolSchemaJson.objectSchema(tool.parameters))
     }
 
     companion object {
