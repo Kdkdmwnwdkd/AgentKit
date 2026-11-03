@@ -140,6 +140,41 @@ fun main() {
         check("R7-1 scope 类别可判", RunScope.kindOf(RunScope.skill("demo")) == RunScope.KIND_SKILL)
     }
 
+    // R7：有 DISP 无 ASSIST 也算「越过了执行边界」。
+    //
+    // 技能脚本的调用不经过「模型声明调用」这一步，所以日志里只有 DISP 没有 ASSIST。
+    // 改造前修复器写的是 `pending[callId]?.dispatched = true`——遇到没有声明的 DISP
+    // 就整个忽略，于是「脚本写完文件、进程被杀」被判成「什么都没发生」→ 重放 → 数据损坏。
+    run {
+        val events = listOf(
+            RunEvent.TurnOpened(1, 100, "t1"),
+            RunEvent.ToolDispatched(2, 110, "t1", 0, "skill:demo:write_file#1"),
+        )
+        val r = RunJournalRepair.repair(events)
+        val orphan = r.orphans.firstOrNull { it.callId == "skill:demo:write_file#1" }
+        check("R7-2 无 ASSIST 的 DISP 被登记", orphan != null)
+        check("R7-2 判为结局未知", orphan?.status == ToolSettleStatus.OUTCOME_UNKNOWN)
+        check("R7-2 工具名从 callId 反推", orphan?.toolName == "write_file")
+        check("R7-2 补了一条 SETTLE", r.closers.any { it is RunEvent.ToolSettled })
+    }
+
+    // R7：派生句柄不写回合级/步级事件（否则子代理的一步收口会清空主代理的待应答表）
+    run {
+        val events = listOf(
+            RunEvent.TurnOpened(1, 100, "t1"),
+            RunEvent.AssistantCommitted(2, 110, "t1", 0, listOf(ToolCallRef("main-1", "read_file"))),
+            RunEvent.ToolDispatched(3, 120, "t1", 0, "main-1"),
+            // 子代理的一步收口（scope=sub:x）——若修复器把它当全局的步收口，
+            // pending 会被清空，主代理未应答的调用就此漏判
+            RunEvent.StepClosed(4, 130, "t1", 0, RunScope.subagent("查资料")),
+            RunEvent.ToolDispatched(5, 140, "t1", 0, "sub-1", RunScope.subagent("查资料")),
+        )
+        val r = RunJournalRepair.repair(events)
+        val mainOrphan = r.orphans.firstOrNull { it.callId == "main-1" }
+        check("R7-2 主代理的调用未被子代理的步收口清空", mainOrphan != null)
+        check("R7-2 主代理调用判为结局未知", mainOrphan?.status == ToolSettleStatus.OUTCOME_UNKNOWN)
+    }
+
     println()
     println("结果：$pass 通过 / $fail 失败")
     if (fail > 0) kotlin.system.exitProcess(1)

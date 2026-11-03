@@ -138,7 +138,28 @@ class TurnJournal(
         /** 本句柄产生的事件的作用域（R7）。 */
         val scope: String = RunScope.MAIN,
         /** 写锁。派生句柄与主句柄共用同一把锁——同一文件并发写会交错出半行。 */
-        private val mutex: Mutex = Mutex()
+        private val mutex: Mutex = Mutex(),
+        /**
+         * 是否为**回合拥有者**（R7）。
+         *
+         * 只有拥有者能写回合级与步级事件（`TurnOpened` / `AssistantCommitted` /
+         * `StepClosed` / `TurnClosed`）。派生句柄（技能脚本、子代理）只写
+         * **工具调用事件**（`ToolDispatched` / `ToolSettled`）。
+         *
+         * ## 为什么这条边界是硬的
+         *
+         * 修复器是**逐事件**解读日志的，而它对回合级事件的解读是「全局」的：
+         *  - 见到 `StepClosed` 就认为「本步的调用都已应答」→ `pending.clear()`；
+         *  - 见到 `TurnClosed` 就认为「回合已结束」→ 不再补尾；
+         *  - 见到 `AssistantCommitted` 就把其中的 callId 登记为本步的待应答调用。
+         *
+         * 若子代理也写这些事件，它的一步收口会把**主代理**尚未应答的调用清空——
+         * 崩溃恢复因此认为「主代理的写操作都处理过了」，一个可能已生效的写操作
+         * 被静默漏掉。这不是显示问题，是**数据损坏级别的漏判**。
+         *
+         * 所以作用域的作用不只是「标注谁产生的」，还要划清**谁能写哪些事件**。
+         */
+        private val owner: Boolean = true
     ) {
 
         /**
@@ -152,25 +173,31 @@ class TurnJournal(
          * 而恢复流程必须在**单个文件**内自洽地判定。
          */
         fun scoped(scope: String): Turn =
-            Turn(writer?.scoped(scope), turnId, scope, mutex)
+            Turn(writer?.scoped(scope), turnId, scope, mutex, owner = false)
 
         /** 本回合是否真的在留日志。false = 一开始就打不开（退回无日志的现状）。 */
         val journaling: Boolean get() = writer != null
 
         private var closed = false
 
-        suspend fun turnOpened(): Boolean = write { it.turnOpened(clock()) }
+        suspend fun turnOpened(): Boolean =
+            if (!owner) true else write { it.turnOpened(clock()) }
 
         /**
          * 模型响应已提交（assistant 文本 + 本步声明的调用）。
          *
          * **必须在 [executeBatch] 之前调用**——这是「先落盘再执行」的那一半。
          * 顺序反了，崩溃后无法区分「模型没说完」与「工具跑了但没记」。
+         *
+         * R7：派生句柄不写这一条——「本步声明了哪些调用」是**回合拥有者**的语义，
+         * 技能脚本的调用不是模型声明的，子代理的声明也不该登记进主代理的待应答表。
          */
-        suspend fun assistantCommitted(step: Int, calls: List<ToolCall>): Boolean =
-            write { w ->
+        suspend fun assistantCommitted(step: Int, calls: List<ToolCall>): Boolean {
+            if (!owner) return true
+            return write { w ->
                 w.assistantCommitted(clock(), step, calls.map { ToolCallRef(it.id, it.name) })
             }
+        }
 
         /**
          * 某次调用**即将越过执行边界**。返回 true 才允许真正调工具。
@@ -191,8 +218,9 @@ class TurnJournal(
             errorCode: String? = null
         ): Boolean = write { it.toolSettled(clock(), step, callId, status, errorCode) }
 
-        /** 该步全部调用都已应答。 */
-        suspend fun stepClosed(step: Int): Boolean = write { it.stepClosed(clock(), step) }
+        /** 该步全部调用都已应答。仅回合拥有者可写（见 [owner]）。 */
+        suspend fun stepClosed(step: Int): Boolean =
+            if (!owner) true else write { it.stepClosed(clock(), step) }
 
         /**
          * 回合结束。重复调用只生效一次（取消路径与正常路径可能都想收尾）。
@@ -200,6 +228,7 @@ class TurnJournal(
          * @param reason `completed` / `cancelled` / `failed` / `blocked`。
          */
         suspend fun turnClosed(reason: String): Boolean {
+            if (!owner) return true
             if (closed) return true
             closed = true
             return write { it.turnClosed(clock(), reason) }

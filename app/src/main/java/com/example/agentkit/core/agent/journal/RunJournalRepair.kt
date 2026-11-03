@@ -52,39 +52,84 @@ object RunJournalRepair {
                 }
 
                 is RunEvent.TurnClosed -> {
-                    if (event.turnId != openTurnId) {
-                        anomalies.add("回合结束事件与当前回合不匹配（seq=${event.seq}）")
+                    // R7：只有**回合拥有者**的 CLOSE 才闭合回合。
+                    // 子代理/技能不该有能力结束主回合——否则主回合会被提前判为已闭合，
+                    // 未闭合的写操作就此不再补尾。
+                    if (event.scope != RunScope.MAIN) {
+                        anomalies.add("非拥有者作用域的回合结束事件被忽略（scope=${event.scope}，seq=${event.seq}）")
+                    } else {
+                        if (event.turnId != openTurnId) {
+                            anomalies.add("回合结束事件与当前回合不匹配（seq=${event.seq}）")
+                        }
+                        openTurnId = null
+                        openStep = null
+                        pending.clear()
                     }
-                    openTurnId = null
-                    openStep = null
-                    pending.clear()
                 }
 
                 is RunEvent.StepClosed -> {
+                    // R7：步收口只清**同作用域**的待应答调用。
+                    //
+                    // 子代理的一步收口不该把主代理尚未应答的调用清空——那会让一个
+                    // 可能已生效的写操作被静默漏掉（数据损坏级别，不是显示问题）。
+                    //
                     // 步已关闭却还有未应答调用，说明日志被截断/写坏过。
                     // 不在这里补——补了会写进一个已经结束的步，破坏"一调用一结果"的时序。
                     // 记下来，由上层决定是否上报诊断。
-                    if (pending.isNotEmpty()) {
+                    val closedScope = event.scope
+                    val remaining = pending.filterValues { it.scope != closedScope }
+                    val dropped = pending.size - remaining.size
+                    if (dropped > 0) {
                         anomalies.add(
-                            "步 ${event.step} 关闭时仍有 ${pending.size} 个未应答调用：" +
-                                pending.keys.joinToString(",")
+                            "步 ${event.step}（scope=$closedScope）关闭时仍有 $dropped 个未应答调用"
                         )
                     }
-                    openStep = null
                     pending.clear()
+                    pending.putAll(remaining)
+                    if (closedScope == RunScope.MAIN) openStep = null
                 }
 
                 is RunEvent.AssistantCommitted -> {
-                    openStep = event.step
-                    for (call in event.calls) {
-                        pending[call.id] = PendingCall(call.id, call.name, event.step, dispatched = false)
+                    // R7：只有回合拥有者的声明才登记「本步待应答的调用」并推进 openStep。
+                    // 子代理的声明是**它自己**的待应答表，不能登记进主代理的表。
+                    if (event.scope != RunScope.MAIN) {
+                        anomalies.add("非拥有者作用域的调用声明被忽略（scope=${event.scope}，seq=${event.seq}）")
+                    } else {
+                        openStep = event.step
+                        for (call in event.calls) {
+                            pending[call.id] = PendingCall(
+                                call.id, call.name, event.step, dispatched = false, scope = event.scope
+                            )
+                        }
                     }
                 }
 
                 is RunEvent.ToolDispatched -> {
-                    // 只有"日志里出现过 ToolDispatched"才算越过边界。
-                    // 注意：不能用 pending 里是否存在来判断——不存在说明调用声明都没记全，那是更早的损坏。
-                    pending[event.callId]?.dispatched = true
+                    // 「日志里出现过 ToolDispatched」就算越过边界。
+                    //
+                    // R7：这里**不能**用「pending 里有没有」来判断要不要登记——
+                    // 技能脚本的调用没有 ASSIST（它不经过「模型声明调用」这一步，
+                    // 脚本自己决定调什么），子代理的调用同理（派生句柄不写 ASSIST）。
+                    // 但它们同样真的越过��执行边界、同样可能已生效。
+                    //
+                    // 改造前这里写的是 `pending[event.callId]?.dispatched = true`——
+                    // 遇到没有声明的 DISP 就**整个忽略**。于是脚本写完文件、进程被杀，
+                    // 恢复后判成「什么都没发生」，用户（或系统）重放一次 → 数据损坏。
+                    //
+                    // 现在把「有 DISP 无 ASSIST」的调用登记为**已派发**：
+                    // 崩溃时按 OUTCOME_UNKNOWN 补尾。宁可多提醒一次核对，不可漏判副作用。
+                    val existing = pending[event.callId]
+                    if (existing != null) {
+                        existing.dispatched = true
+                    } else {
+                        pending[event.callId] = PendingCall(
+                            event.callId,
+                            toolNameOf(event.callId),
+                            event.step,
+                            dispatched = true,
+                            scope = event.scope
+                        )
+                    }
                 }
 
                 is RunEvent.ToolSettled -> {
@@ -116,7 +161,10 @@ object RunJournalRepair {
                     step = call.step,
                     callId = call.callId,
                     status = status,
-                    errorCode = if (call.dispatched) CODE_OUTCOME_UNKNOWN else CODE_NOT_DISPATCHED
+                    errorCode = if (call.dispatched) CODE_OUTCOME_UNKNOWN else CODE_NOT_DISPATCHED,
+                    // R7：补的终态要带原调用的作用域，否则读日志时一条 skill scope
+                    // 的调用配上 main scope 的终态，配对关系就断了。
+                    scope = call.scope
                 )
             )
         }
@@ -160,8 +208,28 @@ object RunJournalRepair {
         val callId: String,
         val toolName: String,
         val step: Int,
-        var dispatched: Boolean
+        var dispatched: Boolean,
+        /** R7：所属作用域。步收口只清同作用域的调用。 */
+        val scope: String = RunScope.MAIN
     )
+
+    /**
+     * 从 callId 反推工具名（R7）。
+     *
+     * 主代理的 callId 由模型给（不透明），工具名来自 ASSIST 事件的声明；
+     * 但技能脚本的 callId 是我们生成的 `skill:<技能id>:<工具名>#<序号>`，
+     * 能在没有 ASSIST 的情况下把工具名还原出来——恢复提示里能说清是哪个工具，
+     * 而不是只给一个不透明的 id。
+     *
+     * 认不出来时返回空串（恢复提示会退化成只报 id，仍比漏判好）。
+     */
+    private fun toolNameOf(callId: String): String {
+        if (!callId.startsWith(RunScope.SKILL_PREFIX)) return ""
+        val rest = callId.removePrefix(RunScope.SKILL_PREFIX)
+        val tool = rest.substringAfter(':', "")
+            .substringBefore('#')
+        return tool
+    }
 
     const val CODE_OUTCOME_UNKNOWN = "journal_outcome_unknown"
     const val CODE_NOT_DISPATCHED = "journal_not_dispatched"

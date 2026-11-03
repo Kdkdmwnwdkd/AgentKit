@@ -393,6 +393,15 @@ fun main() = runBlocking {
             "R7-8 子代理事件 category 正确",
             RunScope.kindOf(RunScope.subagent("查资料")) == RunScope.KIND_SUBAGENT
         )
+        // 子代理不得写回合级/步级事件：它的一步收口会把主代理未应答的调用清空，
+        // 崩溃恢复因此漏判「可能已生效」的写操作——数据损坏级别。
+        assertTrue("R7-8 子代理没写 STEP", events.none { it is RunEvent.StepClosed })
+        assertTrue("R7-8 子代理没写 ASSIST", events.none { it is RunEvent.AssistantCommitted })
+        assertEquals(
+            "R7-8 子代理没写 CLOSE",
+            0,
+            events.count { it is RunEvent.TurnClosed && it.scope != RunScope.MAIN }
+        )
     }
 
     // ——————————————————————— R7-9 主路径不受影响 ———————————————————————
@@ -410,6 +419,33 @@ fun main() = runBlocking {
         val events = com.example.agentkit.core.agent.journal.RunJournal(dir).load("turn-M")
         assertEquals("R7-9 事件数不变", 6, events.size)
         assertTrue("R7-9 全部 scope=main", events.all { it.scope == RunScope.MAIN })
+    }
+
+    // ——————————————————————— R7-11 作用域边界 ———————————————————————
+
+    check("R7-11 派生句柄不写回合级/步级事件") {
+        val dir = java.io.File(base, "owner")
+        val journal = TurnJournal(com.example.agentkit.core.agent.journal.RunJournal(dir))
+        val turn = journal.begin("turn-O")
+        val sub = turn.scoped(RunScope.subagent("x"))
+
+        // 派生句柄尝试写回合级/步级事件——全部应当被忽略
+        sub.turnOpened()
+        sub.assistantCommitted(0, listOf(ToolCall("sc-1", "read_file", JsonObject(emptyMap()))))
+        sub.stepClosed(0)
+        sub.turnClosed("completed")
+
+        // 拥有者正常写
+        turn.toolDispatched(0, "main-1")
+        turn.toolSettled(0, "main-1", com.example.agentkit.core.agent.journal.ToolSettleStatus.SUCCEEDED)
+        turn.turnClosed("completed")
+
+        val events = com.example.agentkit.core.agent.journal.RunJournal(dir).load("turn-O")
+        // 只有 begin 的 OPEN + 主句柄的 DISP/SETTLE/CLOSE = 4 条
+        assertEquals("R7-11 派生句柄的回合级事件未落盘", 4, events.size)
+        assertTrue("R7-11 没有 STEP 事件", events.none { it is RunEvent.StepClosed })
+        assertTrue("R7-11 没有 ASSIST 事件", events.none { it is RunEvent.AssistantCommitted })
+        assertEquals("R7-11 只有一个 CLOSE", 1, events.count { it is RunEvent.TurnClosed })
     }
 
     // ——————————————————————— R7-10 NDJSON 导出 ———————————————————————
