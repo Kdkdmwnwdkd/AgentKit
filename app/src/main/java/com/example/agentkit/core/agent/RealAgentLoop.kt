@@ -18,6 +18,7 @@ import com.example.agentkit.core.ToolMessage
 import com.example.agentkit.core.ToolRegistry
 import com.example.agentkit.core.ToolResult
 import com.example.agentkit.core.UserMessage
+import com.example.agentkit.core.agent.journal.RunScope
 import com.example.agentkit.core.agent.journal.ToolSettleStatus
 import com.example.agentkit.core.agent.journal.TurnJournal
 import com.example.agentkit.core.llm.ChatStreamEvent
@@ -160,6 +161,23 @@ class RealAgentLoop(
     private val checkpoint: ((List<ChatMessage>) -> Unit)? = null,
     /** R1：回合日志（null = 不留恢复依据，harness 与无状态调用走这条）。 */
     private val journal: TurnJournal? = null,
+    /**
+     * R7：外部已开启的回合日志句柄。**优先于** [journal]。
+     *
+     * 子代理用它把工具调用记进**主回合**的日志文件（scope=`sub:<标题>`），
+     * 而不是自己开一个新文件。
+     *
+     * 为什么不新开文件：崩溃恢复是**逐文件**判定的（扫描 → 找出未闭合回合 → 补尾）。
+     * 子代理单独成文件的话，「主回合到底有没有产生副作用」就得跨文件聚合——
+     * 而子代理的写工具虽被白名单挡住，脚本形态技能却能写文件。
+     * 同文件 + scope 标签，既保留「谁产生的」信息，又让恢复判定保持单文件自洽。
+     */
+    private val journalTurn: TurnJournal.Turn? = null,
+    /**
+     * R7：本执行域的作用域名。子代理传 `sub:<标题>`，主代理用 [RunScope.MAIN]。
+     * 出现在 R5 时间线的每条事件上。
+     */
+    private val scope: String = RunScope.MAIN,
     memoryProvider: (() -> String)? = null,
     private val onEvent: ((AgentEvent) -> Unit)? = null,
     private val shouldContinue: (() -> Boolean)? = null,
@@ -337,8 +355,11 @@ class RealAgentLoop(
         // R5：回合结束状态。由 [TurnClock] 记录、各出口设置，finally 统一发事件——
         // 保证「有且只有一条 turn.end」（漏发就看不出回合是被取消还是卡死）。
         val status = TurnEndStatus()
-        // 未注入日志：直接跑，行为与改造前逐字节一致（harness 与子代理走这条）。
-        val j = journal ?: run {
+        // R7：注入的句柄优先（子代理把调用记进主回合文件），否则按 journal 开一个新回合。
+        //
+        // 两条路径产出的 Turn 语义一致：都有日志、没有的都是「退回无日志的现状」。
+        val turn: TurnJournal.Turn? = journalTurn ?: journal?.begin(turnId)
+        if (turn == null) {
             try {
                 return runTurnBody(userInput, images, priorMessages, null, clock, status)
             } catch (cancel: CancellationException) {
@@ -351,10 +372,18 @@ class RealAgentLoop(
                 clock.emitTurnEnd(status.value)
             }
         }
-        val turn = j.begin(turnId)
         var reason = TurnJournal.REASON_COMPLETED
+        // R7：把执行域挂进协程上下文。
+        //
+        // 技能脚本与子代理都在**别人的调用栈里**执行（脚本在 Rhino 线程、工具在
+        // registry 里），要让他们写到同一份回合日志，就得有一份「当前回合句柄」的
+        // 传递通道。逐层加参数会污染每一层签名；用协程上下文则只改两端——
+        // 入口安装、出口读取，中间层与新执行路径都不用记得改。
+        val agentScope = AgentScope(turn = turn, scope = scope)
         try {
-            return runTurnBody(userInput, images, priorMessages, turn, clock, status)
+            return withContext(AgentScopeContext(agentScope)) {
+                runTurnBody(userInput, images, priorMessages, turn, clock, status)
+            }
         } catch (cancel: CancellationException) {
             reason = TurnJournal.REASON_CANCELLED
             status.set("cancelled")
@@ -369,7 +398,8 @@ class RealAgentLoop(
             withContext(NonCancellable) {
                 clock.emitTurnEnd(status.value)
                 turn.turnClosed(reason)
-                j.prune()
+                // R7：prune 归 journal 管——注入的句柄（子代理）不该替主回合清理文件。
+                journal?.prune()
             }
         }
     }
@@ -389,6 +419,8 @@ class RealAgentLoop(
      * `turn.end`，放在一个地方能保证**有且只有一条**。
      */
     private inner class TurnClock(val turnId: String) {
+        /** R7：本执行域的作用域名（主代理 = main，子代理 = sub:<标题>）。 */
+        val scope: String = this@RealAgentLoop.scope
         private val startMs = System.currentTimeMillis()
         private var lastStep = 0
 
@@ -413,6 +445,7 @@ class RealAgentLoop(
                     turnId = turnId,
                     step = currentStep(),
                     elapsedMs = elapsed(),
+                    scope = scope,
                     status = status,
                     steps = currentStep() + 1,
                 )
@@ -498,6 +531,7 @@ class RealAgentLoop(
                 turnId = clock.turnId,
                 step = 0,
                 elapsedMs = clock.elapsed(),
+                scope = clock.scope,
                 inputChars = userInput.length,
                 visibleToolCount = exposure0.visible.size,
             )
@@ -505,6 +539,9 @@ class RealAgentLoop(
 
         repeat(maxSteps) { step ->
             clock.step(step)
+            // R7：把当前步号同步给执行域——技能脚本要用它写日志（DISP/SETTLE 带步号），
+            // 否则技能产生的事件会挂在一个错误的步上，排障时对不上模型的那一轮。
+            currentAgentScope()?.currentStep?.set(step)
             // T05：每轮开始复查取消——UI 点「停止」后 ≤1 轮内退出
             currentCoroutineContext().ensureActive()
             // R2 第三层：回合总预算软截止。只在**步边界**判，不在工具执行中途打断——
@@ -547,6 +584,7 @@ class RealAgentLoop(
                     turnId = clock.turnId,
                     step = step,
                     elapsedMs = clock.elapsed(),
+                    scope = clock.scope,
                     visibleToolCount = exposure.visible.size,
                     estimatedTokens = requestMessages.sumOf { ContextBudget.messageTokens(it) },
                     groups = exposure.groups.map { it.first },
@@ -560,6 +598,7 @@ class RealAgentLoop(
                     turnId = clock.turnId,
                     step = step,
                     elapsedMs = clock.elapsed(),
+                    scope = clock.scope,
                     attempt = 1,
                 )
             )
@@ -574,6 +613,7 @@ class RealAgentLoop(
                         turnId = clock.turnId,
                         step = step,
                         elapsedMs = clock.elapsed(),
+                        scope = clock.scope,
                         attempt = 1,
                         durationMs = System.currentTimeMillis() - llmStart,
                         success = false,
@@ -596,6 +636,7 @@ class RealAgentLoop(
                     turnId = clock.turnId,
                     step = step,
                     elapsedMs = clock.elapsed(),
+                    scope = clock.scope,
                     attempt = 1,
                     durationMs = System.currentTimeMillis() - llmStart,
                     success = true,
@@ -659,6 +700,7 @@ class RealAgentLoop(
                     turnId = clock.turnId,
                     step = step,
                     elapsedMs = clock.elapsed(),
+                    scope = clock.scope,
                     toolCount = resp.toolCalls.size,
                 )
             )
@@ -843,6 +885,7 @@ class RealAgentLoop(
                 turnId = clock.turnId,
                 step = step,
                 elapsedMs = clock.elapsed(),
+                scope = clock.scope,
                 tool = call.name,
                 argsSummary = call.arguments.toString().take(120),
             )
@@ -872,6 +915,7 @@ class RealAgentLoop(
                     turnId = clock.turnId,
                     step = step,
                     elapsedMs = clock.elapsed(),
+                    scope = clock.scope,
                     tool = call.name,
                     code = outcome.code,
                     isError = outcome.message.isError,
@@ -900,6 +944,7 @@ class RealAgentLoop(
                 turnId = clock.turnId,
                 step = step,
                 elapsedMs = clock.elapsed(),
+                scope = clock.scope,
                 tool = call.name,
                 code = if (outcome is ToolCallOutcome.Unknown) "cancelled_unknown" else "cancelled",
                 isError = true,
@@ -948,6 +993,7 @@ class RealAgentLoop(
                     turnId = clock.turnId,
                     step = step,
                     elapsedMs = clock.elapsed(),
+                    scope = clock.scope,
                     tool = call.name,
                     code = if (verdict is ToolCallOutcome.Unknown) "cancelled_unknown" else "cancelled",
                     isError = true,

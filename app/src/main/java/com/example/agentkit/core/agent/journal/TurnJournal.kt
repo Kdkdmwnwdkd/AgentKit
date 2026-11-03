@@ -134,10 +134,25 @@ class TurnJournal(
      */
     inner class Turn internal constructor(
         private val writer: RunJournal.Writer?,
-        val turnId: String
+        val turnId: String,
+        /** 本句柄产生的事件的作用域（R7）。 */
+        val scope: String = RunScope.MAIN,
+        /** 写锁。派生句柄与主句柄共用同一把锁——同一文件并发写会交错出半行。 */
+        private val mutex: Mutex = Mutex()
     ) {
 
-        private val mutex = Mutex()
+        /**
+         * 派生一个**同文件、不同作用域**的句柄（R7）。
+         *
+         * 用于「技能脚本 / 子代理」把它们的调用记进主回合日志：
+         * 同一个文件、同一把锁、同一个序号序列，只是事件带上了各自的 scope。
+         *
+         * 不派生新文件是刻意的：崩溃恢复按文件逐个扫描，拆成多个文件会让
+         * 「这个回合到底有没有副作用」变成需要跨文件聚合的问题——
+         * 而恢复流程必须在**单个文件**内自洽地判定。
+         */
+        fun scoped(scope: String): Turn =
+            Turn(writer?.scoped(scope), turnId, scope, mutex)
 
         /** 本回合是否真的在留日志。false = 一开始就打不开（退回无日志的现状）。 */
         val journaling: Boolean get() = writer != null

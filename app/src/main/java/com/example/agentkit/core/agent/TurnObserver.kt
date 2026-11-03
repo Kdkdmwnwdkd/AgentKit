@@ -52,6 +52,17 @@ sealed interface TurnEvent {
     /** 相对回合开始的毫秒数。用**相对时间**而非墙钟，跨设备对照日志时不会因时区/校时错位。 */
     val elapsedMs: Long
 
+    /**
+     * 执行作用域（R7）：这条事件由谁产生——主代理、技能脚本还是子代理。
+     *
+     * R5 的时间线假定「一个回合只有一条执行线」。R7 之后不成立：技能脚本与子代理
+     * 会在同一个回合里发起自己的调用。没有这个维度就分不清「主代理在等」
+     * 与「技能脚本在等」——而这两者的处置方式完全不同。
+     *
+     * 默认 [com.example.agentkit.core.agent.journal.RunScope.MAIN]，即改造前的行为。
+     */
+    val scope: String get() = com.example.agentkit.core.agent.journal.RunScope.MAIN
+
     /** 回合开始。 */
     data class TurnStarted(
         override val turnId: String,
@@ -61,6 +72,7 @@ sealed interface TurnEvent {
         val inputChars: Int,
         /** 本回合暴露的工具数。 */
         val visibleToolCount: Int,
+        override val scope: String = com.example.agentkit.core.agent.journal.RunScope.MAIN,
     ) : TurnEvent
 
     /** 请求视图算完：暴露面 + 预算 + 截断，一次算好下发。 */
@@ -74,6 +86,7 @@ sealed interface TurnEvent {
         val estimatedTokens: Int,
         /** 激活的工具组（按序）。 */
         val groups: List<String>,
+        override val scope: String = com.example.agentkit.core.agent.journal.RunScope.MAIN,
     ) : TurnEvent
 
     /** 发请求前。 */
@@ -83,6 +96,7 @@ sealed interface TurnEvent {
         override val elapsedMs: Long,
         /** 本次是第几次尝试（1 起；重试会递增）。 */
         val attempt: Int,
+        override val scope: String = com.example.agentkit.core.agent.journal.RunScope.MAIN,
     ) : TurnEvent
 
     /** 请求返回（含失败与取消）。 */
@@ -99,6 +113,7 @@ sealed interface TurnEvent {
         val code: String? = null,
         /** 模型返回的工具调用数。 */
         val toolCallCount: Int = 0,
+        override val scope: String = com.example.agentkit.core.agent.journal.RunScope.MAIN,
     ) : TurnEvent
 
     /** 工具开始执行。 */
@@ -110,6 +125,7 @@ sealed interface TurnEvent {
         val tool: String,
         /** 参数摘要（截断），够认出是哪一次调用即可。 */
         val argsSummary: String,
+        override val scope: String = com.example.agentkit.core.agent.journal.RunScope.MAIN,
     ) : TurnEvent
 
     /**
@@ -128,6 +144,7 @@ sealed interface TurnEvent {
         val code: String,
         val isError: Boolean,
         val durationMs: Long,
+        override val scope: String = com.example.agentkit.core.agent.journal.RunScope.MAIN,
     ) : TurnEvent
 
     /** 本步收口：本批工具全部有终态。 */
@@ -137,6 +154,7 @@ sealed interface TurnEvent {
         override val elapsedMs: Long,
         /** 本步执行的工具数。 */
         val toolCount: Int,
+        override val scope: String = com.example.agentkit.core.agent.journal.RunScope.MAIN,
     ) : TurnEvent
 
     /** 回合结束。 */
@@ -148,6 +166,7 @@ sealed interface TurnEvent {
         val status: String,
         /** 本回合走过的步数。 */
         val steps: Int,
+        override val scope: String = com.example.agentkit.core.agent.journal.RunScope.MAIN,
     ) : TurnEvent
 }
 

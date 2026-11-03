@@ -31,8 +31,9 @@ import kotlinx.coroutines.withTimeoutOrNull
  * 若工具内部用阻塞 IO / `runBlocking` 且不响应取消，超时只会停止「等待」，
  * 后台线程仍会跑完。这也是超时结果必须按「可能已生效」措辞的原因。
  */
-private const val DEFAULT_READ_ONLY_BUDGET_MS = 90_000L
-private const val DEFAULT_WRITE_BUDGET_MS = 600_000L
+/** internal 而非 private：技能路径（R7）复用同一套默认预算，避免两处数字漂移。 */
+internal const val DEFAULT_READ_ONLY_BUDGET_MS = 90_000L
+internal const val DEFAULT_WRITE_BUDGET_MS = 600_000L
 
 /**
  * 单次工具调用的产出（T01，本任务最微妙处，吃透再写）。

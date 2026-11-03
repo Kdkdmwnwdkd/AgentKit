@@ -16,6 +16,8 @@ package com.example.agentkit.core.agent.journal
  *
  * @property seq 单调递增序号，从 1 开始，同一回合内不重用。
  * @property atMs 事件时间（epoch millis）。合成事件复用前一条的时间，保证可复现。
+ * @property scope 执行作用域（R7）：这条事件由谁产生——主代理、技能脚本还是子代理。
+ *   默认 [RunScope.MAIN]，即改造前的行为。
  */
 sealed interface RunEvent {
 
@@ -23,11 +25,21 @@ sealed interface RunEvent {
     val atMs: Long
     val turnId: String
 
+    /**
+     * 执行作用域（R7）。
+     *
+     * 同一个回合日志里会同时出现主代理、技能脚本、子代理三类调用的事件。
+     * 没有这个维度就无法回答「这条 DISP 是谁写的」——而技能脚本能产生真实副作用，
+     * 崩溃恢复时必须能区分。
+     */
+    val scope: String get() = RunScope.MAIN
+
     /** 回合开始。写入后即表示"这个回合存在"，恢复时据此判断是否需要补尾。 */
     data class TurnOpened(
         override val seq: Long,
         override val atMs: Long,
-        override val turnId: String
+        override val turnId: String,
+        override val scope: String = RunScope.MAIN
     ) : RunEvent
 
     /**
@@ -43,7 +55,8 @@ sealed interface RunEvent {
         override val atMs: Long,
         override val turnId: String,
         val step: Int,
-        val calls: List<ToolCallRef>
+        val calls: List<ToolCallRef>,
+        override val scope: String = RunScope.MAIN
     ) : RunEvent
 
     /**
@@ -56,7 +69,8 @@ sealed interface RunEvent {
         override val atMs: Long,
         override val turnId: String,
         val step: Int,
-        val callId: String
+        val callId: String,
+        override val scope: String = RunScope.MAIN
     ) : RunEvent
 
     /** 工具结果落地（正常结束、失败、超时、拒绝都走这里）。 */
@@ -67,7 +81,8 @@ sealed interface RunEvent {
         val step: Int,
         val callId: String,
         val status: ToolSettleStatus,
-        val errorCode: String? = null
+        val errorCode: String? = null,
+        override val scope: String = RunScope.MAIN
     ) : RunEvent
 
     /** 步结束。写在这里表示"该步的所有调用都已应答"，恢复时据此不再补该步。 */
@@ -75,7 +90,8 @@ sealed interface RunEvent {
         override val seq: Long,
         override val atMs: Long,
         override val turnId: String,
-        val step: Int
+        val step: Int,
+        override val scope: String = RunScope.MAIN
     ) : RunEvent
 
     /**
@@ -87,7 +103,8 @@ sealed interface RunEvent {
         override val seq: Long,
         override val atMs: Long,
         override val turnId: String,
-        val reason: String
+        val reason: String,
+        override val scope: String = RunScope.MAIN
     ) : RunEvent
 }
 

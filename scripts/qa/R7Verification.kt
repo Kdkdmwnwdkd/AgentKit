@@ -1,0 +1,496 @@
+#!/usr/bin/env kotlin
+/**
+ * R7（执行作用域统一 + 非主路径纳入护栏）行为验证 harness。
+ *
+ * ## 为什么单独一套
+ * R7 修掉的是三个「**别的路径不受管**」类的缺陷。它们的共同点是：
+ * 主路径上一切正常，出问题的一定是**旁路**——而旁路恰恰是用户最容易踩到的。
+ *
+ *  1. **技能脚本绕过执行器**。`SkillRuntimeBridge.tool()` 改造前直接
+ *     `registry.execute(call)`：没有超时预算（R2 第二层对技能完全失效）、
+ *     没有熔断、没有回合日志。技能调一次 `agent.writeFile()` 真的改了文件，
+ *     日志里却一片空白——崩溃恢复因此判不出「技能是否已生效」。
+ *
+ *  2. **技能 callId 确定性重复**。改造前 id 是 `skill:<id>:<工具名>`：
+ *     同一脚本连调两次同一工具 → 同一个 id → 回喂模型的 ToolMessage 重复 id，
+ *     恢复器按 id 配对时把两条 DISP 配到一条 SETTLE 上，判定结果就是错的。
+ *
+ *  3. **子代理不在事件流里**。子代理跑在独立的 `RealAgentLoop` 里，
+ *     改造前连日志句柄都没有——用户报「卡住了」时只看到主代理在等，
+ *     完全看不见子代理在干什么。
+ *
+ * 覆盖：
+ *  R7-1  作用域载体：派生句柄同文件、序号连续、scope 正确落盘
+ *  R7-2  v1 老日志仍可读（崩溃恢复的依据是历史日志）
+ *  R7-3  执行域上下文跨协程可见（入口安装、出口读取）
+ *  R7-4  技能工具调用有 DISP/SETTLE，scope=skill:<id>
+ *  R7-5  技能 callId 唯一（两次调用不撞 id）
+ *  R7-6  技能路径受超时预算约束（超时返回可自纠的结果而非卡死）
+ *  R7-7  技能路径有熔断（同一失败工具反复调会被拦）
+ *  R7-8  子代理的工具调用进主回合日志，scope=sub:<标题>
+ *  R7-9  主代理路径不受影响（scope 仍是 main，日志结构照旧）
+ *
+ * 运行：scripts/qa/run-r7-verification.sh
+ */
+
+import com.example.agentkit.core.AgentTool
+import com.example.agentkit.core.AssistantMessage
+import com.example.agentkit.core.ChatMessage
+import com.example.agentkit.core.FailureGuard
+import com.example.agentkit.core.JsonSchema
+import com.example.agentkit.core.LLMClient
+import com.example.agentkit.core.ToolCall
+import com.example.agentkit.core.ToolRegistry
+import com.example.agentkit.core.ToolResult
+import com.example.agentkit.core.agent.AgentScope
+import com.example.agentkit.core.agent.AgentScopeContext
+import com.example.agentkit.core.agent.NoopHooks
+import com.example.agentkit.core.agent.RegistryToolExecutor
+import com.example.agentkit.core.agent.SubAgentRunner
+import com.example.agentkit.core.agent.SubTask
+import com.example.agentkit.core.agent.ToolDescriptor
+import com.example.agentkit.core.agent.ToolExecutor
+import com.example.agentkit.core.agent.currentAgentScope
+import com.example.agentkit.core.agent.journal.RunEvent
+import com.example.agentkit.core.agent.journal.RunScope
+import com.example.agentkit.core.agent.journal.TurnJournal
+import com.example.agentkit.skill.SkillManifest
+import com.example.agentkit.skill.SkillExecutor
+import com.example.agentkit.skill.SkillRuntimeBridge
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.JsonObject
+
+private var passed = 0
+private val failures = mutableListOf<String>()
+
+private suspend fun check(name: String, block: suspend () -> Unit) {
+    try {
+        block()
+        passed++
+        println("  PASS  $name")
+    } catch (t: Throwable) {
+        failures += name
+        println("  FAIL  $name -> ${t.message}")
+    }
+}
+
+private fun assertTrue(name: String, cond: Boolean) {
+    if (!cond) throw AssertionError("expected true: $name")
+}
+
+private fun assertEquals(name: String, expected: Any?, actual: Any?) {
+    if (expected != actual) throw AssertionError("$name: expected=$expected actual=$actual")
+}
+
+/** 可控的假工具：能睡、能失败，用来测预算与熔断。 */
+private class FakeTool(
+    override val name: String,
+    override val readOnly: Boolean = true,
+    private val sleepMs: Long = 0L,
+    private val failCode: String? = null
+) : AgentTool {
+    override val description: String = "fake tool"
+    override val parameters: JsonSchema = JsonSchema.objectSchema()
+
+    override suspend fun execute(args: JsonObject): ToolResult {
+        if (sleepMs > 0) delay(sleepMs)
+        return if (failCode != null) {
+            ToolResult.fail(code = failCode, message = "boom", hint = "retry later")
+        } else {
+            ToolResult.ok(message = "done")
+        }
+    }
+}
+
+/** 只回固定答复的假模型。 */
+private class FakeClient(private val responses: List<AssistantMessage>) : LLMClient {
+    override val id: String = "fake"
+    var calls = 0
+        private set
+
+    override suspend fun chat(
+        messages: List<ChatMessage>,
+        tools: List<AgentTool>
+    ): AssistantMessage {
+        val r = responses.getOrElse(calls) { responses.last() }
+        calls++
+        return r
+    }
+
+    override suspend fun testPing(): com.example.agentkit.core.PingResult =
+        com.example.agentkit.core.PingResult(200, "ok")
+}
+
+/** 建一个带日志的回合，供作用域相关用例共用。 */
+private suspend fun newTurn(dir: java.io.File): Pair<TurnJournal, TurnJournal.Turn> {
+    val journal = TurnJournal(com.example.agentkit.core.agent.journal.RunJournal(dir))
+    val turn = journal.begin("r7-turn-1")
+    return journal to turn
+}
+
+fun main() = runBlocking {
+    val base = java.io.File("/tmp/qa-r7")
+    base.mkdirs()
+    base.listFiles()?.forEach { it.deleteRecursively() }
+
+    // ——————————————————————— R7-1 作用域载体 ———————————————————————
+
+    check("R7-1 派生句柄写同一文件、序号连续") {
+        val dir = java.io.File(base, "scope")
+        val journal = TurnJournal(com.example.agentkit.core.agent.journal.RunJournal(dir))
+        val main = journal.begin("turn-A")
+        val skill = main.scoped(RunScope.skill("demo"))
+
+        // begin() 内部已写一条 OPEN
+        skill.toolDispatched(1, "call-1")
+        skill.toolSettled(1, "call-1", com.example.agentkit.core.agent.journal.ToolSettleStatus.SUCCEEDED)
+        main.toolDispatched(1, "call-2")
+        main.toolSettled(1, "call-2", com.example.agentkit.core.agent.journal.ToolSettleStatus.SUCCEEDED)
+        main.turnClosed("completed")
+
+        val events = com.example.agentkit.core.agent.journal.RunJournal(dir).load("turn-A")
+        assertEquals("R7-1 事件数", 6, events.size)
+        val seqs = events.map { it.seq }
+        assertEquals("R7-1 序号连续且唯一", seqs.sorted(), seqs)
+        assertTrue("R7-1 序号从 1 起", seqs.min() == 1L)
+        val skillEvents = events.filter { it.scope.startsWith(RunScope.SKILL_PREFIX) }
+        assertEquals("R7-1 技能事件数", 2, skillEvents.size)
+        val mainEvents = events.filter { it.scope == RunScope.MAIN }
+        assertEquals("R7-1 主路径事件数", 4, mainEvents.size)
+    }
+
+    check("R7-1 scope 落盘后读回一致") {
+        val dir = java.io.File(base, "scope2")
+        val journal = TurnJournal(com.example.agentkit.core.agent.journal.RunJournal(dir))
+        val turn = journal.begin("turn-B")
+        turn.scoped(RunScope.subagent("查资料")).toolDispatched(0, "c1")
+        turn.turnClosed("completed")
+
+        val events = com.example.agentkit.core.agent.journal.RunJournal(dir).load("turn-B")
+        val scoped = events.first { it is RunEvent.ToolDispatched } as RunEvent.ToolDispatched
+        assertEquals("R7-1 scope 值", RunScope.subagent("查资料"), scoped.scope)
+        assertEquals("R7-1 类别可判", RunScope.KIND_SUBAGENT, RunScope.kindOf(scoped.scope))
+    }
+
+    // ——————————————————————— R7-2 老日志兼容 ———————————————————————
+
+    check("R7-2 v1 老日志仍可读（scope 归 main）") {
+        val dir = java.io.File(base, "legacy")
+        dir.mkdirs()
+        // 模拟改造前产生的 v1 文件
+        java.io.File(dir, "turn-Legacy.rjl").writeText(
+            "v1\t1\t100\tturn-Legacy\tOPEN\n" +
+                "v1\t2\t110\tturn-Legacy\tDISP\t1\tcall-x\n" +
+                "v1\t3\t120\tturn-Legacy\tSETTLE\t1\tcall-x\tSUCCEEDED\t\n" +
+                "v1\t4\t130\tturn-Legacy\tCLOSE\tcompleted\n"
+        )
+        val events = com.example.agentkit.core.agent.journal.RunJournal(dir).load("turn-Legacy")
+        assertEquals("R7-2 读到 4 条", 4, events.size)
+        assertTrue("R7-2 全部 scope=main", events.all { it.scope == RunScope.MAIN })
+        val disp = events[1] as RunEvent.ToolDispatched
+        assertEquals("R7-2 字段完好", "call-x", disp.callId)
+    }
+
+    // ——————————————————————— R7-3 执行域上下文 ———————————————————————
+
+    check("R7-3 执行域跨协程可见") {
+        val scope = AgentScope(turn = null, scope = RunScope.MAIN)
+        val seen = withContext(AgentScopeContext(scope)) {
+            // 内层再切一次线程（模拟工具执行换线程），上下文仍要跟过去
+            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                currentAgentScope()
+            }
+        }
+        assertTrue("R7-3 上下文可见", seen != null)
+        assertEquals("R7-3 作用域一致", RunScope.MAIN, seen?.scope)
+    }
+
+    check("R7-3 不在执行域内读到 null") {
+        assertTrue("R7-3 域外为 null", currentAgentScope() == null)
+    }
+
+    // ——————————————————————— R7-4/5/6/7 技能路径 ———————————————————————
+
+    val skillManifest = SkillManifest(
+        id = "demo-skill",
+        name = "演示技能",
+        version = "1.0",
+        tools = listOf("fake_read", "fake_slow", "fake_fail"),
+        entry = "main.js",
+        trust = "packaged"
+    )
+
+    /**
+     * 用**生产代码的同一构造逻辑**搭一个技能桥。
+     *
+     * 刻意不手搓 executor：DISP 的落盘点是本轮最容易写错的地方，
+     * 手搓一份「差不多的」执行器就等于测了一个不存在的东西。
+     */
+    fun buildSkillBridge(
+        registry: ToolRegistry,
+        turn: TurnJournal.Turn?,
+        budgetMs: Long = 5_000L
+    ): SkillRuntimeBridge {
+        val skillExecutor = SkillExecutor(
+            registry = registry,
+            workspace = java.io.File(base, "ws"),
+            jsEngine = null,
+            readBody = { "" },
+            readEntry = { null }
+        )
+        val scope = turn?.let {
+            AgentScope(
+                turn = it.scoped(RunScope.skill("demo-skill")),
+                scope = RunScope.skill("demo-skill"),
+                currentStep = java.util.concurrent.atomic.AtomicInteger(2)
+            )
+        }
+        val dispatchedStep = java.util.concurrent.atomic.AtomicInteger(0)
+        val executor: ToolExecutor = skillExecutor.buildToolExecutor(
+            scope, dispatchedStep, readOnlyBudgetMs = budgetMs, writeBudgetMs = budgetMs
+        )
+        return SkillRuntimeBridge(
+            registry = registry,
+            skill = skillManifest,
+            workspace = java.io.File(base, "ws"),
+            executor = executor,
+            agentScope = scope,
+            dispatchedStep = dispatchedStep
+        )
+    }
+
+    check("R7-4 技能工具调用有 DISP/SETTLE 且 scope 正确") {
+        val dir = java.io.File(base, "skill-log")
+        val journal = TurnJournal(com.example.agentkit.core.agent.journal.RunJournal(dir))
+        val turn = journal.begin("turn-S")
+        val registry = ToolRegistry().apply { register(FakeTool("fake_read")) }
+        val bridge = buildSkillBridge(registry, turn)
+
+        val out = bridge.tool("fake_read", mapOf("x" to 1))
+        assertTrue("R7-4 返回内容", out.contains("done"))
+
+        val events = com.example.agentkit.core.agent.journal.RunJournal(dir).load("turn-S")
+        val disp = events.filterIsInstance<RunEvent.ToolDispatched>()
+        val settle = events.filterIsInstance<RunEvent.ToolSettled>()
+        assertEquals("R7-4 一条 DISP", 1, disp.size)
+        assertEquals("R7-4 一条 SETTLE", 1, settle.size)
+        assertEquals("R7-4 DISP scope", RunScope.skill("demo-skill"), disp[0].scope)
+        assertEquals("R7-4 SETTLE scope", RunScope.skill("demo-skill"), settle[0].scope)
+        assertEquals("R7-4 步号沿用主回合", 2, disp[0].step)
+        assertEquals("R7-4 id 配对", disp[0].callId, settle[0].callId)
+        assertEquals(
+            "R7-4 终态成功",
+            com.example.agentkit.core.agent.journal.ToolSettleStatus.SUCCEEDED,
+            settle[0].status
+        )
+    }
+
+    check("R7-5 技能 callId 唯一（两次调用不撞 id）") {
+        val dir = java.io.File(base, "skill-ids")
+        val journal = TurnJournal(com.example.agentkit.core.agent.journal.RunJournal(dir))
+        val turn = journal.begin("turn-I")
+        val registry = ToolRegistry().apply { register(FakeTool("fake_read")) }
+        val bridge = buildSkillBridge(registry, turn)
+
+        bridge.tool("fake_read", mapOf("x" to 1))
+        bridge.tool("fake_read", mapOf("x" to 2))
+
+        val events = com.example.agentkit.core.agent.journal.RunJournal(dir).load("turn-I")
+        val disp = events.filterIsInstance<RunEvent.ToolDispatched>()
+        assertEquals("R7-5 两条 DISP", 2, disp.size)
+        assertTrue("R7-5 callId 不同", disp[0].callId != disp[1].callId)
+        val settles = events.filterIsInstance<RunEvent.ToolSettled>()
+        assertEquals("R7-5 两条 SETTLE", 2, settles.size)
+        assertEquals(
+            "R7-5 每个 callId 各有一次结算",
+            disp.map { it.callId }.toSet(),
+            settles.map { it.callId }.toSet()
+        )
+    }
+
+    check("R7-6 技能路径受超时预算约束") {
+        val dir = java.io.File(base, "skill-budget")
+        val journal = TurnJournal(com.example.agentkit.core.agent.journal.RunJournal(dir))
+        val turn = journal.begin("turn-BUD")
+        val registry = ToolRegistry().apply {
+            register(FakeTool("fake_slow", readOnly = true, sleepMs = 3_000L))
+        }
+        // 预算 200ms，工具睡 3 秒 → 必须被判超时
+        val bridge = buildSkillBridge(registry, turn, budgetMs = 200L)
+
+        val start = System.currentTimeMillis()
+        val out = bridge.tool("fake_slow", mapOf<String, Any?>())
+        val cost = System.currentTimeMillis() - start
+        assertTrue("R7-6 未被掐断则超时（实际 ${cost}ms）", cost < 2_000L)
+        assertTrue("R7-6 返回超时文案", out.contains("超时"))
+
+        val events = com.example.agentkit.core.agent.journal.RunJournal(dir).load("turn-BUD")
+        val settle = events.filterIsInstance<RunEvent.ToolSettled>()
+        assertEquals("R7-6 有结算事件", 1, settle.size)
+        assertEquals(
+            "R7-6 终态为失败",
+            com.example.agentkit.core.agent.journal.ToolSettleStatus.FAILED,
+            settle[0].status
+        )
+    }
+
+    check("R7-7 技能路径有熔断（同一失败工具反复调会被拦）") {
+        val dir = java.io.File(base, "skill-guard")
+        val journal = TurnJournal(com.example.agentkit.core.agent.journal.RunJournal(dir))
+        val turn = journal.begin("turn-G")
+        val registry = ToolRegistry().apply {
+            register(FakeTool("fake_fail", readOnly = true, failCode = "boom"))
+        }
+        val bridge = buildSkillBridge(registry, turn)
+
+        repeat(5) { bridge.tool("fake_fail", mapOf("x" to 1)) }
+
+        val events = com.example.agentkit.core.agent.journal.RunJournal(dir).load("turn-G")
+        val disp = events.filterIsInstance<RunEvent.ToolDispatched>()
+        // 熔断在派发前拦截 → 派发次数应少于调用次数
+        assertTrue("R7-7 熔断拦住了重复调用（派发 ${disp.size} 次 < 5 次）", disp.size < 5)
+    }
+
+    // ——————————————————————— R7-8 子代理接入 ———————————————————————
+
+    check("R7-8 子代理的工具调用进主回合日志，scope=sub:<标题>") {
+        val dir = java.io.File(base, "sub-log")
+        val journal = TurnJournal(com.example.agentkit.core.agent.journal.RunJournal(dir))
+        val mainTurn = journal.begin("turn-SUB")
+
+        // 子代理只保留 NO_SIDE_EFFECT_TOOLS 白名单里的工具，名字必须对上，
+        // 否则工具表被裁掉、子代理压根看不到它（这正是改造前子代理「一片空白」
+        // 的一部分原因：白名单外的工具连存在都不存在）。
+        val registry = ToolRegistry().apply { register(FakeTool("read_file")) }
+        // 子代理第一轮就要调工具，第二轮给结论
+        val client = FakeClient(
+            listOf(
+                AssistantMessage(
+                    content = "",
+                    toolCalls = listOf(ToolCall("tc-1", "read_file", JsonObject(emptyMap())))
+                ),
+                AssistantMessage(content = "子代理结论")
+            )
+        )
+        val runner = SubAgentRunner(
+            llmProvider = { client },
+            baseRegistry = { registry }
+        )
+
+        // 模拟「主代理的执行域」：子代理从这里继承日志句柄
+        val scope = AgentScope(turn = mainTurn, scope = RunScope.MAIN)
+        withContext(AgentScopeContext(scope)) {
+            runner.run(listOf(SubTask("查资料", "读一下文件")))
+        }
+
+        val events = com.example.agentkit.core.agent.journal.RunJournal(dir).load("turn-SUB")
+        val subDisp = events.filterIsInstance<RunEvent.ToolDispatched>()
+            .filter { it.scope == RunScope.subagent("查资料") }
+        assertTrue("R7-8 子代理调用进主回合日志（${subDisp.size} 条）", subDisp.isNotEmpty())
+        assertTrue(
+            "R7-8 子代理事件 category 正确",
+            RunScope.kindOf(RunScope.subagent("查资料")) == RunScope.KIND_SUBAGENT
+        )
+    }
+
+    // ——————————————————————— R7-9 主路径不受影响 ———————————————————————
+
+    check("R7-9 主代理路径 scope 仍是 main") {
+        val dir = java.io.File(base, "main-path")
+        val journal = TurnJournal(com.example.agentkit.core.agent.journal.RunJournal(dir))
+        val turn = journal.begin("turn-M")
+        turn.assistantCommitted(0, listOf(ToolCall("c1", "read_file", JsonObject(emptyMap()))))
+        turn.toolDispatched(0, "c1")
+        turn.toolSettled(0, "c1", com.example.agentkit.core.agent.journal.ToolSettleStatus.SUCCEEDED)
+        turn.stepClosed(0)
+        turn.turnClosed("completed")
+
+        val events = com.example.agentkit.core.agent.journal.RunJournal(dir).load("turn-M")
+        assertEquals("R7-9 事件数不变", 6, events.size)
+        assertTrue("R7-9 全部 scope=main", events.all { it.scope == RunScope.MAIN })
+    }
+
+    // ——————————————————————— R7-10 NDJSON 导出 ———————————————————————
+
+    check("R7-10 NDJSON 一行一对象、字段自解释") {
+        val dir = java.io.File(base, "ndjson")
+        val journal = TurnJournal(com.example.agentkit.core.agent.journal.RunJournal(dir))
+        val turn = journal.begin("turn-J")
+        turn.assistantCommitted(0, listOf(ToolCall("c1", "read_file", JsonObject(emptyMap()))))
+        turn.toolDispatched(0, "c1")
+        turn.toolSettled(0, "c1", com.example.agentkit.core.agent.journal.ToolSettleStatus.SUCCEEDED)
+        turn.stepClosed(0)
+        turn.turnClosed("completed")
+
+        val ndjson = com.example.agentkit.core.agent.journal.RunJournal(dir).exportNdjson("turn-J")
+        val lines = ndjson.trim().lines()
+        assertEquals("R7-10 行数=事件数", 6, lines.size)
+        assertTrue("R7-10 每行是对象", lines.all { it.startsWith("{") && it.endsWith("}") })
+        assertTrue("R7-10 含 type 字段", lines.all { it.contains("\"type\":") })
+        assertTrue("R7-10 含 scope 字段", lines.all { it.contains("\"scope\":") })
+        assertTrue("R7-10 含 turn 字段", lines.all { it.contains("\"turn\":") })
+        assertTrue("R7-10 工具事件带 call", lines.any { it.contains("\"type\":\"disp\"") && it.contains("\"call\":\"c1\"") })
+    }
+
+    check("R7-10 NDJSON 转义：引号被转义、每行仍是完整对象") {
+        val dir = java.io.File(base, "ndjson-esc")
+        val journal = TurnJournal(com.example.agentkit.core.agent.journal.RunJournal(dir))
+        val turn = journal.begin("turn-E")
+        // 结束原因里塞进引号——TSV 侧只净化分隔符，引号原样保留，JSON 侧必须再转义一次
+        turn.turnClosed("he said \"hi\" then left")
+
+        val ndjson = com.example.agentkit.core.agent.journal.RunJournal(dir).exportNdjson("turn-E")
+        val lines = ndjson.trim().lines()
+        assertEquals("R7-10 单回合两行", 2, lines.size)
+        assertTrue("R7-10 含转义引号", ndjson.contains("\\\""))
+        assertTrue("R7-10 无裸换行", lines.none { it.isEmpty() })
+        assertTrue("R7-10 每行闭合", lines.all { it.startsWith("{") && it.endsWith("}") })
+    }
+
+    check("R7-10 JSON 导出与 TSV 存储信息一致（不增不减）") {
+        val dir = java.io.File(base, "ndjson-parity")
+        val journal = TurnJournal(com.example.agentkit.core.agent.journal.RunJournal(dir))
+        val turn = journal.begin("turn-P")
+        turn.assistantCommitted(0, listOf(ToolCall("c1", "read_file", JsonObject(emptyMap()))))
+        turn.toolDispatched(0, "c1")
+        turn.toolSettled(0, "c1", com.example.agentkit.core.agent.journal.ToolSettleStatus.FAILED, "boom")
+        turn.turnClosed("completed")
+
+        val store = com.example.agentkit.core.agent.journal.RunJournal(dir)
+        val events = store.load("turn-P")
+        val ndjson = store.exportNdjson("turn-P")
+        assertEquals("R7-10 行数=事件数", events.size, ndjson.trim().lines().size)
+        // 事件里有的字段必须都在；导出不得凭空多出事件里没有的信息
+        assertTrue("R7-10 settle 带 status", ndjson.contains("\"status\":\"FAILED\""))
+        assertTrue("R7-10 settle 带 error", ndjson.contains("\"error\":\"boom\""))
+        assertTrue("R7-10 assist 带 calls 数组", ndjson.contains("\"calls\":["))
+    }
+
+    check("R7-10 导出全部回合按时间从旧到新") {
+        val dir = java.io.File(base, "ndjson-all")
+        val journal = TurnJournal(com.example.agentkit.core.agent.journal.RunJournal(dir))
+        val t1 = journal.begin("turn-A1")
+        t1.turnClosed("completed")
+        Thread.sleep(5)
+        val t2 = journal.begin("turn-A2")
+        t2.turnClosed("completed")
+
+        val all = com.example.agentkit.core.agent.journal.RunJournal(dir).exportAllNdjson()
+        val lines = all.trim().lines()
+        assertTrue("R7-10 导出非空", lines.isNotEmpty())
+        assertTrue(
+            "R7-10 旧回合在前",
+            lines.indexOfFirst { it.contains("\"turn\":\"turn-A1\"") } <
+                lines.indexOfFirst { it.contains("\"turn\":\"turn-A2\"") }
+        )
+    }
+
+    println()
+    println("=== R7 结果：$passed 通过 / ${failures.size} 失败 ===")
+    if (failures.isNotEmpty()) {
+        failures.forEach { println("  FAILED: $it") }
+        kotlin.system.exitProcess(1)
+    }
+}

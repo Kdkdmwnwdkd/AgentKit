@@ -4,6 +4,7 @@ import com.example.agentkit.core.AssistantMessage
 import com.example.agentkit.core.LLMClient
 import com.example.agentkit.core.ToolApproval
 import com.example.agentkit.core.ToolRegistry
+import com.example.agentkit.core.agent.journal.RunScope
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.TimeoutCancellationException
@@ -80,6 +81,18 @@ class SubAgentRunner(
     private suspend fun runOne(task: SubTask): SubAgentOutcome {
         val started = System.currentTimeMillis()
         return try {
+            // R7：子代理并入主回合的日志与时间线。
+            //
+            // 改造前子代理的 RealAgentLoop 压根没有日志句柄——它跑的工具调用在主回合
+            // 日志里**一片空白**。用户报「卡住了」时，看到的是主代理在等，
+            // 完全看不见子代理在干什么；而子代理虽然只有无副作用工具，
+            // 脚本形态技能却能写文件——那就是真实副作用，却没有任何记录。
+            //
+            // 并入主回合文件（而不是自己开一个）是为了让崩溃恢复保持**单文件自洽**：
+            // 恢复器逐文件判定「这个回合有没有未闭合的调用」，拆成多文件就得跨文件聚合。
+            val parent = currentAgentScope()
+            val subScope = RunScope.subagent(task.title)
+            val subTurn = parent?.turn?.scoped(subScope)
             val history = withTimeout(timeoutMs) {
                 RealAgentLoop(
                     llmProvider = llmProvider,
@@ -92,7 +105,10 @@ class SubAgentRunner(
                     approval = approval,
                     // 白名单只有十几个工具，不能被「小模型核心集」再裁掉——
                     // 子代理拿不到 read_file 就等于瞎了
-                    forceFullTools = true
+                    forceFullTools = true,
+                    // R7：写进主回合日志，事件带 scope=sub:<标题>
+                    journalTurn = subTurn,
+                    scope = subScope
                 ).send(SubAgentLogic.userPrompt(task.instruction), emptyList(), emptyList())
             }
             val texts = history.mapNotNull { (it as? AssistantMessage)?.content }
