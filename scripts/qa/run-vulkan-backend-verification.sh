@@ -436,7 +436,12 @@ elif ! command -v readelf >/dev/null 2>&1; then
     echo "  SKIP  没有 readelf（binutils 未安装）"
 else
     TMP="$(mktemp -d)"
-    if unzip -o -q "$APK" "lib/arm64-v8a/*" -d "$TMP" 2>/dev/null; then
+    # -PnoNative=true 的构建（无 NDK 的机器上跑 QA）整个 APK 里就没有 lib/ 目录。
+    # 这不是「产物不对」，是本次压根没编 native——跳过而不是判红，否则每次都得手工分辨。
+    # 有 native 产物时下面的检查一条不少，掩盖不了真问题。
+    if ! unzip -l "$APK" 2>/dev/null | grep -q "lib/arm64-v8a/"; then
+        echo "  SKIP  APK 不含 arm64-v8a 原生库（本次构建 -PnoNative=true）"
+    elif unzip -o -q "$APK" "lib/arm64-v8a/*" -d "$TMP" 2>/dev/null; then
         SO="$TMP/lib/arm64-v8a/libagentkit-llama.so"
         if [ ! -f "$SO" ]; then
             fail "APK 里没有 libagentkit-llama.so"

@@ -111,16 +111,18 @@ echo
 echo "== 静态：工具预算可按工具覆盖（R6） =="
 expect "工具接口声明 timeoutBudgetMs"   "$CONTRACT" 'val timeoutBudgetMs: Long? get() = null'
 expect "预算解析器存在"                 "$BUDGET" 'object ToolBudget'
-expect "解析优先级：自声明 > 分档"       "$BUDGET" 'tool.timeoutBudgetMs'
+expect "解析优先级：自声明 > 分档"       "$BUDGET" 'safeMeta(tool, null) { it.timeoutBudgetMs }'
+# 元数据读取一律走安全访问器：接口默认方法 + 增量编译会让旧实现缺桥接（AbstractMethodError）
+expect "元数据读取容忍二进制不兼容"      "$BUDGET" 'catch (e: LinkageError)'
 expect "自声明值被夹紧"                 "$BUDGET" 'declared.coerceIn(lower, upper)'
 expect "下界 1 秒"                      "$BUDGET" 'MIN_DECLARED_BUDGET_MS: Long = 1_000L'
 expect "上界为回合软截止"                "$BUDGET" 'MAX_DECLARED_BUDGET_MS: Long = 30 * 60_000L'
 expect "executor 走预算解析"            "$EXECUTOR" 'ToolBudget.resolve(tool'
 # 分档默认必须原样使用——测试注入 80ms 断言超时路径，夹住就永远测不到
-expect "分档默认原样使用"               "$BUDGET" 'return if (tool.readOnly) readOnlyBudgetMs else writeBudgetMs'
+expect "分档默认原样使用"               "$BUDGET" 'return if (readOnlyOf(tool)) readOnlyBudgetMs else writeBudgetMs'
 reject "分档默认不得被夹紧"             "$BUDGET" 'readOnlyBudgetMs.coerceIn'
 # 等用户的工具不吃预算（awaitsUser 优先于自声明）
-expect "executor 尊重 awaitsUser"       "$EXECUTOR" 'tool.awaitsUser'
+expect "executor 尊重 awaitsUser"       "$EXECUTOR" 'ToolBudget.awaitsUserOf(tool)'
 
 echo
 echo "== 静态：失效断言不得复活 =="

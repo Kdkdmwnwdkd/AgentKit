@@ -72,7 +72,18 @@ sealed interface ToolCallOutcome {
          * 失败原因千差万别（审批被拒 / 超时未生效 / 熔断 / 未知工具 / 工具异常），
          * 只记 isError 等于没记。
          */
-        val code: String = "ok"
+        val code: String = "ok",
+        /**
+         * 工具返回的**原始结果**（未经 [formatToolResult] 包装）。
+         *
+         * 为什么要有它：`message.content` 是给模型看的展示文本，前面拼着
+         * "[ok] code=read_ok / message: 已读取 …"。技能脚本要的是文件原文，
+         * 拿展示文本去统计会系统性偏大——真机上 wordcount 报 22 词，
+         * 文件实际只有 13 词，多出来的全是那句「已读取」。
+         *
+         * 只走主成功路径填充；错误路径为 null，消费方需回退到 `message.content`。
+         */
+        val result: com.example.agentkit.core.ToolResult? = null
     ) : ToolCallOutcome
 
     /** 确定未完成、无副作用（只读工具被 kill）。 */
@@ -319,7 +330,7 @@ class RegistryToolExecutor(
         // 会让存储吃紧的手机连「读一下这个文件」都做不到——那不是保护，是不能用。
         //
         // 未注入日志（beforeEffect == null）时直接放行，行为与改造前一致。
-        if (beforeEffect?.invoke(call) == false && !tool.readOnly) {
+        if (beforeEffect?.invoke(call) == false && !ToolBudget.readOnlyOf(tool)) {
             AgentLogger.w("Tool", "日志不可写，拒绝写操作 ${call.name}（只读不受影响）")
             return ToolCallOutcome.Completed(
                 toolMessageOf(
@@ -341,18 +352,18 @@ class RegistryToolExecutor(
             // 其余 CancellationException 原样传播——用户点停止是取消，不是超时。
             // R6：预算按「工具自声明 > 只读/写分档」解析，自声明值夹在安全区间内。
             val budget = ToolBudget.resolve(tool, readOnlyBudgetMs, writeBudgetMs, maxDeclaredBudgetMs)
-            tool.timeoutBudgetMs?.let { declared ->
+            ToolBudget.declaredBudgetOf(tool)?.let { declared ->
                 ToolBudget.warnIfClamped(tool.name, declared, budget)
             }
             // 等用户的工具不加预算：`ask_user` / `plan_propose` 标了 readOnly（确实无副作用），
             // 但它们挂起时是在等人思考，不是卡死。用 90 秒把用户的问题掐掉是纯回归。
             // 这两类工具自己有等待上限（180s / 300s），超时文案也更准确。
-            val result = if (tool.awaitsUser) {
+            val result = if (ToolBudget.awaitsUserOf(tool)) {
                 tool.execute(call.arguments)
             } else {
                 withTimeoutOrNull(budget) { tool.execute(call.arguments) }
                     ?: return timeoutOutcome(
-                        call, tool.name, tool.readOnly, fingerprint, budget,
+                        call, tool.name, ToolBudget.readOnlyOf(tool), fingerprint, budget,
                         System.currentTimeMillis() - start
                     )
             }
@@ -371,7 +382,8 @@ class RegistryToolExecutor(
             ToolCallOutcome.Completed(
                 ToolMessage(call.id, tool.name, call.arguments, text, result.isError, imgUrls),
                 imgUrls,
-                code = result.code
+                code = result.code,
+                result = result
             )
         } catch (cancel: CancellationException) {
             // 取消不是失败：不上计数、不造假结果，直接上抛由树尾闭合补全
@@ -436,7 +448,9 @@ class RegistryToolExecutor(
             )
         }
         AgentLogger.toolResult(toolName, false, costMs, result.message)
-        return ToolCallOutcome.Completed(toolMessageOf(call, result), emptyList(), code = result.code)
+        return ToolCallOutcome.Completed(
+            toolMessageOf(call, result), emptyList(), code = result.code, result = result
+        )
     }
 
     /**
@@ -446,7 +460,7 @@ class RegistryToolExecutor(
      * [ToolRegistry.batchHasMutation] 的未知工具判据一致）。
      */
     override fun onInterrupt(call: ToolCall, descriptor: ToolDescriptor): ToolCallOutcome {
-        val readOnly = registry.get(call.name)?.readOnly ?: true
+        val readOnly = registry.get(call.name)?.let { ToolBudget.readOnlyOf(it) } ?: true
         AgentLogger.w(
             "Tool",
             "onInterrupt：${call.name} 判为 ${if (readOnly) "Interrupted（只读，确定未完成）" else "Unknown（写操作，状态未知）"}"

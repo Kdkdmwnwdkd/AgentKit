@@ -129,7 +129,12 @@ fun main() {
 
     check("B1-8 assets 内置技能由 SkillLoader 显式标为 packaged") {
         val src = read("app/src/main/java/com/example/agentkit/skill/SkillProtocol.kt")
-        assertTrue("SkillLoader 应显式 copy(trust = \"packaged\")", "copy(trust = \"packaged\")" in src)
+        // R7：同时要带上资源目录名——内置技能的 id 是包名式，目录名才是短名，
+        // 用 id 拼 assets 路径会让 entry 读不到（脚本形态静默退化成提示词形态）。
+        assertTrue(
+            "SkillLoader 应显式 copy(trust = \"packaged\", assetDir = id)",
+            "copy(trust = \"packaged\", assetDir = id)" in src
+        )
     }
 
     /* ------------------------- B2 自动备份 ------------------------- */
