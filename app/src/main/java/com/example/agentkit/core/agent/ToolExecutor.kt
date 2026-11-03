@@ -14,6 +14,25 @@ import com.example.agentkit.core.formatToolResult
 import com.example.agentkit.core.isTransientFailureCode
 import com.example.agentkit.core.truncateToolResult
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.withTimeoutOrNull
+
+/**
+ * 单次工具调用的默认预算（R2 三层超时的第二层，毫秒）。
+ *
+ * 为什么分两档而不是一个数：只读调用超时的代价是「浪费一次调用」，写调用超时的
+ * 代价是「不知道改没改」——后者必须给足时间，前者卡着只是在白等。
+ *
+ * 取值依据：
+ *  - 只读 90s：截图/OCR/读大文件/一次网络查询都在秒级，90 秒还没回来基本是卡死；
+ *  - 写 600s：`gradle build`、装 APK、批量写文件都可能跑几分钟，卡太紧会误杀正常任务。
+ *    真正需要更久的长任务应走 `shell_background`（有独立作业通道），而不是让回合干等。
+ *
+ * 注意这是**保底**而不是**精确控制**：`withTimeoutOrNull` 只能取消可挂起的执行，
+ * 若工具内部用阻塞 IO / `runBlocking` 且不响应取消，超时只会停止「等待」，
+ * 后台线程仍会跑完。这也是超时结果必须按「可能已生效」措辞的原因。
+ */
+private const val DEFAULT_READ_ONLY_BUDGET_MS = 90_000L
+private const val DEFAULT_WRITE_BUDGET_MS = 600_000L
 
 /**
  * 单次工具调用的产出（T01，本任务最微妙处，吃透再写）。
@@ -49,6 +68,15 @@ sealed interface ToolCallOutcome {
 
     /** 可能已有副作用（写工具被 kill），状态未知。 */
     data object Unknown : ToolCallOutcome
+
+    /**
+     * 未派发：调用已声明、但执行边界根本没越过（崩在 `ToolDispatched` 落盘之前）。
+     *
+     * 与 [Interrupted] 的区别是判据不同：Interrupted 看「工具有没有副作用」，
+     * 本态看「日志里有没有派发记录」。两者正交，合起来才是完整判据——
+     * 未派发时无论副作用类别，重试都安全，不需要走「先核对」流程。
+     */
+    data object NotDispatched : ToolCallOutcome
 }
 
 /**
@@ -152,7 +180,23 @@ class RegistryToolExecutor(
      * W-11：单条结果字符上限。默认全局 [MAX_TOOL_RESULT_CHARS]；AgentLoop 会按上下文
      * 预算传入更小值（本地 2k 预算 → 2.4k 字符），否则一条大结果单条就撑爆 n_ctx。
      */
-    private val maxResultChars: Int = MAX_TOOL_RESULT_CHARS
+    private val maxResultChars: Int = MAX_TOOL_RESULT_CHARS,
+    /**
+     * R1：越过执行边界前的最后一道问询——返回 false 表示「这一步不能执行」。
+     *
+     * 位置很关键：它在**审批通过之后、真正调用工具之前**。早先放在 executor 之外
+     * （executeOne 开头）时，审批弹窗那段等待也被算进了「已越过执行边界」——
+     * 用户在弹窗上犹豫时进程被杀，重启后会被告知「写操作可能已生效」，
+     * 实际上一次都没跑。放到这里，日志记的才是「真的要动手了」。
+     *
+     * 注入方是 AgentLoop（写回合日志）；测试替身不传即无此关卡，行为与改造前一致。
+     */
+    private val beforeEffect: (suspend (ToolCall) -> Boolean)? = null,
+    /**
+     * R2：单次调用预算（毫秒），按副作用分档。测试注入小值（如 50ms）即可断言超时路径。
+     */
+    private val readOnlyBudgetMs: Long = DEFAULT_READ_ONLY_BUDGET_MS,
+    private val writeBudgetMs: Long = DEFAULT_WRITE_BUDGET_MS
 ) : BatchToolExecutor {
 
     /** 基础契约入口：duplicateInBatch 缺省 false（单发调用无同批前驱）。 */
@@ -247,10 +291,39 @@ class RegistryToolExecutor(
                 )
             }
         }
+        // R1「先落盘再执行」：日志写不进就**不越过执行边界**。
+        //
+        // 只读放行，写操作拒绝。这个不对称是有意的：崩溃时只读调用最多被重放一次
+        // （浪费一次调用），而写操作重放是数据损坏；反过来，因为日志坏掉就一律拒绝，
+        // 会让存储吃紧的手机连「读一下这个文件」都做不到——那不是保护，是不能用。
+        //
+        // 未注入日志（beforeEffect == null）时直接放行，行为与改造前一致。
+        if (beforeEffect?.invoke(call) == false && !tool.readOnly) {
+            AgentLogger.w("Tool", "日志不可写，拒绝写操作 ${call.name}（只读不受影响）")
+            return ToolCallOutcome.Completed(
+                toolMessageOf(
+                    call,
+                    ToolResult.fail(
+                        code = "journal_unavailable",
+                        message = "运行日志写入失败（存储可能已满），为避免同一操作被执行两次，本次写操作未执行。",
+                        hint = "请告知用户清理存储空间后重试；只读工具不受影响，可先用只读方式确认当前状态。"
+                    )
+                ),
+                emptyList()
+            )
+        }
         AgentLogger.toolCall(call.name, call.arguments.toString().take(300))
         return try {
             val start = System.currentTimeMillis()
-            val result = tool.execute(call.arguments)
+            // R2 第二层：工具级预算。null = 本层超时（工具内部自己抛的
+            // TimeoutCancellationException 也会被这里吞成 null，同样按超时处理）；
+            // 其余 CancellationException 原样传播——用户点停止是取消，不是超时。
+            val budget = if (tool.readOnly) readOnlyBudgetMs else writeBudgetMs
+            val result = withTimeoutOrNull(budget) { tool.execute(call.arguments) }
+                ?: return timeoutOutcome(
+                    call, tool.name, tool.readOnly, fingerprint, budget,
+                    System.currentTimeMillis() - start
+                )
             val cost = System.currentTimeMillis() - start
             val imgUrls = result.parts.filterIsInstance<ToolPart.Image>().map { it.url }
             // T04：成功清指纹，失败累加计数；W-8：瞬时故障（服务未就绪等）三不——
@@ -285,6 +358,51 @@ class RegistryToolExecutor(
                 emptyList()
             )
         }
+    }
+
+    /**
+     * R2 第二层超时的产出。
+     *
+     * 仍然是 [ToolCallOutcome.Completed]——超时是有确定终态的「本次等待结束」，
+     * 必须回喂模型（T02 自纠语义），而不是让整轮失败。区别只在文案与熔断计数：
+     *
+     *  - **只读**：确定没有副作用，`transient = true`（不毒化指纹），文案允许直接重试；
+     *  - **写操作**：可能已经改了东西，按失败计数（重复超时会被熔断挡住），
+     *    文案要求先核对再决定——与取消路径 `cancelled_unknown` 同一套措辞逻辑。
+     */
+    private fun timeoutOutcome(
+        call: ToolCall,
+        toolName: String,
+        readOnly: Boolean,
+        fingerprint: String,
+        budgetMs: Long,
+        costMs: Long
+    ): ToolCallOutcome.Completed {
+        val seconds = budgetMs / 1000
+        // 只读超时是环境性的（服务没起、网络卡住），与 service_not_ready 同类：不计入熔断。
+        // 写超时相反——同一个写调用连续超时还让它重试，就是在拿数据赌运气。
+        failureGuard.onExecuted(fingerprint, failed = true, transient = readOnly)
+        AgentLogger.w(
+            "Tool",
+            "工具超时 $toolName：${seconds}s（${if (readOnly) "只读" else "写操作"}，实际等待 ${costMs}ms）"
+        )
+        val result = if (readOnly) {
+            ToolResult.fail(
+                code = "tool_timeout",
+                message = "工具「$toolName」执行超时（${seconds} 秒），已停止等待。",
+                hint = "只读调用没有副作用，可以直接重试；若连续超时说明该工具当前不可用，请换用其他工具或告知用户。"
+            )
+        } else {
+            ToolResult.fail(
+                code = "tool_timeout_unknown",
+                message = "工具「$toolName」执行超时（${seconds} 秒），已停止等待。" +
+                    "这是写操作，可能已经产生副作用，当前状态未知。",
+                hint = "不要直接重试。先用只读方式核对结果（读文件 / 查状态 / 看进程），" +
+                    "确认没有生效再决定是否重做；无法确认时告知用户。"
+            )
+        }
+        AgentLogger.toolResult(toolName, false, costMs, result.message)
+        return ToolCallOutcome.Completed(toolMessageOf(call, result), emptyList())
     }
 
     /**

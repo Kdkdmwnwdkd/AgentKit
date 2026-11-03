@@ -2,6 +2,7 @@ package com.example.agentkit.core.agent
 
 import com.example.agentkit.core.AssistantMessage
 import com.example.agentkit.core.LLMClient
+import com.example.agentkit.core.ToolApproval
 import com.example.agentkit.core.ToolRegistry
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -20,11 +21,13 @@ import kotlinx.coroutines.withTimeout
  * 全文都灌进主对话，之后每一轮都要重新计费、还挤掉真正的任务信息。
  * 子代理把这段「脏活」关在**自己的消息栈**里，只把一段结论交回来。
  *
- * ## 三条边界（都写在代码里，不只是注释）
- *  1. **只读**：工具表按 [SubAgentLogic.READ_ONLY_TOOLS] 过滤，模型看不到写工具；
+ * ## 四条边界（都写在代码里，不只是注释）
+ *  1. **无副作用**：工具表按 [SubAgentLogic.NO_SIDE_EFFECT_TOOLS] 过滤，模型看不到写工具；
  *  2. **不递归**：白名单里没有 `spawn_agents`，子代理无法再派子代理；
  *  3. **有预算**：单任务超时 [timeoutMs]、最多 [maxSteps] 步、上下文 [budgetTokens]——
- *     子代理跑飞不会拖垮整轮任务。
+ *     子代理跑飞不会拖垮整轮任务；
+ *  4. **审批可达（R4）**：即使白名单将来放进了需要确认的工具，子代理也带得动审批回调，
+ *     不会出现「主代理弹窗、子代理静默放行」的两套标准。
  *
  * 并发用「分批 + 批内并行」而不是一次性全并发：手机端同时打 3 个请求最容易撞 429，
  * 分批能让前一批的 Key 冷却在下一批生效。
@@ -37,7 +40,16 @@ class SubAgentRunner(
     /** 单个子代理最多几步工具往返。 */
     private val maxSteps: Int = 8,
     /** 单个子代理的上下文预算（token）。 */
-    private val budgetTokens: Int = 12_000
+    private val budgetTokens: Int = 12_000,
+    /**
+     * R4：子代理的审批回调（null = 不弹审批）。
+     *
+     * 当前白名单只含无副作用工具，所以传不传都「看起来一样」；但这是**今天**的事实，
+     * 不是**契约**。R4 之前子代理构造 [RealAgentLoop] 时压根没这个参数，
+     * 白名单一旦加进任何需要确认的工具，就是一条静默旁路。传上去，让安全属性
+     * 由「白名单恰好没放危险工具」变成「执行器本身会问」。
+     */
+    private val approval: ToolApproval? = null
 ) {
 
     /**
@@ -76,6 +88,8 @@ class SubAgentRunner(
                     maxSteps = maxSteps,
                     maxParallelTools = 2,
                     contextBudgetTokens = budgetTokens,
+                    // R4：审批必须穿过子代理边界——见构造参数注释
+                    approval = approval,
                     // 白名单只有十几个工具，不能被「小模型核心集」再裁掉——
                     // 子代理拿不到 read_file 就等于瞎了
                     forceFullTools = true
@@ -111,7 +125,7 @@ class SubAgentRunner(
     private fun buildRegistry(): ToolRegistry {
         val sub = ToolRegistry()
         baseRegistry().list().forEach { tool ->
-            if (tool.name in SubAgentLogic.READ_ONLY_TOOLS) sub.register(tool)
+            if (tool.name in SubAgentLogic.NO_SIDE_EFFECT_TOOLS) sub.register(tool)
         }
         return sub
     }

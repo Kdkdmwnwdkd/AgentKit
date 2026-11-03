@@ -49,6 +49,19 @@ class McpToolAdapter(
      */
     override val readOnly: Boolean = false
 
+    /**
+     * R4 审批收口：外部 MCP 工具**必须**走用户确认。
+     *
+     * 修前这里是默认的 `false`——`readOnly = false` 只影响串行调度，
+     * 审批判据看的是 `needsApproval`，于是「外部服务器提供的工具」可以不经确认
+     * 直接执行，这是三条旁路里最宽的一条（服务器可能做任何事，参数里可能带用户数据）。
+     *
+     * 代价是每次调用都弹窗。这个代价是故意的：MCP 服务器由用户手动配置，
+     * 但配置之后 Agent 会自己决定何时调用——「我信任这个服务器」和
+     * 「我同意这一次把这段内容发出去」是两件事。
+     */
+    override val needsApproval: Boolean = true
+
     override val systemPrompt: String =
         "这是外部 MCP 工具，参数必须严格符合其 JSON Schema；调用失败时先读错误信息修正参数，" +
             "不要原样重复调用。"

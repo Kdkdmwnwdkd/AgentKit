@@ -18,6 +18,8 @@ import com.example.agentkit.core.ToolMessage
 import com.example.agentkit.core.ToolRegistry
 import com.example.agentkit.core.ToolResult
 import com.example.agentkit.core.UserMessage
+import com.example.agentkit.core.agent.journal.ToolSettleStatus
+import com.example.agentkit.core.agent.journal.TurnJournal
 import com.example.agentkit.core.llm.ChatStreamEvent
 import com.example.agentkit.core.Prompt
 import com.example.agentkit.core.PromptAssembler
@@ -33,7 +35,19 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.atomic.AtomicBoolean
+
+/**
+ * R2 第一层超时：单次 LLM 调用（一次 `streamChat` 收集）在预算内没有完成。
+ *
+ * 为什么要有独立类型：`withTimeoutOrNull` 吞掉超时后必须给重试层一个**明确不可重试**
+ * 的信号。若退回 `else -> true` 的默认判定，一次 300 秒的卡死会被重试 3 次，
+ * 用户要干等 20 分钟才看到报错——那正是「不白等」要修的东西。
+ */
+class LlmCallTimeoutException(val timeoutMs: Long) : RuntimeException(
+    "LLM 调用超时：${timeoutMs / 1000} 秒内没有完成（连接可能已挂死）"
+)
 
 /**
  * [AgentLoop] 的默认实现（T01）：回合主循环——规划 -> 调工具 -> 回填 -> 再规划，
@@ -93,7 +107,13 @@ import java.util.concurrent.atomic.AtomicBoolean
  *   429 限流序列 10s/30s/60s 需 3 次重试才走得完，2 次会在第 3 次 429 后直接失败）。
  * @param maxHistoryMessages 上下文滑动窗口上限（默认 40）。
  * @param approval 危险工具审批回调（null = 关闭）。
- * @param checkpoint 检查点回调（每批消息变更后调用，断线/被杀后可恢复）。
+ * @param checkpoint 界面投影回调（每批消息变更后调用）。**不是恢复依据**——
+ *   它拿到的是一份内存列表快照，进程被杀时最后一次快照已经丢了；
+ *   崩溃恢复只认 [journal]。
+ * @param journal 回合日志（R1，null = 不留恢复依据，行为与改造前一致）。
+ *   非 null 时每步按「模型响应落盘 → 派发落盘 → 执行 → 结果落盘 → 步关闭」写盘，
+ *   进程在工具执行窗口被杀，重启后由 [com.example.agentkit.core.agent.journal.RunJournalRepair]
+ *   判定「越没越过执行边界」，据此决定补「可安全重试」还是「可能已生效，先核对」。
  * @param memoryProvider 记忆摘要提供者（null = 关闭）。
  * @param onEvent 过程事件回调（null = 关闭，保持旧行为）。
  * @param shouldContinue 每轮结束复查的续跑钩子（null = 关闭；stop() 与之并列）。
@@ -138,6 +158,8 @@ class RealAgentLoop(
     private val keepRecentImages: Int = ContextBudget.DEFAULT_KEEP_IMAGES,
     private val approval: ToolApproval? = null,
     private val checkpoint: ((List<ChatMessage>) -> Unit)? = null,
+    /** R1：回合日志（null = 不留恢复依据，harness 与无状态调用走这条）。 */
+    private val journal: TurnJournal? = null,
     memoryProvider: (() -> String)? = null,
     private val onEvent: ((AgentEvent) -> Unit)? = null,
     private val shouldContinue: (() -> Boolean)? = null,
@@ -176,7 +198,30 @@ class RealAgentLoop(
     private val rateLimitBackoff: suspend (attempt: Int, retryAfterMs: Long) -> Unit =
         RetryBackoffPolicy.networkAwareRateLimit(rateLimitPlan, networkRecovery),
     private val retryBackoff: suspend (attempt: Int) -> Unit =
-        RetryBackoffPolicy.networkAware(backoffPlan, networkRecovery)
+        RetryBackoffPolicy.networkAware(backoffPlan, networkRecovery),
+    /**
+     * R2 第一层：单次 LLM 调用的上限（毫秒，默认 300 秒）。
+     *
+     * 流式响应没有「整通超时」（[com.example.agentkit.core.llm.LlmHttp] 的 `callTimeout = 0`），
+     * 长回答可以跑几分钟，按整通计时会误杀。这里卡的是**一次调用**的上限：
+     * 300 秒还没结束，基本是连接挂死而不是在生成。
+     *
+     * 端侧模型（provider id 以 `local-` 开头）自动放宽到 3 倍：手机上跑 7B 生成
+     * 两千 token 确实要几分钟，用云端的尺子量它会天天误杀。
+     */
+    private val llmCallTimeoutMs: Long = 300_000L,
+    /**
+     * R2 第三层：单个回合的总预算（毫秒，默认 30 分钟）。
+     *
+     * 与 [maxSteps] 互补：步数限制防「同参打转」，时间限制防「每步都很慢」——
+     * 60 步 × 每步 30 秒就是半小时，用户在旁边看着屏幕不动，只会以为卡死了。
+     *
+     * 走**软截止**而不是 `withTimeout` 硬杀：到点后在步边界优雅收尾，补一条
+     * 「已暂停，回复继续」的助手消息。硬杀会抛 `TimeoutCancellationException`，
+     * 那是 `CancellationException` 的子类，会被当成「用户点停止」走树尾闭合，
+     * 用户看到的是一堆「已取消」而不是一句人话。
+     */
+    private val turnBudgetMs: Long = 30 * 60 * 1000L
 ) : AgentLoop {
 
     /**
@@ -272,6 +317,44 @@ class RealAgentLoop(
         images: List<String> = emptyList(),
         priorMessages: List<ChatMessage> = emptyList()
     ): List<ChatMessage> {
+        // 未注入日志：直接跑，行为与改造前逐字节一致（harness 与子代理走这条）。
+        val j = journal ?: return runTurnBody(userInput, images, priorMessages, null)
+        val turn = j.begin(newTurnId())
+        var reason = TurnJournal.REASON_COMPLETED
+        try {
+            return runTurnBody(userInput, images, priorMessages, turn)
+        } catch (cancel: CancellationException) {
+            reason = TurnJournal.REASON_CANCELLED
+            throw cancel
+        } catch (e: Throwable) {
+            reason = TurnJournal.REASON_FAILED
+            throw e
+        } finally {
+            // NonCancellable：取消路径上直接写会立刻再抛一次，日志就断在最后一步。
+            // 收尾本身很快（一次 fsync），代价可以接受。
+            withContext(NonCancellable) {
+                turn.turnClosed(reason)
+                j.prune()
+            }
+        }
+    }
+
+    /** 回合 ID：时间序（便于 prune 按名排序）+ 随机后缀（同毫秒并发也不撞）。 */
+    private fun newTurnId(): String =
+        "${System.currentTimeMillis().toString(36)}-${java.util.UUID.randomUUID().toString().take(8)}"
+
+    /**
+     * [runTurn] 的回合体（包一层是为了让日志的「开/关」包住所有出口，
+     * 包括三个正常 return 与两条异常路径）。
+     *
+     * @param turn 本回合的日志句柄，null = 不记录。
+     */
+    private suspend fun runTurnBody(
+        userInput: String,
+        images: List<String>,
+        priorMessages: List<ChatMessage>,
+        turn: TurnJournal.Turn?
+    ): List<ChatMessage> {
         val loopStart = System.currentTimeMillis()
         // 内核暴露（core/KernelExposure）：按能力档位选工具面——W-102 起云端与端侧都只默认
         // 激活 file 组（+ 常驻 misc），其余靠 `__use_tools` 开。开过的组由元工具就地写回
@@ -303,9 +386,28 @@ class RealAgentLoop(
         fun turnResult(): List<ChatMessage> = messages.drop(priorMessages.size)
         checkpoint?.invoke(messages)
 
-        repeat(maxSteps) {
+        repeat(maxSteps) { step ->
             // T05：每轮开始复查取消——UI 点「停止」后 ≤1 轮内退出
             currentCoroutineContext().ensureActive()
+            // R2 第三层：回合总预算软截止。只在**步边界**判，不在工具执行中途打断——
+            // 中途硬杀会把「工具可能已生效」的状态留给用户，比多跑一步更糟。
+            // 单步过长由第二层（工具级预算）负责，两层各管各的时间尺度。
+            val elapsed = System.currentTimeMillis() - loopStart
+            if (elapsed > turnBudgetMs) {
+                AgentLogger.w(
+                    "AgentLoop",
+                    "回合超时：已运行 ${elapsed}ms（预算 ${turnBudgetMs}ms），在第 $step 步前优雅收尾"
+                )
+                hooks.beforeStop()
+                messages.add(
+                    AssistantMessage(
+                        "⏱ 本次任务已连续运行 ${turnBudgetMs / 60_000} 分钟，先停在这里（防止一直占着设备）。\n" +
+                            "已完成的工作和结果都保留着，回复「继续」即可接着做；" +
+                            "如果某一步特别慢，可以把那件事拆小一点再让我做。"
+                    )
+                )
+                return turnResult()
+            }
             // 每轮重算工具面：上一步若调了 __use_tools，激活的组要立刻体现在下一轮请求里。
             // scopedRegistry 仍按暴露面收紧执行侧——被裁工具在此视图内「查无此工具」，
             // 走 T02 未知工具路径并提示先用 __use_tools，避免模型靠猜名字绕过裁剪。
@@ -349,15 +451,22 @@ class RealAgentLoop(
                 return turnResult()
             }
 
+            // R1「先落盘再执行」：把「模型声明了哪些调用」写进日志**之后**才允许执行。
+            // 顺序反了的话，进程在这两条语句之间被杀就无法区分「没跑」与「跑了但没记」，
+            // 只能保守假设全部可能已生效——每个卡死的回合都会退化成一次人工核对。
+            turn?.assistantCommitted(step, resp.toolCalls)
+
             // T01 三段式之执行 + commit：本批工具执行（T03 并发判据在 executor/loop 协作下生效）
             val stepImages = mutableListOf<String>()
             val results = try {
-                executeBatch(resp.toolCalls, stepImages, turnRegistry)
+                executeBatch(resp.toolCalls, stepImages, turnRegistry, turn, step)
             } catch (cancel: CancellationException) {
                 // T05 树尾闭合：不信任取消时 execute() 的返回值——工具被 kill 后可能返回假成功。
                 // 在 NonCancellable 内给本 Assistant 里所有**未配对**的 ToolCall 补错误 ToolResult，
                 // 保证「已 commit 的 ToolCall 必有配对 ToolResult」，再重抛取消。
-                withContext(NonCancellable) { closePendingToolResults(resp.toolCalls, messages, turnRegistry) }
+                withContext(NonCancellable) {
+                    closePendingToolResults(resp.toolCalls, messages, turnRegistry, turn, step)
+                }
                 throw cancel
             }
             // 注：ToolExecutionFailedException 不在此捕获——回合级失败语义就是
@@ -371,6 +480,9 @@ class RealAgentLoop(
             // W-10：压缩不再就地改 messages（旧实现 maybeCompact 会删掉 UI 已展示的工具卡片，
             // 且在「刚丢完又新增」之间来回抖动）——改为下一次请求时按预算构建只读视图，
             // 见 buildRequestMessages。此处保留 checkpoint，UI/落盘仍拿到完整历史。
+
+            // R1：本步所有调用都已应答，关闭该步。修复器据此不再往这个步里补结果。
+            turn?.stepClosed(step)
 
             // T05：每轮结束再复查一次（工具批可能执行很久，结束时 UI 可能已点停止）
             currentCoroutineContext().ensureActive()
@@ -451,7 +563,9 @@ class RealAgentLoop(
     private suspend fun executeBatch(
         calls: List<ToolCall>,
         images: MutableList<String>,
-        turnRegistry: ToolRegistry
+        turnRegistry: ToolRegistry,
+        turn: TurnJournal.Turn?,
+        step: Int
     ): List<ToolMessage> {
         val seenFingerprints = HashSet<String>()
         val duplicateFlags = calls.map { call ->
@@ -477,12 +591,15 @@ class RealAgentLoop(
             "AgentLoop",
             "本批 ${calls.size} 个调用：hasMutation=$hasMutation（${if (hasMutation) "串行" else "并行"}）"
         )
-        val executor = toolExecutor(turnRegistry)
+        // R1：带上 turn/step——执行器要在审批之后、真正动手之前记「越过执行边界」
+        val executor = toolExecutor(turnRegistry, turn, step)
         return if (hasMutation) {
             // 含写整批串行：单协程顺序执行，直接写 images 无并发问题；顺序确定，
             // 便于日志审计与用户预期
             calls.mapIndexed { i, call ->
-                executeOne(executor, call, descriptors[i], duplicateFlags[i], images).message
+                executeOne(
+                    executor, call, descriptors[i], duplicateFlags[i], images, turn, step
+                ).message
             }
         } else {
             // 全批只读：并行（分块限流，块间仍保序；块内 awaitAll 保序）
@@ -498,7 +615,10 @@ class RealAgentLoop(
                         chunk.map { (i, call) ->
                             async {
                                 val localImages = mutableListOf<String>()
-                                executeOne(executor, call, descriptors[i], duplicateFlags[i], localImages) to localImages
+                                executeOne(
+                                    executor, call, descriptors[i], duplicateFlags[i], localImages,
+                                    turn, step
+                                ) to localImages
                             }
                         }.awaitAll()
                             .onEach { (_, localImages) -> images.addAll(localImages) }
@@ -525,7 +645,9 @@ class RealAgentLoop(
         call: ToolCall,
         descriptor: ToolDescriptor?,
         duplicateInBatch: Boolean,
-        images: MutableList<String>
+        images: MutableList<String>,
+        turn: TurnJournal.Turn?,
+        step: Int
     ): ToolCallOutcome.Completed {
         onEvent?.invoke(AgentEvent.ToolStarted(call))
         val outcome = try {
@@ -546,6 +668,13 @@ class RealAgentLoop(
         if (outcome is ToolCallOutcome.Completed) {
             images.addAll(outcome.images)
             onEvent?.invoke(AgentEvent.ToolFinished(outcome.message))
+            // R1：有结局就落盘。业务失败也算「有结局」——日志层只关心「这条调用还会不会被补」，
+            // 失败原因由 ToolMessage 携带，不进日志（日志是恢复依据，不是排障全文）。
+            turn?.toolSettled(
+                step,
+                call.id,
+                if (outcome.message.isError) ToolSettleStatus.FAILED else ToolSettleStatus.SUCCEEDED
+            )
             return outcome
         }
         // 防御：execute() 契约规定只返回 Completed（业务失败也在内）。若实现违规
@@ -573,7 +702,9 @@ class RealAgentLoop(
     private suspend fun closePendingToolResults(
         calls: List<ToolCall>,
         messages: MutableList<ChatMessage>,
-        turnRegistry: ToolRegistry
+        turnRegistry: ToolRegistry,
+        turn: TurnJournal.Turn?,
+        step: Int
     ) {
         val paired = messages.filterIsInstance<ToolMessage>().mapTo(HashSet()) { it.id }
         val executor = toolExecutor(turnRegistry)
@@ -585,6 +716,10 @@ class RealAgentLoop(
             val msg = interruptToolMessage(call, verdict)
             messages.add(msg)
             onEvent?.invoke(AgentEvent.ToolFinished(msg))
+            // R1：取消也要落终态。否则重启后修复器看到「已派发、无结果」，
+            // 会把它判成 OUTCOME_UNKNOWN——用户明明点了停止，下一轮却被要求「先核对」。
+            // 执行层已经给出判定（只读确定未完成 / 写操作结局未知），日志照抄即可。
+            turn?.toolSettled(step, call.id, ToolSettleStatus.fromOutcome(verdict))
             filled++
         }
         if (filled > 0) {
@@ -619,6 +754,17 @@ class RealAgentLoop(
                 )
             )
 
+            // 未越过执行边界：无论工具是否有副作用，都不可能产生效果，可直接重试。
+            // 与 Interrupted 分开是必要的——把这种情况也说成"先确认"，会让模型白问一轮。
+            is ToolCallOutcome.NotDispatched -> toolMessageOf(
+                call,
+                ToolResult.fail(
+                    code = "not_dispatched",
+                    message = "该调用尚未开始执行就被中断，没有产生任何效果。",
+                    hint = "可以安全地重新调用 ${call.name}。"
+                )
+            )
+
             is ToolCallOutcome.Completed -> verdict.message
         }
 
@@ -634,17 +780,28 @@ class RealAgentLoop(
      */
     private suspend fun chatOnce(messages: List<ChatMessage>, exposure: KernelExposure.Plan): AssistantMessage {
         var completed: AssistantMessage? = null
-        // 发给 LLM 的工具定义用**本轮**暴露面（默认 file 组 + 元工具，均含元工具）。
-        // 与系统提示同源的部分只在首轮一致；后续轮次因 __use_tools 启用新组而扩大，
-        // 新组的用法由工具 description 自解释，系统提示不再重拼（保 KV 前缀稳定）。
-        llmProvider().streamChat(messages, exposure.visible).collect { event ->
-            when (event) {
-                is ChatStreamEvent.TextDelta -> onTextDelta?.invoke(event.text)
-                // 功能五（P1-9）：推理过程增量与正文分流上抛（UI 折叠块实时渲染），
-                // 同样不进历史——进历史的只有 Completed 整条（message.reasoning）
-                is ChatStreamEvent.ReasoningDelta -> onReasoningDelta?.invoke(event.text)
-                is ChatStreamEvent.Completed -> completed = event.message
+        // R2 第一层：整次「收集一条完整回答」的预算。端侧放宽到 3 倍，见构造参数注释。
+        val budget = if (llmProvider().id.startsWith("local-")) llmCallTimeoutMs * 3 else llmCallTimeoutMs
+        val streamFinished = withTimeoutOrNull(budget) {
+            // 发给 LLM 的工具定义用**本轮**暴露面（默认 file 组 + 元工具，均含元工具）。
+            // 与系统提示同源的部分只在首轮一致；后续轮次因 __use_tools 启用新组而扩大，
+            // 新组的用法由工具 description 自解释，系统提示不再重拼（保 KV 前缀稳定）。
+            llmProvider().streamChat(messages, exposure.visible).collect { event ->
+                when (event) {
+                    is ChatStreamEvent.TextDelta -> onTextDelta?.invoke(event.text)
+                    // 功能五（P1-9）：推理过程增量与正文分流上抛（UI 折叠块实时渲染），
+                    // 同样不进历史——进历史的只有 Completed 整条（message.reasoning）
+                    is ChatStreamEvent.ReasoningDelta -> onReasoningDelta?.invoke(event.text)
+                    is ChatStreamEvent.Completed -> completed = event.message
+                }
             }
+            true
+        } ?: false
+        // 超时与「流结束但没给 Completed」是两件事，必须分开报：前者是环境问题，
+        // 后者是供应商违反流式契约——混成一句「超时」会让排查方向跑偏。
+        if (!streamFinished) {
+            AgentLogger.w("LLM", "单次调用超时：${budget}ms（provider=${llmProvider().id}）")
+            throw LlmCallTimeoutException(budget)
         }
         return completed
             ?: throw IllegalStateException("streamChat 未产生 Completed 事件（供应商违反流式契约）")
@@ -766,6 +923,8 @@ class RealAgentLoop(
      * 其余（超时、DNS、连接中断等网络 IO 异常）一律视为可重试。
      */
     private fun isRetryable(e: Throwable): Boolean = when (e) {
+        // R2：一次调用超时说明连接已挂死，重试只会把 300 秒再等一遍（×4 = 20 分钟）。
+        is LlmCallTimeoutException -> false
         // 本地推理失败是确定性的：同一段 prompt + 同一个 native 库，重试只是再失败一次。
         // 走退避重试会让用户干等 3s+10s 才看到一句「出错了」。
         is com.example.agentkit.core.llm.local.LocalInferenceException -> false
@@ -780,7 +939,7 @@ class RealAgentLoop(
      * 即原 `registry`（行为不变）；裁剪时仅含暴露工具，被裁工具走未知工具路径。
      * executorFactory 注入（测试替身）优先级不变，忽略 [reg]。
      */
-    private fun toolExecutor(reg: ToolRegistry): ToolExecutor =
+    private fun toolExecutor(reg: ToolRegistry, turn: TurnJournal.Turn? = null, step: Int = 0): ToolExecutor =
         executorFactory?.invoke() ?: RegistryToolExecutor(
             reg,
             failureGuard,
@@ -788,7 +947,9 @@ class RealAgentLoop(
             hooks,
             // W-11：结果上限与上下文预算对齐——本地 2k 预算下 24k 字符的一条结果
             // 单条就撑爆 n_ctx，且当前步不可丢，压缩救不回来
-            maxResultChars = ContextBudget.toolResultLimitChars(llmProvider().id, contextBudgetTokens)
+            maxResultChars = ContextBudget.toolResultLimitChars(llmProvider().id, contextBudgetTokens),
+            // R1：把「越过执行边界」的记账点交给执行器——放在审批之后，见 beforeEffect 注释
+            beforeEffect = { call -> turn?.toolDispatched(step, call.id) ?: true }
         )
 
     /**

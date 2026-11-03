@@ -137,14 +137,16 @@ fun main() {
         assertTrue("要求 0 → 1", SubAgentLogic.clampConcurrency(0, 2) == 1)
         assertTrue("任务 1 → 1", SubAgentLogic.clampConcurrency(3, 1) == 1)
     }
-    check("白名单只含只读工具") {
+    check("白名单只含无副作用工具") {
         val mustHave = listOf("read_file", "web_search", "ui_tree", "ocr_image")
-        mustHave.forEach { assertTrue("缺 $it", it in SubAgentLogic.READ_ONLY_TOOLS) }
+        mustHave.forEach { assertTrue("缺 $it", it in SubAgentLogic.NO_SIDE_EFFECT_TOOLS) }
         val mustNot = listOf(
             "write_file", "edit_file", "shell_run", "ui_tap", "app_install",
-            "app_uninstall", "spawn_agents", "plan_propose"
+            "app_uninstall", "spawn_agents", "plan_propose",
+            // R4：可 POST 任意内容到任意地址 = 数据外泄通道，不属于「无副作用」
+            "http_request"
         )
-        mustNot.forEach { assertTrue("不应包含 $it", it !in SubAgentLogic.READ_ONLY_TOOLS) }
+        mustNot.forEach { assertTrue("不应包含 $it", it !in SubAgentLogic.NO_SIDE_EFFECT_TOOLS) }
     }
     check("系统提示强调只读与结论格式") {
         val prompt = SubAgentLogic.systemPrompt("查定义")

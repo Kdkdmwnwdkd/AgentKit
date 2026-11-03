@@ -157,6 +157,8 @@ import com.example.agentkit.core.agent.PlanBroker
 import com.example.agentkit.tools.SubAgentTool
 import com.example.agentkit.core.agent.SubAgentRunner
 import com.example.agentkit.core.agent.TitleLogic
+import com.example.agentkit.core.agent.journal.RunJournal
+import com.example.agentkit.core.agent.journal.TurnJournal
 import com.example.agentkit.core.text.MentionLogic
 import com.example.agentkit.core.text.TranslateLogic
 import com.example.agentkit.core.workspace.FileBackupStore
@@ -420,6 +422,27 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
      * B 批：Agent 长任务的运行态存储（用于进程被杀后的恢复提示）。
      */
     private val agentRunStateStore = AgentRunStateStore(File(app.filesDir, "agent_run_state.json"))
+
+    /**
+     * R1：回合日志。目录 `filesDir/run-journal`，只保留最近 20 个回合。
+     *
+     * 与 [agentRunStateStore] 的分工：那个记「整个任务跑到第几步」，给用户看进度；
+     * 这个记「本回合每个工具调用越没越过执行边界」，给恢复逻辑判「能不能重放」。
+     * 前者丢失只是提示不准，后者丢失会导致写操作被执行两次——所以它单独一行一条 fsync。
+     */
+    private val runJournal = RunJournal(File(app.filesDir, "run-journal"))
+
+    /** 回合日志的运行时门面（写失败降级，不拖垮回合）。 */
+    private val turnJournal = TurnJournal(runJournal)
+
+    /**
+     * 上次进程被杀留下的孤儿调用说明，**只注入下一轮请求一次**。
+     *
+     * 不落库：它是恢复期的临时上下文，写进会话会在用户切分支/导出时变成一段
+     * 出现在错误位置的助手发言。用完即清（见 [send]）。
+     */
+    @Volatile
+    private var pendingRecoveryNote: String? = null
 
     /**
      * B 批：上次任务被系统中断时的提示语（启动时对账得到，非 null 则展示一次）。
@@ -1078,7 +1101,11 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
             SubAgentTool(
                 SubAgentRunner(
                     llmProvider = { buildMainClient() },
-                    baseRegistry = { this }
+                    baseRegistry = { this },
+                    // R4：审批穿过子代理边界（白名单当前无副作用工具，但不能再依赖这个巧合）。
+                    // 用 lambda 间接引用而不是直接传值：registry 的初始化早于 approvalHandler
+                    // （属性按声明顺序初始化），直接取值会捕到 null；lambda 在真正弹窗时才读。
+                    approval = { tool, args -> approvalHandler(tool, args) }
                 )
             )
         )
@@ -1119,6 +1146,9 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         runCatching {
             agentRunStateStore.reconcile()?.let { _interruptedNotice.value = it.note }
         }
+        // R1：回合日志对账——比上面那条更细一层：它能说清「哪个写操作可能已经生效」，
+        // 而不只是「上次没跑完」。两者都写 interruptedNotice，先到的优先（运行态那句更完整）。
+        runCatching { recoverInterruptedJournal() }
         if (skillsSnapshot.isNotEmpty()) {
             // use_skill 工具的 systemPrompt 会被 AgentLoop 自动拼进系统提示（利用工具自带提示特性）
             // 用 skillsProvider 动态感知导入/卸载/授权的技能变化
@@ -1151,6 +1181,59 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         // L8/L9：首屏即有内容可看
         refreshLogs()
         refreshMemories()
+    }
+
+    /**
+     * R1：启动对账——扫描上次进程被杀留下的未闭合回合，把孤儿调用变成可读的提示。
+     *
+     * 判据来自日志事实而非猜测：`OUTCOME_UNKNOWN` = 已越过执行边界但没记到结果，
+     * 说明工具**可能已经生效**；`NOT_DISPATCHED` = 声明了但没派发，重试绝对安全。
+     * 这个两轴区分是本次改造的核心——只按「工具有没有副作用」判，会让一个根本没启动的
+     * `rm` 也走一遍「先核对」，白烧一轮；只按「日志有没有记录」判，又会让已生效的写操作被重放。
+     *
+     * 全部包在 runCatching 里：启动阶段任何异常都不该阻止 App 起来（日志坏了就退化成旧行为）。
+     */
+    private fun recoverInterruptedJournal() {
+        viewModelScope.launch {
+            val results = turnJournal.scanAndRepair()
+            if (results.isEmpty()) return@launch
+            val orphans = results.flatMap { it.orphans }
+            val anomalies = results.flatMap { it.anomalies }
+            if (anomalies.isNotEmpty()) {
+                AgentLogger.w(
+                    "Recovery",
+                    "回合日志不一致 ${anomalies.size} 条：" + anomalies.joinToString("；")
+                )
+            }
+            if (orphans.isEmpty()) return@launch
+            val unknown = orphans.filter { it.mayHaveTakenEffect }
+            val safe = orphans.filterNot { it.mayHaveTakenEffect }
+            AgentLogger.w(
+                "Recovery",
+                "上次回合被中止：${unknown.size} 个写操作结局未知，${safe.size} 个未派发。明细=" +
+                    orphans.joinToString { "${it.toolName}:${it.status}" }
+            )
+            val note = buildString {
+                append("上次执行被系统中止。")
+                if (unknown.isNotEmpty()) {
+                    append("其中 ${unknown.size} 个写操作（")
+                    append(unknown.map { it.toolName }.distinct().joinToString("、"))
+                    append("）可能已经生效——继续之前建议先核对结果，我不会自动重做。")
+                }
+                if (safe.isNotEmpty()) {
+                    if (unknown.isNotEmpty()) append(" 另有 ")
+                    append("${safe.size} 个调用还没开始执行，可以安全重试。")
+                }
+            }
+            pendingRecoveryNote = note
+            // 提示优先级：**有写操作结局未知时，以这一句为准**。
+            // 实测发现的坑：运行态那句「上次任务已被系统中断」先到，把这里挡住，
+            // 用户只看到「可以直接说继续」——而这恰恰是最不能直接继续的情况。
+            // 没有未知写操作时才让位给运行态那句（它带任务标题与步数，更完整）。
+            if (unknown.isNotEmpty() || _interruptedNotice.value == null) {
+                _interruptedNotice.value = note
+            }
+        }
     }
 
     /**
@@ -2177,6 +2260,9 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         llmProvider = { buildMainClient() },
         registry = registry,
         approval = approvalHandler,
+        // R1：回合日志——崩溃恢复的唯一依据。原来 checkpoint 恒为 null（四个断点全是空调用），
+        // 进程在「工具已执行、结果未落盘」时被杀，重进会重放写操作。
+        journal = turnJournal,
         // L9：每轮运行都把当前记忆摘要注入系统提示
         memoryProvider = { memoryStore.summaryForPrompt(12, 1200) },
         // Hotfix2：工具调用过程实时上屏（执行中卡 → 终态卡），
@@ -2973,7 +3059,16 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         // W-46：先把历史摊平（此时当前这句还没落库，天然不含本轮）——loop 每回合只造
         // 「系统提示 + 当前输入」，不带历史就会出现「它 / 继续 / 第二个方案」全失忆
         // （放在 begin 之前：摊平是纯读 store，不需要运行态已置位）
-        val priorMessages = buildPriorMessages(owner)
+        // R1：上次被中止的孤儿调用说明，只注入下一轮请求一次。
+        // 为什么要注入而不是只弹提示：历史里那条 assistant 说了「我来写这个文件」就断了，
+        // 模型下一轮看到这段会自然地说「那我重新执行」——而那次写可能已经生效了。
+        // 不落库是因为它属于恢复期的临时上下文，写进会话会在分支/导出里变成一段错位的发言。
+        val recoveryNote = pendingRecoveryNote?.also { pendingRecoveryNote = null }
+        val priorMessages = if (recoveryNote.isNullOrBlank()) {
+            buildPriorMessages(owner)
+        } else {
+            buildPriorMessages(owner) + AssistantMessage(recoveryNote)
+        }
         // W-54：开场仪式与 regenerate 共用。placeholderDraft=false——用户消息气泡本身
         // 就是「在生成」的占位，不必再造一个空草稿行
         turnRunner.begin(owner, placeholderDraft = false)

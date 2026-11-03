@@ -42,18 +42,22 @@ object SubAgentLogic {
     const val MAX_SUMMARY = 4_000
 
     /**
-     * 子代理可用的**只读**工具白名单。
+     * 子代理可用的**无副作用**工具白名单（R4：原名 `READ_ONLY_TOOLS`）。
      *
-     * 为什么硬限制为只读：
+     * 为什么硬限制：
      *  - 并行执行写操作会互相踩（两个子任务同时改同一个文件 = 谁后写谁赢，且没人知道）；
      *  - 子代理没有 UI 确认通道，写错没人拦；
      *  - 调研/搜索/看界面本来就只需要读——要写就让主代理串行做。
      *
+     * **改名不是措辞洁癖**：`readOnly` 在工具契约里只表示「可并行」，不表示「无外部影响」。
+     * 按 `readOnly` 挑白名单，会把「读起来无害、实际上在往外发数据」的工具放进来。
+     * `http_request` 就是这一类——它可以 POST 任意 body 到任意地址，是标准的数据外泄通道。
+     * R4 把它移出白名单：子代理要发请求，由主代理在审批下代做。
+     *
      * 白名单外的工具名不会被注册进子代理的工具表，模型看不到也就调不到。
      */
-    val READ_ONLY_TOOLS: Set<String> = setOf(
+    val NO_SIDE_EFFECT_TOOLS: Set<String> = setOf(
         "read_file",
-        "http_request",
         "web_search",
         "web_open",
         "web_snapshot",

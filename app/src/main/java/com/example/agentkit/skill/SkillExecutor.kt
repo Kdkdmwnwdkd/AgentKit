@@ -130,8 +130,13 @@ class SkillRuntimeBridge(
         // runBlocking 会卡住这条线程，且 SCRIPT_TIMEOUT 的取消无法中断它——用户不点弹窗
         // 就会永久占住一个线程。这里直接拒绝，让模型回到主对话里走正常审批链路，
         // 是当前架构下唯一不会引入死锁的 fail-closed 做法。
+        //
+        // R4：判据从工具级 `needsApproval` 换成参数级 `needsApprovalFor(args)`。
+        // 差别在 shell_run：`ls` 无副作用、`rm -rf` 有——工具级布尔会把两者一起拒掉，
+        // 技能脚本于是连「看一眼目录」都做不到。参数级判据与主对话走同一套规则
+        // （[com.example.agentkit.core.agent.ShellCommandRules]），不会出现两处口径不一。
         val target = registry.get(name)
-        if (target?.needsApproval == true) {
+        if (target?.needsApprovalFor(obj) == true) {
             return "⛔ 工具 $name 需要用户逐次确认，脚本不能代为调用。" +
                 "请在主对话中直接调用该工具（Agent 会弹出确认框）。"
         }
