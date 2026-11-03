@@ -19,10 +19,16 @@ import java.util.concurrent.atomic.AtomicInteger
  * 再给每个会话套一层引用计数只会让「谁能关会话」的判定分散到两处。
  *
  * ## 与容器的关系
- * 容器（proot）本身就是终端后端的一种（[TerminalBackend.KEY_PROOT]），
- * 所以**容器租约就是本类的 proot 实例**——不另造一套。
- * 这也是「只有三类资源」判据的自然结果：本地模型、终端、容器，
- * 其中终端与容器共用同一套会话机制。
+ * 容器（proot）是终端**后端**的一种（[TerminalBackend.KEY_PROOT]），但容器**会话**
+ * 不归本类管。R8 之前这里写着「容器租约就是本类的 proot 实例——不另造一套」，
+ * 那条推论只在「会话由池创建」时成立，而容器页走的是 `ContainerSession.create` 直连：
+ *
+ * - 池的 `liveSessions()` 数不到容器会话 → 池租约认为「没人在用」；
+ * - 池的 `closeAll()` 也关不掉它 → 空闲回收**看得到却关不掉**。
+ *
+ * 一个有名字但关不掉的租约比没有更坏：观察面会显示「已回收」，而 proot 还在后台跑。
+ * 因此容器改用独立租约 [ContainerLease]（`container:<distroId>`），
+ * 本类只管池内的终端会话（`terminal:user` / `terminal:proot`）。
  *
  * ## 释放的副作用
  * 空闲回收会**关掉该后端上的全部会话**。用户若还持有会话句柄，

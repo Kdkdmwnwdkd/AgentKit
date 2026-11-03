@@ -50,6 +50,8 @@ import com.example.agentkit.core.container.ContainerSession
 import com.example.agentkit.core.container.ProotRunner
 import com.example.agentkit.core.container.RootfsManager
 import com.example.agentkit.core.container.ToolchainInstaller
+import com.example.agentkit.runtime.lease.ContainerLeases
+import com.example.agentkit.runtime.lease.LeaseHandle
 import com.example.agentkit.terminal.TerminalSession
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -533,6 +535,19 @@ private object ContainerSessionHolder {
 
     private val main = android.os.Handler(android.os.Looper.getMainLooper())
     private var session: TerminalSession? = null
+
+    /**
+     * 当前会话对应的发行版 id。
+     *
+     * 之前没有这个字段，`session?.let { return it }` 只要会话还在就直接返回——
+     * 用户在 alpine 里按返回、1 秒宽限期内点进 debian，`pendingKill` 被取消，
+     * 拿到的仍是 alpine 的 shell，界面标题却显示 debian。会话必须与发行版绑定。
+     */
+    private var sessionDistroId: String? = null
+
+    /** 容器租约句柄（R8）：UI 持有期间 activeCount > 0，空闲回收不会动它。 */
+    private var leaseHandle: LeaseHandle? = null
+
     private var refs = 0
     private var pendingKill: Runnable? = null
 
@@ -542,6 +557,11 @@ private object ContainerSessionHolder {
         pendingKill?.let { main.removeCallbacks(it) }
         pendingKill = null
         refs++
+        // 切换发行版：旧会话不能复用（复用的后果是「标题 debian、shell 是 alpine」）
+        if (session != null && sessionDistroId != distro.id) {
+            AgentLogger.i(TAG, "切换发行版 ${sessionDistroId} → ${distro.id}，销毁旧容器会话")
+            destroyNow()
+        }
         session?.let { return it }
 
         startError.value = null
@@ -563,27 +583,52 @@ private object ContainerSessionHolder {
         s.onUpdate = { main.post { updateTick.value++ } }
         s.onExit = { code -> main.post { exitCode.value = code } }
         session = s
+        sessionDistroId = distro.id
         val ok = runCatching { s.start() }.isSuccess
         if (!ok) {
             startError.value = "容器 shell 启动失败（proot 执行失败，可能是 ptrace 受限）"
             AgentLogger.e(TAG, "容器启动失败")
             s.destroy()
             session = null
+            sessionDistroId = null
             refs--
             return null
         }
+        // 会话真正跑起来之后才借租约：借了却拿不到会话，会让 activeCount 虚高，
+        // 空闲回收永远等不到归零（这正是「泄漏检测只报不管」也要单独记一笔的原因）。
+        leaseHandle = ContainerLeases.forDistro(
+            distroId = distro.id,
+            alive = { session?.isAlive == true },
+            destroy = { destroyNow() }
+        ).borrow()
         return s
     }
 
     fun release() {
-        refs--
-        if (refs > 0 || session == null) return
+        refs = (refs - 1).coerceAtLeast(0)
+        if (refs > 0) return
+        if (session == null) {
+            closeLease()
+            return
+        }
         val kill = Runnable {
-            session?.destroy()
-            session = null
+            destroyNow()
             pendingKill = null
         }
         pendingKill = kill
         main.postDelayed(kill, ROTATION_GRACE_MS)
+    }
+
+    /** 销毁会话并归还租约。幂等——空闲回收与 UI 退出都会走到这里。 */
+    private fun destroyNow() {
+        closeLease()
+        session?.destroy()
+        session = null
+        sessionDistroId = null
+    }
+
+    private fun closeLease() {
+        leaseHandle?.close()
+        leaseHandle = null
     }
 }

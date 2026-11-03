@@ -29,6 +29,10 @@
  *  R7-7  技能路径有熔断（同一失败工具反复调会被拦）
  *  R7-8  子代理的工具调用进主回合日志，scope=sub:<标题>
  *  R7-9  主代理路径不受影响（scope 仍是 main，日志结构照旧）
+ *  R7-10 回合日志 NDJSON 导出（一行一对象，可选单回合）
+ *  R7-13 内置技能按资源目录名定位（用包名式 id 会静默退化成提示词形态）
+ *  R7-14 脚本读到文件原文，不是给模型看的包装文本
+ *  R8-1  死循环脚本被指令看门狗中断（线程可回收，不是只放弃等待）
  *
  * 运行：scripts/qa/run-r7-verification.sh
  */
@@ -603,6 +607,26 @@ fun main() = runBlocking {
         val got = bridge.readFile("notes.txt")
         assertEquals("R7-14 必须是原文", "hello world", got)
         assertTrue("R7-14 不得混入 message", !got.contains("已读取"))
+    }
+
+    // —— R8：脚本中断能力 ——
+    //
+    // 这条用例真跑 10 秒死循环，不为快，为的是**验证线程真的退出了**：
+    // 只测「返回 null」是测不出泄漏的——旧实现同样返回 null，但 worker 会永久空转。
+    // 所以断言分两段：结果必须为 null，且中断之后引擎还能继续求值。
+    check("R8-1 死循环脚本被指令看门狗中断，且线程可回收") {
+        val engine = com.example.agentkit.skill.RhinoJsEngine()
+        val t0 = System.currentTimeMillis()
+        val result = engine.eval("(function(){ while(true){} })", emptyMap())
+        val elapsed = System.currentTimeMillis() - t0
+        assertTrue("超时应返回 null（放弃结果、回退提示词形态）", result == null)
+        assertTrue(
+            "应在 8~14 秒内返回（脚本截止 10s），实际 ${elapsed}ms",
+            elapsed in 8_000L..14_000L
+        )
+        // 中断后引擎仍可用：说明脚本线程已经退出，没有把调度器 worker 占死
+        val again = engine.eval("(function(){ return 'alive'; })()", emptyMap())
+        assertEquals("中断后应能继续求值", "alive", again)
     }
 
     println()

@@ -17,10 +17,17 @@
  *  R3-7 泄漏检测：未归还的句柄被记录（只报警不回收）
  *  R3-8 释放失败不影响后续（不抛异常）
  *  R3-9 准入判据：只有「占内存/占进程」且「可回收」的才登记
+ *  R3-10 容器租约按发行版独立，id 形状 container:<distro>
+ *  R3-11 同一发行版返回同一实例（引用计数不分裂）
+ *  R3-12 容器租约持有期间不回收，归零后销毁会话
+ *  R3-13 会话已销毁时不重复调用 destroy
+ *  R3-14 快照给出可读状态（类别 / 标题 / 释放器）
  *
  * 运行：scripts/qa/run-r3-verification.sh
  */
 
+import com.example.agentkit.runtime.lease.ContainerLeases
+import com.example.agentkit.runtime.lease.LeaseKind
 import com.example.agentkit.runtime.lease.LeaseRegistry
 import com.example.agentkit.runtime.lease.LeaseHandle
 import com.example.agentkit.runtime.lease.RuntimeLease
@@ -186,6 +193,60 @@ private fun main2() = runBlocking {
         LeaseRegistry.checkOnce()
         assertTrue("已登记的应回收", registered.releaseCount == 1)
         assertTrue("未登记的不应回收", unregistered.releaseCount == 0)
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* R8：容器会话租约（container:<distro>）                              */
+    /* ------------------------------------------------------------------ */
+
+    check("R3-10 容器租约按发行版独立，id 形状为 container:<distro>") {
+        val a = ContainerLeases.forDistro("r3-alpine", alive = { true }, destroy = {})
+        val b = ContainerLeases.forDistro("r3-debian", alive = { true }, destroy = {})
+        assertTrue("alpine id 应为 container:r3-alpine，实际 ${a.id}", a.id == "container:r3-alpine")
+        assertTrue("两个发行版应是不同租约", a !== b)
+        assertTrue("类别应识别为容器", LeaseKind.of(a.id) == LeaseKind.CONTAINER)
+        // terminal:proot 与 container:alpine 是两批不同的进程，不能归到同一类
+        assertTrue("终端租约不应被认成容器", LeaseKind.of("terminal:proot") == LeaseKind.TERMINAL)
+    }
+
+    check("R3-11 同一发行版返回同一实例（引用计数不分裂）") {
+        val first = ContainerLeases.forDistro("r3-shared", alive = { true }, destroy = {})
+        val second = ContainerLeases.forDistro("r3-shared", alive = { true }, destroy = {})
+        assertTrue("同一 distro 应返回同一实例，否则两套计数各自归零", first === second)
+    }
+
+    check("R3-12 容器租约持有期间不回收，归零后销毁会话") {
+        var destroyed = 0
+        val lease = ContainerLeases.forDistro("r3-idle", alive = { true }, destroy = { destroyed++ })
+        val handle = lease.borrow()
+        assertTrue("借用后持有者应为 1，实际 ${lease.activeCount}", lease.activeCount == 1)
+        LeaseRegistry.idleTimeoutMs = 0L
+        LeaseRegistry.checkOnce()
+        assertTrue("有人持有时不应销毁，实际 $destroyed 次", destroyed == 0)
+        handle.close()
+        assertTrue("归还后持有者应为 0，实际 ${lease.activeCount}", lease.activeCount == 0)
+        LeaseRegistry.checkOnce()
+        assertTrue("空闲后应销毁一次，实际 $destroyed 次", destroyed == 1)
+    }
+
+    check("R3-13 会话已销毁时不重复调用 destroy（回收器定期空转）") {
+        var destroyed = 0
+        var alive = true
+        ContainerLeases.forDistro("r3-dead", alive = { alive }, destroy = { destroyed++; alive = false })
+        LeaseRegistry.idleTimeoutMs = 0L
+        LeaseRegistry.checkOnce()   // 第一次：会话存活 → 销毁
+        LeaseRegistry.checkOnce()   // 第二次：已死 → 必须跳过
+        assertTrue("只应销毁一次，实际 $destroyed 次", destroyed == 1)
+    }
+
+    check("R3-14 快照给出可读状态（类别 / 标题 / 释放器）") {
+        val lease = ContainerLeases.forDistro("r3-snap", alive = { true }, destroy = {})
+        val snap = LeaseRegistry.snapshot().firstOrNull { it.id == lease.id }
+        assertTrue("快照应包含容器租约", snap != null)
+        requireNotNull(snap)
+        assertTrue("类别应为容器，实际 ${snap.kind}", snap.kind == LeaseKind.CONTAINER)
+        assertTrue("应已注册释放器（否则回收器会跳过）", snap.releaserRegistered)
+        assertTrue("标题应含发行版，实际 ${snap.title}", snap.title.contains("r3-snap"))
     }
 }
 
