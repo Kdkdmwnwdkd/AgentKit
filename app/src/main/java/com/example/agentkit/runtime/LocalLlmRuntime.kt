@@ -11,6 +11,9 @@ import com.example.agentkit.core.ModelInfo
 import com.example.agentkit.core.PingResult
 import com.example.agentkit.core.llm.ChatStreamEvent
 import com.example.agentkit.core.llm.local.LocalLlamaEngine
+import com.example.agentkit.runtime.lease.LeaseHandle
+import com.example.agentkit.runtime.lease.LeaseRegistry
+import com.example.agentkit.runtime.lease.LocalLlmLease
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -22,7 +25,6 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.onCompletion
 import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.launch
-import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * 本地模型的生命周期运行时：运行层第一个落地能力。
@@ -61,9 +63,6 @@ object LocalLlmRuntime : AgentCapability {
 
     private val stateFlow = MutableStateFlow(CapabilityState.REGISTERED)
     override val state: StateFlow<CapabilityState> = stateFlow
-
-    /** 在途推理计数。> 0 时节拍器不释放。 */
-    private val inFlight = AtomicInteger(0)
 
     private val policy = IdleUnloadPolicy(id)
 
@@ -124,26 +123,58 @@ object LocalLlmRuntime : AgentCapability {
 
     // ———— 在途记账（仅供 wrapLocalLlm 使用）———————————————————
 
-    /** 心跳 + 在途 +1。装饰器在每次推理开始时调用。 */
-    fun beginUse() {
+    /**
+     * R3：本地模型租约。
+     *
+     * 租约化之后「谁在减计数」不再靠手工约定——`LeaseHandle.close()` 保证归还，
+     * 漏一次不会永久泄漏计数。原 [beginUse] / [endUse] 保留为薄封装
+     * （装饰器仍在用），但内部记账走租约。
+     */
+    private val lease = LocalLlmLease(id)
+
+    /**
+     * 心跳 + 在途 +1。装饰器在每次推理开始时调用。
+     *
+     * R3：改为**挂起**函数，借一个租约句柄；[endUse] 关闭它。
+     * 挂起是必要的——租约的 acquire 是挂起操作，而 `runBlocking` 在这里
+     * 有死锁风险（调用点可能在持有锁的协程里）。所有调用点本来就在挂起上下文。
+     */
+    suspend fun beginUse() {
         policy.touch()
-        inFlight.incrementAndGet()
+        val handle = lease.acquire()
+        // 句柄存起来供 endUse 归还。用队列而非集合：同一时刻可能有多个在途推理，
+        // 归还时按「后进先出」对应即可——每次推理独立借还，句柄之间无区别。
+        synchronized(handleQueue) { handleQueue.add(handle) }
     }
 
-    /** 在途 -1。装饰器在推理结束 / 取消时调用（finally 语义）。 */
-    fun endUse() {
-        inFlight.decrementAndGet()
+    /**
+     * 在途 -1。装饰器在推理结束 / 取消时调用（finally 语义）。
+     */
+    suspend fun endUse() {
+        // poll() 从头部取并移除（ConcurrentLinkedQueue 没有 removeAt）。
+        // 句柄之间无区别，取哪个都一样——每次推理独立借还。
+        val handle = handleQueue.poll()
+        handle?.close()
         policy.touch()
     }
+
+    /** 在途推理的租约句柄队列（先进先出地归还即可，句柄之间无区别）。 */
+    private val handleQueue = java.util.concurrent.ConcurrentLinkedQueue<LeaseHandle>()
 
     // ———— 空闲释放 ————————————————————————————————————————————
 
+    /**
+     * R3：空闲释放改由租约接管。
+     *
+     * 改造前这里靠 [inFlight] 计数（手工加减），现在计数在 [lease] 里，
+     * 两处判据必须用**同一个源**——否则「租约说没人用、旧节拍器说有在途」
+     * 这种漂移会让释放时机变得不可预测。
+     */
     private val releasable = object : IdleReleasable {
-        override val isSafeToRelease: Boolean
-            get() = inFlight.get() == 0 && LocalLlamaEngine.isLoaded
+        override val isSafeToRelease: Boolean get() = lease.isSafeToRelease
 
         override fun releaseNow(reason: String) {
-            releaseIfLoaded(reason)
+            lease.releaseIdle(reason)
         }
     }
 
@@ -162,13 +193,23 @@ object LocalLlmRuntime : AgentCapability {
 
     // ———— 初始化 ——————————————————————————————————————————————
 
-    /** Application.onCreate 调一次：建配置存储、注册进能力注册表，并启动空闲节拍。 */
+    /**
+     * Application.onCreate 调一次：建配置存储、登记租约，并启动空闲节拍。
+     *
+     * R3：原先这里调 `CapabilityHost.register(this)`——那是「通用能力注册表」，
+     * 全仓只有这一处调用，其余方法零消费，已随通用能力框架一起删除。
+     * 现在登记的是 [LeaseRegistry]（真有人用的统一回收器）。
+     */
     fun init(context: Context) {
         if (this::prefs.isInitialized) return
         prefs = context.applicationContext
             .getSharedPreferences(SP_NAME, Context.MODE_PRIVATE)
         policy.idleTimeoutMs = if (enabled) timeoutMsFromPrefs() else 0L
-        CapabilityHost.register(this)
+        // R3：登记租约并注册空闲释放动作。回收由 [LeaseRegistry] 的统一节拍器执行，
+        // 与旧的 [policy] 节拍器并存——两者都只释放「无人使用 + 可安全释放」的资源，
+        // 重复释放由 lease.releaseIdle 的「模型未加载则直接返回」保证无害。
+        LeaseRegistry.register(lease)
+        LeaseRegistry.registerIdleReleaser(lease.id) { lease.releaseIdle("租约空闲回收") }
         startWatch()
     }
 

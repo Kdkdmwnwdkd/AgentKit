@@ -93,6 +93,8 @@ import com.example.agentkit.core.llm.local.GpuMode
 import com.example.agentkit.core.llm.local.LlamaJni
 import com.example.agentkit.core.llm.local.LocalDeviceRules
 import com.example.agentkit.runtime.wrapLocalLlm
+import com.example.agentkit.runtime.lease.LeaseRegistry
+import com.example.agentkit.runtime.lease.TerminalLeases
 import com.example.agentkit.core.llm.local.LocalLlamaClient
 import com.example.agentkit.core.llm.local.LocalLlamaEngine
 import com.example.agentkit.core.llm.local.LocalLlamaSetting
@@ -936,6 +938,14 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     private val terminalPool = TerminalSessionPool(terminalBackendFactory)
 
     /**
+     * R3：终端/容器租约（按后端分池）。
+     *
+     * 租约的作用是防止**空闲回收关掉正在用的会话**：命令执行期间借出，
+     * 执行完归还；之后若长时间没人用，回收器才会关掉该后端上的会话。
+     */
+    private val terminalLeases = TerminalLeases(terminalPool)
+
+    /**
      * 能力就绪度快照（DoD⑤）：逐条能力给出「选中的执行路径 + 降级轨迹 + 最终引导」。
      * 供权限中心页「一次走完」地告诉用户需要做什么，而不是让用户逐条工具试错。
      */
@@ -1052,6 +1062,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         register(
             ShellRunTool(
                 pool = terminalPool,
+                leases = terminalLeases,
                 privilegedExec = { cmd ->
                     // W-37：优先 UserService（shell 进程内起本地进程，waitFor 语义正常，进程常驻）；
                     // 不可用时回落 W-36 的 newProcess 轮询通道；两者都不可用才回落本机 user shell。

@@ -9,6 +9,7 @@ import com.example.agentkit.core.terminal.TERMINAL_HANDLE_REGEX
 import com.example.agentkit.core.terminal.TerminalSessionPool
 import com.example.agentkit.core.terminal.backend.TerminalBackend
 import com.example.agentkit.core.terminal.backend.TerminalIdentity
+import com.example.agentkit.runtime.lease.TerminalLeases
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
@@ -92,6 +93,16 @@ private const val SHELL_BRIDGE_ALIAS = "app_control"
  */
 class ShellRunTool(
     private val pool: TerminalSessionPool,
+    /**
+     * R3：终端租约（按后端分池）。null = 不接管（默认，行为与改造前一致）。
+     *
+     * 租约的作用是**防止空闲回收关掉正在用的会话**：命令执行期间借出，
+     * 执行完归还；归还后若长时间没人用，回收器才会关掉这个后端上的会话。
+     *
+     * 不默认接管是有意的——租约是可选增强，接管意味着会话的关闭时机
+     * 多了一层依赖，接线时必须确认调用链完整。
+     */
+    private val leases: TerminalLeases? = null,
     private val defaultPreferProot: Boolean = SHELL_RUN_DEFAULT_PREFER_PROOT,
     /**
      * 提权通道（W-13 B 方案）：Shizuku 就绪时由外部注入，执行 `sh -c <cmd>`（uid 2000）。
@@ -313,7 +324,17 @@ class ShellRunTool(
             handle = h
         }
 
-        val result = pool.run(handle, command, identity = declaredIdentity)
+        // R3：命令执行期间借出后端租约——空闲回收器看到「有人用」就不会关掉这个后端。
+        // 归还放在 finally 语义里（下面的 close 路径也会经过），确保异常时也归还。
+        val backendKey = pool.lookup(handle)?.backendKey
+        val leaseHandle = backendKey?.let { key ->
+            leases?.forBackend(key)?.acquire()
+        }
+        val result = try {
+            pool.run(handle, command, identity = declaredIdentity)
+        } finally {
+            leaseHandle?.close()
+        }
         if (!result.ok) {
             return ToolResult.fail(
                 code = result.errorCode ?: "exec_failed",

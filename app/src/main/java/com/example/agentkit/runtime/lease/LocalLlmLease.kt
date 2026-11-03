@@ -1,0 +1,72 @@
+package com.example.agentkit.runtime.lease
+
+import com.example.agentkit.core.AgentLogger
+import com.example.agentkit.core.llm.local.LocalLlamaEngine
+
+/**
+ * 本地模型租约（R3）。
+ *
+ * ## 与原 [com.example.agentkit.runtime.LocalLlmRuntime] 的关系
+ * 原实现已有「在途计数 + 空闲释放」两件事，但**没有租约语义**：
+ * 计数只在装饰器里手工加减（`beginUse` / `endUse`），调用方漏一次减法就永久泄漏。
+ *
+ * 本类把同样的行为包进 [RuntimeLease] 契约：
+ * - [acquire] → 计数 +1、刷新心跳；
+ * - [LeaseHandle.close] → 计数 -1、刷新心跳；
+ * - 引用数归零且空闲超阈值 → 卸载模型。
+ *
+ * **行为完全不变**，只是把「谁在减这个数」从手工约定变成 `use { }` 保证。
+ *
+ * ## 为什么本地模型够格进租约
+ * 3B Q4 模型的权重 + KV cache 通常在 1–2GB，符合「占内存 > 50MB」的准入判据，
+ * 且空闲确实可回收（下一次推理会自动重载）。
+ */
+class LocalLlmLease(
+    override val id: String = "local-llm",
+) : RuntimeLease {
+
+    private companion object {
+        const val TAG = "LocalLlmLease"
+    }
+
+    /** 活跃引用数（= 在途推理数）。 */
+    private val active = java.util.concurrent.atomic.AtomicInteger(0)
+
+    override val activeCount: Int get() = active.get()
+
+    /**
+     * 释放安全性：模型已加载**且**没有在途推理。
+     *
+     * 注意「已加载」这一项：模型没加载时本来就没什么可释放的，
+     * 此时返回 false 让回收器跳过（而不是调一次无意义的 unload）。
+     */
+    override val isSafeToRelease: Boolean
+        get() = active.get() == 0 && LocalLlamaEngine.isLoaded
+
+    override suspend fun acquire(): LeaseHandle {
+        active.incrementAndGet()
+        return LeaseRegistry.acquire(this) { release() }
+    }
+
+    /**
+     * 空闲释放：卸载模型。
+     *
+     * 失败只记日志不抛——回收失败不该影响后续使用（模型仍加载着，
+     * 下一次回收还会再试）。
+     */
+    fun releaseIdle(reason: String) {
+        if (!LocalLlamaEngine.isLoaded) return
+        val model = LocalLlamaEngine.loadedModelName ?: "未知模型"
+        runCatching { LocalLlamaEngine.unload() }
+            .onSuccess {
+                AgentLogger.i(TAG, "已释放本地模型 $model（$reason）。下次对话会自动重载，首字会慢十几秒")
+            }
+            .onFailure { AgentLogger.w(TAG, "本地模型释放失败（$reason）", it) }
+    }
+
+    /** 供 [com.example.agentkit.runtime.LocalLlmRuntime] 复用：归还引用。 */
+    fun release() {
+        active.updateAndGet { (it - 1).coerceAtLeast(0) }
+        LeaseRegistry.touch(id)
+    }
+}
