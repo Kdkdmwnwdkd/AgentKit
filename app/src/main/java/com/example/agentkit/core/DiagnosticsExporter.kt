@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import androidx.core.content.FileProvider
+import com.example.agentkit.core.agent.journal.RunJournal
 import com.example.agentkit.core.llm.KeyPoolStore
 import com.example.agentkit.core.llm.local.NativeCrashMemory
 import com.example.agentkit.core.llm.local.NativeCrashParser
@@ -30,6 +31,9 @@ object DiagnosticsExporter {
 
     /** 单个崩溃现场的截断长度：现场文件只有几百字节，这个上限纯属防意外。 */
     private const val MAX_CRASH_CHARS = 4000
+
+    /** 回合日志目录名，与 `ChatViewModel.runJournal` 保持一致（两处硬编码必须同源）。 */
+    private const val JOURNAL_DIR = "run-journal"
 
     /** 生成诊断文件；失败返回 null（调用方提示用户，不崩）。 */
     fun export(context: Context, logText: String): File? = runCatching {
@@ -98,6 +102,38 @@ object DiagnosticsExporter {
     }.getOrNull()
 
     /**
+     * 回合事件的结构化导出（R10）：`<cache>/exports/agentkit-turns-<stamp>.ndjson`。
+     *
+     * 为什么单独成文件而不是塞进诊断文本：回合事件是**给工具读的**——
+     * `jq -c 'select(.type=="settle")'` 能一句话捞出所有失败的调用，
+     * 而嵌在 .txt 里就只剩人眼 grep。R7 把导出函数写好了，但一直没人调，
+     * 等于不存在；这里补上唯一的消费方。
+     *
+     * 不含任何脱敏负担：[RunEventJson] 只编码 seq/at/turn/scope/type/step/call/status，
+     * **不落工具入参与输出**，因此不存在「事件里夹了 Key」的可能。
+     *
+     * @return 文件；没有回合日志时返回 null（调用方只发诊断文本，不报错）。
+     */
+    fun ndjsonOf(context: Context): File? = runCatching {
+        val body = RunJournal(File(context.filesDir, JOURNAL_DIR)).exportAllNdjson()
+        if (body.isBlank()) return null
+        val dir = File(context.cacheDir, "exports").apply { mkdirs() }
+        val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.getDefault()).format(Date())
+        File(dir, "agentkit-turns-$stamp.ndjson").apply { writeText(body) }
+    }.getOrNull()
+
+    /**
+     * 生成诊断包：文本摘要 + 可选的事件流，**一次分享带两个文件**。
+     *
+     * 为什么不让调用方自己拼：分享面板必须一次拉起，分两次会让用户看到两个选择器，
+     * 且第一个发出去后用户很可能忘了第二个——排障时最怕的就是这种「只拿到一半证据」。
+     */
+    fun exportBundle(context: Context, logText: String): List<File> = runCatching {
+        val summary = export(context, logText) ?: return emptyList()
+        listOfNotNull(summary, ndjsonOf(context))
+    }.getOrDefault(emptyList())
+
+    /**
      * 把原生崩溃现场拼成一段文字。
      *
      * 为什么必须进来：现场文件里是复现所需的**全部参数**（stage / signal / sigcode /
@@ -130,15 +166,39 @@ object DiagnosticsExporter {
     }
 
     /** 调系统分享面板发送诊断文件。 */
-    fun share(context: Context, file: File) {
-        val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
-        val intent = Intent(Intent.ACTION_SEND).apply {
-            type = "text/plain"
-            putExtra(Intent.EXTRA_STREAM, uri)
-            putExtra(Intent.EXTRA_SUBJECT, "AgentKit 诊断包")
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    fun share(context: Context, file: File) = share(context, listOf(file))
+
+    /**
+     * 多文件版：诊断文本 + 回合事件流。
+     *
+     * 必须**一次**拉起选择器（`ACTION_SEND_MULTIPLE`），不是发两次——
+     * 分两次的话用户很可能只发了第一个，排障时拿到一半证据比没拿到更误导。
+     *
+     * MIME 声明成通配（星号斜杠）而非 text/plain：第二个文件是 `.ndjson`，
+     * 不少接收端不认这个扩展名，声明成 text/plain 会被过滤掉。
+     */
+    fun share(context: Context, files: List<File>) {
+        if (files.isEmpty()) return
+        val uris = ArrayList<android.net.Uri>(files.size)
+        for (f in files) {
+            uris.add(
+                FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", f)
+            )
         }
-        val chooser = Intent.createChooser(intent, "分享诊断包").apply {
+        val send = if (uris.size == 1) {
+            Intent(Intent.ACTION_SEND).apply {
+                type = "text/plain"
+                putExtra(Intent.EXTRA_STREAM, uris.first())
+            }
+        } else {
+            Intent(Intent.ACTION_SEND_MULTIPLE).apply {
+                type = "*/*"
+                putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris)
+            }
+        }
+        send.putExtra(Intent.EXTRA_SUBJECT, "AgentKit 诊断包")
+        send.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        val chooser = Intent.createChooser(send, "分享诊断包").apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
         runCatching { context.startActivity(chooser) }

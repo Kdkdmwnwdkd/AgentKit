@@ -179,10 +179,16 @@ fun LogsScreen(vm: ChatViewModel) {
                 icon = Icons.Outlined.Share,
                 modifier = Modifier.weight(1f),
                 onClick = {
-                    val file = DiagnosticsExporter.export(ctx, vm.exportLogs())
-                    if (file != null) {
-                        DiagnosticsExporter.share(ctx, file)
-                        exportHint = "诊断包已生成（配置已脱敏），选择应用发送"
+                    // R10：诊断文本 + 回合事件流一起发。没有回合日志时只有文本，
+                    // 回执里不再谎称「含事件」——用户能据此判断这次有没有可用证据。
+                    val files = DiagnosticsExporter.exportBundle(ctx, vm.exportLogs())
+                    if (files.isNotEmpty()) {
+                        DiagnosticsExporter.share(ctx, files)
+                        exportHint = if (files.size > 1) {
+                            "诊断包已生成（含回合事件），选择应用发送"
+                        } else {
+                            "诊断包已生成（配置已脱敏），选择应用发送"
+                        }
                     } else {
                         exportHint = "诊断包生成失败，请改用「导出」复制日志"
                     }
