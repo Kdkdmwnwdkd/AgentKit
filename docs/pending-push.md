@@ -57,7 +57,7 @@ https://gh-proxy.com/https://github.com/<owner>/<repo>/archive/refs/heads/<branc
 
 ⚠️ **本会话（2026-10-14 19:00 前后启动）不可用** —— MCP 服务在会话启动时加载，改动需**新会话**生效。
 
-## 待推送批次（2026-11-04 · 27 个提交）
+## 待推送批次（2026-11-04 · 31 个提交）
 
 ### 网络状态：通了
 
@@ -93,10 +93,10 @@ git push origin HEAD:main          # 远端 main 会从 7306b4e 前进到下面�
 git remote set-url origin https://github.com/Kdkdmwnwdkd/AgentKit.git   # 把 token 从配置里抹掉
 ```
 
-推送的是 **27 个提交 / 31 个文件 / +1493 −102**，全是文本（无二进制）。
+推送的是 **31 个提交 / 31 个文件 / +1608 −102**，全是文本（无二进制）。
 推完 CI 会自动出 debug 包并发到 `latest` Release（`.github/workflows/build.yml` 已配好）。
 
-### 这 27 个提交
+### 这 31 个提交
 
 | 本地 sha | 标题 |
 |---|---|
