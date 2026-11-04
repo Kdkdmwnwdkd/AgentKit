@@ -63,7 +63,7 @@ https://gh-proxy.com/https://github.com/<owner>/<repo>/archive/refs/heads/<branc
 `gh` 未登录、credential helper 对 github.com 返回空、MCP github 插件不在本会话工具列表里。
 镜像 `gh-proxy` 只读可用（`git fetch` 正常，匿名 `git push` 会被要求输入用户名）。
 
-所以下面两个提交**只在沙箱本地**，远端 main 仍是 `7306b4e`：
+所以下面这些提交**只在沙箱本地**，远端 main 仍是 `7306b4e`：
 
 | 本地 sha | 标题 |
 |---|---|
@@ -72,10 +72,14 @@ https://gh-proxy.com/https://github.com/<owner>/<repo>/archive/refs/heads/<branc
 | `e5417f4` | docs(push): 记下本会话写通道不可用 |
 | `86cd886` | fix(terminal): REP(b) 从来没打出过字符，同时补上终端仿真器的 78 条断言 |
 | `0134753` | docs(qa): 去掉笔记里那个按路径字面匹配算出来的假覆盖率数字 |
+| `8c09a9f` | feat(skill): 能力表与工具清单对账，把注释里的承诺变成会红的断言 |
+| `9eae19d` | fix(approval): 两个需审批的工具在弹窗上裸出英文名，ui_tree 还与截图不同组 |
+| `54da2b8` | test(kernel): 清单里的工具名必须有实现——补上 audit ② 的静态版 |
+| `934f671` | feat(qa): 门禁加第 5 条——PASS 数不得低于基线，堵住「全 SKIP 也算绿」 |
 
 推送时按《网络通道与加速指南》的 MCP 写通道批量提交即可（改动的 11 个文件都在
 `git show --stat` 里，全是文本，没有二进制）。推之前重跑一次 `bash scripts/qa/run-all.sh`：
-本会话已跑过 **PASS=86 SKIP=1 FAIL=0**。
+本会话已跑过 **PASS=86 SKIP=1 FAIL=0**，`gate.sh` 五条全过（含新增的 PASS 基线门）。
 
 ## 待推送批次（历史，已全部完成，本节归档）
 

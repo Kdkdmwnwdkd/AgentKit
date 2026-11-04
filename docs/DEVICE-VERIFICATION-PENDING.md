@@ -129,7 +129,7 @@
 | 租约语义 | `run-r3-verification.sh` R3-1~14 | 14/0 |
 | 借还顺序 | 同脚本 R3-15（源码顺序断言） | 通过 |
 | 回合事件 / 崩溃恢复 | `run-r7-verification.sh` | 20/0 |
-| 技能脚本链路 | `run-batchb-verification.sh` | 89/0 |
+| 技能脚本链路 + 能力表/清单对账 | `run-batchb-verification.sh` | 93/0 |
 | 工具预算 / 作用域 | `run-runtime-capability-verification.sh` | 46/0 |
 | 工具 schema 单点序列化 | `run-r11-verification.sh` | 11/0 |
 | 原子写（真文件 / 真并发） | `run-r12-verification.sh` | 13/0 |
@@ -139,9 +139,11 @@
 | 生成运行态状态机（含取消/异常） | `run-generation-run-verification.sh` | 34/0 |
 | 遥测流水字段契约与落盘 | `run-trace-telemetry-verification.sh` | 30/0 |
 | 度量脚本自身的正确性 | `run-trace-metrics-verification.sh` | 14/0 |
-| 工具表顺序 = 清单顺序（含乱序输入） | `run-kernel-exposure-verification.sh` 第 9 段 | 80/0 |
+| 工具表顺序 = 清单顺序（含乱序输入）+ 清单↔实现双向 | `run-kernel-exposure-verification.sh` 第 9~10 段 | 83/0 |
 | 工具面 token 预算（默认 ≤525 / 满载 ≤3500） | `run-tool-surface-verification.sh` | 3/0 |
 | 终端仿真器（打印/宽度/SGR/光标/擦除/备用屏/历史/畸形输入/并发/缩放） | `run-terminal-emulator-verification.sh` | 78/0 |
+| 审批归组（同类操作同组 + 需审批工具都有中文说明） | `run-approval-grouping-verification.sh` | 9/0 |
+| CI 门禁本身（含「全 SKIP 不算绿」） | `run-gate-verification.sh` | 20/0 |
 
 真机验的是**这些断言覆盖不到的那一层**：真实 proot 进程的生死、真实 Compose 生命周期、
 真实分享面板。断言通过不代表真机通过，反之亦然——两边都要，但不用重复。
