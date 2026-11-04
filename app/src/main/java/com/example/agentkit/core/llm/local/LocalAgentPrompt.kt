@@ -45,8 +45,6 @@ object LocalAgentPrompt {
         "read_file" to "read a workspace file as text",
         "write_file" to "write text into a workspace file (overwrite)",
         "edit_file" to "replace exact text inside a file",
-        "list_dir" to "list files in a workspace folder",
-        "search_files" to "find files by name or by content",
         "http_request" to "fetch a URL and return the body",
         "ui_tree" to "read the current screen: text and bounds",
         "ui_tap" to "tap a point on screen (x,y from ui_tree)",
@@ -69,9 +67,15 @@ object LocalAgentPrompt {
     /**
      * 固定顺序（= 本地最小工具面的语义顺序：先读写、再感知与动作、最后扩展，
      * 外加常用云端工具）。顺序即「重要度」，也保证同一组工具每轮渲染结果逐字节一致。
+     *
+     * **只能写真实存在的工具名**。这里曾经有 `list_dir` / `search_files`——它们是
+     * 设计阶段的拟名，注册表里从来没有过。因为 [build] 只渲染传入的工具，这两个名字
+     * 不会真的出现在提示词里，属于死条目：不报错、不占 token、只是让下一个人以为
+     * 「我们有这两个工具，那别处为什么不给模型」。`run-local-prompt-verification.sh`
+     * 会对这张表与 `CapabilityManifest` 做交叉比对，多一个就红。
      */
     private val ORDER: List<String> = listOf(
-        "read_file", "write_file", "edit_file", "list_dir", "search_files",
+        "read_file", "write_file", "edit_file",
         "http_request", "ui_tree", "ui_tap", "clipboard", "use_skill",
         "shell_run", "memory_write", "memory_search",
         "app_launch", "app_list", "send_notification",

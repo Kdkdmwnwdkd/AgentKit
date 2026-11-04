@@ -1,0 +1,68 @@
+# 文本断言基线（只减不增）
+#
+# 由 `scripts/qa/assertion-census.py` 读取。规则：每个文件的文本断言数
+# （对源码字符串做匹配，而不是调用被测函数）只准往下。
+#
+# 为什么冻结而不是清零：存量 1300 多条，清完要两周且风险高于收益。而「只减不增」
+# 能立刻止住趋势——新写的断言只能是行为断言，老的自然衰减。
+#
+# 抬高基线不是禁止的，但要在提交信息里写清「为什么这条只能看源码」。
+# 典型正当理由：「某文件不得再出现 X」（反向断言没有行为可调）。
+#
+# 格式：`text <路径> <上限>`；`text __TOTAL__ <上限>` 是全局上限，
+# 防的是「把 625 条拆成两个文件」绕过单文件限制。
+
+text scripts/qa/Hotfix11Verification.kt 626
+text scripts/qa/run-local-inference-perf-verification.sh 90
+text scripts/qa/PromptProtocolVerification.kt 47
+text scripts/qa/AppControlVerification.kt 40
+text scripts/qa/PermissionGuideVerification.kt 40
+text scripts/qa/run-local-agent-prompt-verification.sh 37
+text scripts/qa/CrashLogVerification.kt 36
+text scripts/qa/T01Verification.kt 32
+text scripts/qa/run-runtime-capability-verification.sh 30
+text scripts/qa/BatchBVerification.kt 29
+text scripts/qa/ConversationsScreenVerification.kt 24
+text scripts/qa/run-llama-v070-verification.sh 21
+text scripts/qa/T02T06Verification.kt 20
+text scripts/qa/W31Verification.kt 20
+text scripts/qa/ModelSetupVerification.kt 19
+text scripts/qa/FallbackVerification.kt 18
+text scripts/qa/LocalModelVerification.kt 17
+text scripts/qa/W33Verification.kt 17
+text scripts/qa/CapabilityManifestVerification.kt 14
+text scripts/qa/R7Verification.kt 14
+text scripts/qa/Round4Verification.kt 13
+text scripts/qa/ShellRouteVerification.kt 11
+text scripts/qa/BranchVerification.kt 10
+text scripts/qa/KernelExposureVerification.kt 10
+text scripts/qa/R2R4Verification.kt 10
+text scripts/qa/T01AdversarialProbe.kt 10
+text scripts/qa/T07T08Verification.kt 10
+text scripts/qa/EditWebSearchVerification.kt 9
+text scripts/qa/T07T08AdversarialProbe.kt 9
+text scripts/qa/W9ScreenshotVerification.kt 9
+text scripts/qa/R5Verification.kt 8
+text scripts/qa/W29Verification.kt 7
+text scripts/qa/run-w96-chat-spacing-verification.sh 6
+text scripts/qa/T01AdversarialProbe2.kt 6
+text scripts/qa/AppManageVerification.kt 5
+text scripts/qa/ContextBudgetVerification.kt 5
+text scripts/qa/W32Verification.kt 5
+text scripts/qa/KeyPoolVerification.kt 4
+text scripts/qa/MemoryRetrievalVerification.kt 4
+text scripts/qa/R13Verification.kt 4
+text scripts/qa/W28Verification.kt 4
+text scripts/qa/W30Verification.kt 4
+text scripts/qa/R12Verification.kt 3
+text scripts/qa/WorkflowScheduleVerification.kt 3
+text scripts/qa/GenerationRunVerification.kt 2
+text scripts/qa/R11Verification.kt 2
+text scripts/qa/RetryVerification.kt 2
+text scripts/qa/LoadSkillVerification.kt 1
+text scripts/qa/MarkdownVerification.kt 1
+text scripts/qa/R3Verification.kt 1
+text scripts/qa/ShizukuResultVerification.kt 1
+text scripts/qa/W34Verification.kt 1
+text scripts/qa/W46Verification.kt 1
+text __TOTAL__ 1372

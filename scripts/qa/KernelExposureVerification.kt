@@ -198,6 +198,36 @@ fun main() = runBlocking {
     check("云端默认只激活 file（+misc）", cloudPlan.activated - "misc" == setOf("file"), "${cloudPlan.activated}")
     check("元工具总在末尾", cloudPlan.visible.takeLast(2).map { it.name }.toSet() == setOf(KernelExposure.USE_TOOLS, KernelExposure.FIND_TOOLS))
 
+    // ---------- 2b. 外部 MCP 工具：独立成组、默认不激活 ----------
+    println("\n[2b] MCP：外部工具不占常驻名额")
+    val mcpStub = object : AgentTool {
+        override val name: String = "mcp_demo_ping"
+        override val description: String = "外部 MCP 服务器提供的工具，每次调用都需要确认。"
+        override val parameters: JsonSchema = JsonSchema()
+        override suspend fun execute(args: JsonObject): ToolResult = ToolResult.ok(message = "ok")
+    }
+    val withMcp = all + mcpStub
+    // 修前：`mcp_` 前缀推不出组 → misc（常驻）→ 每一轮都把外部工具塞进工具表。
+    eq("mcp_ 前缀归 mcp 组（不进 misc）", KernelExposure.groupOf("mcp_demo_ping"), "mcp")
+    eq("mcp 组不常驻", KernelExposure.isPinned("mcp"), false)
+
+    val mcpActive = mutableSetOf<String>()
+    val mcpOff = KernelExposure.plan(withMcp, "openai", false, mcpActive)
+    check("默认不可见（必须显式开组）", mcpOff.visible.none { it.name == "mcp_demo_ping" })
+    check("默认不激活", "mcp" !in mcpOff.activated, mcpOff.activated.toString())
+    // 组索引里要能看到它——不然模型连「有这么一组」都不知道，永远不会去开
+    check("组索引里能看到 mcp", KernelExposure.groupsOf(withMcp).any { it.first == "mcp" })
+
+    mcpActive.add("mcp")
+    val mcpOn = KernelExposure.plan(withMcp, "openai", false, mcpActive)
+    check("开组后可见", mcpOn.visible.any { it.name == "mcp_demo_ping" })
+
+    // 断连：服务器没了，工具从注册表消失 → 残留的组名必须被清掉，
+    // 否则它会顶掉一个淘汰名额，把别的功能组挤出去。
+    val staleMcp = mutableSetOf("mcp")
+    KernelExposure.plan(all, "openai", false, staleMcp)
+    check("MCP 断连后残留的 mcp 组被清掉", "mcp" !in staleMcp, staleMcp.toString())
+
     // ---------- 3. 元工具：找回被裁掉的工具 ----------
     println("\n[3] 元工具：裁掉不等于禁用")
     val active = mutableSetOf<String>()

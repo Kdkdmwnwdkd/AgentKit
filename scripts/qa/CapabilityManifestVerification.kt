@@ -78,6 +78,12 @@ fun main(args: Array<String>) {
     eq("未归类兜底组常驻", CapabilityManifest.isPinned(CapabilityManifest.MISC), true)
     eq("file 组常驻", CapabilityManifest.isPinned("file"), true)
     eq("ui 组不常驻", CapabilityManifest.isPinned("ui"), false)
+    // P3-3：MCP 必须独立成组且**不常驻**。修前 `mcp_` 前缀推不出组 → 落进 misc（常驻），
+    // 于是连上几个服务器就有十几个外部工具塞进每一轮工具表，而组索引里看不到「mcp」。
+    eq("mcp 组存在且动态", CapabilityManifest.isDynamic("mcp"), true)
+    eq("mcp 组不常驻", CapabilityManifest.isPinned("mcp"), false)
+    eq("mcp 组成员不在清单里（运行时才知道）",
+        CapabilityManifest.capabilities.first { it.group == "mcp" }.tools, emptyList<String>())
 
     // —— 2. 归组规则 ——
     println("\n[2] 归组规则（补丁 → 前缀 → misc）")
@@ -88,6 +94,8 @@ fun main(args: Array<String>) {
     eq("shell_run → shell", CapabilityManifest.groupOf("shell_run"), "shell")
     eq("github_commit → github", CapabilityManifest.groupOf("github_commit"), "github")
     eq("清单收录全部静态工具", CapabilityManifest.toolNames.size, 56)
+    eq("mcp_demo_create_issue → mcp（前缀归组，不进 misc）",
+        CapabilityManifest.groupOf("mcp_demo_create_issue"), "mcp")
     eq("weather 推不出来 → misc", CapabilityManifest.groupOf("weather"), "misc")
     check("说明文案不等于组名", CapabilityManifest.noteOf("ui") != "ui", CapabilityManifest.noteOf("ui"))
 
@@ -145,6 +153,32 @@ fun main(args: Array<String>) {
         noFile.problems.size.toString()
     )
 
+    // —— 5b. 动态组：今天的写法对，明天改一行就会错的规则 ——
+    println("\n[5b] 动态组自洽")
+    val mcpStub = stub("mcp_demo_ping")
+    // ① 放行动态成员：真实场景就是「服务器连上后 registry 里多出 mcp_*」，
+    //    审计若把它报成「未登记」，启动日志每次都会带一串假问题，真问题就被淹了。
+    val withMcp = CapabilityManifest.audit(names.map { stub(it) } + mcpStub)
+    check("① 动态组成员不报「未登记」",
+        withMcp.problems.none { it.contains("mcp_demo_ping") },
+        withMcp.problems.firstOrNull().orEmpty())
+
+    // ⑥ 手写成员 → 抓：这类名单连不上服务器时就全是死名字
+    val handwritten = CapabilityManifest.capabilities.map {
+        if (it.group == "mcp") it.copy(tools = listOf("mcp_demo_ping")) else it
+    }
+    val hw = CapabilityManifest.audit(handwritten, names.map { stub(it) } + mcpStub)
+    check("⑥ 动态组手写成员 → 被抓", hw.problems.any { it.contains("手写了") },
+        hw.problems.firstOrNull().orEmpty())
+
+    // ⑥ 标成常驻 → 抓：空组占淘汰名额，且模型永远不知道为什么有一组是空的
+    val pinnedMcp = CapabilityManifest.capabilities.map {
+        if (it.group == "mcp") it.copy(pinned = true) else it
+    }
+    val pm = CapabilityManifest.audit(pinnedMcp, names.map { stub(it) } + mcpStub)
+    check("⑥ 动态组标常驻 → 被抓", pm.problems.any { it.contains("被标成常驻") },
+        pm.problems.firstOrNull { it.contains("被标成常驻") }.orEmpty())
+
     // —— 6. 单点纪律（静态） ——
     println("\n[6] 单点（静态）")
     val exposure = File(src, "com/example/agentkit/core/KernelExposure.kt").readText(Charsets.UTF_8)
@@ -155,7 +189,10 @@ fun main(args: Array<String>) {
     val auditAt = vm.indexOf("CapabilityManifest.audit(")
     val mcpAt = vm.indexOf("registerMcpTools()")
     check("启动时跑一次审计", auditAt > 0)
-    check("审计在 MCP 注册之前（动态工具不参与）", auditAt in 1 until mcpAt, "audit=$auditAt mcp=$mcpAt")
+    check("审计在 MCP 注册之前", auditAt in 1 until mcpAt, "audit=$auditAt mcp=$mcpAt")
+    check("McpToolAdapter 强制审批（外部工具不得免审）",
+        File(src, "com/example/agentkit/core/mcp/McpToolAdapter.kt")
+            .readText(Charsets.UTF_8).contains("override val needsApproval: Boolean = true"))
 
     println("\n==== 结果：PASS=$pass FAIL=${fails.size} ====")
     if (fails.isNotEmpty()) {

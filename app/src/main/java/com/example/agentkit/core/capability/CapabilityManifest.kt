@@ -12,12 +12,16 @@ import com.example.agentkit.core.AgentTool
  * @param note 给模型看的组索引说明（`__use_tools` 的组清单与此同源）
  * @param tools 该组包含的工具名。**清单是真源**：注册表里有、这里没有的，[CapabilityManifest.audit] 会红
  * @param pinned 常驻组：不参与淘汰，也不该让用户关掉（关了下一轮也会被 pin 回来）
+ * @param dynamic 成员由运行时提供（MCP 服务器连上才知道有哪些工具）。
+ *   这类组的 `tools` 必须是空的——写了具体名字反而说明有人在手工同步一份**连不上就失效**的名单。
+ *   审计对它们跳过「工具→清单」与「组→工具」：不是漏登记，而是结构上不可能登记。
  */
 data class CapabilityGroup(
     val group: String,
     val note: String,
     val tools: List<String>,
     val pinned: Boolean = false,
+    val dynamic: Boolean = false,
 )
 
 /**
@@ -114,6 +118,18 @@ object CapabilityManifest {
             "sys", "剪贴板、容器、通知等系统能力",
             tools = listOf("clipboard", "send_notification", "calculator", "container_toolchain"),
         ),
+        // 外部 MCP 服务器：工具名是 `mcp_<server>_<tool>`，连上之后才知道有哪些。
+        //
+        // 为什么必须独立成组、且**不常驻**（架构方案 P3-3 的第二条）：
+        // 修前 `mcp_` 前缀推不出组 → 落进 `misc` → 常驻。后果是每次连上 MCP 服务器，
+        // 它的全部工具（可能十几个）都会塞进**每一轮**的工具表，占的是用户没要求过的 token，
+        // 而组索引里又看不到「mcp」这个组——模型只知道有一堆陌生工具，不知道从哪管。
+        // 现在它们成为一个可关闭的组：默认不激活，模型要 `__use_tools("mcp")` 才看得到。
+        CapabilityGroup(
+            "mcp", "外部 MCP 服务器提供的工具（每次调用都需确认）",
+            tools = emptyList(),
+            dynamic = true,
+        ),
         // 兜底桶：成员恒为空（有成员说明有工具没登记），见 audit 的 ②③
         CapabilityGroup(MISC, "未归类的其他工具", tools = emptyList(), pinned = true),
     )
@@ -135,6 +151,9 @@ object CapabilityManifest {
     /** 组是否常驻（`file` / `misc`）。 */
     fun isPinned(group: String): Boolean = byGroup[group]?.pinned == true
 
+    /** 组是否由运行时提供成员（`mcp`）。 */
+    fun isDynamic(group: String): Boolean = byGroup[group]?.dynamic == true
+
     /** 组的一句话说明；未知组回退成组名。 */
     fun noteOf(group: String): String = byGroup[group]?.note ?: group
 
@@ -154,21 +173,49 @@ object CapabilityManifest {
      * 3. **组 → 工具**：每个非兜底组至少要有一个工具，否则模型按索引开组会开到空组。
      * 4. **归组一致**：按 [groupOf] 反推出来的组，必须与它被写进的组一致——这条防的是
      *    「清单写了一套、名字前缀指向另一套」，那种情况下暴露面与组索引会对不上。
+     * 5. **常驻组非空**：pin 一个没有成员的组只是白占一个淘汰名额。
+     * 6. **动态组自洽**（P3-3）：`dynamic` 组的 `tools` 必须为空、且不能 `pinned`——
+     *    它的成员连上服务器才知道，手写就是一份「连不上时全失效」的名单。
      *
-     * `misc` 是兜底桶：空着才是理想状态，所以 2/3 都跳过它。
+     * `misc` 是兜底桶：空着才是理想状态，所以 2/3 都跳过它。`mcp` 这类动态组同理，
+     * 只是理由不同——它不是「兜底」，是「结构上不可能提前知道」。
+     *
+     * 1~6 全部可以在 [audit] 的**带组表重载**上单独触发失败，harness 就是这么反向验的。
      *
      * @param tools 当前真正注册进 ToolRegistry 的工具（顺序无所谓）。
-     *   MCP 动态工具请在调用前过滤掉（它们不在清单里，属于正常情况）。
+     *   MCP 动态工具不用手工过滤——它们会被 ① 按「动态组」放行（见 [CapabilityGroup.dynamic]）。
      */
-    fun audit(tools: List<AgentTool>): CapabilityAudit {
+    fun audit(tools: List<AgentTool>): CapabilityAudit = audit(capabilities, tools)
+
+    /**
+     * 同一套断言的**可重载版本**：对任意组表求审计。
+     *
+     * 存在的理由只有一个——反向验证。真表是 `val`，改不动；想证明「动态组手写成员会被抓」
+     * 就只能喂一张假的组表进来。若把断言写在「只吃真表」的函数里，这一类用例永远写不出来，
+     * 于是 ⑥ 这种「今天不会发生、明天改一行就会发生」的规则就没人验过。
+     */
+    internal fun audit(groups: List<CapabilityGroup>, tools: List<AgentTool>): CapabilityAudit {
+        val groupOfTool: Map<String, String> = buildMap {
+            groups.forEach { cap -> cap.tools.forEach { put(it, cap.group) } }
+        }
+        val byGroup: Map<String, CapabilityGroup> = groups.associateBy { it.group }
+        // 与公有 [groupOf] 同规则：先清单，再前缀，最后兜底。这里必须重算，
+        // 因为它要跟着**入参**组表走，而不是对象里那张真表。
+        fun resolve(name: String): String {
+            groupOfTool[name]?.let { return it }
+            val prefix = name.substringBefore('_', missingDelimiterValue = name)
+            return if (byGroup.containsKey(prefix)) prefix else MISC
+        }
+        fun dynamic(group: String): Boolean = byGroup[group]?.dynamic == true
+
         val names = tools.map { it.name }
         val nameSet = names.toHashSet()
         val problems = mutableListOf<String>()
 
-        // ① 工具 → 清单
+        // ① 工具 → 清单（动态组的成员本来就登记不了，跳过）
         names.forEach { name ->
-            if (name !in groupOfTool) {
-                problems += "工具 `$name` 没有在清单里登记 → 会落进 ${groupOf(name)}，" +
+            if (name !in groupOfTool && !dynamic(resolve(name))) {
+                problems += "工具 `$name` 没有在清单里登记 → 会落进 ${resolve(name)}，" +
                     "组索引里看不到它、`__use_tools` 也开不到它所在的组。" +
                     "请在 CapabilityManifest.capabilities 的某个组 tools 里加上它。"
             }
@@ -182,8 +229,8 @@ object CapabilityManifest {
             }
         }
 
-        // ③ 组 → 工具（misc 是兜底桶，空着才是理想状态）
-        capabilities.filter { it.group != MISC }.forEach { cap ->
+        // ③ 组 → 工具（misc 是兜底桶，空着才是理想状态；dynamic 组成员不在清单里，见字段注释）
+        groups.filter { it.group != MISC && !it.dynamic }.forEach { cap ->
             if (cap.tools.isEmpty()) {
                 problems += "能力组 `${cap.group}`（${cap.note}）没有任何工具 → " +
                     "模型按索引开这个组会开到空组。补上工具，或删掉这个组。"
@@ -192,7 +239,7 @@ object CapabilityManifest {
 
         // ④ 归组一致：清单位置必须与「按名字推出来的组」一致
         groupOfTool.forEach { (name, group) ->
-            val derived = groupOf(name)
+            val derived = resolve(name)
             if (derived != group) {
                 problems += "`$name` 写在 `${group}` 组，但按名字推出来是 `$derived` → " +
                     "暴露面与组索引会对不上。要么改名字，要么把它挪到 `$derived`。"
@@ -200,18 +247,32 @@ object CapabilityManifest {
         }
 
         // ⑤ 常驻组不能空（misc 除外）：pin 一个没有内容的组只是白占淘汰名额
-        capabilities.filter { it.pinned && it.group != MISC }.forEach { cap ->
+        groups.filter { it.pinned && it.group != MISC }.forEach { cap ->
             if (cap.tools.isEmpty()) {
                 problems += "常驻组 `${cap.group}` 没有任何工具 → 每轮都要把它 pin 回来，纯浪费一个淘汰名额。"
             }
         }
 
+        // ⑥ 动态组的两条自洽：成员不能手写（连不上就失效的名单）、不能常驻（每轮 pin 一个空组）
+        groups.filter { it.dynamic }.forEach { cap ->
+            if (cap.tools.isNotEmpty()) {
+                problems += "动态组 `${cap.group}` 手写了 ${cap.tools.size} 个成员 → " +
+                    "这些名字在运行时可能根本不存在（服务器未连接）。动态组的 tools 必须为空，" +
+                    "成员由运行时注册决定。"
+            }
+            if (cap.pinned) {
+                problems += "动态组 `${cap.group}` 被标成常驻 → 它默认是空的，" +
+                    "每轮 pin 回来只会白占一个淘汰名额。外部工具必须显式开组。"
+            }
+        }
+
         // 常量自检（表本身写坏了也算问题）
-        val dupGroups = capabilities.groupingBy { it.group }.eachCount().filterValues { it > 1 }.keys
+        val dupGroups = groups.groupingBy { it.group }.eachCount().filterValues { it > 1 }.keys
         if (dupGroups.isNotEmpty()) problems += "能力组重复声明：${dupGroups.joinToString()}。"
-        val dupTools = toolNames.groupingBy { it }.eachCount().filterValues { it > 1 }.keys
+        val allNames = groups.flatMap { it.tools }
+        val dupTools = allNames.groupingBy { it }.eachCount().filterValues { it > 1 }.keys
         if (dupTools.isNotEmpty()) problems += "工具被重复登记到多个组：${dupTools.joinToString()}。"
-        capabilities.filter { it.note.isBlank() }.forEach {
+        groups.filter { it.note.isBlank() }.forEach {
             problems += "能力组 `${it.group}` 没有说明文字 → 组索引里会显示成组名，模型读不懂。"
         }
 

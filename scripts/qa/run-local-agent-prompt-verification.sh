@@ -108,6 +108,42 @@ expect "shell_run 覆写 needsApprovalFor" "$SHELL" 'override fun needsApprovalF
 expect "执行器按参数判定审批" "$EXECUTOR" 'tool.needsApprovalFor\(call.arguments\)'
 expect "接口默认行为不变" "$CONTRACT" 'fun needsApprovalFor\(args: JsonObject\): Boolean = needsApproval'
 
+# —— 6. 三张表里的工具名必须真实存在 ————————————————————————————
+# 这一节盯的是「死条目」：`LocalAgentPrompt.ORDER` 与 `HINTS` 曾写着
+# `list_dir` / `search_files`，解析器的别名表也把 `ls` / `grep` 往它们身上归——
+# 可那两个工具从来没实现过。
+#
+# 它们不报错（`build()` 只渲染传入的工具，`nameOf()` 只在 available 里找），
+# 也不占 token。正因如此才需要机器盯着：人看到这两行只会以为「我们有这工具」，
+# 然后去别处追问「为什么模型列不了目录」。设计阶段的拟名必须清掉。
+MANIFEST="$ROOT/app/src/main/java/com/example/agentkit/core/capability/CapabilityManifest.kt"
+missing=$(python3 - "$PROMPT" "$PARSER" "$MANIFEST" <<'PY'
+import re, sys
+
+prompt, parser, manifest = (open(p, encoding='utf-8').read() for p in sys.argv[1:4])
+
+# 清单：所有 `tools = listOf(...)` 里的名字（组名不在其中，天然排除）
+declared = set()
+for m in re.finditer(r'tools\s*=\s*listOf\(([^)]*)\)', manifest, re.S):
+    declared |= set(re.findall(r'"([a-z0-9_]+)"', m.group(1)))
+
+# 提示词：HINTS 的键 + ORDER 的元素（值里的英文句子含空格，不会被名字正则吃进来）
+used = set()
+for pat in (r'private val HINTS.*?\n    \)', r'private val ORDER.*?\n    \)'):
+    m = re.search(pat, prompt, re.S)
+    if m:
+        used |= set(re.findall(r'"([a-z0-9_]+)"', m.group(0)))
+
+# 别名表：每个左值都是一个工具名
+m = re.search(r'private val ALIASES.*?\n    \)', parser, re.S)
+if m:
+    used |= set(re.findall(r'^\s*"([a-z0-9_]+)" to listOf', m.group(0), re.M))
+
+print(" ".join(sorted(used - declared)))
+PY
+)
+check "提示词/别名表的工具名都真实存在（虚构：${missing:-无}）" "$([ -z "$missing" ] && echo 1 || echo 0)"
+
 echo
 echo "本地 Agent 契约：$pass 通过 / $fail 失败"
 if [ "$fail" -ne 0 ]; then
