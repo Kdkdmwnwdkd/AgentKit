@@ -3,6 +3,7 @@ package com.example.agentkit.core.agent
 import com.example.agentkit.core.AgentLogger
 import com.example.agentkit.core.FailureGuard
 import com.example.agentkit.core.GuardVerdict
+import com.example.agentkit.core.KernelExposure
 import com.example.agentkit.core.MAX_TOOL_RESULT_CHARS
 import com.example.agentkit.core.ToolApproval
 import com.example.agentkit.core.ToolCall
@@ -143,9 +144,9 @@ interface ToolExecutor {
      * 执行一次工具调用。
      *
      * @param call 调用请求（id / name / arguments）。
-     * @param descriptor loop 解析出的工具描述符；未知工具时为 loop 合成的占位
+     * @param descriptor loop 解析出的工具描述符；工具不在本回合视图里时为 loop 合成的占位
      *   descriptor（name=call.name、wireName=call.name、inputSchemaJson="{}"），
-     *   实现应走未知工具文案路径（T02 模糊匹配）。
+     *   实现应按「分组未启用」与「名称写错」分流文案（前者指出所属组，后者给模糊匹配）。
      * @return [ToolCallOutcome.Completed]（正常与业务失败）——中断态只由
      *   [onInterrupt] 产出。
      */
@@ -216,6 +217,19 @@ class RegistryToolExecutor(
      */
     private val beforeEffect: (suspend (ToolCall) -> Boolean)? = null,
     /**
+     * 全量工具注册表：用于区分「工具根本不存在」与「工具存在但所属分组未启用」。
+     *
+     * 背景：回合级工具视图（`RealAgentLoop.scopedRegistry`）只装本回合暴露的工具，
+     * 被裁掉的工具在这个视图里查无此工具。若一律回「未知工具」，模型会以为自己
+     * 记错了名字，转而去猜别的名字——而它其实**没记错**，只是少开了一个组。
+     *
+     * 注入 null 时行为与改造前逐字节相同（一律按「未知工具」处理）。
+     *
+     * 注入方是 RealAgentLoop（它同时持有全量 registry 与回合级视图）；
+     * 技能路径（SkillExecutor）用不到这个概念，不注入。
+     */
+    private val fullRegistry: ToolRegistry? = null,
+    /**
      * R2：单次调用预算（毫秒），按副作用分档。测试注入小值（如 50ms）即可断言超时路径。
      */
     private val readOnlyBudgetMs: Long = DEFAULT_READ_ONLY_BUDGET_MS,
@@ -261,6 +275,35 @@ class RegistryToolExecutor(
     ): ToolCallOutcome {
         val tool = registry.get(call.name)
             ?: run {
+                // 「查无此工具」有两种截然不同的原因，**必须分开回喂**：
+                //
+                //  A. 工具根本不存在 → 模型记错了名字 → 该改名字/换工具；
+                //  B. 工具存在，但所属分组本回合未启用 → 模型**没记错**，只是少开一个组
+                //     → 该先 `__use_tools` 启用它，下一轮就能直接调。
+                //
+                // 统一说「未知工具」会让模型在 B 情形下去猜别的名字，把一次「开组」
+                // 能解决的往返变成若干次瞎猜 + 失败回填。
+                //
+                // 判据：全量注册表（fullRegistry）里有它、而本回合视图里没有 → B。
+                val group = fullRegistry
+                    ?.takeIf { it.get(call.name) != null }
+                    ?.let { KernelExposure.groupOf(call.name) }
+                if (group != null) {
+                    AgentLogger.w("Tool", "工具未启用：${call.name}（组 $group）——请先 __use_tools 启用该组")
+                    return ToolCallOutcome.Completed(
+                        toolMessageOf(
+                            call,
+                            ToolResult.fail(
+                                code = "tool_not_enabled",
+                                message = registry.toolNotEnabledMessage(call.name, group),
+                                hint = "先调用 __use_tools 启用 '${group}' 组（参数 groups=\"$group\"），" +
+                                    "下一轮即可直接调用 ${call.name}；不要重复以同一个未启用的工具名重试。"
+                            )
+                        ),
+                        emptyList(),
+                        code = "tool_not_enabled"
+                    )
+                }
                 // T02：未知工具 + 编辑距离 ≤2 模糊匹配建议，让模型从错误里自纠
                 AgentLogger.w("Tool", "未知工具：${call.name}（wireName=${descriptor.wireName}）")
                 return ToolCallOutcome.Completed(

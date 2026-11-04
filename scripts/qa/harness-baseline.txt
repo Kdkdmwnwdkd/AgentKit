@@ -11,4 +11,12 @@
 #     ② localmodel——以前缺 app/build/tmp/kotlin-classes/debug（AGP 产物）被 SKIP，
 #        现在 native 包编出来、产物在了，它真跑了，并修掉那条写死旧注册顺序的断言。
 #   两处 SKIP 变 PASS，SKIP 归零。
-88
+#
+# 2026-11-04：88 → 90（新增两个 harness，都是行为断言 + 真实链路）。
+#   ① run-startup-trace-verification.sh——启动分段计时器（StartupTrace，纯 Kotlin 可独立编译）。
+#      25 条断言，用**注入的假时钟**做确定性验证：分段语义、间隔分别记录、空状态、
+#      summary 格式、慢段阈值与倒序、快照隔离、8 线程×50 次并发打点不丢段。
+#   ② run-tool-not-enabled-verification.sh——「工具存在但所属分组未启用」这条路径。
+#      默认只做只读体检（不改源码）；设 AK_ALLOW_SOURCE_MUTATION=1 才会跑
+#      「回退注入点 → 断言必须变红 → 恢复 → 必须重新变绿」的反向变异。
+90

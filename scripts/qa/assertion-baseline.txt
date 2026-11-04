@@ -31,7 +31,10 @@ text scripts/qa/T02T06Verification.kt 20
 text scripts/qa/W31Verification.kt 20
 text scripts/qa/ModelSetupVerification.kt 19
 text scripts/qa/FallbackVerification.kt 18
-text scripts/qa/LocalModelVerification.kt 17
+# 2026-11-04 收紧 17 → 14：「工具未启用 vs 未知工具」的新断言改成了**结构化比较**
+# （解析 formatToolResult 的 code/message/hint 字段后精确相等），不再靠子串 find。
+# 上限跟着实际值往下调，后面的新增就得写成结构化断言了。
+text scripts/qa/LocalModelVerification.kt 14
 text scripts/qa/W33Verification.kt 17
 text scripts/qa/CapabilityManifestVerification.kt 14
 text scripts/qa/R7Verification.kt 14
@@ -68,4 +71,5 @@ text scripts/qa/R3Verification.kt 1
 text scripts/qa/ShizukuResultVerification.kt 1
 text scripts/qa/W34Verification.kt 1
 text scripts/qa/W46Verification.kt 1
-text __TOTAL__ 1373
+# 2026-11-04 收紧 1373 → 1370：同上，3 条子串断言换成了结构化比较。
+text __TOTAL__ 1370

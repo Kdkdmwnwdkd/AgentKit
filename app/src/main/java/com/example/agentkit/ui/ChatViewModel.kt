@@ -38,6 +38,7 @@ import com.example.agentkit.core.agent.TurnObservers
 import com.example.agentkit.core.capability.CapabilityAuditReporter
 import com.example.agentkit.core.capability.ToolActivationStore
 import com.example.agentkit.core.AgentLogger
+import com.example.agentkit.core.StartupMark
 import com.example.agentkit.core.KernelExposure
 import com.example.agentkit.core.agent.ConnectivityNetworkRecoveryWaiter
 import com.example.agentkit.core.ConfigSanitizer
@@ -364,6 +365,8 @@ private const val PROJECT_RULES_LIMIT = 4_000
 
 class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
 
+    private val startup = StartupMark() // 启动分段计时：把「初始化慢」变成可归因的数字
+
     private val workspace = File(app.filesDir, "agent_workspace")
 
     /**
@@ -553,7 +556,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     private fun buildInitialSkills(): List<SkillManifest> {
         val imported = importRepo.loadImported(app)
         importedIds = imported.map { it.id }.toSet()
-        return SkillLoader.loadAll(app) + imported
+        return (SkillLoader.loadAll(app) + imported).also { startup.mark("skills") }
     }
 
     /** UI 用技能信息（含安全策略摘要）：让 L5 全局能力门「看得见」。 */
@@ -567,7 +570,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     /* ------------------------- W-48 插件市场状态 ------------------------- */
 
     /** 已配置的市场源（含顺序即用户添加顺序）。 */
-    private val _marketSources = MutableStateFlow(marketStore.loadSources())
+    private val _marketSources = MutableStateFlow(marketStore.loadSources().also { startup.mark("marketSources") })
     val marketSources: StateFlow<List<MarketSource>> = _marketSources.asStateFlow()
 
     /** 合并去重后的插件列表（含本机安装态）。 */
@@ -718,9 +721,8 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
             context = app,
             distroProvider = { RootfsManager.listAvailable(app).firstOrNull() },
             // W-53：无线调试作为第三级（proot → adb → user）。provider 在 automation 包，
-            // 由这里注入，避免 core 反向依赖 automation。
-            // W-56：Shizuku 也做成池后端（uid 2000 + 持久 shell），所以默认会话链是
-            // proot → shizuku → adb → user
+            // 由这里注入，避免 core 反向依赖 automation。W-56：Shizuku 也做成池后端
+            // （uid 2000 + 持久 shell），所以默认会话链是 proot → shizuku → adb → user
             extraProviders = listOf(ShizukuBackendProvider(), AdbBackendProvider())
         )
 
@@ -908,8 +910,8 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
                     llmProvider = { buildMainClient() },
                     baseRegistry = { this },
                     // R4：审批穿过子代理边界（白名单当前无副作用工具，但不能再依赖这个巧合）。
-                    // 用 lambda 间接引用而不是直接传值：registry 的初始化早于 approvalHandler
-                    // （属性按声明顺序初始化），直接取值会捕到 null；lambda 在真正弹窗时才读。
+                    // 用 lambda 间接引用而不是直接传值：registry 的初始化早于 approvalHandler，
+                    // 直接取值会捕到 null；lambda 在真正弹窗时才读。
                     approval = { tool, args -> approvalHandler(tool, args) }
                 )
             )
@@ -927,6 +929,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         register(ShellJobsTool(jobStore, jobRunner))
         // B 批：容器运行时管理——让 Agent 自己把容器变成能跑 node/python/java 的环境
         register(ContainerToolchainTool(app))
+        startup.mark("registry") // 工具注册表整段（40+ 工具实例化）：最可能随工具数线性增长的段
     }
 
     /** JS 执行引擎（Rhino，纯 Java 无需 NDK）；初始化失败则降级为仅 prompt 形态。 */
@@ -942,22 +945,18 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     )
 
     init {
-        // L8：日志目录就绪后才能记录后续任何一行。
-        //
-        // R3：日志初始化已挪到 `AgentKitApplication.onCreate`——运行层（租约登记、
-        // 空闲回收）比 ViewModel 更早跑，那段时间的日志必须能落盘。
-        // 这里保留调用是**幂等兜底**（Application 初始化失败时仍能补上）。
+        // L8：日志目录就绪后才能记录后续任何一行。R3 起日志初始化已挪到
+        // `AgentKitApplication.onCreate`（运行层比 ViewModel 更早跑），此处保留是**幂等兜底**。
         runCatching { AgentLogger.init(logDir) }
         // W-33：上次进程被杀时残留的 running 任务标为「结果未知」，不假装还在跑
         runCatching { jobStore.reconcile(System.currentTimeMillis()) }
-        // B 批：Agent 长任务运行态对账——残留 running 说明上次进程被系统回收了，
-        // 标为 interrupted 并生成一句恢复提示（用户回来能知道上次做到哪）。
+        // B 批：Agent 长任务运行态对账——残留 running 说明上次进程被系统回收了，标为 interrupted
         runCatching {
             agentRunStateStore.reconcile()?.let { _interruptedNotice.value = it.note }
         }
-        // R1：回合日志对账——比上面那条更细一层：它能说清「哪个写操作可能已经生效」，
-        // 而不只是「上次没跑完」。两者都写 interruptedNotice，先到的优先（运行态那句更完整）。
+        // R1：回合日志对账——比上面那条更细一层：它能说清「哪个写操作可能已经生效」
         runCatching { recoverInterruptedJournal() }
+        startup.mark("reconcile")
         if (skillsSnapshot.isNotEmpty()) {
             // use_skill 工具的 systemPrompt 会被 AgentLoop 自动拼进系统提示（利用工具自带提示特性）
             // 用 skillsProvider 动态感知导入/卸载/授权的技能变化
@@ -984,9 +983,9 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         // W-17：注册周期巡检（幂等）并载入列表
         WorkflowScheduler.ensureScheduled(app)
         refreshWorkflows()
+        startup.mark("workflows")
         // P3-1：能力清单自检——把注册表与 CapabilityManifest 对一遍（只在有偏差时打一条 warn）。
-        // 放在 MCP 注册**之前**：MCP 工具是运行时动态来的，名字不受清单约束，
-        // 让它们参与审计只会制造固定噪声。
+        // 放在 MCP 注册**之前**：MCP 工具是运行时动态来的，名字不受清单约束，参与审计只会制造噪声。
         CapabilityAuditReporter.report(registry.list())
         // W-14：异步连 MCP 服务器并把工具注册进 registry（失败只记日志，不影响启动）
         registerMcpTools()
@@ -994,6 +993,8 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         // L8/L9：首屏即有内容可看
         refreshLogs()
         refreshMemories()
+        startup.mark("refresh")
+        startup.logSummary("ViewModel 初始化分段")
     }
 
     /**
@@ -1039,10 +1040,9 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
                 }
             }
             pendingRecoveryNote = note
-            // 提示优先级：**有写操作结局未知时，以这一句为准**。
-            // 实测发现的坑：运行态那句「上次任务已被系统中断」先到，把这里挡住，
-            // 用户只看到「可以直接说继续」——而这恰恰是最不能直接继续的情况。
-            // 没有未知写操作时才让位给运行态那句（它带任务标题与步数，更完整）。
+            // 提示优先级：**有写操作结局未知时，以这一句为准**。实测的坑：运行态那句
+            // 「上次任务已被系统中断」先到把这里挡住，用户只看到「可以直接说继续」——
+            // 而这恰恰是最不能直接继续的情况；没有未知写操作时才让位给运行态那句。
             if (unknown.isNotEmpty() || _interruptedNotice.value == null) {
                 _interruptedNotice.value = note
             }

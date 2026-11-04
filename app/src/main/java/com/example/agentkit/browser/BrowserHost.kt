@@ -8,6 +8,7 @@ import android.os.SystemClock
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import com.example.agentkit.core.AgentLogger
+import java.io.File
 import java.lang.ref.WeakReference
 
 /**
@@ -51,6 +52,7 @@ object BrowserHost {
                 // 响应」的状态，日志里必须有耗时可查——否则下次再看到启动卡顿，只能猜。
                 val t0 = SystemClock.elapsedRealtime()
                 AgentLogger.i(TAG, "开始创建后台 WebView")
+                ensureWebViewCacheDir(activity)
                 val wv = WebView(activity)
                 val tConstruct = SystemClock.elapsedRealtime() - t0
                 wv.settings.apply {
@@ -81,6 +83,40 @@ object BrowserHost {
 
     /** 取当前 WebView（必须在主线程访问）。未就绪返回 null。 */
     fun webView(): WebView? = if (destroyed) null else webRef?.get()
+
+    /**
+     * 预建 WebView 的缓存目录 `cache/WebView`。
+     *
+     * ## 为什么必须先建
+     *
+     * chromium 初始化崩溃上报器时，会在 `cache/WebView/` **下面**再 mkdir 一个
+     * `Crashpad` 子目录。系统并不保证 `cache/WebView` 存在（它是 WebView provider
+     * 首次运行时才懒创建的），于是每次冷启动都有一条 E 级错误：
+     *
+     * ```
+     * E chromium: [ERROR:filesystem_posix.cc(62)]
+     *   mkdir /data/user/0/<pkg>/cache/WebView/Crashpad: No such file or directory (2)
+     * ```
+     *
+     * 影响：功能上无害（崩溃上报只是没落盘），但它每次冷启动都刷一条 E 级日志——
+     * 而「启动日志里有 E 级错误」本身就会让人怀疑是不是出了真问题，排障时白白分神。
+     *
+     * 修法就是字面意义上的「先把父目录建出来」：mkdirs 会递归建出 `cache/WebView`，
+     * chromium 随后的 `mkdir Crashpad` 就能成功。
+     */
+    private fun ensureWebViewCacheDir(activity: Activity) {
+        runCatching {
+            val dir = File(activity.cacheDir, "WebView")
+            if (!dir.exists()) {
+                dir.mkdirs()
+                AgentLogger.i(TAG, "已预建 WebView 缓存目录：${dir.absolutePath}")
+            }
+        }.onFailure {
+            // 建不出来也不能阻断 WebView 创建——它是「消除一条 E 级日志」，
+            // 不是「WebView 的必要条件」。失败就退回原来的行为（有那条错误日志）。
+            AgentLogger.w(TAG, "预建 WebView 缓存目录失败：${it.message}")
+        }
+    }
 
     /** 释放（Activity 销毁时调用）。 */
     fun release() {

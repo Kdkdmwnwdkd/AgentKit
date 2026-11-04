@@ -107,6 +107,34 @@ class ToolRegistry {
         append("。请从上述工具中选择正确名称重新调用，不要重复已失败的调用。")
     }
 
+    /**
+     * 工具在**全量注册表**里存在、但不在本注册表（回合级工具视图）里时的回喂文案。
+     *
+     * ## 为什么必须与 [unknownToolMessage] 分开
+     *
+     * 回合级工具视图（`RealAgentLoop.scopedRegistry`）只装本回合暴露的工具。被裁掉的
+     * 工具在这个视图里「查无此工具」，与「这个工具根本不存在」走的是同一条分支——
+     * 但两者的**正确反应完全相反**：
+     *
+     *  - 真不存在 → 模型是**记错了名字**，该做的是改名字或换工具；
+     *  - 存在但未启用 → 模型记的**完全正确**，该做的是先 `__use_tools` 启用它所在的分组，
+     *    下一轮就能直接调。
+     *
+     * 统一说「未知工具」会让模型以为自己凭空编了个工具，转而去猜别的名字——
+     * 而真相是它**没有记错**，只是少开了一个组。这正是本方法存在的理由。
+     *
+     * @param name 模型调用的工具名。
+     * @param group 该工具所属的分组名（用于告诉模型开哪个组）。
+     */
+    fun toolNotEnabledMessage(name: String, group: String): String = buildString {
+        append("工具 '").append(name).append("' 存在，但当前未启用（它属于 '").append(group).append("' 组）。")
+        append("请先调用 __use_tools 启用 '").append(group).append("' 组（参数 groups=\"").append(group).append("\"），")
+        append("下一轮即可直接调用它；或调用 __find_tools 查找其他可用工具。")
+        append("当前已启用工具：")
+        append(names().take(20).joinToString(", "))
+        append("。")
+    }
+
     /** 执行一次工具调用，无论成功失败都返回一个可进入历史的 ToolMessage（统一契约文本）。 */
     suspend fun execute(call: ToolCall): ToolMessage {
         val tool = get(call.name)

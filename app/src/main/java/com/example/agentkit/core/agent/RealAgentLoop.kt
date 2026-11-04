@@ -610,8 +610,7 @@ class RealAgentLoop(
                 return turnResult()
             }
             // 每轮重算工具面：上一步若调了 __use_tools，激活的组要立刻体现在下一轮请求里。
-            // scopedRegistry 仍按暴露面收紧执行侧——被裁工具在此视图内「查无此工具」，
-            // 走 T02 未知工具路径并提示先用 __use_tools，避免模型靠猜名字绕过裁剪。
+            // scopedRegistry 仍按暴露面收紧执行侧——被裁工具走「未启用」路径并提示先开它所在的组。
             val exposure = currentExposure(active)
             val turnRegistry = scopedRegistry(exposure)
             // T01 钩子：序列化前（每次 LLM 请求前一次；快照传参，钩子看不到后续变更）
@@ -815,19 +814,18 @@ class RealAgentLoop(
             val fp = failureGuard.fingerprint(call.name, call.arguments)
             !seenFingerprints.add(fp) // 已出现过 -> 同批重复
         }
-        // T01 三段式之解析：descriptor 快照（未知工具 -> 合成占位，executor 内走模糊匹配文案）。
-        // Phase 2 DoD④：以「回合级工具视图」解析——被裁工具在此为 null，走未知工具路径。
+        // T01 三段式之解析：descriptor 快照（不在本回合工具视图里 -> 合成占位，executor 内分流）。
+        // Phase 2 DoD④：以「回合级工具视图」解析——被裁工具在此为 null，走「未启用」路径。
         val descriptors = calls.map { turnRegistry.descriptorOf(it.name) }
         val unknownCount = descriptors.count { it == null }
         if (unknownCount > 0) {
-            AgentLogger.w("AgentLoop", "本批含 $unknownCount 个未知工具调用（走 T02 模糊匹配文案）")
+            AgentLogger.w("AgentLoop", "本批含 $unknownCount 个不在本回合工具视图的调用（分组未启用或名称写错）")
         }
         // 元工具 `__use_tools` 标了 `readOnly = true`，但那只是「不需要审批」的意思，
         // **不代表没有副作用**：它会就地修改 active 组集合。而 `batchHasMutation` 只看
         // `readOnly` 判串并行，于是模型一次发两个 `__use_tools` 时，两个协程会同时
         // `remove`/`addAll` 同一个 LinkedHashSet——轻则顺序错乱（LRU 失效），重则
-        // ConcurrentModificationException。这里按名字补一条，把它归入串行。
-        // `__find_tools` 不在此列：它纯读，并行无害。
+        // ConcurrentModificationException。这里按名字补一条，把它归入串行（`__find_tools` 纯读，并行无害）。
         val hasMutation = turnRegistry.batchHasMutation(calls) ||
             calls.any { it.name == KernelExposure.USE_TOOLS }
         AgentLogger.i(
@@ -1269,7 +1267,8 @@ class RealAgentLoop(
      * 每批工具执行前取一次 executor（默认按**当前**字段构造，update(registry) 即时生效）。
      *
      * Phase 2 DoD④：默认 executor 绑定的 registry 为「回合级工具视图」[reg]——未裁剪时
-     * 即原 `registry`（行为不变）；裁剪时仅含暴露工具，被裁工具走未知工具路径。
+     * 即原 `registry`（行为不变）；裁剪时仅含暴露工具，被裁工具走「未启用」路径（靠
+     * [RegistryToolExecutor] 的 fullRegistry 参数与全量表对照判定）。
      * executorFactory 注入（测试替身）优先级不变，忽略 [reg]。
      */
     private fun toolExecutor(reg: ToolRegistry, turn: TurnJournal.Turn? = null, step: Int = 0): ToolExecutor =
@@ -1278,11 +1277,12 @@ class RealAgentLoop(
             failureGuard,
             approval,
             hooks,
-            // W-11：结果上限与上下文预算对齐——本地 2k 预算下 24k 字符的一条结果
-            // 单条就撑爆 n_ctx，且当前步不可丢，压缩救不回来
+            // W-11：结果上限与上下文预算对齐——本地 2k 预算下 24k 字符的一条结果就撑爆 n_ctx
             maxResultChars = ContextBudget.toolResultLimitChars(llmProvider().id, contextBudgetTokens),
             // R1：把「越过执行边界」的记账点交给执行器——放在审批之后，见 beforeEffect 注释
-            beforeEffect = { call -> turn?.toolDispatched(step, call.id) ?: true }
+            beforeEffect = { call -> turn?.toolDispatched(step, call.id) ?: true },
+            // fullRegistry：让执行器区分「工具不存在」与「存在但分组未启用」
+            fullRegistry = registry
         )
 
     /**
@@ -1302,7 +1302,7 @@ class RealAgentLoop(
      * 由暴露面构造「回合级工具视图 registry」：
      *  - 未裁剪（全量）→ 原样返回 [registry]，零开销；
      *  - 发生裁剪 → 新建仅含暴露工具的 registry，使被裁工具在该视图内「查无此工具」，
-     *    从而 descriptor 解析为 null、executor 走 T02 未知工具路径（模糊匹配 + 自纠 hint），不抛异常。
+     *    从而 descriptor 解析为 null、executor 走「未启用」路径（指出所属组 + 开组指引），不抛异常。
      *
      * 注：仅影响本回合的「工具视图」，全局 [registry]（Skill 桥等复用）不变。
      */

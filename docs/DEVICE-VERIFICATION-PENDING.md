@@ -310,9 +310,85 @@ tool.start / tool.end / step.close / turn.end`。
 - arm64 真机：O1~O9/O11、容器租约（需 arm64 版 proot）、无障碍、真实分享面板。
 - **首帧耗时**（arm64 真机未测；`ChatViewModel` 初始化 9 秒主线程重活未处理）。
 - P5-4 发布签名缺 secret。
-- `chromium: mkdir /data/user/0/.../cache/WebView/Crashpad: No such file or directory`
-  ——WebView 缓存目录未先创建，chromium 建子目录失败（E 级，不影响功能，
-  但每次冷启动都有一条错误日志，未处理）。
+
+---
+
+## 2026-11-04 第二轮：三条挂账落地（启动可归因 + 工具回执分路 + Crashpad 静默）
+
+上一轮列的三条「说不清」——`unknown_tool` 文案、`ChatViewModel` 9 秒、Crashpad 日志——
+这一轮全部落地成**可验证的事实**。详细过程见
+`AgentKit-启动可归因与工具回执分路-2026-11-04.md`。
+
+### ✅ 挂账 1：未启用组的工具回执（已修 + 已验）
+
+**改法**：新增失败码 `tool_not_enabled` 与专属文案，与 `unknown_tool` 严格分开；
+执行器拿到全量注册表后做二分判定（存在但不在本回合工具视图 → 「未启用」）。
+
+**验证机实测**（`active_groups=file`，`sys` 组不激活，mock LLM 调 `calculator`）：
+
+```
+23:50:08.788 INFO [ToolExposure] 工具面裁剪：provider=openai mode=GROUPED 暴露 5 个（含 2 个元工具），裁掉 53 个；已启用组=file
+23:50:10.479 WARN  [Tool] 工具未启用：calculator（组 sys）——请先 __use_tools 启用该组
+23:50:10.596 INFO  [Turn] tool.end step=0 tool=calculator code=tool_not_enabled error=true dur=130ms
+23:50:11.784 INFO  [Turn] turn.end status=completed steps=2
+```
+
+回执现在说清三件事：**存在但未启用**、**属于哪个组**、**怎么开**（`groups="sys"`）。
+真不存在的工具仍然回 `unknown_tool`（两条路径互不干扰，有断言守着）。
+
+### ✅ 挂账 2：`ChatViewModel` 初始化 9 秒（已埋点，数字可归因）
+
+新增纯 Kotlin 的启动分段计时器（`core/StartupTrace.kt`），在 ViewModel 初始化里打 6 个点。
+**验证机实测（x86 软件模拟，两次冷启动）**：
+
+```
+23:45:07.699 INFO [Startup] ViewModel 初始化分段：skills=674ms, marketSources=13ms, registry=732ms,
+                 reconcile=79ms, workflows=150ms, refresh=729ms, total=2377ms
+23:47:04.759 INFO [Startup] ViewModel 初始化分段：skills=445ms, marketSources=9ms, registry=593ms,
+                 reconcile=137ms, workflows=105ms, refresh=834ms, total=2123ms
+```
+
+「9 秒」这句话被数据取代了：这台无 KVM 的软件模拟器上总耗时 **2.1～2.4 秒**，
+重活集中在 `refresh`（729~834ms）、`registry`（593~732ms）、`skills`（445~674ms）。
+**下一轮要动的对象就是这三个数**（本轮只埋点，不优化）。
+
+> arm64 真机首帧仍未测——但现在真机一装上，日志里就会直接给出这些数字。
+
+### ✅ 挂账 3：chromium Crashpad E 级日志（已修 + 已验）
+
+创建 WebView 之前先 `mkdirs()` 建出 `cache/WebView`（chromium 的 mkdir 不是递归的）。
+
+**验证机实测（必须全新安装，`-r` 覆盖安装会保留 `cache/`，测不出东西）**：
+
+```
+23:55:04.415 INFO [BrowserHost] 开始创建后台 WebView
+23:55:04.444 INFO [BrowserHost] 已预建 WebView 缓存目录：/data/user/0/com.example.agentkit/cache/WebView
+23:55:06.971 INFO [BrowserHost] 后台 WebView 已就绪（构造 2509ms，总计 2555ms）
+```
+
+logcat 里 **0 条** crashpad 行、**0 条** chromium 的 E 级行。
+
+### 本轮新发现的一件事（本轮未改，记为新挂账）
+
+**App 已在前台时，`am start --es workflow_id w-calc` 不会触发工作流**——
+系统提示 "intent has been delivered to currently running top-most instance"，
+但 `onNewIntent` 里的 `pendingWorkflowId` 没有被 Compose 消费（无「从通知进入，准备执行」日志）。
+冷启动带同一个 extra 则正常（`onCreate` 路径）。
+
+影响：真机用户「App 开着的时候点定时任务通知」这条路径可能不执行。
+本轮未定位根因、未改代码，**新挂账**。
+
+### 这一轮的验证数字
+
+| 项 | 结果 |
+|---|---|
+| 全量 harness | `PASS=90 SKIP=0 XFAIL=0 FAIL=0`（新增 2 个 harness） |
+| 门禁 | 5/5 全过 |
+| 文本断言 | 1373 → **1370**（新断言全改结构化比较，基线同步收紧） |
+| 大文件行数 | `ChatViewModel` 3890 / `RealAgentLoop` 1557，**均未超冻结上限** |
+| 反向变异 | 「回退注入点 → 必红 → 恢复 → 重新变绿」6/6 通过 |
+| 三项度量 | 白等 0 次 / 写入 3.5KB / 重放 0 次 |
+
 
 ### 补掉 3：全量 harness 两处「第一次真跑」暴露的陈旧断言
 

@@ -68,6 +68,40 @@ private fun assertNotContains(name: String, haystack: String?, needle: String) {
     }
 }
 
+/**
+ * 工具回执的结构化视图：把 `formatToolResult` 渲染出来的文本拆成 code / message / hint。
+ *
+ * ## 为什么解析而不是子串 find
+ *
+ * 本 harness 走的是**真实链路**（RealAgentLoop → RegistryToolExecutor → formatToolResult），
+ * 拿到的 content 是**运行期产物**，不是源码。契约真正关心的是三个字段的值：
+ * 机器可读码（模型据此分支）、主文案、修复指引。
+ *
+ * 拆成字段之后能做**精确相等**比较，比「整段文本里 find 得到某个词」严：
+ * 回执说错了码、把该开的组说成别的组、或者把「未启用」说成「未知」，都会红。
+ */
+private data class Receipt(val code: String, val message: String, val hint: String?)
+
+private fun parseReceipt(content: String): Receipt {
+    val lines = content.lines()
+    val code = lines.firstOrNull().orEmpty().substringAfter("code=", "").trim()
+    val message = lines.firstOrNull { it.startsWith("message: ") }?.removePrefix("message: ").orEmpty()
+    val hint = lines.firstOrNull { it.startsWith("hint: ") }?.removePrefix("hint: ")
+    return Receipt(code, message, hint)
+}
+
+/**
+ * 从回执里抽出「建议启用的分组名」（文案里的 `groups="ui"`）。抽不出返回 null。
+ *
+ * 这个参数是模型下一步真正要用的东西——它必须和该工具**真实的归属组**一致，
+ * 否则模型开了组还是调不到，等于给了条错路。
+ */
+private fun extractGroups(text: String?): String? {
+    val raw = text?.substringAfter("groups=\"", "") ?: return null
+    val name = raw.substringBefore('"')
+    return name.takeIf { it.isNotBlank() }
+}
+
 /* ------------------------------ 测试替身 ------------------------------ */
 
 /** 真实的 25 个工具名（对齐 ChatViewModel 注册面），"20+ 个工具"的现状快照。 */
@@ -296,11 +330,11 @@ private suspend fun testLoopExposure() {
     }
 }
 
-/** 用例 4：被裁工具被调用 → 未知工具路径（不抛异常 + 可自纠 hint + 真的没执行）。 */
+/** 用例 4：被裁工具被调用 → 「存在但未启用」路径（不抛异常 + 提示开组 + 真的没执行）。 */
 private suspend fun testTrimmedToolUnknownPath() {
-    println("\n== 用例 4：被裁工具被调用 → 未知工具路径 ==")
+    println("\n== 用例 4：被裁工具被调用 → tool_not_enabled 路径 ==")
 
-    check("本地模型调 ui_swipe（已裁）：不抛异常、错误结果回喂、含自纠 hint、且未真正执行") {
+    check("本地模型调 ui_swipe（未启用）：不抛异常、错误结果回喂、提示先开组、且未真正执行") {
         val fx = Fixture()
         val llm = ScriptedLlm(
             "local-llama",
@@ -315,15 +349,50 @@ private suspend fun testTrimmedToolUnknownPath() {
         val tm = history.filterIsInstance<ToolMessage>().firstOrNull { it.id == "c1" }
         assertTrue("有 c1 的 ToolResult", tm != null)
         assertEquals("标记为错误", true, tm!!.isError)
-        assertContains("未知工具 code", tm.content, "unknown_tool")
-        assertContains("未知工具文案", tm.content, "未知工具 'ui_swipe'")
-        assertContains("可自纠 hint", tm.content, "hint:")
-        // 可用工具列表只含本回合暴露面：不应出现另一个被裁工具
-        assertNotContains("可用列表不含被裁工具", tm.content, "ui_long_press")
+        // 关键区分：ui_swipe **确实存在**（在 ui 组），只是该组没启用。
+        // 回执必须说「未启用、这是哪个组、怎么开」，而不是「未知工具」——
+        // 后者会让模型以为自己记错了名字，转而去猜别的名字。
+        val r = parseReceipt(tm.content)
+        assertEquals("失败码=tool_not_enabled", "tool_not_enabled", r.code)
+        assertTrue("失败码不是 unknown_tool", r.code != "unknown_tool")
+        assertTrue(
+            "回执开门见山说「存在但未启用」",
+            r.message.startsWith("工具 'ui_swipe' 存在，但当前未启用")
+        )
+        assertTrue("回执点明所属组", r.message.indexOf("属于 'ui' 组") >= 0)
+        // 「怎么开组」要可执行：文案与 hint 都必须给出 groups 参数，且与真实归属组一致
+        assertEquals("message 里的 groups 参数=ui", "ui", extractGroups(r.message))
+        assertEquals("hint 里的 groups 参数=ui", "ui", extractGroups(r.hint))
+        assertTrue("hint 教模型先开组", (r.hint ?: "").indexOf("__use_tools") >= 0)
         // 关键：被裁工具「根本没有执行」（回合级工具视图里查无此工具）
         assertEquals("ui_swipe 未被执行", 0, fx.tools["ui_swipe"]!!.executions)
         // 正常收尾
         assertEquals("正常收尾", "done", (history.last() as AssistantMessage).content)
+    }
+
+    check("真不存在的工具仍走 unknown_tool（与「未启用」严格区分）") {
+        val fx = Fixture()
+        val llm = ScriptedLlm(
+            "local-llama",
+            listOf(
+                AssistantMessage("", listOf(ToolCall("c2", "totally_not_a_tool", argsOf()))),
+                AssistantMessage("done")
+            )
+        )
+        val loop = RealAgentLoop(llmProvider = { llm }, registry = fx.registry, providerRetry = 0)
+        val history = loop.send("随便调用")
+
+        val tm = history.filterIsInstance<ToolMessage>().firstOrNull { it.id == "c2" }
+        assertTrue("有 c2 的 ToolResult", tm != null)
+        assertEquals("标记为错误", true, tm!!.isError)
+        // 真正不存在的工具：仍然是 unknown_tool + 模糊匹配建议（T02 语义不变）
+        val r = parseReceipt(tm.content)
+        assertEquals("失败码=unknown_tool", "unknown_tool", r.code)
+        assertTrue("失败码不是 tool_not_enabled", r.code != "tool_not_enabled")
+        assertTrue("未知工具文案点名工具名", r.message.startsWith("未知工具 'totally_not_a_tool'"))
+        // 「不存在」时不该指示开组——没有组可开
+        assertEquals("未知工具路径不给出 groups 参数", null, extractGroups(r.message))
+        assertEquals("未知工具路径不给出 groups 参数（hint）", null, extractGroups(r.hint))
     }
 }
 

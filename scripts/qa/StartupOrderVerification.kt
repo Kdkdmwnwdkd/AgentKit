@@ -77,6 +77,43 @@ fun main() {
     // 4. 构造耗时必须进日志：这段卡顿是可见的，日志里查不到就等于没观测
     check("WebView 构造耗时进日志", "elapsedRealtime" in host && "构造" in host)
 
+    // ---------- 5. WebView 缓存目录必须先建（chromium 的 Crashpad 报错） ----------
+    //
+    // 真机日志原文（每次冷启动都有）：
+    //   E chromium: [ERROR:filesystem_posix.cc(62)]
+    //     mkdir /data/user/0/<pkg>/cache/WebView/Crashpad: No such file or directory (2)
+    //
+    // 根因：chromium 建 Crashpad 子目录时用**非递归** mkdir，父目录 `cache/WebView`
+    // 不存在就直接失败（那个目录是 WebView provider 首次运行时才懒创建的）。
+    // 影响：功能无害，但每次冷启动刷一条 E 级日志——启动日志里挂着 E 级错误，
+    // 排障时会让人怀疑是不是出了真问题，白白分神。
+    //
+    // 修法：创建 WebView 之前先 mkdirs 建出 `cache/WebView`。
+    //
+    // 断言要点：建目录的调用**必须在 WebView(activity) 之前**——顺序反了等于没修
+    // （chromium 在构造 WebView 时就报错了，事后建目录来不及）。
+    val ensureCall = host.indexOf("ensureWebViewCacheDir(activity)")
+    val webViewCtor = host.indexOf("WebView(activity)")
+    check(
+        "预建 WebView 缓存目录的调用排在 WebView 构造之前（顺序反了等于没修）",
+        ensureCall > 0 && webViewCtor > 0 && ensureCall < webViewCtor,
+        "ensure@$ensureCall webView@$webViewCtor"
+    )
+    check(
+        "建的是 cache/WebView（chromium 要在它下面建 Crashpad 子目录）",
+        "cacheDir" in host && "WebView" in host
+    )
+    check(
+        "用 mkdirs 递归建（chromium 的 mkdir 不是递归的，父目录必须齐）",
+        "mkdirs()" in host
+    )
+    // 建目录失败**不能**阻断 WebView 创建：它是「消除一条 E 级日志」，
+    // 不是 WebView 的必要条件。失败就退回原行为。
+    check(
+        "建目录失败不阻断 WebView 创建（runCatching 兜底）",
+        "runCatching" in host && "ensureWebViewCacheDir" in host
+    )
+
     println("\n== 结果：$pass 通过 / $fail 失败 ==")
     if (fail > 0) kotlin.system.exitProcess(1)
 }
