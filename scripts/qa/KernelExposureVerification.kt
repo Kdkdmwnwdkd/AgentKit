@@ -28,6 +28,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import java.io.File
 
 private var pass = 0
 private val fails = mutableListOf<String>()
@@ -485,7 +486,32 @@ fun main() = runBlocking {
         promptA.lines().firstOrNull { it.startsWith("- read_file(") } ?: "缺 read_file 行"
     )
 
-    // ---------- 10. 结果 ----------
+    // ---------- 10. 清单 → 实现（静态） ----------
+    //
+    // `CapabilityManifest.audit` 的第 ② 条也在查这个，但它跑在**运行期**、拿的是注册表：
+    // 只有 App 启动过一次才知道缺谁，且只 WARN。这条在**编译前**用源码查同一件事——
+    // 清单是发给模型的工具表，写错一个名字的后果是模型照着调用、拿到 unknown_tool，
+    // 更糟的是模糊匹配会把它指到一个不相干的工具上（见 CapabilityManifest 的注释）。
+    //
+    // 扫 `override val name = "xxx"` 而不是按类名走：工具的继承链有四五种写法
+    // （`class X(...) : AgentTool`、多行构造参数、object、匿名实现），按类名切会漏，
+    // 而漏掉的正好是「清单里名字最长的那些」（WriteFileTool 就是这样漏的）。
+    val implNames: Set<String> = File("app/src/main/java/com/example/agentkit")
+        .walkTopDown()
+        .filter { it.extension == "kt" }
+        .flatMap { f ->
+            Regex("""override val name(?::\s*String)?\s*=\s*"([a-z0-9_]+)"""")
+                .findAll(f.readText()).map { it.groupValues[1] }.asSequence()
+        }
+        .toSet()
+    // 自检：正则失效时集合会变空，「全部存在」就成了空话。
+    check("扫到足够多的工具实现（当前 ${implNames.size} 个）", implNames.size >= 40)
+    val noImpl = CapabilityManifest.toolNames.filter { it !in implNames }
+    check("清单里每个工具都有实现（否则模型照清单调用会拿到 unknown_tool）", noImpl.isEmpty(), "缺：$noImpl")
+    val noGroup = implNames - CapabilityManifest.toolNames.toSet()
+    check("实现了的工具都在清单里（未登记的工具会落进 misc 且组索引看不到）", noGroup.isEmpty(), "未登记：$noGroup")
+
+    // ---------- 11. 结果 ----------
 
     // 结果行必须含 "0 失败"：run-all.sh 靠这个字样判 PASS，
     // 写成「0 项失败」不匹配它的正则，会被当成「跑完没有通过标记」判 FAIL。
