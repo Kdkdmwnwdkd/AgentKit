@@ -103,12 +103,51 @@ object CapabilityRegistry {
      * **未知工具按 DANGEROUS 处理**：这是安全侧默认（fail-closed）。
      * 旧实现按 SAFE 处理，等于「新工具只要忘了登记就自动放行」——`shell_run` /
      * `edit_file` / `github_commit` 都曾因此被 imported 技能当成安全工具。
-     * 新增工具必须显式登记到 [table]，harness 会扫描全部工具名守住这条。
+     * 新增工具必须显式登记到 [table]，[audit] 与 harness 守着这条。
      */
     fun cap(toolName: String): Capability = table[toolName] ?: Capability.DANGEROUS
 
     /** 返回全部已知危险工具名（供 UI / 审计展示）。 */
     fun dangerousTools(): List<String> = table.filterValues { it == Capability.DANGEROUS }.keys.toList()
+
+    /** 已登记的工具名（只读快照，供审计与调试页使用）。 */
+    val knownTools: Set<String> get() = table.keys
+
+    /**
+     * 与「受治理的工具全集」对账，返回人话问题列表（空 = 对得上）。
+     *
+     * ## 为什么要单独对账
+     *
+     * [cap] 是 fail-closed 的：查不到就当 DANGEROUS。这让「漏登记」在**安全**上无害，
+     * 却在**可解释性**上有害——一个标了 SAFE 语义的新工具（比如某个只读查询）忘了登记，
+     * 表现是 imported/remote 技能调它时拿到一句「能力越权：…无权调用 xxx（DANGEROUS）」，
+     * 而工具本身明明只读。查这个问题要从「技能为什么被拒」倒推回这张表，中间没有任何线索。
+     *
+     * 反方向同样要查：工具删了、表没删，条目就是死的，`dangerousTools()` 的展示、
+     * 审批弹窗的分级说明都会指着不存在的东西。
+     *
+     * ## 入参口径
+     *
+     * 传 [com.example.agentkit.core.capability.CapabilityManifest.toolNames]（受治理的工具），
+     * **不要传工具注册表全集**：元工具（`__use_tools` / `__find_tools`）与 MCP 动态工具的
+     * 名字不受技能白名单约束，传进来只会制造每次都一样的固定噪声。
+     */
+    fun audit(governedTools: Collection<String>): List<String> {
+        val governed = governedTools.toSet()
+        val missing = governed.filter { it !in table }.sorted()
+        val stale = table.keys.filter { it !in governed }.sorted()
+        return buildList {
+            if (missing.isNotEmpty()) {
+                add(
+                    "能力表缺 ${missing.size} 个工具（会按 DANGEROUS 处理，" +
+                        "imported/remote 技能调用即被拒）：${missing.joinToString()}"
+                )
+            }
+            if (stale.isNotEmpty()) {
+                add("能力表多 ${stale.size} 个清单里没有的工具（死条目）：${stale.joinToString()}")
+            }
+        }
+    }
 }
 
 /** Skill 信任等级：来源越不可控，权限越收紧。 */

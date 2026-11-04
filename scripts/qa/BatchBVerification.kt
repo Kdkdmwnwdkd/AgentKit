@@ -1,6 +1,7 @@
 import com.example.agentkit.core.agent.AgentRunState
 import com.example.agentkit.core.agent.AgentRunStateStore
 import com.example.agentkit.core.agent.ApprovalGrouping
+import com.example.agentkit.core.capability.CapabilityManifest
 import com.example.agentkit.core.container.ToolchainInstaller
 import com.example.agentkit.core.workspace.FileBackupStore
 import com.example.agentkit.core.workspace.TextDiff
@@ -1095,6 +1096,40 @@ fun main() {
             "不要在抽屉里用 weight 拆两层（真机上会让菜单高度归零）",
             "weight(1f)\n            .verticalScroll" !in s
         )
+    }
+
+    // ---------- F. 技能能力表与工具清单对账（P3-6） ----------
+    //
+    // `CapabilityRegistry.cap()` 的注释一直写着「新增工具必须显式登记，harness 会扫描
+    // 全部工具名守住这条」——但这句话此前**没有任何东西在守**：全套 harness 里只有
+    // B4-8 断言了 `container_toolchain` 一个工具。
+    //
+    // 漏登记的危害不在安全侧（fail-closed，未知即 DANGEROUS），而在可解释性：
+    // 一个只读的新工具忘了登记，表现是 imported 技能调它时收到「无权调用 xxx（DANGEROUS）」，
+    // 而它明明只读。查这个问题要从「技能为什么被拒」倒推回这张表，中间没有线索。
+    check("F-1 能力表覆盖清单里的全部工具（漏登记会静默降级成 DANGEROUS）") {
+        val problems = CapabilityRegistry.audit(CapabilityManifest.toolNames)
+        assertTrue(
+            "清单 ${CapabilityManifest.toolNames.size} 个工具应全部登记，实际差异：$problems",
+            problems.isEmpty()
+        )
+    }
+
+    check("F-2 对账能发现漏登记（反向：给一个不存在的工具名必须报出来）") {
+        val problems = CapabilityRegistry.audit(CapabilityManifest.toolNames + "ghost_tool")
+        assertTrue("应报出 ghost_tool，实际：$problems", problems.any { "ghost_tool" in it })
+    }
+
+    check("F-3 对账能发现死条目（反向：工具从清单移除后必须报出来）") {
+        val problems = CapabilityRegistry.audit(CapabilityManifest.toolNames - "read_file")
+        assertTrue("应报出 read_file 成了死条目，实际：$problems", problems.any { "read_file" in it })
+    }
+
+    // 口径：元工具（__use_tools / __find_tools）与 MCP 动态工具不受技能白名单约束，
+    // 既不进清单也不进能力表。写死这条，免得下次有人「顺手补齐」把噪声引进来。
+    check("F-4 元工具不进清单也不进能力表（否则每次对账都有固定噪声）") {
+        assertTrue("清单不该含元工具", CapabilityManifest.toolNames.none { it.startsWith("__") })
+        assertTrue("能力表不该含元工具", CapabilityRegistry.knownTools.none { it.startsWith("__") })
     }
 
     println("\n== 结果：$pass 通过 / $fail 失败 ==")
