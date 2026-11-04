@@ -185,11 +185,16 @@ fun main(args: Array<String>) {
     check("KernelExposure 不再自持分组表", !exposure.contains("GROUP_NOTES =") && !exposure.contains("GROUP_PATCH ="))
     check("KernelExposure 的 groupOf 委托给清单", exposure.contains("CapabilityManifest.groupOf("))
 
+    // P5-1 起自检搬进 core/capability（UI 层不该做能力自检），所以这里锚三处：
+    // 宿主有没有调用、实现有没有真的跑 audit、调用点是否在 MCP 注册之前。
     val vm = File(src, "com/example/agentkit/ui/ChatViewModel.kt").readText(Charsets.UTF_8)
-    val auditAt = vm.indexOf("CapabilityManifest.audit(")
+    val reporter = File(src, "com/example/agentkit/core/capability/CapabilityAuditReporter.kt")
+        .readText(Charsets.UTF_8)
+    val auditAt = vm.indexOf("CapabilityAuditReporter.report(")
     val mcpAt = vm.indexOf("registerMcpTools()")
     check("启动时跑一次审计", auditAt > 0)
     check("审计在 MCP 注册之前", auditAt in 1 until mcpAt, "audit=$auditAt mcp=$mcpAt")
+    check("自检实现在 core（不在 UI 层）", reporter.indexOf("CapabilityManifest.audit(tools)") >= 0)
     check("McpToolAdapter 强制审批（外部工具不得免审）",
         File(src, "com/example/agentkit/core/mcp/McpToolAdapter.kt")
             .readText(Charsets.UTF_8).contains("override val needsApproval: Boolean = true"))

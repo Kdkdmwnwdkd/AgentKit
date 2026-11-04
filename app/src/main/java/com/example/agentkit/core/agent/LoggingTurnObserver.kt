@@ -39,7 +39,9 @@ class LoggingTurnObserver(
     private fun format(event: TurnEvent): String = buildString {
         append("TURN ").append(event.turnId)
         append(' ').append(event.elapsedMs).append("ms ")
-        append(nameOf(event))
+        // 事件名与流水共用一处（[TurnEvent.nameOf]）：改名会同时改两条通道，
+        // 不存在「文案改了脚本悄悄断掉」的中间态。
+        append(event.nameOf())
         if (!verbose) return@buildString
         when (event) {
             is TurnEvent.TurnStarted ->
@@ -66,11 +68,13 @@ class LoggingTurnObserver(
             is TurnEvent.ToolCallStarted ->
                 append(" step=").append(event.step)
                     .append(" tool=").append(event.tool)
+                    .append(" call=").append(shortId(event.callId))
                     .append(" args=").append(event.argsSummary)
 
             is TurnEvent.ToolCallEnded ->
                 append(" step=").append(event.step)
                     .append(" tool=").append(event.tool)
+                    .append(" call=").append(shortId(event.callId))
                     .append(" code=").append(event.code)
                     .append(" error=").append(event.isError)
                     .append(" dur=").append(event.durationMs).append("ms")
@@ -85,15 +89,11 @@ class LoggingTurnObserver(
         }
     }
 
-    /** 事件名（与 [TurnEvent] 的里程碑一一对应）。 */
-    private fun nameOf(event: TurnEvent): String = when (event) {
-        is TurnEvent.TurnStarted -> "turn.start"
-        is TurnEvent.PromptPlanned -> "prompt.plan"
-        is TurnEvent.LlmCallStarted -> "llm.call"
-        is TurnEvent.LlmCallEnded -> "llm.end"
-        is TurnEvent.ToolCallStarted -> "tool.start"
-        is TurnEvent.ToolCallEnded -> "tool.end"
-        is TurnEvent.StepClosed -> "step.close"
-        is TurnEvent.TurnEnded -> "turn.end"
-    }
+    /**
+     * 调用 id 的前 6 位。
+     *
+     * 不打印全长：一行日志里出现两个 36 位 uuid 会让人一眼看不出哪行是哪行，
+     * 而前 6 位在同一回合内撞车的概率低到可以忽略。配不上对的时候再用流水查全长。
+     */
+    private fun shortId(id: String): String = if (id.isEmpty()) "-" else id.take(6)
 }

@@ -1,6 +1,7 @@
 package com.example.agentkit.core
 
 import com.example.agentkit.core.io.AtomicJsonFile
+import com.example.agentkit.core.telemetry.StoreWriteTrace
 import com.example.agentkit.core.llm.objOrNull
 import com.example.agentkit.core.UiItem
 import kotlinx.serialization.Serializable
@@ -298,6 +299,15 @@ class ConversationStore(file: File) {
 
     /** 有未落盘的变更。 */
     private val persistDirty = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /**
+     * 自上次落盘以来累积的变更次数（P5-1）。
+     *
+     * 去抖到底省了多少次写，只能靠它算：一次 flush 里 `coalesced=7` 说明
+     * 7 次流式追加被并成 1 次 fsync。没有这个数，「写入量降下来了」到底是
+     * 去抖的功劳还是根本就没有写，分不清。
+     */
+    private val pendingMutations = java.util.concurrent.atomic.AtomicInteger(0)
 
     /** 已排的延迟任务，用来在下次变更时取消旧的（这就是「去抖」本身）。 */
     private val pendingPersist = java.util.concurrent.atomic.AtomicReference<java.util.concurrent.ScheduledFuture<*>?>(null)
@@ -633,6 +643,7 @@ class ConversationStore(file: File) {
      */
     private fun schedulePersist(urgent: Boolean = false) {
         persistDirty.set(true)
+        pendingMutations.incrementAndGet()
         if (urgent) {
             runCatching { pendingPersist.getAndSet(null)?.cancel(false) }
             runCatching { persistScheduler.execute { flushNow() } }
@@ -656,8 +667,10 @@ class ConversationStore(file: File) {
      */
     private fun flushNow() {
         if (!persistDirty.getAndSet(false)) return
+        // 取走累积计数（与清脏标记同一处），保证「合并了几次」与「这次写」一一对应
+        val mutations = pendingMutations.getAndSet(0)
         runCatching {
-            persist()
+            persist(mutations)
             persistCount++
         }
     }
@@ -676,12 +689,21 @@ class ConversationStore(file: File) {
      * 原子写：完整快照编码后写入 .tmp；上一版主文件备份为 .bak；最后 rename 替换主文件。
      * rename（同一目录）是原子的，写一半被杀进程也不会把文件打成半截 JSON。
      */
-    private fun persist() {
+    private fun persist(mutations: Int = 1) {
         val snapshot = synchronized(lock) { items.toList() }
         val payload = runCatching { json.encodeToString(snapshot) }.getOrNull() ?: return
         // 会话是最贵的数据：丢了不是「少一条记录」，是整段对话蒸发。
         // 统一原子写保证「写完 → fsync → rename」，断电最差回到上一版。
+        val started = System.currentTimeMillis()
         AtomicJsonFile.write(file, payload)
+        // P5-1：落盘计量（字节数按 UTF-8 算——中文内容按字符数会低估一半以上）。
+        // 放在写成功之后：失败时 AtomicJsonFile 自己会留痕，这里只统计真实写出的量。
+        StoreWriteTrace.write(
+            store = "conversations",
+            bytes = payload.toByteArray(Charsets.UTF_8).size,
+            durationMs = System.currentTimeMillis() - started,
+            coalesced = mutations,
+        )
     }
 
     private fun readTextOrEmpty(f: File): String =

@@ -6,6 +6,7 @@ import android.os.Bundle
 import com.example.agentkit.automation.adb.AdbSession
 import com.example.agentkit.automation.shizuku.ShizukuShell
 import com.example.agentkit.core.AgentLogger
+import com.example.agentkit.core.telemetry.TraceSink
 import com.example.agentkit.core.CrashLogger
 import com.example.agentkit.core.llm.local.AndroidDeviceProbe
 import com.example.agentkit.core.llm.local.LlamaJni
@@ -84,6 +85,9 @@ class AgentKitApplication : Application() {
         //
         // 挪到这里之前先确认目录可用（runCatching 兜住：日志坏了不该阻止启动）。
         runCatching { AgentLogger.init(File(filesDir, "logs")) }
+        // P5-1：机器可读流水的落盘目录（与日记同目录，文件名前缀区分）。
+        // 未初始化即 no-op，所以这里失败不影响任何功能——只是度量又回到「未知」。
+        runCatching { TraceSink.init(File(filesDir, "logs")) }
         runCatching { LocalLlmRuntime.init(this) }
         // R3：租约回收节拍器（统一管理本地模型 / 终端 / 容器三类重资源的空闲释放）。
         // 启动失败不影响任何功能：各资源自己的释放路径仍可用，只是少了统一回收。

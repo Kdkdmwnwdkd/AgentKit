@@ -297,6 +297,17 @@ class RealAgentLoop(
      */
     private val turnActive = AtomicBoolean(false)
 
+    /**
+     * 本步已尝试的请求次数（P5-1）。
+     *
+     * 只给 `llm.end` 事件用：确定性错误（401 / 400 / 额度不足）本该一次就失败，
+     * 若 attempt > 1 说明重试策略把不该重试的东西重试了——「确定性错误平均白等
+     * 38 秒」那项指标就是从这里算的。用 @Volatile 而不是局部变量：发射点在
+     * `callWithRetry` 之外，而一次只有一个回合在跑（`turnActive` 守卫）。
+     */
+    @Volatile
+    private var lastAttempts: Int = 1
+
     /** 可运行时更新字段（[update] 只改这四项；@Volatile：update 可能来自 UI 线程）。 */
     @Volatile
     private var registry: ToolRegistry = registry
@@ -460,15 +471,40 @@ class RealAgentLoop(
         fun emitTurnEnd(status: String) {
             emit(
                 TurnEvent.TurnEnded(
-                    turnId = turnId,
-                    step = currentStep(),
-                    elapsedMs = elapsed(),
-                    scope = scope,
-                    status = status,
-                    steps = currentStep() + 1,
+                    turnId, currentStep(), elapsed(), status, currentStep() + 1, scope
                 )
             )
         }
+
+        // —— 事件构造的便捷入口（P5-1）——
+        //
+        // 每个发射点原本都要重复五六个信封参数（turnId / step / elapsed / scope），
+        // 十处发射点就是八九十行纯样板。搬进来之后，发射点一行一个事件，
+        // 「这一回合在什么时机发了哪些事件」能一眼看完——而这件事在排障时
+        // 恰恰比「每个事件怎么拼出来的」重要得多。
+        fun turnStarted(inputChars: Int, tools: Int) =
+            emit(TurnEvent.TurnStarted(turnId, 0, elapsed(), inputChars, tools, scope))
+
+        fun promptPlanned(step: Int, tools: Int, tokens: Int, groups: List<String>) =
+            emit(TurnEvent.PromptPlanned(turnId, step, elapsed(), tools, tokens, groups, scope))
+
+        fun llmStarted(step: Int, attempt: Int) =
+            emit(TurnEvent.LlmCallStarted(turnId, step, elapsed(), attempt, scope))
+
+        /** @param code 归一化失败类别（见 `failureCodeOf`），成功传 null。 */
+        fun llmEnded(
+            step: Int, attempt: Int, durMs: Long, ok: Boolean, code: String? = null, calls: Int = 0
+        ) = emit(TurnEvent.LlmCallEnded(turnId, step, elapsed(), attempt, durMs, ok, code, calls, scope))
+
+        fun toolStarted(step: Int, tool: String, args: String, callId: String) =
+            emit(TurnEvent.ToolCallStarted(turnId, step, elapsed(), tool, args, callId, scope))
+
+        fun toolEnded(
+            step: Int, tool: String, code: String, isError: Boolean, durMs: Long, callId: String
+        ) = emit(TurnEvent.ToolCallEnded(turnId, step, elapsed(), tool, code, isError, durMs, callId, scope))
+
+        fun stepClosed(step: Int, toolCount: Int) =
+            emit(TurnEvent.StepClosed(turnId, step, elapsed(), toolCount, scope))
     }
 
     /**
@@ -544,16 +580,7 @@ class RealAgentLoop(
 
         // R5：回合开始事件。工具面规模取「当前暴露面」的可见工具数——
         // 用户报「模型没按我说的做」时，第一眼要确认的就是「它到底看得见哪些工具」。
-        clock.emit(
-            TurnEvent.TurnStarted(
-                turnId = clock.turnId,
-                step = 0,
-                elapsedMs = clock.elapsed(),
-                scope = clock.scope,
-                inputChars = userInput.length,
-                visibleToolCount = exposure0.visible.size,
-            )
-        )
+        clock.turnStarted(userInput.length, exposure0.visible.size)
 
         repeat(maxSteps) { step ->
             clock.step(step)
@@ -597,46 +624,31 @@ class RealAgentLoop(
             // R5：请求视图算完（暴露 + 预算 + 截断）→ prompt.plan。
             // 记估算 token 是为了回答「是不是上下文撑爆了」——这类问题在改代码时看不出来，
             // 只有把当次的估算值与可见工具数放在一起看才有意义。
-            clock.emit(
-                TurnEvent.PromptPlanned(
-                    turnId = clock.turnId,
-                    step = step,
-                    elapsedMs = clock.elapsed(),
-                    scope = clock.scope,
-                    visibleToolCount = exposure.visible.size,
-                    estimatedTokens = requestMessages.sumOf { ContextBudget.messageTokens(it) },
-                    groups = exposure.groups.map { it.first },
-                )
+            clock.promptPlanned(
+                step = step,
+                tools = exposure.visible.size,
+                tokens = requestMessages.sumOf { ContextBudget.messageTokens(it) },
+                groups = exposure.groups.map { it.first },
             )
             // R5：llm.call。重试循环在 callWithRetry 内部，因此这里发的是**首次尝试**；
             // 重试由 callWithRetry 自己发 RetryStarted（既有通道），不重复计入时间线——
             // 时间线的粒度是「一次请求往返」，重试属于同一次往返的内部行为。
-            clock.emit(
-                TurnEvent.LlmCallStarted(
-                    turnId = clock.turnId,
-                    step = step,
-                    elapsedMs = clock.elapsed(),
-                    scope = clock.scope,
-                    attempt = 1,
-                )
-            )
+            clock.llmStarted(step, attempt = 1)
             val llmStart = System.currentTimeMillis()
             val resp = try {
                 callWithRetry { chatOnce(requestMessages, exposure) }
             } catch (e: Throwable) {
                 // R5：失败也要留一条 llm.end ——「卡住」与「失败了」在用户嘴里是一样的
                 // （都是没回话），必须能从时间线区分开。
-                clock.emit(
-                    TurnEvent.LlmCallEnded(
-                        turnId = clock.turnId,
-                        step = step,
-                        elapsedMs = clock.elapsed(),
-                        scope = clock.scope,
-                        attempt = 1,
-                        durationMs = System.currentTimeMillis() - llmStart,
-                        success = false,
-                        code = if (e is CancellationException) "cancelled" else "llm_error",
-                    )
+                // P5-1：带上真实尝试次数与归一化失败类别。修前写死 attempt=1 且
+                // code 一律 "llm_error"，于是「401 重试 3 次白等 38 秒」在流水里
+                // 与「429 退避后成功」长得一模一样，度量无从分辨。
+                clock.llmEnded(
+                    step = step,
+                    attempt = lastAttempts,
+                    durMs = System.currentTimeMillis() - llmStart,
+                    ok = false,
+                    code = failureCodeOf(e),
                 )
                 // 取消不是失败。点「停止」会取消本协程，CancellationException 从这里穿出去；
                 // 原来一律打 ERROR，真机日志就留下「ERROR [LLM] 调用失败
@@ -649,17 +661,14 @@ class RealAgentLoop(
                 }
                 throw e
             }
-            clock.emit(
-                TurnEvent.LlmCallEnded(
-                    turnId = clock.turnId,
-                    step = step,
-                    elapsedMs = clock.elapsed(),
-                    scope = clock.scope,
-                    attempt = 1,
-                    durationMs = System.currentTimeMillis() - llmStart,
-                    success = true,
-                    toolCallCount = resp.toolCalls.size,
-                )
+            // 成功也带真实尝试次数：>1 就是「靠重试救回来的请求」，
+            // 这个比例决定退避序列该不该继续加长。
+            clock.llmEnded(
+                step = step,
+                attempt = lastAttempts,
+                durMs = System.currentTimeMillis() - llmStart,
+                ok = true,
+                calls = resp.toolCalls.size,
             )
             AgentLogger.i(
                 "AgentLoop",
@@ -713,15 +722,7 @@ class RealAgentLoop(
             turn?.stepClosed(step)
             // R5：本步收口事件。工具事件已成对发出（每个 tool.start 都有 tool.end），
             // 这一条把「本步一共跑了几个工具」标出来——排障时能一眼看出是哪一批卡住。
-            clock.emit(
-                TurnEvent.StepClosed(
-                    turnId = clock.turnId,
-                    step = step,
-                    elapsedMs = clock.elapsed(),
-                    scope = clock.scope,
-                    toolCount = resp.toolCalls.size,
-                )
-            )
+            clock.stepClosed(step, resp.toolCalls.size)
 
             // T05：每轮结束再复查一次（工具批可能执行很久，结束时 UI 可能已点停止）
             currentCoroutineContext().ensureActive()
@@ -898,16 +899,8 @@ class RealAgentLoop(
         // 位置很关键：排障要回答「卡在哪一次调用」，而「卡住」的表现恰恰是
         // 「只有 start 没有 end」。若 start 排在执行之后，卡住时就只剩上一条 end，
         // 定位到的会是**上一次成功的调用**——指向错误的现场。
-        clock.emit(
-            TurnEvent.ToolCallStarted(
-                turnId = clock.turnId,
-                step = step,
-                elapsedMs = clock.elapsed(),
-                scope = clock.scope,
-                tool = call.name,
-                argsSummary = call.arguments.toString().take(120),
-            )
-        )
+        // callId（P5-1）：不带的话，同一步并行两个同名工具时配对只能靠猜
+        clock.toolStarted(step, call.name, call.arguments.toString().take(120), call.id)
         val toolStart = System.currentTimeMillis()
         val outcome = try {
             val d = descriptor ?: ToolDescriptor(call.name, call.name, "{}")
@@ -928,17 +921,9 @@ class RealAgentLoop(
             images.addAll(outcome.images)
             onEvent?.invoke(AgentEvent.ToolFinished(outcome.message))
             // R5：tool.end —— 与上面的 tool.start 配对。
-            clock.emit(
-                TurnEvent.ToolCallEnded(
-                    turnId = clock.turnId,
-                    step = step,
-                    elapsedMs = clock.elapsed(),
-                    scope = clock.scope,
-                    tool = call.name,
-                    code = outcome.code,
-                    isError = outcome.message.isError,
-                    durationMs = System.currentTimeMillis() - toolStart,
-                )
+            clock.toolEnded(
+                step, call.name, outcome.code, outcome.message.isError,
+                System.currentTimeMillis() - toolStart, call.id
             )
             // R1：有结局就落盘。业务失败也算「有结局」——日志层只关心「这条调用还会不会被补」，
             // 失败原因由 ToolMessage 携带，不进日志（日志是恢复依据，不是排障全文）。
@@ -957,17 +942,10 @@ class RealAgentLoop(
         onEvent?.invoke(AgentEvent.ToolFinished(filled))
         // R5：这条也要补 tool.end，否则时间线里留下一个没有终态的 start——
         // 而「有 start 无 end」正是「卡住」的判据，不能被防御路径污染。
-        clock.emit(
-            TurnEvent.ToolCallEnded(
-                turnId = clock.turnId,
-                step = step,
-                elapsedMs = clock.elapsed(),
-                scope = clock.scope,
-                tool = call.name,
-                code = if (outcome is ToolCallOutcome.Unknown) "cancelled_unknown" else "cancelled",
-                isError = true,
-                durationMs = System.currentTimeMillis() - toolStart,
-            )
+        clock.toolEnded(
+            step, call.name,
+            if (outcome is ToolCallOutcome.Unknown) "cancelled_unknown" else "cancelled",
+            true, System.currentTimeMillis() - toolStart, call.id
         )
         return ToolCallOutcome.Completed(filled, filled.images)
     }
@@ -1006,17 +984,10 @@ class RealAgentLoop(
             // R5：取消闭合也要补 tool.end。这些调用在时间线里已经有 tool.start
             // （执行前埋的），若这里不补终态，时间线就会留下「有 start 无 end」的
             // 假卡点——把「用户点了停止」误报成「卡住了」。
-            clock.emit(
-                TurnEvent.ToolCallEnded(
-                    turnId = clock.turnId,
-                    step = step,
-                    elapsedMs = clock.elapsed(),
-                    scope = clock.scope,
-                    tool = call.name,
-                    code = if (verdict is ToolCallOutcome.Unknown) "cancelled_unknown" else "cancelled",
-                    isError = true,
-                    durationMs = 0L,
-                )
+            clock.toolEnded(
+                step, call.name,
+                if (verdict is ToolCallOutcome.Unknown) "cancelled_unknown" else "cancelled",
+                true, 0L, call.id
             )
             // R1：取消也要落终态。否则重启后修复器看到「已派发、无结果」，
             // 会把它判成 OUTCOME_UNKNOWN——用户明明点了停止，下一轮却被要求「先核对」。
@@ -1110,6 +1081,27 @@ class RealAgentLoop(
     }
 
     /**
+     * 失败 → 机器可读码（P5-1）。
+     *
+     * 与 `AgentLogger` 里那句话（`第 2 次调用失败，准备重试：...`）的分工：
+     * 那句话给人看，这个码给脚本分类。**码的取值域就是
+     * [ErrorNormalizer.FailureClass]**（小写）——不另造一套词汇表，否则
+     * 「什么样算确定性错误」会出现两个互相矛盾的答案。
+     *
+     * 度量脚本靠它筛出「本该 1 秒内失败」的那批调用：
+     * `auth` / `quota` / `bad_request` 三类都不该重试。
+     */
+    private fun failureCodeOf(e: Throwable): String = when (e) {
+        is CancellationException -> "cancelled"
+        is LlmHttpException ->
+            ErrorNormalizer.classify(e.code, e.serverBody).cls.name.lowercase(java.util.Locale.ROOT)
+        is LlmCallTimeoutException -> "timeout"
+        is java.net.UnknownHostException, is java.net.ConnectException,
+        is java.net.SocketTimeoutException, is java.io.InterruptedIOException -> "network"
+        else -> "llm_error"
+    }
+
+    /**
      * 供应商瞬时失败重试（429/5xx 与网络异常才重试）。
      *
      * 401/403/400 这类鉴权与参数错误重试多少次都不会变，必须一次性快速失败，
@@ -1152,11 +1144,16 @@ class RealAgentLoop(
         val profile = retryProfileProvider()
         // R10：次数来自档位；显式传非负值可以覆盖（harness 靠它精确控制尝试次数）
         val maxRetries = if (providerRetry >= 0) providerRetry else profile.maxRetries
+        // P5-1：本步实际尝试了几次。写进 llm.end 的 attempt 字段——
+        // 修前那里写死 `attempt = 1`，于是「401 白等 38 秒」在流水里看起来
+        // 只是一次很慢的成功调用，度量脚本无从判断它本该 1 秒内失败。
+        lastAttempts = 1
         var last: Throwable? = null
         // 本轮是否对外抛出过重试状态（决定收尾是否要抛 RetryFinished）
         var retrying = false
         try {
             repeat(maxRetries + 1) { attempt ->
+                lastAttempts = attempt + 1
                 try {
                     return block()
                 } catch (cancel: CancellationException) {
