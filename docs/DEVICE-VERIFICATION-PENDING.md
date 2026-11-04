@@ -206,3 +206,110 @@
 
   判定「回合真的跑了」的标志：`[Workflow] 从通知进入，准备执行 <id>` →
   `[Chat] 用户发送：…` → `[AgentLoop] 开始运行…` → `[Turn] … turn.end status=completed`。
+
+---
+
+## 2026-11-04 复测（构建机 native 编译 + 验证机干净复测）
+
+这一轮补掉了两件之前一直挂着的事：**native arm64 首次编译通过**，以及
+**三项度量在「不打断进程」的干净环境下复测通过**。
+
+### 补掉 1：native arm64 首次真编译（构建机）
+
+之前构建机上**从来没有 llama.cpp 源码**，所以历来的 APK 都是
+`./gradlew :app:assembleDebug -PnoNative=true` 出的（28.2MB，**不含 lib/**）——
+它能装进 x86 模拟器只是因为「没有 lib/ 目录 = 任何 ABI 都能装」，
+代价是 **JNI 那条路一次都没被编译验证过**。
+
+这次按 `scripts/fetch-llama.sh` 拉了固定 tag `v0.7.0`（commit 校验通过），
+再跑不带 `-PnoNative` 的完整构建：
+
+```
+> Task :app:configureCMakeDebug[arm64-v8a]
+> Task :app:buildCMakeDebug[arm64-v8a]
+BUILD SUCCESSFUL
+app-debug.apk  35,159,658 字节（29.8MB → 35.2MB）
+```
+
+APK 内实测含两个自编 .so：
+
+| 文件 | 大小 |
+|---|---|
+| `lib/arm64-v8a/libagentkit-llama.so` | 4,471,456 |
+| `lib/arm64-v8a/libagentkit-termux.so` | 331,928 |
+
+（另有 `libmlkit_google_ocr_pipeline.so` 等第三方 .so。）
+
+**结论**：llama.cpp v0.7.0 + JNI 的 arm64 交叉编译在构建机上成立。
+两个产物各有用途，已留在构建机：
+
+- `/data/home/app-debug-native-arm64.apk`（35.2MB）→ **真机用**（含 lib/）
+- `/data/home/app-debug-emulator.apk`（28.2MB，无 lib/）→ **模拟器用**
+
+### 补掉 2：验证机干净复测（三项度量全达标）
+
+上一轮的 O13 是「跑到一半强杀进程」测出来的，`重放 3 次` 其实是**人为制造的
+撕裂记录被修复**，不是产品缺陷。这轮改成：全新安装 → 只跑一个**自然结束**的回合
+→ 不强杀进程 → 直接取流水。
+
+触发回合的两处配置（模拟器触摸被禁用，只能走文件 + intent 入口）：
+
+```bash
+# ① 模型指向 mock LLM：adb reverse 把设备 127.0.0.1:8899 转到宿主机 mock
+adb reverse tcp:8899 tcp:8899
+adb shell "run-as com.example.agentkit sh -c 'cat > shared_prefs/agentkit_model_config.xml'" < cfg.xml
+# ② 预置工具组：calculator 属于 sys 组，默认不激活，不置的话模型直接调会撞 unknown_tool
+adb shell "run-as com.example.agentkit sh -c 'cat > shared_prefs/tool_activation.xml'" < act.xml
+#   → <string name="active_groups">file,sys</string>
+# ③ 工作流（prompt 里带 "write" 会触发 write_file，带 "calc" 触发 calculator）
+adb shell "run-as com.example.agentkit sh -c 'cat > files/workflow/workflows.json'" < wf.json
+adb shell am start -n com.example.agentkit/.MainActivity --es workflow_id w-calc
+```
+
+⚠️ 装完 App 立刻写 `shared_prefs/` 会失败（**目录还不存在**），
+必须先 `adb shell run-as com.example.agentkit mkdir -p shared_prefs files/workflow`，
+否则配置静默丢失，回合会以 `status=failed` 收场。
+
+工具面因此从 5 个涨到 9 个，`calculator` 真跑起来了：
+
+```
+[ToolExposure] 工具面裁剪：provider=openai mode=GROUPED 暴露 9 个（含 2 个元工具），裁掉 49 个；已启用组=file,sys
+[Turn] tool.start step=0 tool=calculator args={"expression":"(120+80)*0.85"}
+[Turn] tool.end   step=0 tool=calculator code=calc_ok error=false dur=315ms
+[Turn] turn.end status=completed steps=2
+```
+
+官方度量脚本（`scripts/qa/trace-metrics.py`）对这份流水的结果：
+
+| 指标 | 实测 | 目标 | 判定 |
+|---|---|---|---|
+| 确定性错误白等 | 0 次，均值 0.0s，峰值 0.0s | <1s | ✅ |
+| 每回合会话写入 | 均值 3.5KB / 峰值 3.5KB | <1MB | ✅ |
+| 崩溃恢复重放 | **0 次** | 0 | ✅ |
+
+退出码 0。事件流 15 行，类型齐全：
+`store.write×4 / turn.start / prompt.plan×2 / llm.call×2 / llm.end×2 /
+tool.start / tool.end / step.close / turn.end`。
+
+同时确认：冷启动**无 FATAL EXCEPTION、无 ANR、无「能力清单有 N 处不同步」**。
+
+### 本轮新发现的两件事
+
+1. **模型直接调未激活组的工具，报的是「未知工具」**。
+   `calculator` 登记在 `sys` 组，默认只激活 `file` 组，模型若不先调 `__find_tools`
+   发现它就会拿到 `code=unknown_tool`。工具**确实存在**，但回执把它说成「不存在」。
+   这是给模型看的错误文案，建议改成「该工具当前未启用，请先 `__find_tools` 查找」
+   ——否则模型会以为是自己编了个不存在的工具，转而去猜别的名字。
+
+2. **x86 软件模拟（`-accel off`）上首帧 37.3 秒**（`Displayed: +37s297ms`）。
+   不是回归：`ChatViewModel` 初始化那约 9 秒主线程重活还在，只是没有 KVM 的
+   模拟器把它放大了 3~4 倍。**这条仍然挂账**：arm64 真机上的首帧耗时没有数过。
+
+### 仍然挂账（没变的）
+
+- arm64 真机：O1~O9/O11、容器租约（需 arm64 版 proot）、无障碍、真实分享面板。
+- **首帧耗时**（arm64 真机未测；`ChatViewModel` 初始化 9 秒主线程重活未处理）。
+- P5-4 发布签名缺 secret。
+- `chromium: mkdir /data/user/0/.../cache/WebView/Crashpad: No such file or directory`
+  ——WebView 缓存目录未先创建，chromium 建子目录失败（E 级，不影响功能，
+  但每次冷启动都有一条错误日志，未处理）。
