@@ -208,7 +208,7 @@ POOL_GROUPS = {
         ("工具名", "spawn_agents"),
         ("成功码", "subagents_done"),
         ("全失败码", "subagents_failed"),
-        ("只读白名单字段", "READ_ONLY_TOOLS"),
+        ("只读白名单字段", "NO_SIDE_EFFECT_TOOLS"),
         ("任务校验函数", "parseTasks"),
         ("结论提取函数", "extractConclusion"),
         ("并发归一函数", "clampConcurrency"),

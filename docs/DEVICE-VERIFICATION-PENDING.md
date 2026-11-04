@@ -313,3 +313,43 @@ tool.start / tool.end / step.close / turn.end`。
 - `chromium: mkdir /data/user/0/.../cache/WebView/Crashpad: No such file or directory`
   ——WebView 缓存目录未先创建，chromium 建子目录失败（E 级，不影响功能，
   但每次冷启动都有一条错误日志，未处理）。
+
+### 补掉 3：全量 harness 两处「第一次真跑」暴露的陈旧断言
+
+这轮把 APK 路径传给 `run-all.sh`、并且 native 包编出来（AGP 产物
+`app/build/tmp/kotlin-classes/debug` 就位）之后，**两个一直 SKIP 的 harness 第一次真跑**，
+各暴露一条陈旧断言。两条都不是产品缺陷，是断言自己过期了：
+
+| harness | 以前 | 现在暴露的问题 | 处理 |
+|---|---|---|---|
+| `run-apk-verification.sh` | SKIP（本地默认不传 APK 路径） | 查包内字符串 `READ_ONLY_TOOLS`，但 R4 已把它改名成 `NO_SIDE_EFFECT_TOOLS` | 反验脚本改查新名 |
+| `run-localmodel-verification.sh` | SKIP（缺 AGP 编译产物） | 断言写死了**旧注册顺序**的工具表；P3-5 之后顺序由清单决定，数量对（25=25）但顺序不同 | 改成「数量相等 + 成员集合相等 + 顺序＝`CapabilityManifest.sort()`」 |
+
+第二条值得多说一句：它原本断言「全量开关下模型收到**这 25 个、这个顺序**」。
+把顺序写死，等于把「注册顺序」当成了不变量——而 P3-5 恰恰把这个不变量废掉了。
+现在断言的是**真正的不变量**：「顺序由清单决定」，清单改了断言会跟着改，不会再过期。
+
+> 这也印证了门禁第 5 条（PASS 数不得低于基线）的价值：
+> 环境一变，两个 harness 从 SKIP 变 PASS，PASS 数从 86 变 88——
+> 如果只看「FAIL=0」，这次会以为没变化；实际上**验得更多了**。
+> 反过来，如果这次是环境变差导致大面积 SKIP，基线会立刻报红。
+
+顺带补齐了 CI 的 **Fetch Shizuku APK** 步骤（本地构建默认不走它），
+native 包因此与 CI 产物一致，反验里「assets/shizuku.apk 存在且体积合理」也真跑起来了：
+
+```
+$ curl -fL "$URL" -o app/src/main/assets/shizuku.apk    # RikkaApps/Shizuku v13.6.0
+  2,571,773 bytes
+```
+
+### 最终产物
+
+| 产物 | 大小 | 用途 |
+|---|---|---|
+| `/data/home/app-debug-native-arm64.apk` | 36,948,986 | **arm64 真机**（含 lib/ + shizuku.apk） |
+| `/data/home/app-debug-emulator.apk` | 30,031,067 | **x86 模拟器**（无 lib/，含 shizuku.apk） |
+
+用最终 APK 重做的验证机取证（全新安装 → 自然结束的一回合 → 不打断进程）：
+冷启动 **0 崩溃 / 0 ANR / 0 能力清单不同步**，`Displayed: +34s760ms`，
+`calculator` → `code=calc_ok error=false`，`turn.end status=completed steps=2`，
+三项度量 **白等 0 次 / 写入 3.5KB / 重放 0 次**（`trace-metrics.py` 退出码 0）。

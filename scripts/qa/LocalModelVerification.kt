@@ -26,6 +26,7 @@
 
 import com.example.agentkit.core.*
 import com.example.agentkit.core.agent.RealAgentLoop
+import com.example.agentkit.core.capability.CapabilityManifest
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
@@ -272,14 +273,26 @@ private suspend fun testLoopExposure() {
         loop.send("hi")
         assertEquals("收到的工具名个数", CLOUD_EXPOSED, llm.lastToolNames.size)
     }
-    check("强制全量开关：模型收到全量 25 个") {
+    check("强制全量开关：模型收到全量 25 个（成员不缺、顺序按清单）") {
         val fx = Fixture()
         val llm = ScriptedLlm("local-llama", listOf(AssistantMessage("ok")))
         val loop = RealAgentLoop(
             llmProvider = { llm }, registry = fx.registry, providerRetry = 0, forceFullTools = true
         )
         loop.send("hi")
-        assertEquals("全量", ALL_TOOL_NAMES, llm.lastToolNames)
+        val got = llm.lastToolNames
+        // 成员与数量：全量开关打开时**一个都不能少**。
+        assertEquals("全量工具数", ALL_TOOL_NAMES.size, got.size)
+        assertEquals("全量工具成员", ALL_TOOL_NAMES.sorted(), got.sorted())
+        // 顺序：P3-5 起排序的唯一入口是 [CapabilityManifest.sort]，「按注册顺序」早就不成立。
+        // 把旧顺序写死在这里，只会让这条断言在每次重排工具时过期——它已经过期过一次了
+        // （2026-11-04：清单排序落地后这里还在比对旧注册顺序，harness 因此报错）。
+        // 真正的不变量是「顺序由清单决定」，所以直接跟清单比。
+        assertEquals(
+            "全量工具顺序＝清单顺序",
+            CapabilityManifest.sort(fx.registry.list()).map { it.name },
+            got
+        )
     }
 }
 

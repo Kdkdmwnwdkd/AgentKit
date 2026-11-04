@@ -4,5 +4,11 @@
 # 变少说明有 harness 没真跑（多半是缺 kotlinc 或 app/build 产物导致大面积 SKIP），
 # 那不是「环境问题」，是把没验证当成验证过了。
 #
-# 当前：87 个 runner，1 个 SKIP（apk 静态反验，需传 APK 路径，本地默认不跑）。
-87
+# 2026-11-04：87 → 88。
+#   变化的不是「加了个 harness」，而是**环境齐了**：
+#     ① apk 静态反验——以前因为「本地默认不传 APK 路径」被 SKIP，现在传了 APK 路径，
+#        真跑了，并顺手修掉它一条查旧字段名（READ_ONLY_TOOLS）的陈旧断言；
+#     ② localmodel——以前缺 app/build/tmp/kotlin-classes/debug（AGP 产物）被 SKIP，
+#        现在 native 包编出来、产物在了，它真跑了，并修掉那条写死旧注册顺序的断言。
+#   两处 SKIP 变 PASS，SKIP 归零。
+88
