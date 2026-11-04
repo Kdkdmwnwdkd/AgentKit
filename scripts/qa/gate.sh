@@ -6,12 +6,13 @@
 # 一个新引入的失效 harness 只要往 known-broken.txt 里加一行，就能长期悄悄挂在 CI 上。
 # 本脚本把这类「沉淀」变成**当场报红**。
 #
-# 门禁四条（任一不满足即失败）：
+# 门禁五条（任一不满足即失败）：
 #   1. known-broken.txt 里不能有非注释条目 —— 清单必须归零
 #   2. QA 汇总里 FAIL 必须为 0
 #   3. 日志里不能出现 XPASS —— 出现说明清单该更新了（脚本已修好却仍被当失效项）
 #   4. harness 覆盖完整性 —— 每个 *Verification.kt 都必须被某个 run-*.sh 引用，
 #      且 run-*.sh 的数量必须与日志里实际跑过的数量一致（防止"写了 harness 但没人跑"）
+#   5. PASS 数不得低于基线 —— 防止「环境一变全 SKIP」被当成全绿（那是另一种假绿）
 #
 # 用法：
 #   bash scripts/qa/gate.sh [qa日志路径]
@@ -40,7 +41,7 @@ if [ -f "$BROKEN_FILE" ]; then
     printf '%s\n' "$entries" | sed 's/^/    - /' >&2
     say "  修好一条就删一条；确实修不好就先修，别让失效项沉淀成常态。"
   else
-    say "GATE OK 1/4：known-broken.txt 已归零（0 条）"
+    say "GATE OK 1/5：known-broken.txt 已归零（0 条）"
   fi
 else
   fail "known-broken.txt 不存在（$BROKEN_FILE）——门禁无法判定，请检查文件是否被误删"
@@ -66,7 +67,7 @@ else
     elif [ "$f" -ne 0 ]; then
       fail "QA 汇总 FAIL=$f（必须为 0）"
     else
-      say "GATE OK 2/4：FAIL=0（PASS=${p:-?} XFAIL=${x:-?}）"
+      say "GATE OK 2/5：FAIL=0（PASS=${p:-?} XFAIL=${x:-?}）"
     fi
   fi
 
@@ -74,7 +75,7 @@ else
     fail "QA 日志出现 XPASS（脚本已修好但仍列在 known-broken.txt），请从清单移除："
     grep -E '^XPASS ' "$LOG" | sed 's/^/    - /' >&2
   else
-    say "GATE OK 3/4：无 XPASS"
+    say "GATE OK 3/5：无 XPASS"
   fi
 
   # ------------------------------------------------------------ 门禁 4
@@ -112,7 +113,38 @@ else
   elif [ "${ran:-0}" -lt "${runners:-0}" ]; then
     fail "run-*.sh 有 $runners 个，但日志里只跑了 $ran 个（有 runner 没被 run-all 收录）"
   else
-    say "GATE OK 4/4：harness 覆盖完整（$runners 个 runner 全部跑到，无孤儿 harness）"
+    say "GATE OK 4/5：harness 覆盖完整（$runners 个 runner 全部跑到，无孤儿 harness）"
+  fi
+
+  # ------------------------------------------------------------ 门禁 5
+  #
+  # 「全绿」有两种：断言都过了，或者一条都没跑。
+  #
+  # run-all 把 SKIP 定义为「什么都不算通过」但不阻塞——这对本地是对的（没编 AGP 产物
+  # 时不该红）。可在 CI 上它意味着：kotlinc shim 装失败、Gradle 缓存路径变了、某个
+  # runner 提前 exit 3，都能让几十个 harness 静默跳过，而构建照样绿。这类事故的唯一
+  # 表现就是「PASS 数悄悄变少」，没人会盯着汇总行数看。
+  #
+  # 所以卡 PASS 下限，只增不减。新增 harness 时脚本会提示把基线调上去。
+  BASELINE="scripts/qa/harness-baseline.txt"
+  if [ ! -f "$BASELINE" ]; then
+    fail "基线文件缺失（$BASELINE）——门禁 5 无法判定"
+  else
+    base=$(awk '!/^[[:space:]]*(#|$)/ {print $1; exit}' "$BASELINE")
+    if [ -z "$p" ]; then
+      fail "无法从汇总行解析 PASS 数，门禁 5 判不了"
+    elif [ "$p" -lt "${base:-0}" ]; then
+      fail "PASS=$p 低于基线 $base —— 有 harness 没真跑（断言变少不等于变绿）："
+      nskip=$(grep -cE '^SKIP ' "$LOG" || true)
+      grep -E '^SKIP ' "$LOG" | head -5 | sed 's/^/    - /' >&2
+      [ "${nskip:-0}" -gt 5 ] && echo "    …… 共 $nskip 个（完整清单见 $LOG）" >&2
+      say "  环境问题就修环境（多半是找不到 kotlinc 或 app/build 产物）；"
+      say "  确实删掉了 harness，再往下调 $BASELINE 并写清理由。"
+    elif [ "$p" -gt "$base" ]; then
+      say "GATE OK 5/5：PASS=$p 高于基线 $base（新增了 harness？把 $BASELINE 里的数字改成 $p）"
+    else
+      say "GATE OK 5/5：PASS=$p 与基线一致"
+    fi
   fi
 fi
 

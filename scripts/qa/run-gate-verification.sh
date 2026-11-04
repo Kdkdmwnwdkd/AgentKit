@@ -16,14 +16,19 @@ bad()  { echo "  FAIL  $1 -> $2"; fail=$((fail+1)); }
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 
-# 造一个最小「仓库」：只需要 scripts/qa/gate.sh 与 scripts/qa/known-broken.txt
+# 造一个最小「仓库」：gate.sh + known-broken.txt + harness-baseline.txt。
+# 三样都要：门禁 5 读基线文件，缺了它沙盒里会红在「基线缺失」而不是被测的那一条。
 mk_repo() {
   local d="$WORK/$1"
   mkdir -p "$d/scripts/qa"
   cp "$GATE" "$d/scripts/qa/gate.sh"
+  cp "$ROOT/scripts/qa/harness-baseline.txt" "$d/scripts/qa/harness-baseline.txt"
   printf '%s\n' "$2" > "$d/scripts/qa/known-broken.txt"
   echo "$d"
 }
+
+# 真实基线值：沙盒日志的 PASS 数要与之一致，否则「全绿应通过」的场景会被门禁 5 拦下。
+BASE=$(awk '!/^[[:space:]]*(#|$)/ {print $1; exit}' "$ROOT/scripts/qa/harness-baseline.txt")
 
 # ---------------------------------------------------------------- 场景 1
 echo "== 场景 1：清单归零 + 日志全绿 → 应 PASS =="
@@ -31,10 +36,10 @@ R=$(mk_repo ok "\
 # 注释行，忽略
 # run-foo.sh	历史记录
 ")
-cat > "$WORK/ok.log" <<'EOF'
+cat > "$WORK/ok.log" <<EOF
 PASS  scripts/qa/run-a.sh
 PASS  scripts/qa/run-b.sh
-==== 汇总：PASS=48 SKIP=0 XFAIL=0 FAIL=0
+==== 汇总：PASS=$BASE SKIP=0 XFAIL=0 FAIL=0
 EOF
 out=$(cd "$R" && bash scripts/qa/gate.sh "$WORK/ok.log" 2>&1); rc=$?
 if [ $rc -eq 0 ]; then ok "退出码 0"
@@ -142,6 +147,31 @@ RC9=$?
 set -e
 if [ "$RC9" -eq 0 ]; then ok "全跑时门禁放行"
 else bad "全跑时门禁放行" "$(printf '%s' "$OUT9" | grep 'GATE FAIL' | head -2)"; fi
+
+# ---------------------------------------------------------------- 场景 10
+# 门禁 5：PASS 数低于基线 → 应失败。
+#
+# 这是「另一种假绿」：所有 runner 都跑了、也没 FAIL，但绝大多数判成 SKIP。
+# CI 上最常见的成因是 kotlinc shim 装失败或 app/build 产物缺失——日志一片绿，
+# 实际上一条断言都没执行过。门禁 2 只看 FAIL=0，拦不住这个。
+echo "== 场景 10：PASS 低于基线 → 应失败（大面积 SKIP 不是全绿） =="
+LOG10="$WORK/qa10.log"
+{
+  for s in $(ls "$ROOT"/scripts/qa/run-*.sh | grep -v 'run-all\.sh$'); do
+    echo "SKIP  ${s#"$ROOT"/}"
+  done
+  echo "==== 汇总：PASS=3 SKIP=$((BASE - 3)) XFAIL=0 FAIL=0"
+} > "$LOG10"
+set +e
+OUT10=$(bash "$ROOT/scripts/qa/gate.sh" "$LOG10" 2>&1)
+RC10=$?
+set -e
+if [ "$RC10" -ne 0 ]; then ok "退出码非 0"; else bad "退出码非 0" "实际 0"; fi
+if printf '%s' "$OUT10" | grep -q "低于基线"; then ok "输出说明 PASS 低于基线"
+else bad "输出说明 PASS 低于基线" "$(printf '%s' "$OUT10" | tail -3)"; fi
+# 门禁 4 在这一场景里是满足的（runner 全跑到），红必须来自门禁 5 —— 否则断言指向了别的原因
+if printf '%s' "$OUT10" | grep -q "GATE OK 4/5"; then ok "门禁 4 仍放行（红的是门禁 5）"
+else bad "门禁 4 仍放行（红的是门禁 5）" "$(printf '%s' "$OUT10" | grep 'GATE' | head -5)"; fi
 
 echo
 echo "=== 汇总: $pass passed, $fail failed ==="

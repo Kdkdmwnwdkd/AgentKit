@@ -1,0 +1,8 @@
+# 全量 harness 的 PASS 下限（scripts/qa/gate.sh 门禁 5）。
+#
+# 只增不减：加一个 harness 就往上调一个。
+# 变少说明有 harness 没真跑（多半是缺 kotlinc 或 app/build 产物导致大面积 SKIP），
+# 那不是「环境问题」，是把没验证当成验证过了。
+#
+# 当前：86 个 runner，1 个 SKIP（apk 静态反验，需传 APK 路径，本地默认不跑）。
+86
