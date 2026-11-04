@@ -163,7 +163,7 @@
 | O12 遥测真的落盘 | ✅ 通过 | `files/logs/turns-20261103.ndjson`（962 字节）出现，内容为 `store.write` / `turn.start` / `prompt.plan` / `llm.call` / `llm.end` / `turn.end` / `store.write` 七行 |
 | O13 三项度量 | ✅ 通过 | 白等 0 次 0.0s（目标 <1s）；每回合会话写入 58.3KB（目标 <1MB）；重放 0 次 |
 
-### 这台机器上发现的两个真问题（都已修）
+### 这台机器上发现的三个真问题（都已修）
 
 1. **启动被判 ANR，App 闪退**：日志原文
    `Completed ANR of com.example.agentkit in 30580ms` + `Force finishing activity
@@ -173,6 +173,17 @@
 2. **「每回合会话写入」度量恒为 0**：归属规则要求落盘时间戳落在回合窗口内，而落盘是
    去抖延迟写、真机上恰恰发生在 `turn.end` 之后 → 全被丢掉 → 目标 <1MB 恒成立。
    修法见 `scripts/qa/trace-metrics.py`（归到最后一个已开始的回合，回合外的写单独显示）。
+3. **首帧修完之后，App 反而崩了**——这一条是**修 1 时自己引入的**：
+
+   ```
+   java.lang.IllegalStateException: Cannot call removeOnDrawListener inside of onDraw
+       at android.view.ViewTreeObserver.removeOnDrawListener(ViewTreeObserver.java:745)
+       at com.example.agentkit.MainActivity$onCreate$2.onDraw(MainActivity.kt:61)
+   ```
+
+   `ViewTreeObserver` 正在派发 `onDraw` 时不能摘监听。harness 全绿（它只读源码文本），
+   真机一装就崩。这条记在这里，是想说明：**「服务器上能验的一律在服务器验掉」不等于
+   「服务器上验过就等于对」**——真机项攒起来不是形式主义，是有些缺陷只能在设备上出现。
 
 ### 这台机器上**不能**做的事（省得下次再试）
 
