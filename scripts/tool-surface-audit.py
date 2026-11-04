@@ -42,40 +42,94 @@ from collections import OrderedDict
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 SRC = os.path.join(ROOT, "app", "src", "main", "java")
 
-# ---- 与 KernelExposure.kt 保持一致的组规则 ----------------------------------
+# ---- 与 CapabilityManifest 保持一致的组规则 ---------------------------------
+#
+# 早前这里有两张**手抄**的表：GROUP_PATCH（前缀推不出来的归组）与 GROUP_NAMES
+# （有哪些组）。抄的时候没人拦，于是 P3-3 给清单加了 `mcp` 组、这张表就再也没跟上——
+# 与 `LocalAgentPrompt.ORDER` 那次是同一个病：同一份知识，两个副本，一个改一个不改。
+#
+# 现在直接从 `CapabilityManifest.kt` 解析：组名、成员、常驻、动态全以清单为准。
+# 清单改完这里不用动，量出来的数字自然跟着变。清单写坏（比如工具重复登记）时
+# `run-capability-manifest-verification.sh` 会先红，这里只管照着算。
 
-# 补丁表：前缀推不出来的归组（KernelExposure.GROUP_PATCH 的镜像）
-GROUP_PATCH = {
-    "read_file": "file", "write_file": "file", "edit_file": "file",
-    "ask_user": "ui",
-    "http_request": "net",
-    "conversation_search": "memory",
-    "load_skill": "skill", "use_skill": "skill",
-    "plan_propose": "agent", "spawn_agents": "agent",
-    "todo_read": "agent", "todo_write": "agent",
-    "ocr_image": "media", "speak": "media",
-    "clipboard": "sys", "container_toolchain": "sys",
-    "send_notification": "sys", "calculator": "sys",
-}
+MANIFEST_KT = os.path.join(
+    SRC, "com", "example", "agentkit", "core", "capability", "CapabilityManifest.kt")
 
-# 有前缀即分组的组名（KernelExposure.GROUP_NOTES 的键）
-GROUP_NAMES = [
-    "file", "ui", "net", "web", "app", "shell", "memory", "skill",
-    "workflow", "device", "media", "agent", "github", "sys", "misc",
-]
 
-PINNED = {"file", "misc", "meta"}
+def load_manifest(path: str):
+    """解析清单 → (顺序化的组名列表, 组→成员, 常驻组集合, 动态组集合)。"""
+    src = open(path, encoding="utf-8").read()
+    groups, members, pinned, dynamic = [], {}, set(), set()
+
+    # 组名可能是字面量（`"file"`），也可能是常量（`MISC`）。先把 `const val X = "y"` 收进来，
+    # 否则兜底桶会被静默跳过——**静默跳过正是这次要消灭的那类 bug**。
+    consts = dict(re.findall(r'const val (\w+)\s*(?::\s*String)?\s*=\s*"([a-z_]+)"', src))
+
+    # 逐段切 `CapabilityGroup(` 到与之配平的右括号（跳过 `data class CapabilityGroup(` 这个声明）
+    for m in re.finditer(r'(?<!class )CapabilityGroup\(', src):
+        if src[max(0, m.start() - 6):m.start()].endswith("class "):
+            continue
+        i, depth = m.end(), 1
+        while i < len(src) and depth:
+            depth += {"(": 1, ")": -1}.get(src[i], 0)
+            i += 1
+        block = src[m.end():i]
+        head = re.match(r'\s*(?:"([a-z_]+)"|([A-Z][A-Za-z0-9_]*))\s*,', block)
+        if not head:
+            raise SystemExit("无法解析 CapabilityGroup 的组名（工具面审计的解析器要跟着清单改）：%s"
+                             % block[:60].replace("\n", " "))
+        g = head.group(1) or consts.get(head.group(2), "")
+        if not g:
+            raise SystemExit("CapabilityGroup 用了未知常量 %s（审计脚本解析不到它的值）" % head.group(2))
+        names = []
+        tools = re.search(r'tools\s*=\s*listOf\(([^)]*)\)', block, re.S)
+        if tools:
+            names = re.findall(r'"([a-z0-9_]+)"', tools.group(1))
+        groups.append(g)
+        members[g] = names
+        if re.search(r'pinned\s*=\s*true', block):
+            pinned.add(g)
+        if re.search(r'dynamic\s*=\s*true', block):
+            dynamic.add(g)
+
+    return groups, members, pinned, dynamic
+
+
+GROUP_ORDER, GROUP_MEMBERS, PINNED, DYNAMIC = load_manifest(MANIFEST_KT)
+
+# 工具名 → 组（清单是精确成员表；misc 不在表内，它是兜底）
+MEMBER_OF = {n: g for g, ns in GROUP_MEMBERS.items() for n in ns}
+
+# 元工具（`__find_tools` / `__use_tools`）不属于任何业务组，单列
+PINNED = PINNED | {"meta"}
 MAX_ACTIVE_GROUPS = 2      # KernelExposure.MAX_ACTIVE_GROUPS
 TRIM_TO_GROUPS = 1         # KernelExposure.TRIM_TO_GROUPS
+
+# 预算门（--gate）的天花板，单位 token。与架构方案「度量」表同一口径：
+# 默认面 ≤525（不退化）。满载按当前实测取整到 3500，留出的余量只够描述微调，
+# 不够新塞一个工具——想涨必须显式改这里。
+DEFAULT_TOKENS_BUDGET = 525
+PEAK_TOKENS_BUDGET = 3500
 
 
 def group_of(name: str) -> str:
     if name.startswith("__"):
         return "meta"
-    if name in GROUP_PATCH:
-        return GROUP_PATCH[name]
+    if name in MEMBER_OF:
+        return MEMBER_OF[name]
     prefix = name.split("_", 1)[0]
-    return prefix if prefix in GROUP_NAMES else "misc"
+    return prefix if prefix in GROUP_MEMBERS else "misc"
+
+
+def _arg_int(flag: str, default: int) -> int:
+    """取 `--flag=123` 形式的整数参数（没有就用默认值）。"""
+    for a in sys.argv:
+        if a.startswith(flag):
+            try:
+                return int(a[len(flag):])
+            except ValueError:
+                raise SystemExit("%s 后面要跟整数，收到 %r" % (flag, a))
+    return default
 
 
 # ---- token 估算（与 ContextBudget.estimateTokens 同口径）---------------------
@@ -239,6 +293,15 @@ def main():
     total_hint = sum(t["hint_chars"] for t in uniq)
     print("读取源码：%s" % os.path.relpath(SRC, ROOT))
     print("解析到工具：%d 个（另有 %d 个动态构造，未计入）" % (len(uniq), len(dynamic)))
+    # 清单是唯一真源：源码里有、清单里没有的工具会落进 misc（仍可见，但组索引里查不到）。
+    # Kotlin 侧的 audit() 会报，这里再报一次——一个在启动日志里，一个在成本报表里，
+    # 两边都能看见才不会被当成噪声忽略。
+    unregistered = [t["name"] for t in uniq if t["name"] not in MEMBER_OF]
+    if unregistered:
+        print("⚠️  %d 个工具不在清单里（会落进 misc）：%s"
+              % (len(unregistered), ", ".join(unregistered)))
+    else:
+        print("清单覆盖：%d 个工具全部登记（0 个落进 misc）" % len(uniq))
     print("成本构成：工具表 JSON %d 字 / 新增提示片段 %d 字（后者是可省的——不暴露就不拼）\n"
           % (total_payload, total_hint))
 
@@ -278,6 +341,39 @@ def main():
     line("满载：file + 最重的 2 组", {"file"} | set(worst_pick),
          "= " + ",".join(["file"] + worst_pick))
     line("最坏（开着 misc）", {"file", "misc"} | set(worst_pick))
+
+    # ---------- 预算门（--gate）----------
+    #
+    # 架构方案「度量」表里写着「工具面默认 token ≈525，目标 ≤525（不退化）」。那张表
+    # 之前只是个数字：没人量，也就没人拦得住它退化。加一个工具、把某句描述从 30 字
+    # 写成 120 字，默认面会涨，**而所有现有断言都不会响**——它们验的是「分组对不对」，
+    # 不是「每轮要付多少钱」。
+    #
+    # 门槛故意卡在现值上（525 / 3500），不留余量：留了余量就等于允许「慢慢地、每次
+    # 一点点」地涨。要涨可以，先改这两个常量，把代价写在提交信息里。
+    if "--gate" in sys.argv:
+        # 两个 override 只给 harness 用：它要证明「门真的会红」，否则这道门和装饰没区别。
+        # 不接受环境变量——CI 里一个手滑的 env 就能把门关掉，那还不如没有。
+        budgets = [
+            ("默认面（云端只开 file）", {"file"}, _arg_int("--budget-default=", DEFAULT_TOKENS_BUDGET)),
+            ("满载（file + 最重的 2 组）", {"file"} | set(worst_pick), _arg_int("--budget-peak=", PEAK_TOKENS_BUDGET)),
+        ]
+        print("\n预算门（--gate）：")
+        bad = 0
+        if unregistered:
+            print("  ❌ 清单覆盖                                     %d 个工具未登记：%s"
+                  % (len(unregistered), ", ".join(unregistered)))
+            bad += 1
+        for label, groups, budget in budgets:
+            _, _, k = surface(groups)
+            ok = k <= budget
+            bad += 0 if ok else 1
+            print("  %s %-28s %5d token ≤ %5d  %s"
+                  % ("✅" if ok else "❌", label, k, budget, "" if ok else "（超 %d）" % (k - budget)))
+        if bad:
+            print("\n工具面预算超了 %d 项。工具表是每轮都要付的成本：要么压缩描述，"
+                  "要么把该组从默认暴露面里挪走，要么显式抬高上面的预算常量并说明理由。" % bad)
+            sys.exit(1)
 
     print("\n最重的可淘汰组排名：")
     for i, g in enumerate(worst[:6], 1):
