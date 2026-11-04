@@ -130,10 +130,14 @@ fun main() {
     }
 
     check("V1 owner 会话 id 跨线程可见") {
+        // P4-4：运行态搬进 GenerationRunController，@Volatile 也必须跟着搬——
+        // 它守的是「写点在主线程、读点在 IO 线程」这件事，与文件位置无关。
+        val generation = read("app/src/main/java/com/example/agentkit/ui/GenerationRunController.kt")
         assertTrue(
-            "runOwnerConvId 缺 @Volatile",
-            "@Volatile\n    private var runOwnerConvId: String? = null" in chatVm
+            "owner 缺 @Volatile",
+            "@Volatile\n    var owner: String? = null" in generation
         )
+        assertTrue("VM 仍在直接读 owner", "generation.owner" in chatVm)
     }
 
     check("P1 终端输出边收边截（不再整段堆内存）") {

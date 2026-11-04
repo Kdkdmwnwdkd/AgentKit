@@ -35,6 +35,7 @@ import com.example.agentkit.automation.UiTapTool
 import com.example.agentkit.automation.UiTreeTool
 import com.example.agentkit.core.agent.RealAgentLoop
 import com.example.agentkit.core.agent.LoggingTurnObserver
+import com.example.agentkit.core.capability.CapabilityManifest
 import com.example.agentkit.core.capability.ToolActivationStore
 import com.example.agentkit.core.AgentLogger
 import com.example.agentkit.core.KernelExposure
@@ -627,238 +628,77 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
 
     // —— 本地 llama.cpp 推理（九步第 3 步）————————————————————————
 
-    /** 本地推理参数（active 模型 / ctx / 线程数）持久化。 */
-    private val localSetting = LocalLlamaSetting(app)
-
-    /** GGUF 模型文件管理（files/models/）：目录、下载、删除。 */
-    private val modelStore = GgufModelStore(app)
-
-    /** 本地模型清单快照（页签打开时刷新）。 */
-    private val _localModels = MutableStateFlow(modelStore.listDownloaded())
-    val localModels: StateFlow<List<DownloadedModel>> =
-        _localModels.asStateFlow()
-
-    /** 当前选中的本地模型文件名（空 = 未选）。 */
-    private val _localActive = MutableStateFlow(localSetting.activeModel)
-    val localActive: StateFlow<String> = _localActive.asStateFlow()
-
-    /** native 引擎是否已加载模型（真机才可能为 true）。 */
-    private val _localLoaded = MutableStateFlow(false)
-    val localLoaded: StateFlow<Boolean> = _localLoaded.asStateFlow()
-
-    /** 下载中的文件名 → 进度（0f~1f，total 未知时为 null 持续刷新）。 */
-    private val _localDownloading = MutableStateFlow<Pair<String, Float?>?>(null)
-    val localDownloading: StateFlow<Pair<String, Float?>?> = _localDownloading.asStateFlow()
-
-    /** 本地推理参数（页签内编辑，保存即落盘）。 */
-    private val _localNCtx = MutableStateFlow(localSetting.nCtx)
-    val localNCtx: StateFlow<Int> = _localNCtx.asStateFlow()
-
-    private val _localThreads = MutableStateFlow(localSetting.nThreads)
-    val localThreads: StateFlow<Int> = _localThreads.asStateFlow()
-
-    private val _localMaxTokens = MutableStateFlow(localSetting.maxTokens)
-    val localMaxTokens: StateFlow<Int> = _localMaxTokens.asStateFlow()
-
-    /** 本地 Agent 模式（默认关）：开＝注入工具协议与完整系统提示，关＝轻聊档。 */
-    private val _localAgentMode = MutableStateFlow(localSetting.agentMode)
-    val localAgentMode: StateFlow<Boolean> = _localAgentMode.asStateFlow()
-
-    /** GPU 卸载策略（自动 / 强制 / 关闭）。 */
-    private val _localGpuMode = MutableStateFlow(localSetting.gpuMode)
-    val localGpuMode: StateFlow<GpuMode> = _localGpuMode.asStateFlow()
-
     /**
-     * 上次「开 GPU 崩掉」的说明（空串 = 没有）。
-     *
-     * 初值从磁盘读：崩溃时进程已经死了，这条只能靠 Application 在下次启动时落盘，
-     * 这里只负责把它显示出来。用户手动改档位即视为「我知道了」，清空。
+     * 本地模型这一摊子的所有者：参数、模型文件、下载进度、GPU 结论全在 [ModelSettings]。
+     * 这里只转发流与动作，UI 的调用点与类型一个没变（名字都保留）。
      */
-    private val _localSafeMode = MutableStateFlow(localSetting.safeMode)
-    val localSafeMode: StateFlow<Boolean> = _localSafeMode.asStateFlow()
+    private val modelSettings = ModelSettings(
+        context = app,
+        scope = viewModelScope,
+        switchToLocalProvider = ::useLocalProvider,
+        onStatus = { _importStatus.value = it },
+    )
 
-    private val _localGpuCrashNote = MutableStateFlow(localSetting.lastGpuCrashNote)
-    val localGpuCrashNote: StateFlow<String> = _localGpuCrashNote.asStateFlow()
+    /** 连接测试与日志要读这两个，故保留同名只读视图，避免把存储细节再抄一遍。 */
+    internal val localSetting: LocalLlamaSetting get() = modelSettings.setting
+    internal val modelStore: GgufModelStore get() = modelSettings.files
 
-    // 必须声明在 localGpuSummary 之前：combine(...) 在属性初始化时就会读到它，
-    // 放在后面的话拿到的是 null（Kotlin 按声明顺序初始化字段），表现为一进页面就 NPE。
-    /** 设备画像（启动时后台采一次；页面打开时通常已就绪）。 */
-    private val _localGpuDevices = MutableStateFlow(AndroidDeviceProbe.cachedProfile)
+    val localModels: StateFlow<List<DownloadedModel>> = modelSettings.models
+    val localActive: StateFlow<String> = modelSettings.active
+    val localLoaded: StateFlow<Boolean> = modelSettings.loaded
+    val localDownloading: StateFlow<Pair<String, Float?>?> = modelSettings.downloading
+    val localNCtx: StateFlow<Int> = modelSettings.nCtx
+    val localThreads: StateFlow<Int> = modelSettings.threads
+    val localMaxTokens: StateFlow<Int> = modelSettings.maxTokens
+    val localAgentMode: StateFlow<Boolean> = modelSettings.agentMode
+    val localGpuMode: StateFlow<GpuMode> = modelSettings.gpuMode
+    val localSafeMode: StateFlow<Boolean> = modelSettings.safeMode
+    val localGpuCrashNote: StateFlow<String> = modelSettings.gpuCrashNote
+    val localGpuSummary: StateFlow<String> = modelSettings.gpuSummary
+
+    /** 页签 onResume / 下载完成后调用。 */
+    fun refreshLocalModels() = modelSettings.refresh()
+
+    fun setActiveLocalModel(fileName: String) = modelSettings.setActive(fileName)
+
+    fun deleteLocalModel(fileName: String) = modelSettings.delete(fileName)
+
+    fun unloadLocalModel() = modelSettings.unload()
+
+    fun downloadLocalModel(entry: GgufCatalogEntry) = modelSettings.download(entry)
+
+    fun importLocalModel(uri: Uri) = modelSettings.import(uri)
+
+    fun setLocalNCtx(v: Int) = modelSettings.setCtx(v)
+
+    fun setLocalThreads(v: Int) = modelSettings.setThreads(v)
+
+    fun setLocalMaxTokens(v: Int) = modelSettings.setMaxTokens(v)
+
+    fun setLocalAgentMode(on: Boolean) = modelSettings.setAgentMode(on)
+
+    fun setLocalSafeMode(on: Boolean) = modelSettings.setSafeMode(on)
+
+    fun setLocalGpuMode(mode: GpuMode) = modelSettings.setGpuMode(mode)
 
     /**
-     * 「这台机器上 GPU 到底怎么样」的一行结论，给设置页当副标题。
+     * W-70：选中本地模型即把当前档案切到本地供应商。
      *
-     * 组合了三个来源：包里有没有编 Vulkan、设备画像怎么说、用户选了什么模式。
-     * 三者任一变了这句就变——所以它不能是一个缓存的常量。
-     */
-    val localGpuSummary: StateFlow<String> = combine(_localGpuMode, _localGpuDevices) { mode, dev ->
-        val compiled = LlamaJni.gpuBackendAvailable
-        if (!compiled) return@combine "当前安装包未编入 Vulkan 后端，本地推理只用 CPU"
-        val advice = dev?.let { LocalDeviceRules.advise(it) }
-            ?: return@combine "设备信息还没采集完，暂时只用 CPU"
-        val plan = LocalDeviceRules.resolveGpu(advice, compiled, mode)
-        val gpu = advice.gpuModel ?: advice.gpu.label
-        if (plan.usingGpu) {
-            "已启用：$gpu（Vulkan ${advice.vulkanVersion ?: "?"}），模型层会卸载到显卡"
-        } else {
-            "$gpu · Vulkan ${advice.vulkanVersion ?: "?"}｜${plan.reason}"
-        }
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), "正在读取设备信息…")
-
-    /** 刷新本地模型清单（页签 onResume / 下载完成后调用）。 */
-    fun refreshLocalModels() {
-        _localModels.value = modelStore.listDownloaded()
-        _localLoaded.value = LocalLlamaEngineIsLoaded()
-        // 画像在启动时后台采一次，这里补一次读取：用户可能进得太快，创建 VM 时还是 null。
-        _localGpuDevices.value = AndroidDeviceProbe.cachedProfile
-        // 崩溃说明也可能被 Application 在本次启动写进去（VM 早于它创建时不成立，但重进页面时要对齐）。
-        _localGpuCrashNote.value = localSetting.lastGpuCrashNote
-        _localSafeMode.value = localSetting.safeMode
-    }
-
-    private fun LocalLlamaEngineIsLoaded(): Boolean =
-        LocalLlamaEngine.isLoaded
-
-    /**
-     * 选用某个已下载模型（立即生效；下次对话时引擎按参数加载/复用）。
-     *
-     * W-70：**选模型 = 要用它对话**，所以这里同时把当前档案的 provider 切成 local。
      * 真机反馈（2026-10-28 录屏 + 日志）：用户在配置页把供应商标成群「本地模型（内置）」、
      * 测试连接显示「连接正常」，但那是编辑区的临时值——没点「保存」就没写进 config，
-     * 发消息时照旧打到 api.agnes-ai.cn，本地引擎一次都没启动。用户看到的是「配好了但用不了」。
+     * 发消息时照旧打到 api.agnes-ai.cn，本地引擎一次都没启动。
      *
-     * 这里**只改 providerId，不清 baseUrl/apiKey**：清空会让用户切回云端时得重填 Key
-     * （W-23 的清理是编辑态行为，不该落到已保存配置上）。本地客户端不读这两个字段，
-     * 留着无害，且让「本地 ⇄ 云端」切换可逆。
+     * 只改 providerId，**不清 baseUrl/apiKey**：清空会让用户切回云端时得重填 Key，
+     * 留着无害（本地客户端不读），且让「本地 ⇄ 云端」切换可逆。
      */
-    fun setActiveLocalModel(fileName: String) {
-        localSetting.activeModel = fileName
-        _localActive.value = fileName
+    private fun useLocalProvider() {
         val current = _config.value
-        if (current.providerId != ProviderCatalog.STYLE_LOCAL_LLAMA) {
-            updateConfig(current.copy(providerId = ProviderCatalog.STYLE_LOCAL_LLAMA))
-            AgentLogger.i("Chat", "选中本地模型 $fileName → 当前档案切到本地推理")
-        }
-    }
-
-    /** 删除本地模型文件（正在加载的会先卸载）。 */
-    fun deleteLocalModel(fileName: String) {
-        modelStore.delete(fileName)
-        _localModels.value = modelStore.listDownloaded()
-        if (_localActive.value == fileName) _localActive.value = localSetting.activeModel
-    }
-
-    /** 卸载常驻内存的本地模型（换模型或内存吃紧时用）。 */
-    fun unloadLocalModel() {
-        LocalLlamaEngine.unload()
-        _localLoaded.value = false
-    }
-
-    /** 下载内置目录中的模型（断点续传；重复调用会复用已完成文件）。 */
-    fun downloadLocalModel(entry: GgufCatalogEntry) {
-        if (_localDownloading.value != null) return
-        viewModelScope.launch {
-            _localDownloading.value = entry.fileName to null
-            val outcome = runCatching {
-                modelStore.download(entry) { downloaded, total ->
-                    _localDownloading.value = entry.fileName to
-                        if (total > 0) downloaded.toFloat() / total else null
-                }
-            }
-            _localDownloading.value = null
-            _localModels.value = modelStore.listDownloaded()
-            _importStatus.value = when {
-                outcome.isFailure -> "下载失败：${outcome.exceptionOrNull()?.message}"
-                // 下完自动选用，省一次点击
-                else -> {
-                    setActiveLocalModel(entry.fileName)
-                    "已下载并选用 ${entry.displayName}"
-                }
-            }
-        }
-    }
-
-    /**
-     * W-45：导入已有的 .gguf（系统文件选择器 → content:// URI）。
-     *
-     * 与下载共用同一条进度通道：UI 不需要区分"在下"还是"在拷"，都显示百分比。
-     * 导入成功后自动设为当前模型（与下载完的行为一致）。
-     */
-    fun importLocalModel(uri: Uri) {
-        if (_localDownloading.value != null) return
-        viewModelScope.launch {
-            _localDownloading.value = "本地文件" to null
-            // importFrom 内部已经 runCatching 并返回 Result<String>，不要再包一层
-            val outcome = modelStore.importFrom(uri) { copied, total ->
-                _localDownloading.value = "本地文件" to
-                    if (total > 0) copied.toFloat() / total else null
-            }
-            _localDownloading.value = null
-            _localModels.value = modelStore.listDownloaded()
-            _importStatus.value = outcome.fold(
-                onSuccess = { name ->
-                    setActiveLocalModel(name)
-                    "已导入并选用 $name"
-                },
-                onFailure = { "导入失败：${it.message}" }
-            )
-        }
-    }
-
-    fun setLocalNCtx(v: Int) {
-        localSetting.nCtx = v
-        _localNCtx.value = localSetting.nCtx
-    }
-
-    fun setLocalThreads(v: Int) {
-        localSetting.nThreads = v
-        _localThreads.value = localSetting.nThreads
-        // W-95：绑核投票的结论是按「上一组加载参数」投出来的，线程数一变就必须作废，
-        // 否则下次加载会沿用旧结论，用户看到的就是「我设了 6 线程，还是跑 4 个」。
-        runCatching { LlamaJni.nativeResetAffinity() }
-    }
-
-    fun setLocalMaxTokens(v: Int) {
-        localSetting.maxTokens = v
-        _localMaxTokens.value = localSetting.maxTokens
-    }
-
-    fun setLocalAgentMode(on: Boolean) {
-        localSetting.agentMode = on
-        _localAgentMode.value = on
+        if (current.providerId == ProviderCatalog.STYLE_LOCAL_LLAMA) return
+        updateConfig(current.copy(providerId = ProviderCatalog.STYLE_LOCAL_LLAMA))
         AgentLogger.i(
-            "LocalLlama",
-            if (on) "本地切到 Agent 模式（会注入工具协议，prompt 变长、首字变慢）"
-            else "本地切到轻聊档（只发系统提示前几行 + 最近两轮，首字最快）"
+            "Chat",
+            "选中本地模型 ${modelSettings.active.value} → 当前档案切到本地推理"
         )
-    }
-
-    /**
-     * 开关安全模式（压上下文 + 压批）。
-     *
-     * 不在这里调 `LlamaJni.applySafeMode`：native 的 n_batch 只在建 context 时读一次，
-     * 由 [com.example.agentkit.core.llm.local.LocalLlamaClient.ensureModelLoaded] 在
-     * 装载前统一推。这里只落盘 + 更新 UI，语义就是「下一条消息生效」。
-     */
-    fun setLocalSafeMode(on: Boolean) {
-        localSetting.safeMode = on
-        _localSafeMode.value = on
-        AgentLogger.i(
-            "LocalLlama",
-            if (on) "安全模式已开启：上下文压到 2048、批压到 128，下一条消息生效"
-            else "安全模式已关闭：恢复设置里的上下文与批大小，下一条消息生效",
-        )
-    }
-
-    fun setLocalGpuMode(mode: GpuMode) {
-        localSetting.gpuMode = mode
-        _localGpuMode.value = mode
-        // 用户已经看过这条提示并做了选择，不再重复打扰。
-        if (_localGpuCrashNote.value.isNotBlank()) {
-            localSetting.lastGpuCrashNote = ""
-            _localGpuCrashNote.value = ""
-        }
-        AgentLogger.i("LocalLlama", "GPU 策略改为「${mode.label}」，下次加载模型生效")
     }
 
     /** L8 最近日志（格式化后的文本，最新的在前），供自动化页「运行日志」卡片展示。 */
@@ -1089,6 +929,29 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         register(ContainerToolchainTool(app))
     }
 
+    /**
+     * P3-1：能力清单自检。
+     *
+     * 四条双向断言（工具→清单 / 清单→工具 / 补丁→工具 / 常驻组自洽）见
+     * [com.example.agentkit.core.capability.CapabilityManifest.audit]。
+     *
+     * 定位是**留痕不是门槛**：偏差不影响工具可用性（落进 misc 的工具照样能被调用），
+     * 所以只 warn 不抛——但省掉了「等模型开错组、再回来看为什么」那一整圈。
+     * 静态工具全在注册表里之后跑一次，MCP 动态工具不参与（见调用点注释）。
+     */
+    private fun auditCapabilities() {
+        runCatching {
+            val audit = CapabilityManifest.audit(registry.list())
+            if (!audit.ok) {
+                AgentLogger.w(
+                    "Capability",
+                    "能力清单有 ${audit.problems.size} 处不同步：\n" +
+                        audit.problems.joinToString("\n")
+                )
+            }
+        }
+    }
+
     /** JS 执行引擎（Rhino，纯 Java 无需 NDK）；初始化失败则降级为仅 prompt 形态。 */
     private val jsEngine: JsEngine? = runCatching { RhinoJsEngine() }.getOrNull()
 
@@ -1144,6 +1007,10 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         // W-17：注册周期巡检（幂等）并载入列表
         WorkflowScheduler.ensureScheduled(app)
         refreshWorkflows()
+        // P3-1：能力清单自检——把注册表与 CapabilityManifest 对一遍（只在有偏差时打一条 warn）。
+        // 放在 MCP 注册**之前**：MCP 工具是运行时动态来的，名字不受清单约束，
+        // 让它们参与审计只会制造固定噪声。
+        auditCapabilities()
         // W-14：异步连 MCP 服务器并把工具注册进 registry（失败只记日志，不影响启动）
         registerMcpTools()
         refreshGrants()
@@ -1317,19 +1184,25 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     private val _conversations = MutableStateFlow(conversationStore.list())
     val conversations: StateFlow<List<ConversationSummary>> = _conversations.asStateFlow()
 
-    /**
-     * 当前会话的消息；启动时从会话存储载入（功能三：重启 App 后对话还在）。
-     * Phase 2 DoD②：改由 [ConversationRecord.toUiItems] 逐轮渲染（带变体游标元数据），
-     * 使变体切换后助手气泡能正确反映当前选中变体。
-     * 声明序保证 [conversationStore] / [_activeConversationId] 已就绪。
-     */
-    private val _messages = MutableStateFlow(
-        conversationStore.load(_activeConversationId.value)?.toUiItems() ?: emptyList()
-    )
-    val messages: StateFlow<List<UiItem>> = _messages.asStateFlow()
-
     /** Hotfix2：过程事件回调来自工具并行执行线程，与主线程的 send() 竞争同一列表——加锁防丢更新。 */
     private val msgLock = Any()
+
+    /**
+     * 当前会话的消息；启动时从会话存储载入（功能三：重启 App 后对话还在）。
+     * Phase 2 DoD②：由 [ConversationRecord.toUiItems] 逐轮渲染（带变体游标元数据），
+     * 使变体切换后助手气泡能正确反映当前选中变体。
+     * 显示态与落库合在 [ConversationProjection] 一处，本类只持流引用。
+     * 声明序保证 [conversationStore] / [_activeConversationId] / [msgLock] 已就绪。
+     */
+    private val projection = ConversationProjection(
+        store = conversationStore,
+        activeId = { _activeConversationId.value },
+        ownerId = { generation.owner },
+        ownerActive = { isOwnerActive() },
+        onStoreChanged = { refreshConversations() },
+        lock = msgLock,
+    )
+    val messages: StateFlow<List<UiItem>> = projection.items
 
     /** 模型配置持久化：进程重启也能还原，避免「明明填过却退回默认值」的不一致。 */
     private val configStore = ConfigStore(app)
@@ -1408,11 +1281,11 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
      * 初值同步算一次（不走默认 false），否则首帧会闪一下「模型未配置」。
      */
     val modelReady: StateFlow<Boolean> =
-        combine(_config, _localActive) { cfg, local -> readyOf(cfg, local) }
+        combine(_config, localActive) { cfg, local -> readyOf(cfg, local) }
             .stateIn(
                 viewModelScope,
                 SharingStarted.Eagerly,
-                readyOf(_config.value, _localActive.value)
+                readyOf(_config.value, localActive.value)
             )
 
     private fun readyOf(cfg: ModelConfig, localModel: String): Boolean =
@@ -1445,136 +1318,36 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     val testing: StateFlow<Boolean> = _testing.asStateFlow()
 
     val input = MutableStateFlow("")
-    val isRunning = MutableStateFlow(false)
 
     /**
-     * T05：当前运行任务的 Job 句柄（send() 内置，stop() 取消）。
-     * 取消后 AgentLoop 会在 ≤1 轮内退出，并在 NonCancellable 内补全所有待决
-     * ToolResult（树尾闭合）——历史里不会留下未闭合 tool_call。
+     * 一轮生成的全部运行态（在跑没跑 / 归属会话 / 流式草稿 / 收尾）都在 [GenerationRunController]
+     * 手里。这里只暴露流，外加一个「收尾时宿主该做什么」的钩子——顺序与原来一致：
+     * 清恢复横幅 → 落盘工具组 → 按需重建消息 → 刷日志。
      */
-    private var runJob: Job? = null
-
-    /**
-     * hotfix30：在途任务的归属会话 id（send/regenerate 启动时捕获，finally 清 null）。
-     *
-     * 真机反馈：「我在一个对话发消息之后，要去那个对话之间的对话的话，他是得让
-     * 那个对话回完才行，我不能跳，不能过其他对话」。
-     *
-     * 根因：旧架构所有在途写操作（appendToStore/handleAgentEvent/流式草稿）都读
-     * _activeConversationId.value，且 switchConversation 有 isRunning 硬守卫——
-     * 放开切换就会把旧会话的生成结果写进新会话（写串）。
-     *
-     * 解法：启动即捕获 owner，所有在途写按 owner 落盘；显示态（_messages/草稿）
-     * 仍跟 active 走，靠 [isOwnerActive] 条件投影。用户切走 → 旧会话后台继续
-     * 出字（只落盘不上屏）；切回 → [syncDraftDisplay] 恢复实时草稿，无缝续看。
-     */
-    /**
-     * 在途运行的归属会话（hotfix30 owner 捕获）。
-     *
-     * W-46：**必须 @Volatile**——写点是主线程（send/regenerate 入口、finally 清零），
-     * 读点却在工具回调/落盘协程（[handleAgentEvent]、[appendToStore]）这些 IO 线程上。
-     * 少了它，后台线程可能读到旧值（stale null），`runOwnerConvId ?: active` 就会把
-     * 后台结果写进**当前**会话——正是 owner 捕获机制要消灭的「写串」。
-     * 同文件 [screenshotApprovedThisTurn] 已按此模式标注，此处补齐。
-     */
-    @Volatile
-    private var runOwnerConvId: String? = null
-
-    /**
-     * hotfix30：流式草稿的内存缓冲（权威态）。[_streamDraft]/[_reasoningDraft]
-     * 只是它在 owner==active 时的投影——切走时显示态清空但缓冲继续攒，
-     * 切回时原样恢复（打字机从中间继续，好过丢半截）。
-     */
-    private var draftBuffer: String? = null
-    private var reasoningBuffer: String? = null
-
-    /** hotfix30：正在生成的会话 id（UI 抽屉显示「生成中」标识；可点到在途会话续看）。 */
-    private val _generatingConvId = MutableStateFlow<String?>(null)
-    val generatingConvId: StateFlow<String?> = _generatingConvId.asStateFlow()
-
-    /** owner 是否就是当前显示会话——在途 UI 更新（草稿/工具卡/气泡）的投影开关。 */
-    private fun isOwnerActive(): Boolean =
-        runOwnerConvId != null && runOwnerConvId == _activeConversationId.value
-
-    /** 切会话/收尾后把草稿缓冲投影到显示态：active==owner 恢复，否则清（缓冲不丢）。 */
-    private fun syncDraftDisplay() {
-        _streamDraft.value = if (isOwnerActive()) draftBuffer else null
-        _reasoningDraft.value = if (isOwnerActive()) reasoningBuffer else null
-    }
-
-    /* --------------------------- 一轮对话的开场 / 收尾 --------------------------- */
-
-    /**
-     * W-54：`send()` 与 `regenerate()` 的**开场仪式**与**收尾仪式**（此前是两份逐行同构的代码）。
-     *
-     * ## 为什么之前必须靠注释同步
-     *
-     * 两处各有 6~8 行完全相同的状态复位：`runOwnerConvId` / `_generatingConvId` /
-     * `draftBuffer` / `reasoningBuffer` / `syncDraftDisplay()` / `isRunning` / `_retryState`。
-     * 代码里出现过 6 次「与 send 同策略」「send 同套保险」这类注释——**用注释去同步两份
-     * 本该只有一份的代码**，而且已经分叉（`reloadActiveMessages` 只有 send 收尾会调）。
-     *
-     * ## 为什么不做成独立类
-     *
-     * 这些字段全是 ViewModel 的私有可变状态（`draftBuffer`、`runOwnerConvId`…）。独立类要
-     * 么暴露 8 个 setter，要么把状态搬出去再引一堆回调——比现在这层 inner class 更绕。
-     * inner class 直接读写宿主字段，零额外耦合，也保住了「一处定义、两处调用」。
-     *
-     * ## 唯一的真实差异，用参数表达
-     *
-     * `placeholderDraft`：regenerate 需要一个**空草稿占位**（`draftBuffer = ""`），send 不需要
-     * （`null`）。这不是历史遗留——UI 用 `streamDraft != null` 决定是否多渲染一行草稿气泡
-     * （ChatScreen 的 `streamDraft != null` → `MessageRow(..., streaming = true)`）：
-     * send 时用户消息气泡本身就是「在生成」的占位，regenerate 时没有新气泡，得自己造一个。
-     * 所以两个值都对，只是场景不同——**把它变成显式参数，而不是两个函数各写一遍**。
-     */
-    private inner class TurnRunner {
-
-        /**
-         * 开场：置归属会话、生成中标识、清草稿与推理缓冲、开运行态。
-         *
-         * @param owner 本轮归属的会话 id（用户切走后，在途写仍按它落盘）
-         * @param placeholderDraft true = 立刻渲染一个空草稿气泡（regenerate 用）；
-         *   false = 等第一个 delta 再出气泡（send 用）
-         */
-        fun begin(owner: String, placeholderDraft: Boolean) {
-            runOwnerConvId = owner
-            _generatingConvId.value = owner
-            draftBuffer = if (placeholderDraft) "" else null
-            reasoningBuffer = null
-            syncDraftDisplay()
-            isRunning.value = true
-        }
-
-        /**
-         * 收尾：清归属/生成中/缓冲、关运行态、清「正在恢复」横幅。
-         *
-         * 取消路径也必须走这里——`finally` 保证 withContext 抛 CancellationException 时
-         * 状态不残留（否则 UI 永远停在「运行中」，发送键禁用）。
-         *
-         * @param rebuildMessages 是否用轮次变体结构重建消息列表。send 需要（补上助手气泡的
-         *   变体游标元数据）；regenerate 不需要——它在 `onSuccess` / `onFailure` 里各自
-         *   reload 过，取消路径草稿已清、列表未变，再 reload 是多余 IO。
-         */
-        fun finish(rebuildMessages: Boolean) {
-            runOwnerConvId = null
-            _generatingConvId.value = null
-            draftBuffer = null
-            reasoningBuffer = null
-            syncDraftDisplay()
-            isRunning.value = false
+    private val generation = GenerationRunController(
+        scope = viewModelScope,
+        activeId = { _activeConversationId.value },
+        onFinished = { rebuildMessages ->
             // Phase 2 DoD③：兜底清「正在恢复」——重试收尾事件之外的最后一道保险
             _retryState.value = null
-            // W-102：粘性激活的落盘点。放这里而不是各终态分支，是因为 send 的成功/失败/
-            // 取消与 regenerate 全都汇聚到本函数——漏一处就是「这次开的组没记住」，
-            // 下次进同一任务又要模型重新 __use_tools 一遍（一次完整往返）。
+            // W-102：粘性激活的落盘点。send 的成功/失败/取消与 regenerate 全都汇聚到这里，
+            // 漏一处就是「这次开的组没记住」，下次进同一任务又要模型重新 __use_tools 一遍。
             persistToolGroups()
             if (rebuildMessages) reloadActiveMessages()
             refreshLogs()
-        }
-    }
+        },
+    )
 
-    private val turnRunner = TurnRunner()
+    val isRunning: StateFlow<Boolean> = generation.running
+    val generatingConvId: StateFlow<String?> = generation.generating
+    val streamDraft: StateFlow<String?> = generation.draft
+    val reasoningDraft: StateFlow<String?> = generation.reasoning
+
+    /** owner 是否就是当前显示会话——在途 UI 更新（草稿/工具卡/气泡）的投影开关。 */
+    private fun isOwnerActive(): Boolean = generation.isOwnerActive()
+
+    /** 切会话/收尾后把草稿缓冲投影到显示态：active==owner 恢复，否则清（缓冲不丢）。 */
+    private fun syncDraftDisplay() = generation.syncDisplay()
 
     /* ------------------------------ W-17 定时任务 ------------------------------ */
 
@@ -1742,14 +1515,12 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
 
     /**
      * T05：停止当前运行（流式中点「停止」）。
-     * 取消 runJob → AgentLoop 每轮边界 ensureActive 退出 + 树尾闭合补结果。
+     * 取消运行句柄 → AgentLoop 每轮边界 ensureActive 退出 + 树尾闭合补结果。
      * 未在运行时调用为 no-op。
      */
     fun stop() {
-        val job = runJob ?: return
+        if (!generation.cancel()) return
         AgentLogger.i("Chat", "用户请求停止运行")
-        job.cancel()
-        runJob = null
         // W-14：挂起中的 ask_user 一并唤醒（否则协程被取消后 deferred 悬着，卡片不消失）
         AskUserBroker.cancel()
         // W-25：待批计划同样唤醒（视为拒绝），否则计划卡片会一直挂在输入栏上方
@@ -1762,7 +1533,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
 
     /**
      * 重新生成**最后一轮**的助手回答：走 T01 流式路径（[com.example.agentkit.core.LLMClient.streamChat]，
-     * 经 [AgentLoop] 的 onTextDelta 打字机上屏到 [_streamDraft]），完成后**追加**一个新变体并选中
+     * 经 [AgentLoop] 的 onTextDelta 打字机上屏到 [streamDraft]），完成后**追加**一个新变体并选中
      * （旧变体保留、可左右切回）——覆盖 DoD②「重新生成 3 次可左右切换」。
      *
      * 运行中忽略（UI 禁用只是双保险）。持久化经 [ConversationStore.appendVariant]，杀进程后仍在。
@@ -1778,70 +1549,57 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
 
         // hotfix30：同 send——捕获在途归属会话，切走再切回不写串（appendVariant 按 owner）
         val owner = _activeConversationId.value
-        // W-54：开场仪式与 send 共用；placeholderDraft=true 是因为这里没有新的用户气泡，
-        // 需要一个空草稿行告诉用户「正在重做」（见 TurnRunner 的 KDoc）
-        turnRunner.begin(owner, placeholderDraft = true)
         AgentLogger.i("Chat", "重新生成：第 ${turnIndex + 1} 轮")
-        runJob = viewModelScope.launch {
-            try {
-                // W-46：重新生成也要带历史，但要**排除最后一轮**——那正是要重做的一轮，
-                // 把它自己的旧答案当历史会诱导模型复读原答案
-                val outcome = runCatching {
-                    loop.send(userText, emptyList(), buildPriorMessages(owner, excludeLastTurn = true))
-                }
-                // 流式草稿使命结束：最终回答以整条变体落库，先清草稿避免与整条同时显示
-                // hotfix30：清内存缓冲，显示态经 syncDraftDisplay 投影
-                draftBuffer = null
-                reasoningBuffer = null
-                syncDraftDisplay()
-                outcome.onSuccess { history ->
-                    // 过程事件已实时渲染；但用户中途切走过会话时，期间的 Tool 事件只落盘
-                    // 不上屏（`isOwnerActive()` 为 false），这里按 id 比对补投影
-                    history.forEach { msg ->
-                        if (msg is ToolMessage) {
-                            val shown = _messages.value.any { it is UiItem.Tool && it.call.id == msg.id }
-                            if (!shown) append(msg)
-                        }
+        // placeholderDraft=true 是因为这里没有新的用户气泡，需要一个空草稿行告诉用户
+        // 「正在重做」；rebuildMessages=false——成功/失败分支各自 reload 过，
+        // 取消分支草稿已清、列表未变，不必再重建一遍
+        generation.start(owner, placeholderDraft = true, rebuildMessages = false) {
+            // W-46：重新生成也要带历史，但要**排除最后一轮**——那正是要重做的一轮，
+            // 把它自己的旧答案当历史会诱导模型复读原答案
+            val outcome = runCatching {
+                loop.send(userText, emptyList(), buildPriorMessages(owner, excludeLastTurn = true))
+            }
+            // 流式草稿使命结束：最终回答以整条变体落库，先清草稿避免与整条同时显示
+            generation.clearDrafts()
+            outcome.onSuccess { history ->
+                // 过程事件已实时渲染；但用户中途切走过会话时，期间的 Tool 事件只落盘
+                // 不上屏（`isOwnerActive()` 为 false），这里按 id 比对补投影
+                history.forEach { msg ->
+                    if (msg is ToolMessage) {
+                        val shown = messages.value.any { it is UiItem.Tool && it.call.id == msg.id }
+                        if (!shown) append(msg)
                     }
-                    val final = history.filterIsInstance<AssistantMessage>()
-                        .lastOrNull()?.content.orEmpty()
-                    // 功能五（P1-5）：新变体带本回合全部 LLM 往返的合计用量
-                    val variant = UiItem.Assistant(
-                        text = if (final.isBlank()) "（模型未返回内容）" else final,
-                        usage = TokenUsage.sum(
-                            history.filterIsInstance<AssistantMessage>().map { it.usage }
-                        )
+                }
+                val final = history.filterIsInstance<AssistantMessage>()
+                    .lastOrNull()?.content.orEmpty()
+                // 功能五（P1-5）：新变体带本回合全部 LLM 往返的合计用量
+                val variant = UiItem.Assistant(
+                    text = if (final.isBlank()) "（模型未返回内容）" else final,
+                    usage = TokenUsage.sum(
+                        history.filterIsInstance<AssistantMessage>().map { it.usage }
                     )
-                    // hotfix30：变体落盘按 owner（切走期间 regenerate 的后台结果仍写回原会话）
+                )
+                // hotfix30：变体落盘按 owner（切走期间 regenerate 的后台结果仍写回原会话）
+                conversationStore.appendVariant(
+                    owner, turnIndex, variant.toMsgRecord()
+                )
+                reloadActiveMessages()
+                refreshConversations()
+            }
+            outcome.onFailure {
+                if (it is CancellationException) {
+                    // 用户主动停止：不算失败，也不追加空变体（草稿已清）
+                    AgentLogger.i("Chat", "重新生成已停止")
+                } else {
+                    AgentLogger.e("Chat", "重新生成失败", it)
+                    val err = UiItem.Assistant(friendlyMessage(it), timeMs = System.currentTimeMillis())
+                    // hotfix30：失败变体同样按 owner 落盘
                     conversationStore.appendVariant(
-                        owner, turnIndex, variant.toMsgRecord()
+                        owner, turnIndex, err.toMsgRecord()
                     )
                     reloadActiveMessages()
                     refreshConversations()
                 }
-                outcome.onFailure {
-                    if (it is CancellationException) {
-                        // 用户主动停止：不算失败，也不追加空变体（草稿已清）
-                        AgentLogger.i("Chat", "重新生成已停止")
-                    } else {
-                        AgentLogger.e("Chat", "重新生成失败", it)
-                        val err = UiItem.Assistant(friendlyMessage(it), timeMs = System.currentTimeMillis())
-                        // hotfix30：失败变体同样按 owner 落盘
-                        conversationStore.appendVariant(
-                            owner, turnIndex, err.toMsgRecord()
-                        )
-                        reloadActiveMessages()
-                        refreshConversations()
-                    }
-                }
-            } finally {
-                runJob = null
-                // W-54：收尾仪式与 send 共用。rebuildMessages=false——成功/失败分支各自
-                // reload 过，取消分支草稿已清、列表未变，不必再重建一遍
-                turnRunner.finish(rebuildMessages = false)
-                // W-102：本轮可能开了组，收尾落盘（取消路径也走这里：开到一半被停，
-                // 下次进来仍是开着的——粘性语义要求「开过就算」）
-                persistToolGroups()
             }
         }
     }
@@ -2254,48 +2012,31 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     )
 
     /**
-     * T01 流式文本增量 → 草稿缓冲（hotfix30 起为内存权威态，[_streamDraft] 是其投影）。
+     * T01 流式文本增量 → 草稿缓冲（在 [GenerationRunController] 内，[streamDraft] 是其投影）。
      * TextDelta 不进历史，仅用于「正在生成」的实时气泡；[send] / [regenerate]
-     * 结束时清空并落库最终整条。回调来自 LLM 收集协程，单独用 [streamDraftLock]
-     * 串行化（与 [msgLock] 解耦）。owner!=active（用户切到别的会话）时缓冲继续攒，
-     * 切回时 [syncDraftDisplay] 恢复——后台续跑不丢半截。
+     * 结束时清空并落库最终整条。缓冲自带锁（与 [msgLock] 解耦，锁序 msgLock→草稿锁）。
+     * owner!=active（用户切到别的会话）时缓冲继续攒，切回时 [syncDraftDisplay] 恢复。
      */
-    private val streamDraftLock = Any()
-
-    private fun handleTextDelta(delta: String) = synchronized(streamDraftLock) {
+    private fun handleTextDelta(delta: String) {
         // hotfix30：先攒进内存缓冲（权威态），仅 owner==active 才投影到显示态
-        draftBuffer = (draftBuffer ?: "") + delta
-        if (isOwnerActive()) _streamDraft.value = draftBuffer
+        generation.appendText(delta)
     }
 
     /**
-     * 功能五（P1-9）：推理过程增量 → [_reasoningDraft]（思考折叠块的实时内容）。
+     * 功能五（P1-9）：推理过程增量 → [reasoningDraft]（思考折叠块的实时内容）。
      * 与 [handleTextDelta] 同一把锁串行化：两条流来自同一 LLM 收集协程、
      * 同一 UI 气泡消费，锁共享保证「思考」与「正文」的相对时序不乱。
      */
-    private fun handleReasoningDelta(delta: String) = synchronized(streamDraftLock) {
+    private fun handleReasoningDelta(delta: String) {
         // hotfix30：同 handleTextDelta——缓冲权威 + 条件投影
-        reasoningBuffer = (reasoningBuffer ?: "") + delta
-        if (isOwnerActive()) _reasoningDraft.value = reasoningBuffer
+        generation.appendReasoning(delta)
     }
-
-    /** 流式草稿文本：非 null 时 UI 在消息末尾渲染一个「正在生成」的助手气泡（尚未落库）。 */
-    private val _streamDraft = MutableStateFlow<String?>(null)
-    val streamDraft: StateFlow<String?> = _streamDraft.asStateFlow()
-
-    /**
-     * 功能五（P1-9）：流式推理过程草稿（思考折叠块的实时内容）。
-     * 与 [_streamDraft] 同生命周期：非 null = 正在生成且模型在输出思考。
-     * 结束（落库/失败）时清空——最终思考随 [AssistantMessage.reasoning] 落盘。
-     */
-    private val _reasoningDraft = MutableStateFlow<String?>(null)
-    val reasoningDraft: StateFlow<String?> = _reasoningDraft.asStateFlow()
 
     /**
      * 功能五（P1-5）：当前会话累计 token 用量（对所有助手气泡的 usage 求和）。
      * 切会话时随 [_messages] 重载自动切换；UI 在对话页顶部常驻显示。
      */
-    val sessionUsage: StateFlow<TokenUsage> = _messages
+    val sessionUsage: StateFlow<TokenUsage> = messages
         .map { items ->
             TokenUsage.sum(items.filterIsInstance<UiItem.Assistant>().mapNotNull { it.usage })
         }
@@ -2328,22 +2069,16 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
             }
 
             is AgentEvent.ToolFinished -> {
-                val cur = _messages.value
-                val idx = cur.indexOfFirst {
-                    it is UiItem.Tool && it.call.id == ev.message.id && it.running
-                }
-                if (idx >= 0) {
-                    val done = UiItem.Tool(
-                        call = ToolCall(ev.message.id, ev.message.name, ev.message.arguments),
-                        result = ev.message.content,
-                        isError = ev.message.isError,
-                        images = ev.message.images,
-                        running = false
-                    )
-                    _messages.value = cur.toMutableList().also { it[idx] = done }
-                    // 功能三：终态落盘（store 按 call.id 覆盖执行中占位）
-                    appendToStore(done)
-                }
+                val done = UiItem.Tool(
+                    call = ToolCall(ev.message.id, ev.message.name, ev.message.arguments),
+                    result = ev.message.content,
+                    isError = ev.message.isError,
+                    images = ev.message.images,
+                    running = false
+                )
+                // 命中执行中卡才替换并落终态（store 按 call.id 覆盖执行中占位）；
+                // 未命中说明这张卡没上屏（切走期间只落盘），终态交给 send() 的 history 兜底
+                if (projection.finishTool(ev.message.id, done)) appendToStore(done)
                 // C2：推进运行态——记下「进行到第几步 + 做过哪些工具」。
                 // B 批只把 stepIndex 初始化成 0 就再没动过，导致中断提示永远显示
                 // 「第 0 步」、doneTools 永远为空——恢复信息形同虚设。这里补上。
@@ -2358,13 +2093,8 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
                 // 上一次已经通过 onTextDelta 推上屏的增量，重试后会从头发一遍。不清缓冲就会
                 // 出现「前半段 → 重试后整段再来一次」的重复观感；而 429 退避是 10/30/60 秒，
                 // 用户这时早就把前半段读完了，重复比丢内容更刺眼。
-                // 锁序：msgLock → streamDraftLock（反向不存在，handleTextDelta 不取 msgLock）。
-                synchronized(streamDraftLock) {
-                    draftBuffer = null
-                    reasoningBuffer = null
-                    _streamDraft.value = null
-                    _reasoningDraft.value = null
-                }
+                // 锁序：msgLock → 草稿锁（反向不存在，handleTextDelta 不取 msgLock）。
+                generation.clearDrafts()
             }
 
             // Phase 2 DoD③：重试收尾（成功 / 最终失败 / 取消）→ 清除横幅
@@ -3044,9 +2774,8 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         } else {
             buildPriorMessages(owner) + AssistantMessage(recoveryNote)
         }
-        // W-54：开场仪式与 regenerate 共用。placeholderDraft=false——用户消息气泡本身
-        // 就是「在生成」的占位，不必再造一个空草稿行
-        turnRunner.begin(owner, placeholderDraft = false)
+        // W-54：开场仪式（置 owner / 生成中标识 / 清缓冲 / 开运行态）由控制器在 start 里做。
+        // placeholderDraft=false——用户消息气泡本身就是「在生成」的占位，不必再造空草稿行。
         AgentLogger.i(
             "Chat",
             "用户发送：${text.take(120)}" +
@@ -3101,8 +2830,11 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         // W-16：从用户这句话里抽取「明确值得长期记住」的内容（异步、失败不影响本轮）
         autoCaptureMemory(text)
 
-        // T05：句柄置入 runJob，供 stop() 取消；finally 保证 isRunning/日志必收
-        runJob = viewModelScope.launch {
+        // T05：运行句柄由控制器持有（stop() 取消它）；收尾由 start 的 finally 兜底，
+        // 取消路径也会走到——否则 UI 永远停在「运行中」、发送键禁用。
+        // rebuildMessages=true：Phase 2 DoD② 要求收尾用轮次变体结构重建消息列表，
+        // 补上助手气泡的变体游标元数据（首条回答变体数=1，切换器不显示；重新生成后 >1）
+        generation.start(owner, placeholderDraft = false, rebuildMessages = true) {
             try {
                 // B 批：长任务保活 + 运行态落盘。
                 // 前台服务把进程提到前台，避免切后台被系统回收；
@@ -3145,10 +2877,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
                 // 用户点停止时，模型其实已经吐了十几片文本，但原实现直接把它连同缓冲一起丢掉，
                 // 界面上只剩一句「已停止」——十几秒的产出白等。捞出来落成一条消息，
                 // 用户至少能接着读/复制已经生成的部分。
-                val partialDraft = draftBuffer?.takeIf { it.isNotBlank() }
-                draftBuffer = null
-                reasoningBuffer = null
-                syncDraftDisplay()
+                val partialDraft = generation.takeDraft()
                 outcome.onSuccess { history ->
                     // 功能五（P1-5）：一个回合可能多次 LLM 往返（每次工具调用后都要再问一次模型），
                     // 每条 AssistantMessage 各带自己那次的 usage——合计后挂到最终回答气泡上，
@@ -3164,7 +2893,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
                             is UserMessage -> Unit
                             // 过程事件已渲染过同 id 的工具卡；未渲染的才兜底补上
                             is ToolMessage -> {
-                                val shown = _messages.value.any { it is UiItem.Tool && it.call.id == msg.id }
+                                val shown = messages.value.any { it is UiItem.Tool && it.call.id == msg.id }
                                 if (!shown) append(msg)
                             }
                             // 中间轮 Assistant 可能只有 toolCalls 无文本，空内容不出气泡
@@ -3267,8 +2996,8 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
                 // 它会直接复用已加载的实例、只补算十几个 token，不到 1 秒。
                 maybeGenerateTitle(_activeConversationId.value, text)
             } finally {
-                // finally 保证取消路径（withContext 直接抛 CancellationException）也能复位
-                runJob = null
+                // 本层 finally 只做「本轮专属」的收尾（前台服务、运行态落盘）；
+                // 运行态复位与消息重建由控制器的 finally 统一做（取消路径同样覆盖）
                 // B 批：任务结束（无论成功/失败/取消）都停掉前台服务并把运行态标记为 done。
                 // 若是取消（用户主动停），同样算「正常结束」——下次不该提示「被系统中断」。
                 AgentRunService.stop(app)
@@ -3281,12 +3010,6 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
                         ) ?: return@runCatching
                     )
                 }
-                // W-54：收尾仪式与 regenerate 共用。rebuildMessages=true——Phase 2 DoD②
-                // 要求用轮次变体结构重建 _messages，补上助手气泡的变体游标元数据
-                // （首条回答变体数=1，切换器不显示；重新生成后才会 >1）
-                turnRunner.finish(rebuildMessages = true)
-                // W-102：同 regenerate——粘性激活的组随回合收尾落盘
-                persistToolGroups()
             }
         }
     }
@@ -3375,71 +3098,19 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * W-47：[_messages] 的唯一追加入口——读改写必须在 [msgLock] 内。
-     *
-     * 为什么必须有这一层：工具事件回调来自最多 5 路并行协程（已在 msgLock 内），而
-     * send/stop/失败三条路径原本是**无锁**的 `_messages.value = _messages.value + x`。
-     * `MutableStateFlow.value` 的赋值是原子的，但「读-拼-写」不是：两个线程同时读到同一
-     * 份旧列表，后写的那次会把先写的那条覆盖掉——表现为并行工具调用时 UI 少一张工具卡
-     * （落盘不丢，切走再回来又出现，极难复现）。
-     *
-     * 可重入：`synchronized` 是监视器锁，[handleAgentEvent] 持锁时再调本方法不会死锁。
+     * W-47：消息列表的唯一追加入口（见 [ConversationProjection.appendItem]）。
+     * 读改写都在 [msgLock] 内完成——工具事件来自最多 5 路并行协程，无锁拼接会丢卡。
      */
-    private fun appendUiItem(item: UiItem) = synchronized(msgLock) {
-        _messages.value = _messages.value + item
-    }
+    private fun appendUiItem(item: UiItem) = projection.appendItem(item)
 
     /** 整体替换（切会话/重建）。同样入锁，避免与在途工具回调交错后丢事件。 */
-    private fun replaceUiItems(items: List<UiItem>) = synchronized(msgLock) {
-        _messages.value = items
-    }
+    private fun replaceUiItems(items: List<UiItem>) = projection.replace(items)
 
-    private fun append(msg: ChatMessage, usage: TokenUsage? = null) {
-        val item = when (msg) {
-            is UserMessage -> UiItem.User(msg.content, timeMs = System.currentTimeMillis())
-            // 功能五（P1-5）：usage 仅在 send() 汇总整轮后传给最终回答（中间轮不传）
-            // 功能五（P1-9）：reasoning 随消息透传——加载历史/落库回答都能折叠展示推理过程
-            is AssistantMessage -> UiItem.Assistant(
-                msg.content,
-                usage = usage,
-                reasoning = msg.reasoning,
-                timeMs = System.currentTimeMillis()
-            )
-            is ToolMessage -> UiItem.Tool(
-                ToolCall(msg.id, msg.name, msg.arguments),
-                msg.content,
-                msg.isError,
-                msg.images
-            )
-            else -> return
-        }
-        // hotfix30：显示态只在 owner==active 时追加（后台续跑期间只落盘）
-        // W-47：走统一入口，读改写入 msgLock（append 可能在持锁的事件回调里被调，锁可重入）
-        if (isOwnerActive()) appendUiItem(item)
-        appendToStore(item) // 功能三：history 兜底补的消息同样落盘（按 owner）
-    }
+    private fun append(msg: ChatMessage, usage: TokenUsage? = null) =
+        projection.appendMessage(msg, usage)
 
-    // —— 功能三：会话切换 / 增删改（聊天记录） ——
-
-    /**
-     * 同步一条消息到会话存储。与 _messages 写入点同处调用、同在 [msgLock] 内，保顺序。
-     *
-     * hotfix30：在途写按 [runOwnerConvId]（启动时捕获的归属会话），不再读 current——
-     * 用户生成中切到别的会话，旧会话的后台出字全部落回旧会话，不写串；
-     * 非在途调用（无 owner）仍落 activeConversationId。
-     *
-     * 每条消息后都刷摘要流：工具事件频次高（每轮多个 ToolStarted/ToolFinished），不刷的话
-     * 抽屉「最近对话」的标题/条数/updatedAt 在整个会话期间全陈旧，首条 user 触发的自动
-     * 命名也不反映到顶栏（QA 抓到的体验缺陷）。store.list() 是内存 items 快照 map+sort
-     * （synchronized 内、无磁盘 IO），每事件刷新是 O(n) 内存操作，可负担。
-     */
-    private fun appendToStore(item: UiItem) {
-        // _activeConversationId 内部是非空 String（ensureNotEmpty 兜底）；对外 StateFlow 声明为
-        // String? 是给 UI 层「可能还没初始化」的余地，这里直接读内部值即可
-        val convId = runOwnerConvId ?: _activeConversationId.value
-        conversationStore.appendMessage(convId, item.toMsgRecord())
-        refreshConversations()
-    }
+    /** 同步一条消息到会话存储（按 owner 落库，见 [ConversationProjection.appendToStore]）。 */
+    private fun appendToStore(item: UiItem) = projection.appendToStore(item)
 
     /** 刷新会话摘要列表（每次增删改后调用；抽屉最近对话区与顶栏标题消费）。 */
     private fun refreshConversations() {
@@ -3503,160 +3174,40 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     /* -------------------- 功能五（P1-4b）：全局备份 / 恢复 -------------------- */
 
     /**
-     * 备份/恢复的 UI 状态机（设置页「备份与恢复」消费）。
-     *
-     * [Done]/[Failed] 是一次性事件语义：UI 展示后调 [consumeBackupState] 复位，
-     * 避免旋转屏幕/重入页面时旧 toast 复读。
+     * 备份/恢复的四态机与两条不可退让的约束（不写 PAT、坏包先拒）都在 [BackupUseCase]，
+     * 这里只转发与提供「恢复完重载 UI」的出口。
      */
-    sealed interface BackupUiState {
-        data object Idle : BackupUiState
-        /** @param exporting true=导出中 false=恢复中。 */
-        data class Working(val exporting: Boolean) : BackupUiState
-        data class Done(val message: String) : BackupUiState
-        data class Failed(val reason: String) : BackupUiState
-    }
+    private val backup = BackupUseCase(
+        app = app,
+        scope = viewModelScope,
+        conversations = conversationStore,
+        memories = memoryStore,
+        prompts = promptStore,
+        config = configStore,
+        keyPool = keyPoolStore,
+        drafts = draftStore,
+        onRestored = ::onBackupRestored,
+    )
 
-    private val _backupState = MutableStateFlow<BackupUiState>(BackupUiState.Idle)
-    val backupState: StateFlow<BackupUiState> = _backupState.asStateFlow()
-
-    /** 备份 JSON 编码器：与 store 落盘同配置（ignoreUnknownKeys 容忍跨版本字段增减）。 */
-    private val backupJson = Json { ignoreUnknownKeys = true }
+    val backupState: StateFlow<BackupUiState> = backup.state
 
     /** 复位一次性状态（UI 消费完 Done/Failed 后调用）。 */
-    fun consumeBackupState() {
-        _backupState.value = BackupUiState.Idle
-    }
+    fun consumeBackupState() = backup.consume()
 
-    /**
-     * 导出全局备份到用户选定的 SAF 位置（[androidx.activity.result.contract.ActivityResultContracts.CreateDocument]）。
-     *
-     * 内容 = ZIP(manifest + conversations + memories + config)，组装逻辑在
-     * [BackupArchive]（纯函数）；本方法只负责取快照与写流。IO 全在 Dispatchers.IO，
-     * 快照读取是内存操作（synchronized 内 map），不阻塞主线程。
-     *
-     * W-47：**不写入 GitHub PAT**（备份件常被存到网盘/微信，明文 token 外流等于送仓库权限）；
-     * 模型 API Key 仍随配置走，UI 已在备份卡片上提示「请勿外传」。
-     */
-    fun exportBackupTo(uri: Uri) {
-        _backupState.value = BackupUiState.Working(exporting = true)
-        viewModelScope.launch(Dispatchers.IO) {
-            val result = runCatching {
-                val conversations = conversationStore.snapshot()
-                val memories = memoryStore.snapshot()
-                // hotfix28：提示词库快照（导出/恢复对称；内置项随 mergeWithBuiltins 补种）
-                val prompts = promptStore.list()
-                val gh = configStore.loadGithubConfig()
-                val config = ConfigBackup(
-                    profilesJson = backupJson.encodeToString(configStore.loadProfiles()),
-                    activeProfileId = configStore.loadActiveId(),
-                    favoriteModels = configStore.loadFavoriteModels(),
-                    mediaKeys = configStore.loadAllMediaKeys(),
-                    githubOwner = gh?.owner,
-                    githubRepo = gh?.repo,
-                    // W-47：**不把 PAT 写进备份包**。备份件常被存到网盘/微信传输助手，
-                    // 明文 token 一旦外流等于把仓库读写权一起送人；而 owner/repo/workflow
-                    // 不带凭据也能省掉重新填写，恢复时再与本机已有 PAT 合并（见 restoreFrom）。
-                    githubPat = null,
-                    githubWorkflow = gh?.workflow
-                )
-                val manifest = BackupManifest(
-                    version = BackupArchive.VERSION,
-                    createdAt = System.currentTimeMillis(),
-                    conversationCount = conversations.size,
-                    memoryCount = memories.size,
-                    hasConfig = true,
-                    // hotfix28：提示词库挂挡（真机反馈漏备份项）
-                    promptCount = prompts.size,
-                    hasPrompts = true
-                )
-                val bytes = BackupArchive.create(
-                    manifest,
-                    backupJson.encodeToString(conversations),
-                    backupJson.encodeToString(memories),
-                    backupJson.encodeToString(config),
-                    backupJson.encodeToString(prompts),
-                    // W-26：备用 Key 池一并备份（否则恢复后全丢）
-                    keyPoolStore.exportAll()
-                )
-                val out = app.contentResolver.openOutputStream(uri)
-                    ?: error("无法写入所选位置（可能已被移除）")
-                out.use { it.write(bytes) }
-                "已导出 ${conversations.size} 个会话、${memories.size} 条记忆、${prompts.size} 条提示词"
-            }
-            _backupState.value = result.fold(
-                onSuccess = { BackupUiState.Done(it) },
-                onFailure = { BackupUiState.Failed(it.message ?: "导出失败") }
-            )
-        }
-    }
+    /** 导出全局备份到用户选定的 SAF 位置（见 [BackupUseCase.exportTo]）。 */
+    fun exportBackupTo(uri: Uri) = backup.exportTo(uri)
 
-    /**
-     * 从用户选定的备份文件恢复（**破坏性**：覆盖全部会话/记忆/模型配置）。
-     *
-     * 调用方（UI）必须先弹二次确认；本方法内部还有 [BackupArchive.read] 的信封
-     * 校验——坏包在触碰任何生产数据前就被拒（Invalid 状态）。
-     *
-     * 恢复顺序：store 重灌（内存+落盘）→ UI 状态重载（会话列表/当前会话/消息/
-     * 记忆页/配置档案流）→ Done。任一步抛异常 → Failed，此时数据可能已部分重灌，
-     * 但 store 自身是原子的（replaceAll 内 synchronized），不会留下半截 JSON。
-     */
-    fun restoreBackupFrom(uri: Uri) {
-        _backupState.value = BackupUiState.Working(exporting = false)
-        viewModelScope.launch(Dispatchers.IO) {
-            val bytes = runCatching {
-                app.contentResolver.openInputStream(uri)?.use { it.readBytes() }
-            }.getOrNull() ?: run {
-                _backupState.value = BackupUiState.Failed("无法读取所选文件")
-                return@launch
-            }
-            when (val read = BackupArchive.read(bytes)) {
-                is BackupArchive.ReadResult.Invalid ->
-                    _backupState.value = BackupUiState.Failed(read.reason)
+    /** 从备份文件恢复（破坏性，调用方须先二次确认；见 [BackupUseCase.restoreFrom]）。 */
+    fun restoreBackupFrom(uri: Uri) = backup.restoreFrom(uri)
 
-                is BackupArchive.ReadResult.Ok -> {
-                    val result = runCatching {
-                        val conversations =
-                            backupJson.decodeFromString<List<ConversationRecord>>(read.conversationsJson)
-                        val memories =
-                            backupJson.decodeFromString<List<MemoryItem>>(read.memoriesJson)
-                        conversationStore.replaceAll(conversations)
-                        memoryStore.restoreAll(memories)
-                        // 功能五（P1-8）：草稿不随备份走——旧会话 id 与新数据对不上，
-                        // 留着会让陌生草稿复活在恢复后的会话里，直接清
-                        draftStore.clear()
-                        read.configJson?.let { cfgText ->
-                            runCatching {
-                                backupJson.decodeFromString<ConfigBackup>(cfgText)
-                            }.getOrNull()?.let { configStore.restoreFrom(it) }
-                        }
-                        // hotfix28：提示词库恢复（老备份件没带该成员 → 跳过，不动现有提示词）
-                        // W-26：恢复备用 Key 池（老备份没有该成员 → 保持现状）
-                        read.keyPoolJson?.let { poolText ->
-                            val n = keyPoolStore.importAll(poolText)
-                            if (n > 0) AgentLogger.i("Backup", "已恢复 $n 个档案的备用 Key 池")
-                        }
-                        read.promptsJson?.let { promptText ->
-                            runCatching {
-                                backupJson.decodeFromString<List<PromptItem>>(promptText)
-                            }.getOrNull()?.let { promptStore.restoreAll(it) }
-                        }
-                        _prompts.value = promptStore.list()
-                        // UI 重载（StateFlow.value 可跨线程设；loadConversation 内部同步）
-                        refreshConversations()
-                        loadConversation(conversationStore.ensureNotEmpty())
-                        refreshMemories()
-                        _profiles.value = configStore.loadProfiles()
-                        _activeProfileId.value = configStore.loadActiveId().orEmpty()
-                        "已恢复 ${conversations.size} 个会话、${memories.size} 条记忆" +
-                            if (read.manifest.hasPrompts) "、${read.manifest.promptCount} 条提示词" else ""
-                    }
-                    _backupState.value = result.fold(
-                        onSuccess = { BackupUiState.Done(it) },
-                        onFailure = { BackupUiState.Failed(it.message ?: "恢复失败") }
-                    )
-                }
-            }
-        }
+    /** 恢复完成后的 UI 重载：会话列表 / 当前会话 / 记忆 / 档案流 / 提示词。 */
+    private fun onBackupRestored(items: List<PromptItem>) {
+        _prompts.value = items
+        refreshConversations()
+        loadConversation(conversationStore.ensureNotEmpty())
+        refreshMemories()
+        _profiles.value = configStore.loadProfiles()
+        _activeProfileId.value = configStore.loadActiveId().orEmpty()
     }
 
     /**
@@ -3670,17 +3221,17 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     private fun loadConversation(id: String) {
         draftStore.set(_activeConversationId.value, input.value)
         _activeConversationId.value = id
-        replaceUiItems(conversationStore.load(id)?.toUiItems() ?: emptyList())
+        replaceUiItems(projection.loadOf(id))
         // W-30：会话切换后消息下标全变，旧译文清掉（否则会显示到别的消息下面）
         _translations.value = emptyMap()
         input.value = draftStore.get(id)
         refreshConversations()
     }
 
-    /** 用当前会话的轮次变体结构重建 [_messages]（变体切换/重新生成/重新发问后调用）。 */
+    /** 用当前会话的轮次变体结构重建消息列表（变体切换/重新生成/重新发问后调用）。 */
     private fun reloadActiveMessages() {
-        replaceUiItems(conversationStore.load(_activeConversationId.value)?.toUiItems() ?: emptyList())
-        // W-30：会话切换后消息下标全变，旧译文清掉（否则会显示到别的消息下面）
+        projection.reloadActive()
+        // W-30：消息下标全变，旧译文清掉（否则会显示到别的消息下面）
         _translations.value = emptyMap()
     }
 
@@ -3692,7 +3243,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
      *
      * hotfix30：该风险已由 owner 捕获消除，但**仍保守拦着**——放开后用户在新空会话
      * 发消息会被 send() 的 isRunning 守卫拒（无并行发送），「能进不能发」比
-     * 「不能进」更割裂；并行发送（runJob 变多句柄）风险大，不在本 hotfix 范围。
+     * 「不能进」更割裂；并行发送（运行句柄变多）风险大，不在本 hotfix 范围。
      */
     fun newConversation() {
         if (isRunning.value) return
@@ -3728,7 +3279,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
      * （ConversationStore 按需重建记录），「删掉的会话复活」成脏数据。UI 同步禁用并 Toast。
      */
     fun deleteConversation(id: String) {
-        if (id == runOwnerConvId) return
+        if (id == generation.owner) return
         if (id == _activeConversationId.value && isRunning.value) return
         conversationStore.delete(id)
         // 功能五（P1-8）：会话没了，它的草稿是垃圾数据，一并清

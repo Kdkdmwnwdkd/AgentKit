@@ -203,7 +203,9 @@ fun main() {
     val scaffold = read("app/src/main/java/com/example/agentkit/ui/AppScaffold.kt")
 
     check("S1 备份不再导出 PAT；恢复时沿用本机 PAT") {
-        assertTrue("仍在导出 PAT", "githubPat = null" in vm)
+        // P4-3：导出流程在 BackupUseCase（VM 只转发），断言跟着所有权走
+        val backupUseCase = read("app/src/main/java/com/example/agentkit/ui/BackupUseCase.kt")
+        assertTrue("仍在导出 PAT", "githubPat = null" in backupUseCase)
         assertTrue("恢复未兜底本机 PAT", "loadGithubConfig()?.pat" in configStore)
     }
 
@@ -218,15 +220,19 @@ fun main() {
         assertTrue("缺整体替换入口", "private fun replaceUiItems(items: List<UiItem>)" in vm)
         // 允许**恰好一处**读改写：appendUiItem 内部那一行；且它必须被 synchronized(msgLock) 包住。
         // 注释里的示例不算（先剥注释行），其它任何裸写都视为回归。
-        val bareLines = vm.lines().filter { line ->
+        // P4-2：读改写本体在 ConversationProjection（唯一入口），VM 只转发；
+        // 两边都要看：投影里必须恰好一处裸拼接且被 synchronized(lock) 包住，VM 里必须一处都没有。
+        val proj = read("app/src/main/java/com/example/agentkit/ui/ConversationProjection.kt")
+        val bareLines = proj.lines().filter { line ->
             val t = line.trim()
             !t.startsWith("//") && !t.startsWith("*") && !t.startsWith("/*") &&
-                "_messages.value = _messages.value +" in t
+                "_items.value = _items.value +" in t
         }
-        assertEquals("裸读改写处数（应只有 appendUiItem 内一处）", 1, bareLines.size)
-        val pos = vm.indexOf(bareLines.first())
-        val before = vm.substring(maxOf(0, pos - 400), pos)
-        assertTrue("读改写没有包在 synchronized(msgLock) 里", "synchronized(msgLock)" in before)
+        assertEquals("裸读改写处数（应只有 appendItem 内一处）", 1, bareLines.size)
+        val pos = proj.indexOf(bareLines.first())
+        val before = proj.substring(maxOf(0, pos - 400), pos)
+        assertTrue("读改写没有包在 synchronized(lock) 里", "synchronized(lock)" in before)
+        assertTrue("VM 里不得再有裸拼接", "_messages.value = _messages.value +" !in vm)
     }
 
     check("S4 全仓无 JSON 硬转换（JsonSafe 之外）") {

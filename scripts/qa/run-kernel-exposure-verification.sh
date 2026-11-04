@@ -39,7 +39,9 @@ done
 DEPS=$STDLIB:$COROUTINES:$SER_JSON:$SER_CORE
 [ -n "${JB_ANNOTATIONS:-}" ] && [ -f "${JB_ANNOTATIONS:-}" ] && DEPS=$DEPS:$JB_ANNOTATIONS
 
-SOURCES="$CORE/ExposureTypes.kt $CORE/PromptSegments.kt $CORE/AgentContract.kt $CORE/ToolResult.kt $CORE/KernelExposure.kt $ROOT/scripts/qa/KernelExposureVerification.kt"
+SOURCES="$CORE/ExposureTypes.kt $CORE/PromptSegments.kt $CORE/AgentContract.kt $CORE/ToolResult.kt \
+$CORE/capability/CapabilityManifest.kt $CORE/KernelExposure.kt \
+$ROOT/scripts/qa/KernelExposureVerification.kt"
 
 rm -rf "$OUT" && mkdir -p "$OUT"
 

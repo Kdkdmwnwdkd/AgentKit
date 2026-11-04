@@ -1,5 +1,7 @@
 package com.example.agentkit.core
 
+import com.example.agentkit.core.capability.CapabilityManifest
+
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
@@ -87,7 +89,7 @@ object KernelExposure {
      * 真正该裁的是那些我们**清楚知道**体积大、用得少的组（ui 9 个、workflow、memory…），
      * 因为你至少知道裁掉了什么。
      */
-    private const val MISC = "misc"
+    private const val MISC = CapabilityManifest.MISC
 
     /**
      * 永不淘汰的组（W-102）：核心工具集 + 兜底分类。
@@ -97,53 +99,17 @@ object KernelExposure {
      * 纯亏一轮。`misc` 同理（见上文：不认识的东西不能藏）。
      *
      * 这两组不占 [MAX_ACTIVE_GROUPS] 的淘汰名额，即上限实际是「2 个可淘汰组 + 2 个固定组」。
+     * 名单本身在 [CapabilityManifest]（`pinned = true`），这里只留一个取用入口——
+     * 两处各写一份的话，加一个常驻组就得记得改两个地方。
      */
-    private val PINNED_GROUPS = setOf("file", MISC)
+    private val PINNED_GROUPS: Set<String> =
+        CapabilityManifest.capabilities.filter { it.pinned }.mapTo(LinkedHashSet()) { it.group }
 
     /**
-     * 少数不能靠前缀推断的工具名 → 组。
-     *
-     * 这张表是**补丁不是白名单**：不在表里、前缀也推不出来的，归 `misc` 仍然可见可发现，
-     * 只是组名不好看。这样新增工具永远不会因为「忘了登记」而从模型视野里消失。
+     * 名字 → 组。规则与例外表都在 [CapabilityManifest]（补丁不是白名单：推不出来的归 misc，
+     * 仍然可见可发现，只是组名不好看——新增工具永远不会因为「忘了登记」而从模型视野里消失）。
      */
-    private val GROUP_PATCH: Map<String, String> = mapOf(
-        "read_file" to "file", "write_file" to "file", "edit_file" to "file",
-        "ask_user" to "ui",
-        "http_request" to "net",
-        "conversation_search" to "memory",
-        "load_skill" to "skill", "use_skill" to "skill",
-        "plan_propose" to "agent", "spawn_agents" to "agent",
-        "todo_read" to "agent", "todo_write" to "agent",
-        "ocr_image" to "media", "speak" to "media",
-        "clipboard" to "sys", "container_toolchain" to "sys",
-        "send_notification" to "sys", "calculator" to "sys"
-    )
-
-    /** 组名 → 一句话说明。给模型看组索引时用，写完就不用改。 */
-    private val GROUP_NOTES: Map<String, String> = mapOf(
-        "file" to "读写改本地文件",
-        "ui" to "看屏幕、点按、输入、问用户",
-        "net" to "HTTP 请求与网页抓取",
-        "web" to "浏览器前进后退、点击、填表",
-        "app" to "安装卸载启停应用",
-        "shell" to "命令行执行与会话管理",
-        "memory" to "跨会话记忆的读写与检索",
-        "skill" to "加载与使用技能",
-        "workflow" to "工作流的增删改查与开关",
-        "device" to "设备状态与通知",
-        "media" to "图片识别与语音播报",
-        "agent" to "计划、待办、子代理",
-        "github" to "GitHub 仓库操作（克隆、提交、日志）",
-        "sys" to "剪贴板、容器、通知等系统能力",
-        "misc" to "未归类的其他工具"
-    )
-
-    /** 按名字推组。未知前缀归 `misc`（不是丢弃）。 */
-    fun groupOf(name: String): String {
-        GROUP_PATCH[name]?.let { return it }
-        val prefix = name.substringBefore('_', missingDelimiterValue = name)
-        return if (GROUP_NOTES.containsKey(prefix)) prefix else "misc"
-    }
+    fun groupOf(name: String): String = CapabilityManifest.groupOf(name)
 
     /**
      * 该组是否常驻（`file` / `misc`）。
@@ -151,10 +117,10 @@ object KernelExposure {
      * 常驻组不参与淘汰，因此**也不该让用户「关掉」**——关掉也会在下一轮 [plan] 的
      * 强制 pin 步骤被加回来，UI 上留一个按了没反应的按钮比不给按钮更糟。
      */
-    fun isPinned(group: String): Boolean = group in PINNED_GROUPS
+    fun isPinned(group: String): Boolean = CapabilityManifest.isPinned(group)
 
     /** 组的一句话说明（与 `__use_tools` 给模型看的组索引同源）；未知组回退成组名。 */
-    fun noteOf(group: String): String = GROUP_NOTES[group] ?: group
+    fun noteOf(group: String): String = CapabilityManifest.noteOf(group)
 
     /**
      * provider + 用户设置 → 能力档位。
@@ -312,7 +278,7 @@ object KernelExposure {
             description = buildString {
                 append("启用工具分组，启用后下一轮即可直接调用其中的工具。可分组的全部工具：\n")
                 index.forEach { (g, tools) ->
-                    append("- $g（${tools.size} 个，${GROUP_NOTES[g] ?: g}）")
+                    append("- $g（${tools.size} 个，${noteOf(g)}）")
                     if (g in active) append(" [已启用]")
                     append('\n')
                 }
