@@ -2,6 +2,7 @@ package com.example.agentkit
 
 import android.content.Intent
 import android.os.Bundle
+import android.view.ViewTreeObserver
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.runtime.Composable
@@ -33,8 +34,6 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // W-15：后台 WebView 宿主（无界面），供 web_* 工具操作网页
-        BrowserHost.attach(this)
         pendingWorkflowId.value = intent?.getStringExtra(WorkflowNotifier.EXTRA_WORKFLOW_ID)
         setContent {
             AgentKitApp(
@@ -42,6 +41,28 @@ class MainActivity : ComponentActivity() {
                 onWorkflowConsumed = { pendingWorkflowId.value = null }
             )
         }
+        // W-15 的后台 WebView：**首帧画完之后**再建，别挡在首帧前面。
+        //
+        // 修前在 `setContent` 之前 attach，于是「创建 WebView」这件事被 `main.post`
+        // 排进主线程队列，排在 Compose 首帧之前。而 WebView 的构造必须在主线程，
+        // 冷启动时它可能要 20~30 秒（首次要拉起 chromium provider）。主线程被占满这
+        // 30 秒，界面一帧都出不来——系统等不到 focused window，5 秒后判 ANR：
+        //   E ActivityManager: Completed ANR of com.example.agentkit in 30580ms
+        //   W ActivityTaskManager: Force finishing activity com.example.agentkit/.MainActivity
+        // 现象是「点开 App 直接被弹回桌面」，用户只会当成 App 闪退。
+        //
+        // 改成在首帧的 onDraw 回调里排队：首帧已经画完、窗口有了焦点，后面主线程再
+        // 忙也只是「界面可见、暂时不响应」，不会变成「打不开」。代价是 web_* 工具在
+        // 首帧之后才可用——它本来就只在用户主动调用浏览器工具时才需要。
+        window.decorView.viewTreeObserver.addOnDrawListener(
+            object : ViewTreeObserver.OnDrawListener {
+                override fun onDraw() {
+                    // 必须移除：OnDrawListener 持有 Activity 引用，留着会泄漏。
+                    window.decorView.viewTreeObserver.removeOnDrawListener(this)
+                    BrowserHost.attach(this@MainActivity)
+                }
+            }
+        )
     }
 
     override fun onNewIntent(intent: Intent) {

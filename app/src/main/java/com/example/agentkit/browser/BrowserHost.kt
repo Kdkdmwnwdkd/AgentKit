@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import com.example.agentkit.core.AgentLogger
@@ -45,7 +46,13 @@ object BrowserHost {
             val existing = webRef?.get()
             if (existing != null && !destroyed) return@post
             runCatching {
+                // 计时不是为了好看：WebView 冷启动可能耗时 20~30 秒（要拉起 chromium
+                // provider），而它必须占着主线程。这段时间里 App 处于「界面已出、暂不
+                // 响应」的状态，日志里必须有耗时可查——否则下次再看到启动卡顿，只能猜。
+                val t0 = SystemClock.elapsedRealtime()
+                AgentLogger.i(TAG, "开始创建后台 WebView")
                 val wv = WebView(activity)
+                val tConstruct = SystemClock.elapsedRealtime() - t0
                 wv.settings.apply {
                     javaScriptEnabled = true
                     domStorageEnabled = true
@@ -62,7 +69,10 @@ object BrowserHost {
                 }
                 webRef = WeakReference(wv)
                 destroyed = false
-                AgentLogger.i(TAG, "后台 WebView 已就绪")
+                AgentLogger.i(
+                    TAG,
+                    "后台 WebView 已就绪（构造 ${tConstruct}ms，总计 ${SystemClock.elapsedRealtime() - t0}ms）"
+                )
             }.onFailure {
                 AgentLogger.w(TAG, "创建 WebView 失败：${it.message}")
             }
