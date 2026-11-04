@@ -88,7 +88,10 @@ data class CharCell(
  * 一行屏幕内容（写时复制：单元格变化时由仿真器换行对象，UI 靠对象身份判断刷新）。
  *
  * @param cells 长度恒等于终端列数的单元格数组，右侧允许是被裁掉的空白。
- * @param continued 是否为自动换行产生的续行（渲染时可整行裁剪尾部空白）。
+ * @param continued 本行是否因**自动换行而写到半截**（内容续到下一行）。语义与 xterm 的
+ *   LINEWRAPPED 一致：标记打在「被截断的那一行」上，承接内容的那行不带标记。
+ *   注意：目前没有消费方（UI 按固定列宽渲染，不需要这个标记）；留着是因为
+ *   「复制时把软换行还原成一行」迟早要用，而到那时再从字节流反推是不可能的。
  */
 class TerminalRow(val cells: Array<CharCell>, val continued: Boolean = false) {
 
@@ -440,8 +443,10 @@ class TerminalEmulator(
 
             b in 0x20..0x2F -> state = ParserState.CSI_IGNORE  // 中间字节：整条忽略
             b in 0x40..0x7E -> {  // 无参数直接终结（如 CSI H）
-                csiDispatch(b.toChar())
+                // 先回到 GROUND 再派发：REP(b) 要走真实打印路径，而 printCodepoint 在
+                // 非 GROUND 态会把字符丢掉（见 csiDispatch 里 'b' 分支）。
                 state = ParserState.GROUND
+                csiDispatch(b.toChar())
             }
 
             b < 0x20 -> executeControl(b)
@@ -457,8 +462,8 @@ class TerminalEmulator(
 
             b in 0x20..0x2F -> state = ParserState.CSI_IGNORE
             b in 0x40..0x7E -> {
+                state = ParserState.GROUND   // 同上：先复位再派发，REP 才打得出来
                 csiDispatch(b.toChar())
-                state = ParserState.GROUND
             }
 
             b < 0x20 -> executeControl(b)
