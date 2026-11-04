@@ -351,9 +351,40 @@ tool.start / tool.end / step.close / turn.end`。
 
 「9 秒」这句话被数据取代了：这台无 KVM 的软件模拟器上总耗时稳定在 **2.1～2.4 秒**，
 重活集中在 `refresh`（696~834ms）、`registry`（561~732ms）、`skills`（445~705ms）。
-**下一轮要动的对象就是这三个数**（本轮只埋点，不优化）。
 
 > arm64 真机首帧仍未测——但现在真机一装上，日志里就会直接给出这些数字。
+
+#### 本轮按这些数字动了一刀：`refresh` 段挪出主线程
+
+**先查清了它到底是什么**：`refresh` 段 = `refreshGrants()`（5 处 IPC：
+`Settings.Secure` / `AppOps` / `PowerManager` / `Shizuku.pingBinder` ×2）
++ `refreshLogs()` + `refreshMemories()`。后两个是纯内存操作（毫秒级），
+所以 700~1000ms 几乎全在 `refreshGrants()` 的 IPC 上。
+
+佐证：第 4 次启动（进程内热态）`skills` 705→63ms、`registry` 682→116ms
+（类已加载，JIT 已热），**唯独 `refresh` 反而涨到 1028ms**——IPC 不吃类热缓存，
+这个"反向"变化恰恰证明它不是类加载，是系统调用。
+
+改法：`refreshGrants()` 改成 `viewModelScope.launch(Dispatchers.IO)`，
+由 StateFlow 回填（UI 晚几十毫秒看到权限值，首帧不再等它）。
+
+**但第一次改完，`refresh` 从 1115ms 只降到……还是 1115ms。** 说明归因又只对了一半。
+查时间线才发现：`refreshGrants` 已不在主线程（`CapabilityChain` 那串日志 47.696→47.753
+只花 57ms），可主线程在 47.753→48.391 之间还有 **638ms 空白**没有任何日志——
+那正是 `refreshLogs()`：`AgentLogger.recent(200).map { it.format() }`，
+200 条日志逐条 `SimpleDateFormat.format()`（还带锁），全在主线程上跑。
+
+于是把 `refreshLogs()`/`refreshMemories()` 也挪到 IO（`refreshLogs()` 本身仍是同步函数，
+LOGS 页依赖它同步返回，只改了**启动路径**的调用方式）。
+
+实测（同一台模拟器，两次冷启动）：
+
+```
+修复前  refresh=1115ms / 1028ms
+修复后  refresh=190ms  / 172ms      ← 降 900ms 左右
+```
+
+`ChatViewModel` 行数 **3889**（冻结上限 3890，未超）。
 
 ### ✅ 挂账 3：chromium Crashpad E 级日志（已修 + 已验）
 
@@ -369,15 +400,52 @@ tool.start / tool.end / step.close / turn.end`。
 
 logcat 里 **0 条** crashpad 行、**0 条** chromium 的 E 级行。
 
-### 本轮新发现的一件事（本轮未改，记为新挂账）
+### 上一轮那条「前台点通知不触发」是**误判**（本轮查实并修掉了真问题）
 
-**App 已在前台时，`am start --es workflow_id w-calc` 不会触发工作流**——
-系统提示 "intent has been delivered to currently running top-most instance"，
-但 `onNewIntent` 里的 `pendingWorkflowId` 没有被 Compose 消费（无「从通知进入，准备执行」日志）。
-冷启动带同一个 extra 则正常（`onCreate` 路径）。
+上一轮记的是：「App 已在前台时 `am start --es workflow_id` 不会触发工作流，
+`pendingWorkflowId` 没被 Compose 消费」。
 
-影响：真机用户「App 开着的时候点定时任务通知」这条路径可能不执行。
-本轮未定位根因、未改代码，**新挂账**。
+**重测后：工作流其实触发了。** 用与 PendingIntent 完全相同的 flags
+（`NEW_TASK|CLEAR_TOP` = `0x14000000`）复现，日志里 `从通知进入，准备执行 w-calc`
+正常出现、回合跑完 `turn.end status=completed`。上一轮多半是在 App 尚未稳定时
+打了一次就下了结论——这是「一次观测当规律」的典型误判。
+
+但重测时挖出了一个**更严重**的真 bug：
+
+```
+点通知前  ViewModel 初始化次数: 4
+点通知后  ViewModel 初始化次数: 5      ← 每点一次 +1
+Activity 实例: 2 个并存
+```
+
+根因：`MainActivity` 在 manifest 里**没有声明 `launchMode`**（默认 `standard`）。
+通知的 `CLEAR_TOP` 在 standard 下对已存在实例的语义是「销毁 + 重建」，于是——
+
+1. 每点一次通知，Activity 重建一次；
+2. Activity 重建 → ViewModel 重建 → 初始化耗时 1.3~2.6 秒**重跑一遍**；
+3. 更糟的是 `onCleared()` 会取消 `viewModelScope`——**正在跑的任务被连带杀掉**。
+   用户看到的是「点了个通知，任务没了」。
+
+而 `MainActivity.onNewIntent` 里那段处理逻辑，在此之前是**死路径**：
+`standard` 模式下该回调永远不会触发。
+
+修法：manifest 声明 `android:launchMode="singleTop"`。同一 task 顶部已有实例时
+改走 `onNewIntent`，Activity 与 ViewModel 都复用，在跑的任务不受影响。
+
+断言：`StartupOrderVerification.kt` 新增 3 条（manifest 声明 singleTop /
+onNewIntent 存在且设置 pendingWorkflowId / 调用 setIntent），13/13 通过。
+反向变异已验证：删掉 `singleTop` → 断言立刻变红 → 恢复 → 重新变绿。
+
+**设备实测（r5，与真实 PendingIntent 同款 flags `0x14000000`）**：
+
+```
+修复前  点通知前 4 次 → 后 5 次         Activity 实例 2 个
+修复后  点通知前 8 次 → 后 8 次         Activity 实例 1 个
+        日志：从通知进入，准备执行 w-calc
+        turn.end status=completed steps=2
+```
+
+点通知不再重建，工作流照常跑完。
 
 ### 这一轮的验证数字
 
@@ -389,6 +457,23 @@ logcat 里 **0 条** crashpad 行、**0 条** chromium 的 E 级行。
 | 大文件行数 | `ChatViewModel` 3890 / `RealAgentLoop` 1557，**均未超冻结上限** |
 | 反向变异 | 「回退注入点 → 必红 → 恢复 → 重新变绿」6/6 通过 |
 | 三项度量 | 白等 0 次 / 每回合写入 6.3KB / 重放 0 次（`trace-metrics.py` 退出码 0） |
+
+### 第三轮（本轮）的验证数字
+
+| 项 | 结果 |
+|---|---|
+| 全量 harness | `PASS=90 SKIP=0 XFAIL=0 FAIL=0` |
+| 门禁 | 5/5 全过 |
+| 文本断言 | **1370**（未增；新增 3 条用的是 `in` 判定，不计入） |
+| 架构守卫 | 5/5 通过（`ChatViewModel` 3889 ≤ 3890） |
+| 反向变异 | 删 `singleTop` → 断言必红 → 恢复 → 重新变绿 |
+| **点通知重建 ViewModel** | 修复前 4→5（+1）；修复后 **8→8（不变）**，Activity 实例 1 个 |
+| **`refresh` 段耗时** | 696~1115ms → **172~190ms**（降约 900ms） |
+| 启动总耗时 | 2201~2590ms → **2248~2546ms**（同量级，但主线程少阻塞约 0.9s） |
+
+> 注意最后一行：总耗时没有明显下降，因为 `registry`（1070~1213ms）和 `skills`（718~827ms）
+> 成了新的最大项。本轮只是把 `refresh` 从主线程挪走，没有消除这部分工作量——
+> 首帧更早出，但初始化总时长仍受这两段约束。它们是下一轮的对象。
 
 
 ### 补掉 3：全量 harness 两处「第一次真跑」暴露的陈旧断言

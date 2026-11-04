@@ -32,6 +32,7 @@ private fun check(name: String, cond: Boolean, detail: String = "") {
 fun main() {
     val main = File("app/src/main/java/com/example/agentkit/MainActivity.kt").readText()
     val host = File("app/src/main/java/com/example/agentkit/browser/BrowserHost.kt").readText()
+    val manifest = File("app/src/main/AndroidManifest.xml").readText()
 
     // 1. attach 必须排在 setContent 之后
     val setContentAt = main.indexOf("setContent {")
@@ -112,6 +113,32 @@ fun main() {
     check(
         "建目录失败不阻断 WebView 创建（runCatching 兜底）",
         "runCatching" in host && "ensureWebViewCacheDir" in host
+    )
+
+    // ---------- 6. 通知重入不能重建 Activity / ViewModel（launchMode） ----------
+    //
+    // 定时任务通知的 PendingIntent 带 `FLAG_ACTIVITY_NEW_TASK|FLAG_ACTIVITY_CLEAR_TOP`。
+    // 在默认 standard 模式下，CLEAR_TOP 对已存在实例的语义是**销毁 + 重建**——设备实测：
+    // 每点一次通知，`ViewModel 初始化分段` 计数 +1（4→5），而 onCleared 会取消
+    // viewModelScope，正在跑的任务被连带杀掉。
+    //
+    // 声明 singleTop 后，同一 task 顶部已有实例时改走 onNewIntent，Activity 与 ViewModel
+    // 都复用。MainActivity 里那段 onNewIntent 在此之前是**死路径**（standard 下永不触发），
+    // 所以这条断言同时锁住「manifest 声明」和「回调真的存在」两半——少一半都不成立。
+    //
+    // 这是静态断言：manifest 没有可在 JVM 里调用的行为入口。真正的行为证据在设备上
+    // （点通知后初始化计数不增长），见 docs/DEVICE-VERIFICATION-PENDING.md。
+    check(
+        "MainActivity 声明 singleTop（否则点通知会重建 ViewModel、杀掉在跑的任务）",
+        "android:launchMode=\"singleTop\"" in manifest
+    )
+    check(
+        "onNewIntent 真的存在且设置 pendingWorkflowId（singleTop 下由它接管）",
+        "override fun onNewIntent" in main && "pendingWorkflowId.value" in main
+    )
+    check(
+        "onNewIntent 会 setIntent（否则后续 getIntent 拿到的是旧 Intent）",
+        "setIntent(intent)" in main
     )
 
     println("\n== 结果：$pass 通过 / $fail 失败 ==")

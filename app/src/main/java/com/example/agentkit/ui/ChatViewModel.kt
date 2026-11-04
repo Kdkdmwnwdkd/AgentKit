@@ -989,10 +989,9 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         CapabilityAuditReporter.report(registry.list())
         // W-14：异步连 MCP 服务器并把工具注册进 registry（失败只记日志，不影响启动）
         registerMcpTools()
-        refreshGrants()
-        // L8/L9：首屏即有内容可看
-        refreshLogs()
-        refreshMemories()
+        refreshGrants() // 已异步（内部 launch(IO)）
+        // L8/L9：首屏即有内容可看。200 条日志的 format() 实测占 600ms+（SimpleDateFormat 加锁），挪到 IO
+        viewModelScope.launch(Dispatchers.IO) { refreshLogs(); refreshMemories() }
         startup.mark("refresh")
         startup.logSummary("ViewModel 初始化分段")
     }
@@ -1114,8 +1113,8 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** 刷新权限授予状态（进入自动化页时调用，反映用户在系统设置里的变更）。 */
-    fun refreshGrants() {
+    /** 刷新权限授予状态。**异步**：5 处 IPC 实测 700~1000ms（启动最慢段、不吃类热缓存），压主线程=首帧白等一秒。 */
+    fun refreshGrants(): Job = viewModelScope.launch(Dispatchers.IO) {
         // 通知监听权限：检查 enabled_notification_listeners 设置里是否包含本服务组件（免依赖、全版本可用）
         val cn = ComponentName(app, AgentNotificationListener::class.java)
         val enabledListeners = Settings.Secure.getString(app.contentResolver, "enabled_notification_listeners")
