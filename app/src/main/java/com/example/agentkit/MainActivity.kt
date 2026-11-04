@@ -57,9 +57,15 @@ class MainActivity : ComponentActivity() {
         window.decorView.viewTreeObserver.addOnDrawListener(
             object : ViewTreeObserver.OnDrawListener {
                 override fun onDraw() {
-                    // 必须移除：OnDrawListener 持有 Activity 引用，留着会泄漏。
-                    window.decorView.viewTreeObserver.removeOnDrawListener(this)
-                    BrowserHost.attach(this@MainActivity)
+                    // ⚠️ 不能在 onDraw 里**直接** removeOnDrawListener：ViewTreeObserver
+                    // 正在派发时会抛 IllegalStateException("Cannot call removeOnDrawListener
+                    // inside of onDraw")，首帧一画就崩。这个坑是本机真机验证抓到的
+                    // （崩溃栈：MainActivity$onCreate$2.onDraw），不是猜的。
+                    // 正确做法：派发结束后再摘——post 一次即可。
+                    window.decorView.post {
+                        window.decorView.viewTreeObserver.removeOnDrawListener(this)
+                        BrowserHost.attach(this@MainActivity)
+                    }
                 }
             }
         )

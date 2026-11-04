@@ -47,6 +47,29 @@ fun main() {
     check("attach 挂在首帧回调上（addOnDrawListener）", "addOnDrawListener" in main)
     check("首帧回调用完即摘（否则 OnDrawListener 泄漏 Activity）", "removeOnDrawListener" in main)
 
+    // 2b. 摘监听必须**延后**到派发结束之后。
+    //
+    // 真机崩溃栈（本轮在验证机上抓到的）：
+    //   java.lang.IllegalStateException: Cannot call removeOnDrawListener inside of onDraw
+    //       at android.view.ViewTreeObserver.removeOnDrawListener(ViewTreeObserver.java:745)
+    //       at com.example.agentkit.MainActivity$onCreate$2.onDraw(MainActivity.kt:61)
+    // 也就是：ViewTreeObserver 正在派发 onDraw 时直接 remove 会抛异常，首帧一画就崩。
+    // 这条断言锁的是「remove 之前先 post」——写错了它会红，但它是文本断言，
+    // 真正的护栏是真机：装包冷启动，看有没有 FATAL。
+    // 位置查找必须**剥掉注释**再找：这段代码的注释里就写着 "removeOnDrawListener"，
+    // 直接在原文件里 indexOf 会先撞上注释里的那个，断言就成了文本游戏。
+    val code = main.lines().joinToString("\n") { line ->
+        if (line.trimStart().startsWith("//")) "" else line
+    }
+    val onDrawAt = code.indexOf("override fun onDraw()")
+    val removeAt = code.indexOf("removeOnDrawListener", onDrawAt)
+    val postAt = code.indexOf("post {", onDrawAt)
+    check(
+        "摘监听前先 post（不能在 onDraw 里直接 removeOnDrawListener）",
+        onDrawAt > 0 && removeAt > onDrawAt && postAt > onDrawAt && postAt < removeAt,
+        "onDraw@$onDrawAt post@$postAt remove@$removeAt"
+    )
+
     // 3. WebView 本身仍在主线程创建（Android 硬要求，不能挪到后台线程）
     check("WebView 仍在主线程创建（main.post + WebView(activity)）",
         "main.post" in host && "WebView(activity)" in host)
