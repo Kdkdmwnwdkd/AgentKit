@@ -107,17 +107,31 @@ def metrics(events):
         elif ev == "store.repair":
             repaired += e.get("n", 0)
 
-    # store.write 归到「当时正在跑的那个回合」：取最后开始的、尚未结束的回合。
-    # 时间窗用 ts 而不是 ms（ms 是相对回合的，跨流对不齐）。
+    # store.write 归到「回合」：取**最后一个已经开始的**回合（turn.start <= ts）。
+    #
+    # 旧规则要求 ts 同时落在 [turn.start, turn.end] 内，于是**回合结束之后的收尾落盘
+    # 全被丢掉**——而落盘是去抖延迟写的（消息变更后 1~2 秒才写），真机上它恰恰发生在
+    # turn.end 之后。后果是「每回合会话写入量」恒为 0，目标 <1MB 恒成立：
+    # 指标看起来达标，其实一次都没量到。真机实测（2026-11-04 模拟器）：
+    # 一次回合两次落盘 58600 + 59744 字节，旧规则算出 0.0KB。
+    #
+    # 回合开始**之前**的写（任何回合都没开始）不归属任何回合，单独统计成「回合外落盘」
+    # 并打印出来——不能静默丢：丢了就等于没量。
     per_turn = {tid: 0 for tid in turns}
+    outside_bytes = 0
+    outside_count = 0
     for ts, nbytes in writes:
         owner = None
         for tid in order:
-            t = turns[tid]
-            if t["start"] <= ts and (t["end"] is None or ts <= t["end"]):
+            if turns[tid]["start"] <= ts:
                 owner = tid
+            else:
+                break
         if owner is not None:
             per_turn[owner] = per_turn.get(owner, 0) + nbytes
+        else:
+            outside_bytes += nbytes
+            outside_count += 1
 
     turn_ms = [t["ms"] for t in turns.values() if t["end"] is not None]
     steps = [e.get("steps") for e in events if e.get("ev") == "turn.end" and "steps" in e]
@@ -135,6 +149,8 @@ def metrics(events):
         "bytes_per_turn_avg": int(sum(per_turn.values()) / len(per_turn)) if per_turn else 0,
         "bytes_per_turn_max": max(per_turn.values()) if per_turn else 0,
         "write_coalesce_avg": round(sum(coalesced) / len(coalesced), 1) if coalesced else 0,
+        "outside_write_bytes": outside_bytes,
+        "outside_write_count": outside_count,
         "repaired": repaired,
     }
 
@@ -154,7 +170,10 @@ def human(m, bad=0):
         + (f"，其中 {m['det_retried']} 次还发生了重试 ← 不该重试的错误被重试了"
            if m["det_retried"] else ""),
         f"每回合会话写入：均值 {mb(m['bytes_per_turn_avg'])} / 峰值 {mb(m['bytes_per_turn_max'])}"
-        f"（目标 <1MB）· 去抖平均合并 {m['write_coalesce_avg']} 次变更/写",
+        + (f"（另有回合外落盘 {m['outside_write_count']} 次 / {mb(m['outside_write_bytes'])}，"
+           f"发生在任何回合开始之前，不计入每回合均值）"
+           if m.get("outside_write_count") else "")
+        + f"（目标 <1MB）· 去抖平均合并 {m['write_coalesce_avg']} 次变更/写",
         f"崩溃恢复重放：{m['repaired']} 次（目标 0）",
     ]
     if bad:
@@ -172,6 +191,12 @@ def selftest():
         {"ev": "llm.end", "ts": 3000, "turn": "t1", "ok": False, "code": "rate_limit", "dur": 10000, "attempt": 1},
         {"ev": "store.write", "ts": 4000, "store": "conversations", "bytes": 2 * 1024 * 1024, "coalesced": 7},
         {"ev": "turn.end", "ts": 5000, "turn": "t1", "ms": 4000, "status": "completed", "steps": 3},
+        # 回合**之后**的收尾落盘：落盘是去抖延迟写的，真机上它恰恰在 turn.end 之后。
+        # 旧规则要求 ts 落在回合窗口内，于是这一次被丢掉——指标恒为 0，目标恒成立。
+        {"ev": "store.write", "ts": 5500, "store": "conversations", "bytes": 1024, "coalesced": 1},
+        # 任何回合**开始之前**的落盘（启动时把恢复的历史写回去）：不归属任何回合，
+        # 但必须看得见，不能静默丢。
+        {"ev": "store.write", "ts": 500, "store": "conversations", "bytes": 2048, "coalesced": 1},
         {"ev": "store.repair", "ts": 6000, "store": "journal", "n": 2},
     ]
     m = metrics(ev)
@@ -180,8 +205,11 @@ def selftest():
         ("确定性白等次数", m["det_count"], 1),
         ("确定性白等均值", m["det_wait_ms_avg"], 38400),
         ("确定性错误被重试的次数", m["det_retried"], 1),
-        ("回合写入字节", m["bytes_per_turn_avg"], 2 * 1024 * 1024),
-        ("去抖合并均值", m["write_coalesce_avg"], 7),
+        # 回合内的 2MB + 回合后的收尾 1KB（旧的「必须落在回合窗口内」规则会丢掉后者）
+        ("回合写入字节", m["bytes_per_turn_avg"], 2 * 1024 * 1024 + 1024),
+        ("回合外落盘次数", m["outside_write_count"], 1),
+        ("回合外落盘字节", m["outside_write_bytes"], 2048),
+        ("去抖合并均值", m["write_coalesce_avg"], 3.0),
         ("重放总数", m["repaired"], 2),
     ]
     ok = True
