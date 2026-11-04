@@ -2,6 +2,7 @@ package com.example.agentkit.core.llm.local
 
 import com.example.agentkit.core.AgentTool
 import com.example.agentkit.core.JsonSchema
+import com.example.agentkit.core.capability.CapabilityManifest
 
 /**
  * 本地小模型（llama.cpp）的 Agent 系统提示——**精简版**。
@@ -26,8 +27,8 @@ import com.example.agentkit.core.JsonSchema
  *
  * 1. **只描述「够模型判断该不该用」的信息**。参数名照抄 schema（保证模型填得对），
  *    但不写类型、不写 JSON Schema、不写"这是一个用于…的工具"这种废话。
- * 2. **工具顺序固定**（按 [order]，未知工具排最后）。系统提示逐字节不变，KV 前缀才能
- *    命中——本地每轮省下的就是这几百 token 的重新 prefill。
+ * 2. **工具顺序固定**（顺序 = `CapabilityManifest` 的清单顺序，未知工具排最后）。
+ *    系统提示逐字节不变，KV 前缀才能命中——本地每轮省下的就是这几百 token 的重新 prefill。
  * 3. **不出现中文**。模型要用中文回答，但提示词本身用英文，纯粹为了 token 经济。
  *
  * 目标：7 个工具约 250 token，全量 20 个工具也不超过 450 token。
@@ -62,24 +63,6 @@ object LocalAgentPrompt {
         "ui_key" to "press a system key (back/home)",
         "ui_click" to "click a widget by its text or id",
         "spawn_agents" to "run sub-tasks in parallel",
-    )
-
-    /**
-     * 固定顺序（= 本地最小工具面的语义顺序：先读写、再感知与动作、最后扩展，
-     * 外加常用云端工具）。顺序即「重要度」，也保证同一组工具每轮渲染结果逐字节一致。
-     *
-     * **只能写真实存在的工具名**。这里曾经有 `list_dir` / `search_files`——它们是
-     * 设计阶段的拟名，注册表里从来没有过。因为 [build] 只渲染传入的工具，这两个名字
-     * 不会真的出现在提示词里，属于死条目：不报错、不占 token、只是让下一个人以为
-     * 「我们有这两个工具，那别处为什么不给模型」。`run-local-prompt-verification.sh`
-     * 会对这张表与 `CapabilityManifest` 做交叉比对，多一个就红。
-     */
-    private val ORDER: List<String> = listOf(
-        "read_file", "write_file", "edit_file",
-        "http_request", "ui_tree", "ui_tap", "clipboard", "use_skill",
-        "shell_run", "memory_write", "memory_search",
-        "app_launch", "app_list", "send_notification",
-        "ui_screenshot", "ui_input", "ui_swipe", "ui_key", "ui_click",
     )
 
     /** 单条工具行的长度上限（防止某个工具的描述把预算吃光，也防止截断切在半句话上）。 */
@@ -120,12 +103,17 @@ object LocalAgentPrompt {
     }.trimEnd()
 
     /**
-     * 固定顺序排序：先按 [ORDER] 的位置，未登记的按名字排（保证同样的工具集每轮输出一致，
-     * 不会因为注册顺序变化而打断 KV 前缀）。
+     * 按**能力清单的顺序**排（P3-5）：清单未登记的工具排最后、彼此按名字排。
+     *
+     * 这张表原来在本文件里（`ORDER`），与云端工具表的「注册顺序」是两份互不相干的排序——
+     * 注册顺序才是发给云端模型的那份，它没有防线：`register(...)` 里插一行，每轮请求体
+     * 就整体位移、KV 前缀全失效，没有任何断言会响。现在顺序归 `CapabilityManifest.sort`，
+     * 一条路径有防线、另一条没有的情况不会再出现。
+     *
+     * 本文件**仍然自己排一次**，而不是信任入参顺序：`build()` 也可能被 harness 或未来的
+     * 新调用方直接喂一个未排序的列表，那时提示词就逐轮抖了。排序是幂等的，多一次无副作用。
      */
-    private fun sorted(tools: List<AgentTool>): List<AgentTool> = tools.sortedWith(
-        compareBy({ ORDER.indexOf(it.name).let { i -> if (i < 0) Int.MAX_VALUE else i } }, { it.name })
-    )
+    private fun sorted(tools: List<AgentTool>): List<AgentTool> = CapabilityManifest.sort(tools)
 
     /**
      * 一个工具渲染成一行：`name(必填, 可选?): 一句话`。

@@ -22,6 +22,8 @@ import com.example.agentkit.core.PromptAssembler
 import com.example.agentkit.core.Section
 import com.example.agentkit.core.Stability
 import com.example.agentkit.core.ToolResult
+import com.example.agentkit.core.capability.CapabilityManifest
+import com.example.agentkit.core.llm.local.LocalAgentPrompt
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
@@ -402,7 +404,88 @@ fun main() = runBlocking {
     )
     eq("空白段不产生额外换行", "A", withBlank.text)
 
-    // ---------- 9. 结果 ----------
+    // ---------- 9. 工具表顺序 = 清单顺序（P3-5） ----------
+    //
+    // 顺序是请求体的一部分：它一变，KV 前缀就失效（云端按量重算、本地整段 prefill）。
+    // 修前有两个互不相干的顺序来源——云端看 `ToolRegistry` 的注册顺序，本地看
+    // `LocalAgentPrompt.ORDER` 那张手写表。注册顺序那条没有任何防线：`register(...)`
+    // 里插一行，每轮报文整体位移，却没人会发现。这一节把它钉在清单上。
+    println("\n[9] 工具表顺序 = 清单顺序（注册顺序不再影响报文）")
+    val manifestOrder = CapabilityManifest.toolNames
+    val cloudNames = cloudPlan.names
+
+    check(
+        "全量模式下已登记工具严格按清单顺序",
+        fullPlan.names.filter { it in manifestOrder } == manifestOrder.filter { it in fullPlan.names },
+        "前 3 个：${fullPlan.names.take(3)}"
+    )
+    // 输入是字母序的 NAMES，清单是「先文件、再屏幕、再网络…」的语义序：
+    // 两者不同才说明真的排过序，否则这条断言在「没排序」的实现上也会绿。
+    check(
+        "确实重排了（不是照抄入参序）",
+        fullPlan.names.filter { it in manifestOrder } != all.map { it.name },
+        "入参首项=${all.first().name} 输出首项=${cloudNames.first()}"
+    )
+
+    // 注册顺序由 `ChatViewModel` 里 40 行 register 决定，今天偶然稳定，明天就可能变。
+    // 打乱两次必须得到同一张表——这是「顺序的拥有者不是注册表」的可执行定义。
+    val shuffledA = all.shuffled(kotlin.random.Random(1))
+    val shuffledB = all.reversed()
+    val planA = KernelExposure.plan(shuffledA, "openai", forceFull = true, active = mutableSetOf())
+    val planB = KernelExposure.plan(shuffledB, "openai", forceFull = true, active = mutableSetOf())
+    check("打乱注册顺序后工具表逐字节相同", planA.names == planB.names, "A 首项=${planA.names.first()} B 首项=${planB.names.first()}")
+    check("与基准全量表的顺序相同", planA.names == fullPlan.names)
+
+    check("元工具在最后两位", cloudNames.takeLast(2).toSet() == setOf(KernelExposure.USE_TOOLS, KernelExposure.FIND_TOOLS), "${cloudNames.takeLast(3)}")
+    // 默认路径（云端只开 file）必须零位移：这三个名字在旧实现里恰好也是注册顺序，
+    // 所以这次统一顺序**不会**让日常对话的报文变一个字节，只有全量/多组场景才有位移。
+    // weather / wordcount 是 misc 的哨兵（常驻），元工具单列，都不算默认路径的成员。
+    check(
+        "默认云端路径零位移（read → write → edit）",
+        cloudNames.filterNot { it.startsWith("__") || it == "weather" || it == "wordcount" } ==
+            listOf("read_file", "write_file", "edit_file"),
+        "$cloudNames"
+    )
+    check(
+        "未登记工具排在已登记工具之后、元工具之前",
+        run {
+            val lastRanked = cloudNames.indexOfLast { it in manifestOrder }
+            val firstUnranked = cloudNames.indexOfFirst { it !in manifestOrder && !it.startsWith("__") }
+            firstUnranked < 0 || lastRanked < firstUnranked
+        },
+        "weather=${cloudNames.indexOf("weather")} 末个已登记=${cloudNames.indexOfLast { it in manifestOrder }}"
+    )
+
+    // 本地提示词：同一份顺序，行为级验证（此前只有 grep，没有真跑过 build()）
+    val promptA = LocalAgentPrompt.build(shuffledA)
+    val promptB = LocalAgentPrompt.build(shuffledB)
+    check("提示词在乱序输入下逐字节相同", promptA == promptB, "${promptA.length} 字符")
+    // 只取「- name(」开头的行：用正则匹配行首，而不是对行做子串判断
+    val lineHead = Regex("""^- ([a-z0-9_]+)\(""")
+    val promptLines = promptA.lines().mapNotNull { lineHead.find(it)?.groupValues?.get(1) }
+    // 无前缀的两个哨兵（weather / wordcount）不在清单里，排在最后，所以只比对已登记的部分，
+    // 再单独确认未登记的那两个确实在末尾。
+    check(
+        "提示词行序与清单顺序一致",
+        promptLines.filter { it in manifestOrder } == manifestOrder.filter { it in promptLines },
+        "前 4 行：${promptLines.take(4)}"
+    )
+    check(
+        "未登记工具排在提示词末尾",
+        promptLines.takeLast(2).toSet() == setOf("weather", "wordcount"),
+        "${promptLines.takeLast(3)}"
+    )
+    check("提示词行数 = 工具数（每个工具恰好一行）", promptLines.size == all.size, "${promptLines.size} 行 / ${all.size} 个工具")
+    // 每轮都要拼一次，且它决定本地模型的 prefill 长度：格式改动要显式看见。
+    check(
+        "单行格式稳定（name(必填, 可选?) 后接一句话）",
+        promptA.lines().first { it.startsWith("- read_file(") }.let {
+            it.startsWith("- read_file(target, mode?, timeout?): read a workspace file as text")
+        },
+        promptA.lines().firstOrNull { it.startsWith("- read_file(") } ?: "缺 read_file 行"
+    )
+
+    // ---------- 10. 结果 ----------
 
     // 结果行必须含 "0 失败"：run-all.sh 靠这个字样判 PASS，
     // 写成「0 项失败」不匹配它的正则，会被当成「跑完没有通过标记」判 FAIL。

@@ -18,7 +18,7 @@
 | 这条消息上不上屏？写进哪个会话？ | `ConversationProjection` | 显示态与持久态必须同源；落库目标 = owner ?: active |
 | 本地模型参数 / 文件 / 下载 / GPU 结论 | `ModelSettings` | 只与 `LocalLlamaSetting` + `GgufModelStore` 打交道，唯一外部动作是「切到本地供应商」 |
 | 备份包怎么组装、恢复后谁来刷新 UI | `BackupUseCase` | 六个 store 的快照 ↔ SAF 文件；UI 重载通过 `onRestored` 回调回宿主 |
-| 工具属于哪个能力组、暴露面怎么裁 | `CapabilityManifest` + `KernelExposure` | 分组与成员在清单；裁剪算法仍在 KernelExposure（它只读清单） |
+| 工具属于哪个能力组、暴露面怎么裁、工具表按什么顺序排 | `CapabilityManifest` + `KernelExposure` | 分组 / 成员 / **顺序**都在清单（P3-5）；裁剪算法仍在 KernelExposure（它只读清单） |
 
 ## 三条不变量（改动时别破坏）
 

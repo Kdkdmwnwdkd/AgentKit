@@ -177,7 +177,7 @@ object KernelExposure {
     ): Plan {
         val strength = strengthOf(providerId, forceFull)
         if (strength == Strength.LARGE) {
-            return Plan(ExposureMode.FULL, all, 0, groupsOf(all), emptySet())
+            return Plan(ExposureMode.FULL, CapabilityManifest.sort(all), 0, groupsOf(all), emptySet())
         }
         // 先剔掉「已经不存在的组名」：active 可能是上个版本落盘读回的，而代码改版后
         // 某个组可能已被删掉（工具合并、改名）。留着它们会让 enforceCap 误以为超限，
@@ -197,7 +197,13 @@ object KernelExposure {
         // 滞回淘汰：超过上限才动手，一次降到 TRIM_TO_GROUPS 组。
         enforceCap(active)
 
-        val visible = all.filter { groupOf(it.name) in active } + metaTools(all, active)
+        // P3-5：业务工具按**清单顺序**排，不按注册顺序。注册顺序是 `ChatViewModel` 里那 40 行
+        // `register(...)` 的书写顺序，改一次（插一个工具到中间）就会让云端每一轮的请求体整体
+        // 位移、KV 前缀失效，而这种位移过去没有任何断言能发现。排序后注册顺序只影响
+        // 「谁先被 register」，不影响工具表字节。元工具追加在最后：它们是「查/开」的入口，
+        // 摆在业务工具后面符合阅读顺序，也让前缀部分尽量不被它们打断。
+        val business = CapabilityManifest.sort(all.filter { groupOf(it.name) in active })
+        val visible = business + metaTools(all, active)
         val mode = if (strength == Strength.TINY) ExposureMode.META else ExposureMode.GROUPED
         val realVisible = visible.count { it.name != FIND_TOOLS && it.name != USE_TOOLS }
         return Plan(mode, visible, all.size - realVisible, groupsOf(all), active.toSet())
@@ -354,6 +360,13 @@ object KernelExposure {
      * 一次暴露的完整快照。
      *
      * @param hiddenCount 被裁掉的真实工具数（不含元工具）。
+     */
+    /**
+     * 暴露面计算结果。
+     *
+     * @property visible 本回合真正发给模型的工具，**顺序即 [CapabilityManifest] 的清单顺序**
+     *   （业务工具在前，元工具在最后）。这个顺序是请求体的一部分：它一变，KV 前缀就失效。
+     *   所以它只能由清单决定，不能由注册顺序、Map 迭代序或线程调度决定。
      */
     data class Plan(
         val mode: ExposureMode,

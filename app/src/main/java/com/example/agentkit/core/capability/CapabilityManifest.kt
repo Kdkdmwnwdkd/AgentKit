@@ -160,8 +160,48 @@ object CapabilityManifest {
     /** 声明过的组名（顺序同 [capabilities]）。 */
     val groups: List<String> get() = capabilities.map { it.group }
 
-    /** 声明过的全部工具名（顺序即工具表顺序）。 */
+    /**
+     * 声明过的全部工具名。**顺序即工具表顺序**（P3-5）——发送给模型的工具表、
+     * 本地小模型的提示词行、`__find_tools` 的清单，全都按它排。
+     */
     val toolNames: List<String> get() = capabilities.flatMap { it.tools }
+
+    /**
+     * 未登记工具的名次：排在所有已登记工具之后。
+     *
+     * 为什么不是 0 或 -1：未登记的工具必须**可见**（见 [MISC] 的注释），但它的位置
+     * 不该插到核心工具前面——模型读工具表和读人读目录一样，先看到的先用。
+     */
+    const val UNRANKED: Int = Int.MAX_VALUE
+
+    private val rankOfTool: Map<String, Int> =
+        toolNames.withIndex().associate { (i, name) -> name to i }
+
+    /** 工具的清单名次；未登记返回 [UNRANKED]。 */
+    fun rankOf(name: String): Int = rankOfTool[name] ?: UNRANKED
+
+    /**
+     * 按清单顺序排出工具表（P3-5）。
+     *
+     * ## 为什么顺序必须有个唯一的拥有者
+     *
+     * 修前有**两个**顺序来源，谁也不认识谁：
+     *  - 云端工具表 = `ToolRegistry` 的**注册顺序**（`ChatViewModel` 里那 40 行 `register(...)`）；
+     *  - 本地提示词 = `LocalAgentPrompt.ORDER` 那张手写表。
+     *
+     * 后果是一句话讲不清「工具表长什么样」：`register` 里挪一行、加一个工具插在中间，
+     * 云端每一轮的请求体就整体位移，KV 前缀全失效（整段 prefill 重算，云端按量计费、
+     * 本地几秒白等），而**没有任何断言或日志会提示这件事发生了**。本地那条路径反而
+     * 因为写了 ORDER 而免疫——同一个问题，一条路径有防线、另一条没有。
+     *
+     * 现在顺序归清单：注册顺序随便改，工具表逐字节不变；想调顺序就改 [capabilities]
+     * 里组的先后或组内成员的先后，一次改完两条路径同时生效。
+     *
+     * 未登记的工具（MCP 动态工具、插件）排最后、彼此按名字排：它们的位置不该由
+     * 「谁先连上服务器」决定，否则同一台设备两次启动的工具表就可能不一样。
+     */
+    fun sort(tools: List<AgentTool>): List<AgentTool> =
+        tools.sortedWith(compareBy({ rankOf(it.name) }, { it.name }))
 
     /**
      * 双向断言。每一条都对应一种真实发生过的「表与代码不同步」。

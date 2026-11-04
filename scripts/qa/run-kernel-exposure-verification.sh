@@ -41,6 +41,7 @@ DEPS=$STDLIB:$COROUTINES:$SER_JSON:$SER_CORE
 
 SOURCES="$CORE/ExposureTypes.kt $CORE/PromptSegments.kt $CORE/AgentContract.kt $CORE/ToolResult.kt \
 $CORE/capability/CapabilityManifest.kt $CORE/KernelExposure.kt \
+$CORE/llm/local/LocalAgentPrompt.kt \
 $ROOT/scripts/qa/KernelExposureVerification.kt"
 
 rm -rf "$OUT" && mkdir -p "$OUT"

@@ -17,7 +17,10 @@ text scripts/qa/run-local-inference-perf-verification.sh 90
 text scripts/qa/PromptProtocolVerification.kt 47
 text scripts/qa/AppControlVerification.kt 40
 text scripts/qa/PermissionGuideVerification.kt 40
-text scripts/qa/run-local-agent-prompt-verification.sh 37
+# P3-5 抬了 1 条（37 → 38）：新增的反向断言「本文件不再自带顺序表」。
+# 它要证明的是「一张表**不存在**」，没有任何行为可调——`sorted()` 读清单这件事
+# 已经由 KernelExposureVerification 的行为断言覆盖，这条只负责防止有人把表加回来。
+text scripts/qa/run-local-agent-prompt-verification.sh 38
 text scripts/qa/CrashLogVerification.kt 36
 text scripts/qa/T01Verification.kt 32
 text scripts/qa/run-runtime-capability-verification.sh 30
@@ -65,4 +68,4 @@ text scripts/qa/R3Verification.kt 1
 text scripts/qa/ShizukuResultVerification.kt 1
 text scripts/qa/W34Verification.kt 1
 text scripts/qa/W46Verification.kt 1
-text __TOTAL__ 1372
+text __TOTAL__ 1373

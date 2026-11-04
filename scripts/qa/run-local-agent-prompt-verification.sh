@@ -58,11 +58,27 @@ expect "身份行（英文）" "$PROMPT" 'You are 北辰, an AI agent running on
 expect "规则：中文回答但提示词英文" "$PROMPT" 'Answer in Chinese'
 expect "规则：一次只调一个工具" "$PROMPT" 'call ONE tool, then stop and wait'
 expect "给出一个具体调用样例" "$PROMPT" '\{"tool": "read_file", "arguments"'
-expect "工具按固定顺序渲染（KV 前缀稳定）" "$PROMPT" 'ORDER.indexOf'
+expect "工具按固定顺序渲染（KV 前缀稳定）" "$PROMPT" 'CapabilityManifest\.sort'
+refute "本文件不再自带顺序表（顺序唯一来源 = 清单）" "$PROMPT" 'private val ORDER'
 expect "工具一行：name(参数) 形式" "$PROMPT" '\$\{tool.name\}\('
 expect "枚举参数摊开取值" "$PROMPT" 'joinToString\("\|"\)'
-# 提示词里不该再出现中文长句（除了名字「北辰」）
-if grep -qE '【|】|请|不要|如果|可以' "$PROMPT"; then
+# 提示词里不该再出现中文长句（除了名字「北辰」）。
+#
+# 只看**真正拼进提示词的字符串字面量**，不看整个源文件——本文件的注释是中文，
+# 一个像「请/不要/如果/可以」这样的常用词（比如注释里写「请求体」）就会让整条断言
+# 无辜变红，于是下一次有人只会去改注释迁就正则，而不是去查提示词到底长不长。
+prompt_text=$(python3 - "$PROMPT" <<'PY'
+import re, sys
+src = open(sys.argv[1], encoding='utf-8').read()
+# 取 build() 函数体（到下一个顶层 `private fun`/`fun` 之前）
+body = src[src.index('fun build('):]
+cut = re.search(r'\n    (private )?fun ', body[10:])
+if cut:
+    body = body[:cut.start() + 10]
+print("".join(re.findall(r'"(?:[^"\\]|\\.)*"', body)))
+PY
+)
+if printf '%s' "$prompt_text" | grep -qE '【|】|请|不要|如果|可以'; then
   check "提示词不含中文长句（token 经济）" 0
 else
   check "提示词不含中文长句（token 经济）" 1
@@ -108,14 +124,17 @@ expect "shell_run 覆写 needsApprovalFor" "$SHELL" 'override fun needsApprovalF
 expect "执行器按参数判定审批" "$EXECUTOR" 'tool.needsApprovalFor\(call.arguments\)'
 expect "接口默认行为不变" "$CONTRACT" 'fun needsApprovalFor\(args: JsonObject\): Boolean = needsApproval'
 
-# —— 6. 三张表里的工具名必须真实存在 ————————————————————————————
-# 这一节盯的是「死条目」：`LocalAgentPrompt.ORDER` 与 `HINTS` 曾写着
+# —— 6. 两张表里的工具名必须真实存在 ————————————————————————————
+# 这一节盯的是「死条目」：`LocalAgentPrompt.HINTS`（曾经还有一张 `ORDER`）里写着
 # `list_dir` / `search_files`，解析器的别名表也把 `ls` / `grep` 往它们身上归——
 # 可那两个工具从来没实现过。
 #
 # 它们不报错（`build()` 只渲染传入的工具，`nameOf()` 只在 available 里找），
 # 也不占 token。正因如此才需要机器盯着：人看到这两行只会以为「我们有这工具」，
 # 然后去别处追问「为什么模型列不了目录」。设计阶段的拟名必须清掉。
+#
+# P3-5 之后 `ORDER` 已删（顺序归清单），所以这一类死条目的来源少了一半——
+# 剩下的一半（HINTS）仍然靠这段交叉比对盯着。
 MANIFEST="$ROOT/app/src/main/java/com/example/agentkit/core/capability/CapabilityManifest.kt"
 missing=$(python3 - "$PROMPT" "$PARSER" "$MANIFEST" <<'PY'
 import re, sys
@@ -127,9 +146,9 @@ declared = set()
 for m in re.finditer(r'tools\s*=\s*listOf\(([^)]*)\)', manifest, re.S):
     declared |= set(re.findall(r'"([a-z0-9_]+)"', m.group(1)))
 
-# 提示词：HINTS 的键 + ORDER 的元素（值里的英文句子含空格，不会被名字正则吃进来）
+# 提示词：HINTS 的键（值里的英文句子含空格，不会被名字正则吃进来）
 used = set()
-for pat in (r'private val HINTS.*?\n    \)', r'private val ORDER.*?\n    \)'):
+for pat in (r'private val HINTS.*?\n    \)',):
     m = re.search(pat, prompt, re.S)
     if m:
         used |= set(re.findall(r'"([a-z0-9_]+)"', m.group(0)))
