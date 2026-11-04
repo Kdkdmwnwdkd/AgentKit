@@ -69,10 +69,13 @@ https://gh-proxy.com/https://github.com/<owner>/<repo>/archive/refs/heads/<branc
 |---|---|
 | `14087cc` | refactor(core): 工具表顺序归能力清单，注册顺序不再影响报文 |
 | `9b8f792` | feat(qa): 工具面预算从表里的数字变成会红的门 |
+| `e5417f4` | docs(push): 记下本会话写通道不可用 |
+| `86cd886` | fix(terminal): REP(b) 从来没打出过字符，同时补上终端仿真器的 78 条断言 |
+| `0134753` | docs(qa): 去掉笔记里那个按路径字面匹配算出来的假覆盖率数字 |
 
 推送时按《网络通道与加速指南》的 MCP 写通道批量提交即可（改动的 11 个文件都在
 `git show --stat` 里，全是文本，没有二进制）。推之前重跑一次 `bash scripts/qa/run-all.sh`：
-本会话已跑过 **PASS=85 SKIP=1 FAIL=0**。
+本会话已跑过 **PASS=86 SKIP=1 FAIL=0**。
 
 ## 待推送批次（历史，已全部完成，本节归档）
 
