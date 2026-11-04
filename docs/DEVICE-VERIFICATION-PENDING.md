@@ -116,9 +116,10 @@
 | O8 | 工具数组参数在三家都能用（R11） | 用 OpenAI / Claude / Gemini 各发一次「并行查三个文件」触发 `spawn_agents` | 模型应正确产出 `tasks` 数组。修前 schema 里 `items` 是空的，严格实现（Gemini）会拒掉整个工具声明，表现为「这个工具像不存在」 |
 | O11 | 升级后 MCP 工具默认不可见（P3-3） | 配一个 MCP 服务器 → 冷启动 → 看工具表；再问一句「用 mcp 工具查一下」 | 预期：默认不在工具表；模型应 `__use_tools("mcp")` 开组后可见。若模型反复报「没有这个工具」且从不试开组，说明组索引的措辞不够明确，需改 `noteOf("mcp")` |
 | O10 | 能力清单零偏差（P3-1） | 冷启动后 `adb logcat -s AgentKit` 过滤 `能力清单` | 应**一条都没有**。若出现「能力清单有 N 处不同步」，说明有工具没登记组（会落进 misc），把日志里的工具名补进 `CapabilityManifest` 对应组的 `tools` |
-| O12 | 遥测流水真的落了盘（P5-1） | 跑两个回合 → 设置页「导出诊断包」→ 看第二个文件 | 分享面板应出现 `agentkit-events-<stamp>.ndjson`，里面有 `turn.start` / `llm.end` / `tool.start` 成对行。**若只有 2 个文件（诊断 txt + turns.ndjson）**，说明 `TraceSink.init` 失败或队列没 flush——这是三项度量继续「未知」的原因 |
-| O13 | 度量三项符合目标（P5-1） | 把导出的 ndjson 拉回电脑，`python3 scripts/qa/trace-metrics.py <file>` | 期望：确定性错误白等 <1s、每回合会话写入 <1MB、重放 0 次。若白等仍有几十秒，看输出里「N 次还发生了重试」——那说明某类错误没被 `ErrorNormalizer` 判成确定性 |
+| O12 | 遥测流水真的落了盘（P5-1） | 跑两个回合 → 看 `files/logs/` 下有没有 `turns-<stamp>.ndjson`（导出诊断包时它会被改名成 `agentkit-turns-<stamp>.ndjson`） | 流水文件里应有 `turn.start` / `prompt.plan` / `llm.call` / `llm.end` / `turn.end` / `store.write` 成对行。**若目录里只有 `agent-*.log` 没有 `turns-*.ndjson`**，说明 `TraceSink.init` 失败或队列没 flush——这是三项度量继续「未知」的原因。⚠️ 本行原先写的文件名 `agentkit-events-*.ndjson` **是错的**，实现叫 `turns-*.ndjson`，2026-11-04 更正 |
+| O13 | 度量三项符合目标（P5-1） | 把 ndjson 拉回电脑，`python3 scripts/qa/trace-metrics.py <file>` | 期望：确定性错误白等 <1s、每回合会话写入 <1MB、重放 0 次。若白等仍有几十秒，看输出里「N 次还发生了重试」——那说明某类错误没被 `ErrorNormalizer` 判成确定性。⚠️ 「每回合会话写入」若显示 0.0KB **不是达标，是没量到**（2026-11-04 修过一次归属规则，见下节） |
 | O9 | 断电不丢会话（R12） | 非必做：写入过程中强杀进程（`am force-stop`）后重进 | 会话要么是完整的一条，要么回到上一版；**不能**是空文件或半截 JSON。空文件说明 fsync 没生效 |
+| O14 | 启动不再被判 ANR（2026-11-04 修） | 冷启动 App（**首次**装包或 WebView 被系统回收后再进） | 日志不应出现 `Completed ANR of com.example.agentkit` / `Force finishing activity ...MainActivity`。旧实现里后台 WebView 的创建排在首帧之前，冷启动要 20~30 秒占着主线程 → 首帧出不来 → 系统判 ANR（`does not have a focused window`）→ 弹回桌面。修后 WebView 改在首帧之后创建，构造耗时会打进日志（`后台 WebView 已就绪（构造 Nms，总计 Nms）`） |
 
 ---
 
@@ -144,6 +145,53 @@
 | 终端仿真器（打印/宽度/SGR/光标/擦除/备用屏/历史/畸形输入/并发/缩放） | `run-terminal-emulator-verification.sh` | 78/0 |
 | 审批归组（同类操作同组 + 需审批工具都有中文说明） | `run-approval-grouping-verification.sh` | 9/0 |
 | CI 门禁本身（含「全 SKIP 不算绿」） | `run-gate-verification.sh` | 20/0 |
+| 启动顺序（首帧先于后台 WebView 创建） | `run-startup-order-verification.sh` | 5/0 |
 
 真机验的是**这些断言覆盖不到的那一层**：真实 proot 进程的生死、真实 Compose 生命周期、
 真实分享面板。断言通过不代表真机通过，反之亦然——两边都要，但不用重复。
+
+---
+
+## 2026-11-04 在验证机（x86_64 模拟器）上已验的项
+
+环境：模拟器 API 30 / x86_64 + mock 模型（`http://10.0.2.2:8899/v1`，设备上已配好
+「假模型」档位）。**不是 arm64 真机**，所以容器租约（需要 arm64 proot）那一类仍然挂账。
+
+| 项 | 结果 | 依据 |
+|---|---|---|
+| O10 能力清单零偏差 | ✅ 通过 | 冷启动日志里**没有**「能力清单有 N 处不同步」；审计在 `ChatViewModel` 初始化时、MCP 注册前跑，零偏差即无输出 |
+| O12 遥测真的落盘 | ✅ 通过 | `files/logs/turns-20261103.ndjson`（962 字节）出现，内容为 `store.write` / `turn.start` / `prompt.plan` / `llm.call` / `llm.end` / `turn.end` / `store.write` 七行 |
+| O13 三项度量 | ✅ 通过 | 白等 0 次 0.0s（目标 <1s）；每回合会话写入 58.3KB（目标 <1MB）；重放 0 次 |
+
+### 这台机器上发现的两个真问题（都已修）
+
+1. **启动被判 ANR，App 闪退**：日志原文
+   `Completed ANR of com.example.agentkit in 30580ms` + `Force finishing activity
+   com.example.agentkit/.MainActivity`，原因 `does not have a focused window`。
+   根因是后台 WebView 的创建排在首帧之前，冷启动 20~30 秒占着主线程。修法见
+   `MainActivity.onCreate`（首帧的 `OnDrawListener` 里再 attach）。
+2. **「每回合会话写入」度量恒为 0**：归属规则要求落盘时间戳落在回合窗口内，而落盘是
+   去抖延迟写、真机上恰恰发生在 `turn.end` 之后 → 全被丢掉 → 目标 <1MB 恒成立。
+   修法见 `scripts/qa/trace-metrics.py`（归到最后一个已开始的回合，回合外的写单独显示）。
+
+### 这台机器上**不能**做的事（省得下次再试）
+
+- **触摸设备被禁用**：`dumpsys input` 里每个输入源都是
+  `Touch Input Mapper (mode - disabled)`。所以 `adb shell input tap` **完全不生效**——
+  点不亮输入框、键盘不弹、消息发不出去。`input text` / `keyevent` 也无效（没有焦点窗口）。
+- **可行替代：用 workflow 通知入口触发回合**，不需要碰 UI：
+
+  ```bash
+  # 1. 往应用私有目录写一条 workflow（run-as 能写；目录要先 mkdir）
+  adb shell 'run-as com.example.agentkit mkdir -p files/workflow'
+  adb push wf.json /data/local/tmp/wf.json
+  adb shell 'run-as com.example.agentkit sh -c "cat /data/local/tmp/wf.json > files/workflow/workflows.json"'
+  # 2. 带 workflow_id 启动：MainActivity 的 LaunchedEffect 会自动执行它（prompt 直接当对话输入发出去）
+  adb shell am start -n com.example.agentkit/.MainActivity --es workflow_id w-test
+  # 3. 看结果
+  adb shell 'run-as com.example.agentkit tail -20 files/logs/agent-*.log'
+  adb shell 'run-as com.example.agentkit cat files/logs/turns-*.ndjson' > /tmp/turns.ndjson
+  ```
+
+  判定「回合真的跑了」的标志：`[Workflow] 从通知进入，准备执行 <id>` →
+  `[Chat] 用户发送：…` → `[AgentLoop] 开始运行…` → `[Turn] … turn.end status=completed`。
