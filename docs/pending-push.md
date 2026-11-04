@@ -128,6 +128,29 @@ git remote set-url origin https://github.com/Kdkdmwnwdkd/AgentKit.git   # 把 to
 | `4d532d0` | fix(metrics): 「每回合会话写入」一直报 0 —— 回合后的收尾落盘被丢掉了 |
 | `0ebad8c` | docs(verify): 记下验证机上已验的三项、两个真问题与「模拟器不能点 UI」的绕法 |
 
+### 两台机器怎么分工（2026-11-04 实测）
+
+| 机器 | 角色 | 怎么用 |
+|---|---|---|
+| `ibssh_ew73gcwuode7onlxp54gukp7i4`（`/tmp/s2.sh`） | **构建机** | 源码在 `/data/home/AgentKit`（不是 git 仓库，改动靠 tar 同步过去）。`./gradlew -PnoNative=true assembleDebug` 增量构建约 10 秒 |
+| `ibssh_viqb5x6t7oyvhjlovwzqltapii`（`/tmp/s1.sh`） | **验证机** | 跑着 x86_64 模拟器（`emulator-5554`，API 30）与 mock LLM（`http://10.0.2.2:8899/v1`）。`adb` 在 `/data/home/android-sdk/platform-tools` |
+
+**传包捷径（省 27 分钟）**：让验证机直接从构建机拉，不要经沙箱中转：
+
+```bash
+scp -O -P 2222 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+  ibssh_ew73gcwuode7onlxp54gukp7i4@ssh.instabox.sh:/data/home/AgentKit/app/build/outputs/apk/debug/app-debug.apk \
+  /data/home/app-debug.apk
+```
+
+`-O` 必须加（新 scp 默认走 sftp 子系统，这里失败）；加上之后 **3 秒**完成，
+而沙箱中转要 27 分钟（沙箱→s2 的 scp 是慢的那一端）。
+
+### 网络：时通时不通
+
+15:07 实测 `github.com:443` 可连、`api.github.com` 返回 200；15:45 再测又超时（90 秒无响应）。
+所以「网络通」不是稳定状态，别把一次失败当成「这条路彻底不通」，也别把一次成功当成「随时能推」。
+
 ### 推之前的验证状态
 
 本会话跑过 **PASS=87 SKIP=1 FAIL=0**，`gate.sh` 五条全过（含新增的 PASS 基线门），
