@@ -5,6 +5,7 @@ import android.content.Intent
 import android.os.Build
 import androidx.core.content.FileProvider
 import com.example.agentkit.core.agent.journal.RunJournal
+import com.example.agentkit.core.telemetry.TraceSink
 import com.example.agentkit.core.llm.KeyPoolStore
 import com.example.agentkit.core.llm.local.NativeCrashMemory
 import com.example.agentkit.core.llm.local.NativeCrashParser
@@ -34,6 +35,9 @@ object DiagnosticsExporter {
 
     /** 回合日志目录名，与 `ChatViewModel.runJournal` 保持一致（两处硬编码必须同源）。 */
     private const val JOURNAL_DIR = "run-journal"
+
+    /** 遥测流水的目录（与 `AgentLogger` / `TraceSink` 同目录：`filesDir/logs`）。 */
+    private const val TRACE_DIR = "logs"
 
     /** 生成诊断文件；失败返回 null（调用方提示用户，不崩）。 */
     fun export(context: Context, logText: String): File? = runCatching {
@@ -123,6 +127,30 @@ object DiagnosticsExporter {
     }.getOrNull()
 
     /**
+     * 遥测流水的导出（P5-1）：`<cache>/exports/agentkit-events-<stamp>.ndjson`。
+     *
+     * 与 [ndjsonOf] 的区别（名字不像，内容完全不同，别混）：
+     * - [ndjsonOf]：`RunEvent`——崩溃恢复日志，回答「哪些调用可能已生效」；
+     * - 本函数：[TurnEvent](core/agent/TurnObserver.kt) + `store.*`——执行流水，
+     *   回答「这一回合慢在哪、写了多少字节」。两份都是 NDJSON，但事件族毫无重叠。
+     *
+     * 先 flush：流水是攒批写的（400ms / 32KB），用户点「导出」的瞬间队列里
+     * 可能还躺着最后几条——不 flush 就会导出到「刚好缺个尾巴」的版本，
+     * 而缺的往往正是最关键的 turn.end。
+     */
+    fun traceOf(context: Context): File? = runCatching {
+        TraceSink.flush()
+        val dir = File(context.filesDir, TRACE_DIR)
+        val src = dir.listFiles { f -> f.isFile && f.name.startsWith("turns-") && f.name.endsWith(".ndjson") }
+            ?.filter { it.length() > 0 }
+            ?.maxByOrNull { it.lastModified() }
+            ?: return null
+        val out = File(context.cacheDir, "exports").apply { mkdirs() }
+        val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.getDefault()).format(Date())
+        File(out, "agentkit-events-$stamp.ndjson").apply { src.copyTo(this, overwrite = true) }
+    }.getOrNull()
+
+    /**
      * 生成诊断包：文本摘要 + 可选的事件流，**一次分享带两个文件**。
      *
      * 为什么不让调用方自己拼：分享面板必须一次拉起，分两次会让用户看到两个选择器，
@@ -130,7 +158,9 @@ object DiagnosticsExporter {
      */
     fun exportBundle(context: Context, logText: String): List<File> = runCatching {
         val summary = export(context, logText) ?: return emptyList()
-        listOfNotNull(summary, ndjsonOf(context))
+        // P5-1：加上遥测流水。排障时「诊断文本 + 恢复日志 + 执行流水」三件套齐了，
+        // 前两者回答「发生了什么」，第三者回答「有多慢、写了多少」。
+        listOfNotNull(summary, ndjsonOf(context), traceOf(context))
     }.getOrDefault(emptyList())
 
     /**

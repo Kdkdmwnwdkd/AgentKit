@@ -34,8 +34,8 @@ import com.example.agentkit.automation.UiSwipeTool
 import com.example.agentkit.automation.UiTapTool
 import com.example.agentkit.automation.UiTreeTool
 import com.example.agentkit.core.agent.RealAgentLoop
-import com.example.agentkit.core.agent.LoggingTurnObserver
-import com.example.agentkit.core.capability.CapabilityManifest
+import com.example.agentkit.core.agent.TurnObservers
+import com.example.agentkit.core.capability.CapabilityAuditReporter
 import com.example.agentkit.core.capability.ToolActivationStore
 import com.example.agentkit.core.AgentLogger
 import com.example.agentkit.core.KernelExposure
@@ -929,29 +929,6 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         register(ContainerToolchainTool(app))
     }
 
-    /**
-     * P3-1：能力清单自检。
-     *
-     * 四条双向断言（工具→清单 / 清单→工具 / 补丁→工具 / 常驻组自洽）见
-     * [com.example.agentkit.core.capability.CapabilityManifest.audit]。
-     *
-     * 定位是**留痕不是门槛**：偏差不影响工具可用性（落进 misc 的工具照样能被调用），
-     * 所以只 warn 不抛——但省掉了「等模型开错组、再回来看为什么」那一整圈。
-     * 静态工具全在注册表里之后跑一次，MCP 动态工具不参与（见调用点注释）。
-     */
-    private fun auditCapabilities() {
-        runCatching {
-            val audit = CapabilityManifest.audit(registry.list())
-            if (!audit.ok) {
-                AgentLogger.w(
-                    "Capability",
-                    "能力清单有 ${audit.problems.size} 处不同步：\n" +
-                        audit.problems.joinToString("\n")
-                )
-            }
-        }
-    }
-
     /** JS 执行引擎（Rhino，纯 Java 无需 NDK）；初始化失败则降级为仅 prompt 形态。 */
     private val jsEngine: JsEngine? = runCatching { RhinoJsEngine() }.getOrNull()
 
@@ -1010,7 +987,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         // P3-1：能力清单自检——把注册表与 CapabilityManifest 对一遍（只在有偏差时打一条 warn）。
         // 放在 MCP 注册**之前**：MCP 工具是运行时动态来的，名字不受清单约束，
         // 让它们参与审计只会制造固定噪声。
-        auditCapabilities()
+        CapabilityAuditReporter.report(registry.list())
         // W-14：异步连 MCP 服务器并把工具注册进 registry（失败只记日志，不影响启动）
         registerMcpTools()
         refreshGrants()
@@ -1995,9 +1972,8 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         // Hotfix2：工具调用过程实时上屏（执行中卡 → 终态卡），
         // 修掉「AI 干完什么都在黑盒里、跑完才甩结果」的体验缺陷
         onEvent = ::handleAgentEvent,
-        // R5：回合结构化事件 → 日志。一条带回合号与耗时的完整时间线，
-        // 用户报「卡住了」时据此定位到最后一个 tool.start（没配对 end 的那条）。
-        observer = LoggingTurnObserver(),
+        // R5+P5-1：回合事件 → 文本行（给人看，定位未配对 end 的 tool.start）+ NDJSON 流水（给脚本算）
+        observer = TurnObservers.production(),
         // Phase 2 DoD②：T01 流式文本增量 → 打字机草稿气泡（重新生成的新变体流式填入）
         onTextDelta = ::handleTextDelta,
         // 功能五（P1-9）：推理过程增量 → handleReasoningDelta（与正文分流，UI 折叠块）

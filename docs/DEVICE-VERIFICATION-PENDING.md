@@ -116,6 +116,8 @@
 | O8 | 工具数组参数在三家都能用（R11） | 用 OpenAI / Claude / Gemini 各发一次「并行查三个文件」触发 `spawn_agents` | 模型应正确产出 `tasks` 数组。修前 schema 里 `items` 是空的，严格实现（Gemini）会拒掉整个工具声明，表现为「这个工具像不存在」 |
 | O11 | 升级后 MCP 工具默认不可见（P3-3） | 配一个 MCP 服务器 → 冷启动 → 看工具表；再问一句「用 mcp 工具查一下」 | 预期：默认不在工具表；模型应 `__use_tools("mcp")` 开组后可见。若模型反复报「没有这个工具」且从不试开组，说明组索引的措辞不够明确，需改 `noteOf("mcp")` |
 | O10 | 能力清单零偏差（P3-1） | 冷启动后 `adb logcat -s AgentKit` 过滤 `能力清单` | 应**一条都没有**。若出现「能力清单有 N 处不同步」，说明有工具没登记组（会落进 misc），把日志里的工具名补进 `CapabilityManifest` 对应组的 `tools` |
+| O12 | 遥测流水真的落了盘（P5-1） | 跑两个回合 → 设置页「导出诊断包」→ 看第二个文件 | 分享面板应出现 `agentkit-events-<stamp>.ndjson`，里面有 `turn.start` / `llm.end` / `tool.start` 成对行。**若只有 2 个文件（诊断 txt + turns.ndjson）**，说明 `TraceSink.init` 失败或队列没 flush——这是三项度量继续「未知」的原因 |
+| O13 | 度量三项符合目标（P5-1） | 把导出的 ndjson 拉回电脑，`python3 scripts/qa/trace-metrics.py <file>` | 期望：确定性错误白等 <1s、每回合会话写入 <1MB、重放 0 次。若白等仍有几十秒，看输出里「N 次还发生了重试」——那说明某类错误没被 `ErrorNormalizer` 判成确定性 |
 | O9 | 断电不丢会话（R12） | 非必做：写入过程中强杀进程（`am force-stop`）后重进 | 会话要么是完整的一条，要么回到上一版；**不能**是空文件或半截 JSON。空文件说明 fsync 没生效 |
 
 ---
@@ -135,6 +137,8 @@
 | 架构守卫（分层 / 行数 / 单点） | `run-arch-guard-verification.sh` | 5/0 |
 | 能力清单四条双向断言 | `run-capability-manifest-verification.sh` | 30/0 |
 | 生成运行态状态机（含取消/异常） | `run-generation-run-verification.sh` | 34/0 |
+| 遥测流水字段契约与落盘 | `run-trace-telemetry-verification.sh` | 30/0 |
+| 度量脚本自身的正确性 | `run-trace-metrics-verification.sh` | 14/0 |
 
 真机验的是**这些断言覆盖不到的那一层**：真实 proot 进程的生死、真实 Compose 生命周期、
 真实分享面板。断言通过不代表真机通过，反之亦然——两边都要，但不用重复。

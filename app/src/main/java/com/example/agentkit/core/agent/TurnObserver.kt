@@ -125,6 +125,15 @@ sealed interface TurnEvent {
         val tool: String,
         /** 参数摘要（截断），够认出是哪一次调用即可。 */
         val argsSummary: String,
+        /**
+         * 调用 id（P5-1）。与 `ToolCall.id`、工具消息的 id 同源。
+         *
+         * 加它之前，「同一步里并行两次 `read_file`」在时间线上是两个一模一样的
+         * `tool.start`，end 也只有两个一模一样的 `tool.end`——配对全靠猜，
+         * 而「哪一个卡住了」正是排障要回答的问题。默认空串：harness 里的
+         * 手写事件不需要关心它。
+         */
+        val callId: String = "",
         override val scope: String = com.example.agentkit.core.agent.journal.RunScope.MAIN,
     ) : TurnEvent
 
@@ -144,6 +153,8 @@ sealed interface TurnEvent {
         val code: String,
         val isError: Boolean,
         val durationMs: Long,
+        /** 调用 id，与 [ToolCallStarted.callId] 配对。见那里的说明。 */
+        val callId: String = "",
         override val scope: String = com.example.agentkit.core.agent.journal.RunScope.MAIN,
     ) : TurnEvent
 

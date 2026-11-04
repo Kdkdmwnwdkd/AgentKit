@@ -1,6 +1,7 @@
 package com.example.agentkit.core.agent.journal
 
 import com.example.agentkit.core.AgentLogger
+import com.example.agentkit.core.telemetry.StoreWriteTrace
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
@@ -93,6 +94,15 @@ class RunJournal(private val dir: File) {
                 val startSeq = (result.closers.first().seq - 1).coerceAtLeast(0L)
                 runCatching { Writer(f, turnId, startSeq).appendAll(result.closers) }
                     .onFailure { AgentLogger.w(TAG, "回合 $turnId 修复事件写回失败：${it.message}") }
+                // P5-1：度量表「崩溃后写操作重放次数」的唯一数据来源。
+                // 记的是**补回的事件数**与其中「可能已生效」的调用数——后者非零才说明
+                // 真的有一次副作用被这条纪律救回来了（或需要用户核对）。
+                StoreWriteTrace.repair(
+                    store = "journal",
+                    restored = result.closers.size,
+                    note = "turn=$turnId odd=${result.orphans.size} " +
+                        "mayEffect=${result.orphans.count { it.mayHaveTakenEffect }}"
+                )
                 result
             }
     }
