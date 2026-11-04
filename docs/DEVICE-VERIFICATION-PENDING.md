@@ -327,10 +327,11 @@ tool.start / tool.end / step.close / turn.end`。
 **验证机实测**（`active_groups=file`，`sys` 组不激活，mock LLM 调 `calculator`）：
 
 ```
-23:50:08.788 INFO [ToolExposure] 工具面裁剪：provider=openai mode=GROUPED 暴露 5 个（含 2 个元工具），裁掉 53 个；已启用组=file
-23:50:10.479 WARN  [Tool] 工具未启用：calculator（组 sys）——请先 __use_tools 启用该组
-23:50:10.596 INFO  [Turn] tool.end step=0 tool=calculator code=tool_not_enabled error=true dur=130ms
-23:50:11.784 INFO  [Turn] turn.end status=completed steps=2
+00:31:14.162 INFO [ToolExposure] 工具面裁剪：provider=openai mode=GROUPED 暴露 5 个（含 2 个元工具），裁掉 53 个；已启用组=file
+00:31:16.107 WARN  [AgentLoop] 本批含 1 个不在本回合工具视图的调用（分组未启用或名称写错）
+00:31:16.257 WARN  [Tool] 工具未启用：calculator（组 sys）——请先 __use_tools 启用该组
+00:31:16.417 INFO  [Turn] tool.end step=0 tool=calculator code=tool_not_enabled error=true dur=148ms
+00:31:17.748 INFO  [Turn] turn.end status=completed steps=2
 ```
 
 回执现在说清三件事：**存在但未启用**、**属于哪个组**、**怎么开**（`groups="sys"`）。
@@ -342,14 +343,14 @@ tool.start / tool.end / step.close / turn.end`。
 **验证机实测（x86 软件模拟，两次冷启动）**：
 
 ```
-23:45:07.699 INFO [Startup] ViewModel 初始化分段：skills=674ms, marketSources=13ms, registry=732ms,
-                 reconcile=79ms, workflows=150ms, refresh=729ms, total=2377ms
-23:47:04.759 INFO [Startup] ViewModel 初始化分段：skills=445ms, marketSources=9ms, registry=593ms,
-                 reconcile=137ms, workflows=105ms, refresh=834ms, total=2123ms
+00:28:35.337 INFO [Startup] ViewModel 初始化分段：skills=680ms, marketSources=13ms, registry=649ms,
+                 reconcile=48ms, workflows=162ms, refresh=739ms, total=2291ms
+00:29:28.526 INFO [Startup] ViewModel 初始化分段：skills=705ms, marketSources=22ms, registry=561ms,
+                 reconcile=80ms, workflows=137ms, refresh=696ms, total=2201ms
 ```
 
-「9 秒」这句话被数据取代了：这台无 KVM 的软件模拟器上总耗时 **2.1～2.4 秒**，
-重活集中在 `refresh`（729~834ms）、`registry`（593~732ms）、`skills`（445~674ms）。
+「9 秒」这句话被数据取代了：这台无 KVM 的软件模拟器上总耗时稳定在 **2.1～2.4 秒**，
+重活集中在 `refresh`（696~834ms）、`registry`（561~732ms）、`skills`（445~705ms）。
 **下一轮要动的对象就是这三个数**（本轮只埋点，不优化）。
 
 > arm64 真机首帧仍未测——但现在真机一装上，日志里就会直接给出这些数字。
@@ -361,9 +362,9 @@ tool.start / tool.end / step.close / turn.end`。
 **验证机实测（必须全新安装，`-r` 覆盖安装会保留 `cache/`，测不出东西）**：
 
 ```
-23:55:04.415 INFO [BrowserHost] 开始创建后台 WebView
-23:55:04.444 INFO [BrowserHost] 已预建 WebView 缓存目录：/data/user/0/com.example.agentkit/cache/WebView
-23:55:06.971 INFO [BrowserHost] 后台 WebView 已就绪（构造 2509ms，总计 2555ms）
+00:28:52.966 INFO [BrowserHost] 开始创建后台 WebView
+00:28:52.998 INFO [BrowserHost] 已预建 WebView 缓存目录：/data/user/0/com.example.agentkit/cache/WebView
+00:28:57.635 INFO [BrowserHost] 后台 WebView 已就绪（构造 4541ms，总计 4669ms）
 ```
 
 logcat 里 **0 条** crashpad 行、**0 条** chromium 的 E 级行。
@@ -387,7 +388,7 @@ logcat 里 **0 条** crashpad 行、**0 条** chromium 的 E 级行。
 | 文本断言 | 1373 → **1370**（新断言全改结构化比较，基线同步收紧） |
 | 大文件行数 | `ChatViewModel` 3890 / `RealAgentLoop` 1557，**均未超冻结上限** |
 | 反向变异 | 「回退注入点 → 必红 → 恢复 → 重新变绿」6/6 通过 |
-| 三项度量 | 白等 0 次 / 写入 3.5KB / 重放 0 次 |
+| 三项度量 | 白等 0 次 / 每回合写入 6.3KB / 重放 0 次（`trace-metrics.py` 退出码 0） |
 
 
 ### 补掉 3：全量 harness 两处「第一次真跑」暴露的陈旧断言
