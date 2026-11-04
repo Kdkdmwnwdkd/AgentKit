@@ -67,13 +67,20 @@ internal object LocalToolCallParser {
     private val NAME_KEYS = listOf("tool", "name", "tool_name", "toolName", "function")
     private val ARG_KEYS = listOf("arguments", "args", "parameters", "params", "input")
 
-    /** 模型常把工具叫成 shell 命令或英文口语；能对上的直接换成本项目真名。 */
+    /**
+     * 模型常把工具叫成 shell 命令或英文口语；能对上的直接换成本项目真名。
+     *
+     * **键必须是 `CapabilityManifest` 里真实存在的工具名**。这里曾有 `list_dir` /
+     * `search_files`（把 `ls` / `grep` / `find` 往那两个名字上归一）——可那两个工具
+     * 从来没实现过。它不会误命中（[nameOf] 只在 available 里找），但会让人误判
+     * 「模型说 ls 我们能接住」，实际是继续落到「工具名不在可用列表」。
+     * 现在 `ls` / `grep` 这类不再映射：模型要列目录就走 `shell_run`，
+     * 那条路参数形态不同，不该由归一化硬塞。
+     */
     private val ALIASES: Map<String, List<String>> = mapOf(
         "read_file" to listOf("read", "cat", "open", "view", "readfile", "getfile"),
         "write_file" to listOf("write", "save", "create", "writefile", "newfile"),
         "edit_file" to listOf("edit", "patch", "replace", "modify", "editfile"),
-        "list_dir" to listOf("ls", "dir", "listdir", "list", "folder"),
-        "search_files" to listOf("grep", "find", "search", "glob", "searchfiles"),
         "http_request" to listOf("http", "fetch", "curl", "request", "webrequest", "get"),
         "ui_tree" to listOf("uitree", "dumpui", "screen", "uiscan", "readscreen"),
         "ui_tap" to listOf("tap", "click", "uitap", "touch", "press"),
