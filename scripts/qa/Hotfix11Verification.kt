@@ -570,16 +570,20 @@ private fun testTokenUsage() {
         assertContains("P11", vm, "append(msg, if (msg === lastAnswer) turnUsage else null)")
     }
     check("P12 VM：regenerate 新变体带用量 + append 支持 usage 参数") {
+        // P4-2 起投影搬进 ConversationProjection：VM 只留 `append(msg, usage)` 这层转发，
+        // 「usage 怎么进气泡」的实现在投影里——断言跟着所有权走，不再锚在宿主文件上。
+        val proj = readSource("ui/ConversationProjection.kt")
         assertContains("P12", vm, "private fun append(msg: ChatMessage, usage: TokenUsage? = null)")
-        // hotfix26 起 append 透传 reasoning（P1-9）
-        // append 的助手分支改为多行命名参数（timeMs 加入后），断言改用稳定片段
-        assertContains("P12", vm, "is AssistantMessage -> UiItem.Assistant(")
-        assertContains("P12", vm, "usage = usage,")
+        assertContains("P12", proj, "fun appendMessage(msg: ChatMessage, usage: TokenUsage? = null)")
+        // hotfix26 起 append 透传 reasoning（P1-9）；助手分支是命名参数（timeMs 加入后），用稳定片段
+        assertContains("P12", proj, "is AssistantMessage -> UiItem.Assistant(")
+        assertContains("P12", proj, "usage = usage,")
         val regen = vm.substringAfter("fun regenerate()")
         assertContains("P12", regen, "usage = TokenUsage.sum(")
     }
     check("P13 VM：会话累计用量派生流（切会话随 _messages 重载自动切换）") {
-        assertContains("P13", vm, "val sessionUsage: StateFlow<TokenUsage> = _messages")
+        // 消息流改由 ConversationProjection 持有，VM 这里读的是同名只读视图
+        assertContains("P13", vm, "val sessionUsage: StateFlow<TokenUsage> = messages")
         assertContains("P13", vm, "TokenUsage.sum(items.filterIsInstance<UiItem.Assistant>().mapNotNull { it.usage })")
         assertContains("P13", vm, ".stateIn(viewModelScope, SharingStarted.Eagerly, TokenUsage.EMPTY)")
     }
@@ -707,19 +711,26 @@ private fun testBackupRestore() {
         assertContains("R5", cfgStore, "saveGithubConfig(")
     }
     check("R6 VM 导出入口：快照 → BackupArchive.create → SAF OutputStream，IO 全离主线程") {
-        assertContains("R6", vm, "fun exportBackupTo(uri: Uri)")
-        assertContains("R6", vm, "conversationStore.snapshot()")
-        assertContains("R6", vm, "memoryStore.snapshot()")
-        assertContains("R6", vm, "BackupArchive.create(")
-        assertContains("R6", vm, "app.contentResolver.openOutputStream(uri)")
-        assertContains("R6", vm, "viewModelScope.launch(Dispatchers.IO)")
+        // P4-3：备份流程整体搬进 BackupUseCase，VM 只保留同名入口转发。
+        // 断言仍要求「入口在 VM、实现在用例」，两边都锚住——只锚一边的话，
+        // 谁把流程又抄回 VM 都不会被发现。
+        val backup = readSource("ui/BackupUseCase.kt")
+        assertContains("R6", vm, "fun exportBackupTo(uri: Uri) = backup.exportTo(uri)")
+        assertContains("R6", backup, "fun exportTo(uri: Uri)")
+        assertContains("R6", backup, "conversations.snapshot()")
+        assertContains("R6", backup, "memories.snapshot()")
+        assertContains("R6", backup, "BackupArchive.create(")
+        assertContains("R6", backup, "app.contentResolver.openOutputStream(uri)")
+        assertContains("R6", backup, "scope.launch(Dispatchers.IO)")
     }
     check("R7 VM 恢复入口：信封校验先行（坏包不碰生产数据）→ 重灌 → UI 状态全量重载") {
-        assertContains("R7", vm, "fun restoreBackupFrom(uri: Uri)")
-        assertContains("R7", vm, "BackupArchive.read(bytes)")
-        assertContains("R7", vm, "conversationStore.replaceAll(conversations)")
-        assertContains("R7", vm, "memoryStore.restoreAll(memories)")
-        assertContains("R7", vm, "configStore.restoreFrom(it)")
+        val backup = readSource("ui/BackupUseCase.kt")
+        assertContains("R7", vm, "fun restoreBackupFrom(uri: Uri) = backup.restoreFrom(uri)")
+        assertContains("R7", backup, "BackupArchive.read(bytes)")
+        assertContains("R7", backup, "conversations.replaceAll(convs)")
+        assertContains("R7", backup, "memories.restoreAll(mems)")
+        assertContains("R7", backup, "config.restoreFrom(it)")
+        // UI 重载留在宿主（它是 ViewModel 的职责），但必须由用例回调触发
         assertContains("R7", vm, "loadConversation(conversationStore.ensureNotEmpty())")
         assertContains("R7", vm, "fun consumeBackupState()")
     }
@@ -863,8 +874,9 @@ private fun testConversationDrafts() {
         assertContains("T4", delBlock, "draftStore.remove(id)")
     }
     check("T5 备份恢复清草稿（旧 id 与新数据对不上，防陌生草稿错配复活）") {
-        val restoreBlock = vm.substringAfter("fun restoreBackupFrom(uri: Uri)").substringBefore("sealed interface BackupUiState")
-        assertContains("T5", restoreBlock, "draftStore.clear()")
+        // P4-3：恢复流程在 BackupUseCase，草稿清理必须与重灌同处一个事务里
+        val restoreBlock = readSource("ui/BackupUseCase.kt").substringAfter("fun restoreFrom(uri: Uri)")
+        assertContains("T5", restoreBlock, "drafts.clear()")
         assertContains("T5", restoreBlock, "草稿不随备份走")
     }
     check("T6 草稿不泄密进备份件（备份只含 conversations/memories/config 三成员 + manifest）") {
@@ -950,17 +962,23 @@ private fun testReasoningFold() {
         assertContains("U8", store, "reasoning = sel.reasoning.takeIf { it.isNotBlank() }")
     }
     check("U9 VM：reasoningDraft 状态 + handleReasoningDelta 共享 streamDraftLock") {
-        assertContains("U9", vm, "private fun handleReasoningDelta(delta: String) = synchronized(streamDraftLock) {")
+        // P4-4：草稿锁随状态搬进 GenerationRunController；两条增量必须落在**同一把**锁上，
+        // 否则「思考」与「正文」的相对时序会乱。
+        val gen = readSource("ui/GenerationRunController.kt")
+        assertContains("U9", vm, "private fun handleReasoningDelta(delta: String) {")
+        assertContains("U9", vm, "generation.appendReasoning(delta)")
         assertContains("U9", vm, "onReasoningDelta = ::handleReasoningDelta,")
-        assertContains("U9", vm, "private val _reasoningDraft = MutableStateFlow<String?>(null)")
-        assertContains("U9", vm, "val reasoningDraft: StateFlow<String?> = _reasoningDraft.asStateFlow()")
+        assertContains("U9", gen, "fun appendText(delta: String) = synchronized(draftLock) {")
+        assertContains("U9", gen, "fun appendReasoning(delta: String) = synchronized(draftLock) {")
+        assertContains("U9", gen, "private val _reasoning = MutableStateFlow<String?>(null)")
+        assertContains("U9", vm, "val reasoningDraft: StateFlow<String?> = generation.reasoning")
         // append 落库路径透传 reasoning（send/regenerate 的历史消息也能折叠展示）
         // 同上：多行构造后按片段断言（reasoning 仍在、usage 仍在）
-        assertContains("U9", vm, "reasoning = msg.reasoning")
+        assertContains("U9", readSource("ui/ConversationProjection.kt"), "reasoning = msg.reasoning")
         // 流结束/失败等复位点清 reasoning 草稿（hotfix30 起：清的是 reasoningBuffer，
         // 显示态经 syncDraftDisplay 投影，不能留着上一条的思考）
-        assertTrue("U9", vm.split("reasoningBuffer = null").size - 1 >= 4)
-        assertContains("U9", vm, "_reasoningDraft.value = if (isOwnerActive()) reasoningBuffer else null")
+        assertTrue("U9", gen.split("reasoningBuffer = null").size - 1 >= 3)
+        assertContains("U9", gen, "_reasoning.value = if (isOwnerActive()) reasoningBuffer else null")
     }
     check("U10 UI：ReasoningBlock 流式展开/完成折叠，null 不渲染") {
         assertContains("U10", screen, "reasoning: String? = null")
@@ -1110,19 +1128,21 @@ private fun testPromptBackup() {
         assertContains("W3", promptStore, "与 [MemoryStore.restoreAll] 同纪律")
     }
     check("W4 VM 导出：prompts 快照进 manifest 与 zip") {
-        val export = vm.substringAfter("fun exportBackupTo(uri: Uri)")
-        assertContains("W4", export, "val prompts = promptStore.list()")
-        assertContains("W4", export, "promptCount = prompts.size,")
+        val export = readSource("ui/BackupUseCase.kt").substringAfter("fun exportTo(uri: Uri)")
+        assertContains("W4", export, "val promptItems = prompts.list()")
+        assertContains("W4", export, "promptCount = promptItems.size,")
         assertContains("W4", export, "hasPrompts = true")
-        assertContains("W4", export, "backupJson.encodeToString(prompts)")
+        assertContains("W4", export, "json.encodeToString(promptItems)")
         assertContains("W4", export, "条提示词")
     }
     check("W5 VM 恢复：老包跳过、新包重灌 + UI 刷新 + 提示文案") {
-        val restore = vm.substringAfter("fun restoreBackupFrom(uri: Uri)")
+        val restore = readSource("ui/BackupUseCase.kt").substringAfter("fun restoreFrom(uri: Uri)")
         assertContains("W5", restore, "read.promptsJson?.let { promptText ->")
-        assertContains("W5", restore, "backupJson.decodeFromString<List<PromptItem>>(promptText)")
-        assertContains("W5", restore, "promptStore.restoreAll(it)")
-        assertContains("W5", restore, "_prompts.value = promptStore.list()")
+        assertContains("W5", restore, "json.decodeFromString<List<PromptItem>>(promptText)")
+        assertContains("W5", restore, "prompts.restoreAll(it)")
+        // UI 刷新在宿主回调里：onRestored(prompts.list()) → VM 设 _prompts.value
+        assertContains("W5", restore, "onRestored(prompts.list())")
+        assertContains("W5", vm, "_prompts.value = items")
         assertContains("W5", restore, "if (read.manifest.hasPrompts) \"、\${read.manifest.promptCount} 条提示词\" else \"\"")
     }
 }
@@ -1201,41 +1221,49 @@ private fun testConversationSwitchWhileRunning() {
     val chat = readSource("ui/ChatScreen.kt")
 
     check("Y1 VM：owner 捕获机制（runOwnerConvId + 草稿缓冲 + 投影开关 + 生成中标识流）") {
-        assertContains("Y1", vm, "private var runOwnerConvId: String? = null")
-        assertContains("Y1", vm, "private var draftBuffer: String? = null")
-        assertContains("Y1", vm, "private var reasoningBuffer: String? = null")
-        assertContains("Y1", vm, "private fun isOwnerActive(): Boolean =")
-        assertContains("Y1", vm, "private fun syncDraftDisplay() {")
-        assertContains("Y1", vm, "val generatingConvId: StateFlow<String?> = _generatingConvId.asStateFlow()")
+        // P4-4：运行态整体搬进 GenerationRunController，VM 只剩两个转发与四个流
+        val gen = readSource("ui/GenerationRunController.kt")
+        assertContains("Y1", gen, "var owner: String? = null")
+        assertContains("Y1", gen, "private var draftBuffer: String? = null")
+        assertContains("Y1", gen, "private var reasoningBuffer: String? = null")
+        assertContains("Y1", gen, "fun isOwnerActive(): Boolean")
+        assertContains("Y1", vm, "private fun isOwnerActive(): Boolean = generation.isOwnerActive()")
+        assertContains("Y1", vm, "private fun syncDraftDisplay() = generation.syncDisplay()")
+        assertContains("Y1", vm, "val generatingConvId: StateFlow<String?> = generation.generating")
     }
     check("Y2 send/regenerate：启动捕获 owner + finally 全套收尾（W-54 起由 TurnRunner 唯一实现）") {
         // W-54：这两段原各写一份，靠 6 条「与 send 同策略」注释同步；现合并为 TurnRunner。
         // 断言随之改为「两处都调用」+「TurnRunner 内确有全套复位」——
         // 比原来的「同一字符串出现 ≥2 次」更贴意图：一处定义、两处调用。
         // 若将来有人把 begin/finish 拆回两份，这两组断言会同时失效。
-        assertContains("Y2 send.begin", vm, "turnRunner.begin(owner, placeholderDraft = false)")
-        assertContains("Y2 regen.begin", vm, "turnRunner.begin(owner, placeholderDraft = true)")
-        assertContains("Y2 send.finish", vm, "turnRunner.finish(rebuildMessages = true)")
-        assertContains("Y2 regen.finish", vm, "turnRunner.finish(rebuildMessages = false)")
-        // TurnRunner 内部：owner 捕获 + 全套复位（各一处，因为只有一份实现）
-        assertContains("Y2 begin 捕获 owner", vm, "runOwnerConvId = owner")
-        assertContains("Y2 finish 清 owner", vm, "runOwnerConvId = null")
-        assertContains("Y2 finish 清 generating", vm, "_generatingConvId.value = null")
-        assertContains("Y2 finish 清草稿", vm, "draftBuffer = null")
+        // P4-4：开场/收尾合并成一次 start(...)，调用方只给 body 与三个开关。
+        // 断言两头都锚：调用点必须传对参数，控制器内部必须确有全套复位。
+        val gen = readSource("ui/GenerationRunController.kt")
+        assertContains("Y2 send.begin", vm, "generation.start(owner, placeholderDraft = false, rebuildMessages = true)")
+        assertContains("Y2 regen.begin", vm, "generation.start(owner, placeholderDraft = true, rebuildMessages = false)")
+        assertContains("Y2 begin 捕获 owner", gen, "this.owner = owner")
+        assertContains("Y2 finish 清 owner", gen, "owner = null")
+        assertContains("Y2 finish 清 generating", gen, "_generating.value = null")
+        assertContains("Y2 finish 清草稿", gen, "draftBuffer = null")
         assertContains("Y2 finish 清 retry", vm, "_retryState.value = null")
-        // 草稿投影调用点：begin / finish / 两处「收草稿」/ switchConversation
-        assertTrue("Y2 syncDraftDisplay", vm.split("syncDraftDisplay()").size - 1 >= 5)
+        // 收尾只有一处出口：控制器的 finally → onFinished
+        assertContains("Y2 单一出口", gen, "onFinished(rebuildMessages)")
+        // 收尾入口唯一：旧的两份 finally 模板（turnRunner.finish + 各自 persistToolGroups）已删
+        assertTrue("Y2 旧收尾模板已删", !vm.contains("turnRunner."))
     }
     check("Y3 在途写按 owner：appendToStore/appendVariant/流式草稿三通道") {
-        val appendStore = vm.substringAfter("private fun appendToStore(item: UiItem)")
-        assertContains("Y3", appendStore, "val convId = runOwnerConvId ?: _activeConversationId.value")
+        // P4-2：落库目标由投影统一算（owner ?: active），三条通道共用同一个入口
+        val proj = readSource("ui/ConversationProjection.kt")
+        val appendStore = proj.substringAfter("fun appendToStore(item: UiItem)")
+        assertContains("Y3", appendStore, "store.appendMessage(ownerId() ?: activeId(), item.toMsgRecord())")
         // regenerate 成功/失败两条 appendVariant 都按 owner（切走期间结果仍写回原会话）
         assertTrue("Y3", vm.split("appendVariant(\n").size >= 2)
         assertTrue("Y3", vm.contains("owner, turnIndex, variant.toMsgRecord()"))
         assertTrue("Y3", vm.contains("owner, turnIndex, err.toMsgRecord()"))
         // 流式增量先攒缓冲再条件投影（切走续攒、切回恢复）
-        assertContains("Y3", vm, "draftBuffer = (draftBuffer ?: \"\") + delta")
-        assertContains("Y3", vm, "reasoningBuffer = (reasoningBuffer ?: \"\") + delta")
+        val gen = readSource("ui/GenerationRunController.kt")
+        assertContains("Y3", gen, "draftBuffer = (draftBuffer ?: \"\") + delta")
+        assertContains("Y3", gen, "reasoningBuffer = (reasoningBuffer ?: \"\") + delta")
     }
     check("Y4 显示态守卫：_messages 追加全部带 isOwnerActive()（后台只落盘不上屏）") {
         // W-47 起追加统一走 appendUiItem()（读改写进 msgLock），守卫改在调用处：
@@ -1252,7 +1280,7 @@ private fun testConversationSwitchWhileRunning() {
     }
     check("Y6 deleteConversation：在途会话（含非 active 的后台生成会话）禁删防复活") {
         val del = vm.substringAfter("fun deleteConversation(id: String)")
-        assertContains("Y6", del, "if (id == runOwnerConvId) return")
+        assertContains("Y6", del, "if (id == generation.owner) return")
     }
     check("Y7 UI：抽屉生成中标识 + 删除在途 Toast + 空闲会话输入说明行") {
         assertContains("Y7", scaffold, "generatingConvId: String? = null")

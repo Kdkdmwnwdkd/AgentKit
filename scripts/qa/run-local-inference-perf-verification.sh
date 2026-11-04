@@ -21,6 +21,8 @@ LOADER="$ROOT/app/src/main/java/com/example/agentkit/core/llm/local/LlamaJni.kt"
 CLIENT="$ROOT/app/src/main/java/com/example/agentkit/core/llm/local/LocalLlamaClient.kt"
 LOOP="$ROOT/app/src/main/java/com/example/agentkit/core/agent/RealAgentLoop.kt"
 VM="$ROOT/app/src/main/java/com/example/agentkit/ui/ChatViewModel.kt"
+# P4-1：本地模型参数（含线程数变更 → 作废绑核结论）已搬到 ModelSettings。
+SETTINGS="$ROOT/app/src/main/java/com/example/agentkit/ui/ModelSettings.kt"
 SETTING="$ROOT/app/src/main/java/com/example/agentkit/core/llm/local/LocalLlamaSetting.kt"
 ABOUT="$ROOT/app/src/main/java/com/example/agentkit/ui/AboutScreen.kt"
 
@@ -265,7 +267,7 @@ expect "重建时沿用结论" "$JNI" '绑核沿用上次结论'
 # 安全模式那档的判据是「内存贴顶」，不该再加 2 秒投票。
 expect "安全模式跳过投票" "$JNI" '!g_affinity\.decided && !g_safeMode\.load\(\)'
 # 用户手动改线程数后必须作废结论：进程级沿用是给「自愈重建」用的，不是给「改了设置」用的。
-expect "改线程数作废绑核结论" "$VM" 'LlamaJni\.nativeResetAffinity\(\)'
+expect "改线程数作废绑核结论" "$SETTINGS" 'LlamaJni\.nativeResetAffinity\(\)' 
 expect "native 侧有作废入口" "$JNI" 'nativeResetAffinity'
 
 # ---- W-97：投票口径 ----

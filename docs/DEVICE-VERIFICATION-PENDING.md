@@ -114,6 +114,7 @@
 | O6 | 第三层归一化有没有乱判（R10） | 任何失败后看日志 | `provider.misclassified` 若频繁出现且 evidence 不相干，说明关键词表需要收窄——这是唯一能发现误判的入口 |
 | O7 | 长对话不再越聊越卡（R13） | 一次连续对话拉到 100+ 条消息，全程流式输出 | 滚动与输入应保持跟手。会话写入已改成 400ms 去抖（`ConversationStore.persistCount` 可查写盘次数）：100 条消息的写入次数应在个位数，而不是 100 次 |
 | O8 | 工具数组参数在三家都能用（R11） | 用 OpenAI / Claude / Gemini 各发一次「并行查三个文件」触发 `spawn_agents` | 模型应正确产出 `tasks` 数组。修前 schema 里 `items` 是空的，严格实现（Gemini）会拒掉整个工具声明，表现为「这个工具像不存在」 |
+| O10 | 能力清单零偏差（P3-1） | 冷启动后 `adb logcat -s AgentKit` 过滤 `能力清单` | 应**一条都没有**。若出现「能力清单有 N 处不同步」，说明有工具没登记组（会落进 misc），把日志里的工具名补进 `CapabilityManifest` 对应组的 `tools` |
 | O9 | 断电不丢会话（R12） | 非必做：写入过程中强杀进程（`am force-stop`）后重进 | 会话要么是完整的一条，要么回到上一版；**不能**是空文件或半截 JSON。空文件说明 fsync 没生效 |
 
 ---
@@ -131,6 +132,8 @@
 | 原子写（真文件 / 真并发） | `run-r12-verification.sh` | 13/0 |
 | 会话落盘去抖 | `run-r13-verification.sh` | 8/0 |
 | 架构守卫（分层 / 行数 / 单点） | `run-arch-guard-verification.sh` | 5/0 |
+| 能力清单四条双向断言 | `run-capability-manifest-verification.sh` | 30/0 |
+| 生成运行态状态机（含取消/异常） | `run-generation-run-verification.sh` | 34/0 |
 
 真机验的是**这些断言覆盖不到的那一层**：真实 proot 进程的生死、真实 Compose 生命周期、
 真实分享面板。断言通过不代表真机通过，反之亦然——两边都要，但不用重复。

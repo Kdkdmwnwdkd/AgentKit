@@ -1,0 +1,47 @@
+# P4 结构拆分 · 所有权地图
+
+> 这份笔记回答一个问题：**某个改动该落在哪个文件？**
+> 拆分的目的是让答案唯一，而不是把行数摊平。
+
+## 拆分前后
+
+| | 拆前 | 拆后 |
+|---|---|---|
+| `ChatViewModel.kt` | 4363 行，混着生成控制 / 消息投影 / 本地模型 / 备份 | 3914 行（守卫上限同步从 4363 降到 3914） |
+| 新增 | — | `ModelSettings` 260 / `ConversationProjection` 130 / `BackupUseCase` 195 / `GenerationRunController` 160 |
+
+## 谁拥有什么
+
+| 问题 | 归谁 | 判据 |
+|---|---|---|
+| 谁在跑？跑到哪了？草稿攒了多少？ | `GenerationRunController` | 所有与「一轮」有关的状态。VM 只读它的流，写只经 `start()` |
+| 这条消息上不上屏？写进哪个会话？ | `ConversationProjection` | 显示态与持久态必须同源；落库目标 = owner ?: active |
+| 本地模型参数 / 文件 / 下载 / GPU 结论 | `ModelSettings` | 只与 `LocalLlamaSetting` + `GgufModelStore` 打交道，唯一外部动作是「切到本地供应商」 |
+| 备份包怎么组装、恢复后谁来刷新 UI | `BackupUseCase` | 六个 store 的快照 ↔ SAF 文件；UI 重载通过 `onRestored` 回调回宿主 |
+| 工具属于哪个能力组、暴露面怎么裁 | `CapabilityManifest` + `KernelExposure` | 分组与成员在清单；裁剪算法仍在 KernelExposure（它只读清单） |
+
+## 三条不变量（改动时别破坏）
+
+1. **`generation.start()` 是唯一开场点**：`owner` / `generating` / 草稿 / `isRunning` 的置位与复位
+   只在这里发生。别在别处写 `isRunning.value = ...`——那正是旧代码两套模板分叉的起点。
+2. **`ConversationProjection.appendItem()` 是唯一追加点**，且读改写在宿主共享的 `msgLock` 内。
+   工具事件最多 5 路并行，无锁拼接会静默丢卡。
+3. **清单是真源**：加工具必须改 `CapabilityManifest.capabilities` 的某个组。
+   `audit()` 的四条断言会在启动日志与 harness 里同时报警——这是唯一能发现「表与代码不同步」的地方。
+
+## 为什么推翻了原来的「不拆」结论
+
+`TurnRunner` 的旧注释写着：这些字段都是 ViewModel 的私有可变状态，独立类要么暴露 8 个 setter，
+要么搬出去再引一堆回调。
+
+那句话在**状态与编排混在一起**时成立。一旦把状态本身搬走，前提就不存在了：
+状态有了唯一所有者，setter 一个都不用暴露，只剩一个「收尾时宿主该做什么」的回调。
+结论没变的是「不要为了拆而拆」——所以 `send()` 的编排（拼上下文、落盘、出气泡）**留在 VM**，
+搬走的只有状态机。
+
+## 没搬的东西（有意为之）
+
+- `draftStore` / `promptStore`：被 harness 断言锁在 ViewModel 内（架构方案 v1 的红线）。
+- `send()` 的编排体：它读 `input` / 附件 / 设备上下文 / 工作区规则，搬走要暴露十几个成员，
+  换来的只是文件更短。
+- `KernelExposure` 的裁剪算法：它已经在读清单，再合并等于把两个职责塞进一个 object。

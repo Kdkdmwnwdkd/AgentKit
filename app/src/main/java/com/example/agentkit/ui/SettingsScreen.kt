@@ -124,11 +124,11 @@ fun SettingsScreen(
     val ctx = LocalContext.current
     LaunchedEffect(backupState) {
         when (val s = backupState) {
-            is ChatViewModel.BackupUiState.Done -> {
+            is BackupUiState.Done -> {
                 Toast.makeText(ctx, s.message, Toast.LENGTH_SHORT).show()
                 vm.consumeBackupState()
             }
-            is ChatViewModel.BackupUiState.Failed -> {
+            is BackupUiState.Failed -> {
                 Toast.makeText(ctx, s.reason, Toast.LENGTH_LONG).show()
                 vm.consumeBackupState()
             }
