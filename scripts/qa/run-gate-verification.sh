@@ -173,6 +173,32 @@ else bad "输出说明 PASS 低于基线" "$(printf '%s' "$OUT10" | tail -3)"; f
 if printf '%s' "$OUT10" | grep -q "GATE OK 4/5"; then ok "门禁 4 仍放行（红的是门禁 5）"
 else bad "门禁 4 仍放行（红的是门禁 5）" "$(printf '%s' "$OUT10" | grep 'GATE' | head -5)"; fi
 
+# ---------------------------------------------------------------- 场景 11
+# 产物陈旧：PASS 数够、FAIL=0，但结论不可信 —— 依赖 classpath 的 harness 读的是旧字节码，
+# 报错会指向早已改过的源码行。这类轮次看起来是绿的，实际什么都没验证对。
+echo "== 场景 11：日志带 ENV STALE（产物陈旧）→ 应失败 =="
+R=$(mk_repo stale "\
+# 空清单
+")
+LOG11="$WORK/qa11.log"
+{
+  for s in $(ls "$ROOT"/scripts/qa/run-*.sh | grep -v 'run-all\.sh$'); do
+    echo "PASS  ${s#"$ROOT"/}"
+  done
+  echo "==== 汇总：PASS=$(ls "$ROOT"/scripts/qa/run-*.sh | grep -vc 'run-all\.sh$') SKIP=0 XFAIL=0 FAIL=0"
+  echo "ENV STALE classes 比源码旧（app/src/main/java/.../Foo.kt）"
+} > "$LOG11"
+set +e
+OUT11=$(cd "$R" && bash scripts/qa/gate.sh "$LOG11" 2>&1)
+RC11=$?
+set -e
+if [ "$RC11" -ne 0 ]; then ok "退出码非 0"; else bad "退出码非 0" "实际 0"; fi
+if printf '%s' "$OUT11" | grep -q "产物比源码旧"; then ok "输出说明产物陈旧"
+else bad "输出说明产物陈旧" "$(printf '%s' "$OUT11" | grep 'GATE' | head -3)"; fi
+# 红必须来自产物陈旧，不是别的门禁顺带触发（否则断言指向了别的原因）
+if printf '%s' "$OUT11" | grep -q "GATE OK 5/5"; then ok "门禁 5 仍放行（红的是产物陈旧）"
+else bad "门禁 5 仍放行（红的是产物陈旧）" "$(printf '%s' "$OUT11" | grep 'GATE' | head -5)"; fi
+
 echo
 echo "=== 汇总: $pass passed, $fail failed ==="
 [ "$fail" -eq 0 ] || exit 1

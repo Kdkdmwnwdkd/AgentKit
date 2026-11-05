@@ -66,6 +66,12 @@ else
       fail "无法从汇总行解析 FAIL 数：$summary"
     elif [ "$f" -ne 0 ]; then
       fail "QA 汇总 FAIL=$f（必须为 0）"
+    elif grep -qE '^ENV STALE' "$LOG"; then
+      # 产物陈旧不改变 PASS/FAIL 计数，但它让「PASS」的含义变味：
+      # 依赖 classpath 的 harness 读的是旧字节码，报错会指向早已改过的源码行。
+      # 这种轮次不能算绿——结论不可信比结论为红更糟，因为它看起来是好的。
+      fail "编译产物比源码旧（run-all 打了 ENV STALE）：$(grep -E '^ENV STALE' "$LOG" | head -1)"
+      say "  先 ./gradlew :app:compileDebugKotlin 再跑，否则「找不到符号」全是假象。"
     else
       say "GATE OK 2/5：FAIL=0（PASS=${p:-?} XFAIL=${x:-?}）"
     fi
