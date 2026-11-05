@@ -77,5 +77,17 @@ sealed interface AgentEvent {
      * T05 不变量：用户点停止后不得残留「正在恢复」（取消不是失败，但重试状态必须清）。
      */
     data object RetryFinished : AgentEvent
+
+    /**
+     * 本轮回答因**输出长度上限**被截断（厂商明确报告 `finish_reason=length`）。
+     *
+     * 为什么要上报而不只是打日志：截断后的回答是「说到一半就停」，但界面上看起来
+     * 与「模型自己说完了」完全一样——用户会以为是模型敷衍，而不是撞到了上限。
+     * 每回合最多上报一次（多步循环里同一原因会重复出现，刷屏反而让人忽略）。
+     *
+     * `reason` 保留厂商原值（已归一化为 [com.example.agentkit.core.llm.FinishReason.LENGTH]），
+     * 供日志与后续「自动续写」判断使用；`null` 表示字段缺失，此时不会上报本事件。
+     */
+    data class OutputTruncated(val reason: String?) : AgentEvent
 }
 

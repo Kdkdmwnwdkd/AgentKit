@@ -141,18 +141,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 
 /**
- * 对话页（视觉规范 §6.2 气泡 / §6.3 工具卡 / §6.4 审批 / §6.9 空态 / §6.10 输入栏）。
- *
- * 一级页面：顶栏走 [PageTopBar]（标题 = 当前会话名 + 右上「新对话」），抽屉开关由宿主注入。
- * 消息列与输入栏贴底排布；审批弹窗是对话流中的模态事件（UX v1 D4：审批不是导航项）。
- *
- * 功能三（聊天记录，录屏反馈「人家都有聊天记录对话记录，你这都没有」）：顶栏标题实时反映
- * 当前会话名（首条消息自动命名 / 抽屉长按可重命名），右上「＋」新建会话并切过去。
- *
- * @param onOpenModel 空态「去配置模型」→ 模型页。
- * @param onOpenGuide 首启引导里的「去开启」→ 权限引导页（P0，2026-10-21）。
- */
-/**
  * W-30：消息操作弹窗的目标。
  *
  * 为什么不用 Triple：四个字段（正文/轮次/角色/时间）+ 消息下标，位置参数读到第三项就开始猜了。
@@ -166,6 +154,16 @@ private data class MenuTarget(
     val index: Int
 )
 
+/**
+ * 对话页（视觉规范 §6.2 气泡 / §6.3 工具卡 / §6.4 审批 / §6.9 空态 / §6.10 输入栏）。
+ *
+ * 一级页面：顶栏走 [PageTopBar]（标题 = 当前会话名 + 右上「新对话」），抽屉开关由宿主注入。
+ * 消息列与输入栏贴底排布；审批弹窗是对话流中的模态事件（UX v1 D4：审批不是导航项）。
+ * 功能三：顶栏标题实时反映当前会话名（首条消息自动命名 / 抽屉长按可重命名），「＋」新建。
+ *
+ * @param onOpenModel 空态「去配置模型」→ 模型页。
+ * @param onOpenGuide 首启引导里的「去开启」→ 权限引导页（P0，2026-10-21）。
+ */
 @Composable
 fun ChatScreen(
     vm: ChatViewModel,
@@ -179,6 +177,7 @@ fun ChatScreen(
     // 功能五（P1-9）：流式推理过程草稿（与 streamDraft 同生命周期的「正在思考」内容）
     val reasoningDraft by vm.reasoningDraft.collectAsStateWithLifecycle()
     val retryState by vm.retryState.collectAsStateWithLifecycle()
+    val truncationNotice by vm.truncationNotice.collectAsStateWithLifecycle()
     val conversations by vm.conversations.collectAsStateWithLifecycle()
     val activeConversationId by vm.activeConversationId.collectAsStateWithLifecycle()
     // hotfix30：正在生成的会话 id——非本会话在生成时输入区给说明行
@@ -635,6 +634,8 @@ fun ChatScreen(
         // Phase 2 DoD③：断网/失败自动恢复横幅——重试中显示「正在恢复（n/N）· 原因」，
         // 恢复成功 / 最终失败 / 取消时置 null 即消失（最终失败仍走既有错误气泡，不重复提示）
         retryState?.let { RetryBanner(it) }
+        // 输出被长度上限截断：不提示的话「说到一半」与「说完了」在界面上完全一样。
+        truncationNotice?.let { InterruptedBanner(it) { vm.dismissTruncationNotice() } }
         // B 批：上次 Agent 长任务被系统中断时的恢复提示。
         // 用户切后台/被回收后回来，能看到「上次做到哪、可以直接说继续」，而不是一片空白。
         vm.interruptedNotice.collectAsStateWithLifecycle().value?.let { notice ->
@@ -2954,24 +2955,8 @@ private fun ApprovalDialog(request: ApprovalRequest, visible: Boolean, vm: ChatV
 }
 
 /**
- * ask_user 的选择卡片（W-14）。
- *
- * 为什么不用弹窗：弹窗会遮挡上下文，用户往往需要回看上文才能选；
- * 贴在输入框上方既醒目又不打断阅读，选完即消失（pending 归 null）。
- */
-/**
- * W-25：计划审批卡片。贴在输入框上方，不遮挡上下文；批准即开始执行，拒绝可附一句修改意见。
- *
- * 交互取舍：
- *  - 「批准执行」是主按钮（实心），「不要执行」是次按钮（描边）——避免误触批准破坏性计划；
- *  - 拒绝时展开一个输入框写原因（可空），模型据此重新规划；
- *  - 步骤多时卡片内部滚动，不把输入栏挤出屏幕。
- */
-/**
  * W-28：@提及建议条（横滑 chips）。点一个就把输入框里的 `@关键词` 替换成 `@路径`。
- *
- * 为什么贴输入框上方：和 ask/plan 卡片同一位置语汇——都是"正在输入时需要的辅助"，
- * 不遮挡对话内容，选完即消失。
+ * 贴输入框上方，与 ask/plan 卡片同一语汇（"正在输入时需要的辅助"），选完即消失。
  */
 @Composable
 private fun MentionSuggestionBar(files: List<String>, onPick: (String) -> Unit) {
@@ -3014,6 +2999,14 @@ private fun MentionSuggestionBar(files: List<String>, onPick: (String) -> Unit) 
     }
 }
 
+/**
+ * W-25：计划审批卡片。贴在输入框上方，不遮挡上下文；批准即开始执行，拒绝可附一句修改意见。
+ *
+ * 交互取舍：
+ *  - 「批准执行」是主按钮（实心），「不要执行」是次按钮（描边）——避免误触批准破坏性计划；
+ *  - 拒绝时展开一个输入框写原因（可空），模型据此重新规划；
+ *  - 步骤多时卡片内部滚动，不把输入栏挤出屏幕。
+ */
 @Composable
 private fun PlanCard(
     plan: PlanBroker.Plan,
@@ -3081,6 +3074,12 @@ private fun PlanCard(
     }
 }
 
+/**
+ * ask_user 的选择卡片（W-14）。
+ *
+ * 为什么不用弹窗：弹窗会遮挡上下文，用户往往需要回看上文才能选；
+ * 贴在输入框上方既醒目又不打断阅读，选完即消失（pending 归 null）。
+ */
 @Composable
 private fun AskUserCard(
     question: AskUserBroker.Question,

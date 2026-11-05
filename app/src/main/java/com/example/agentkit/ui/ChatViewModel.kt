@@ -1051,20 +1051,14 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     /**
      * 资源生命周期收口（QA 定级的 Major：资源泄漏修复）。
      *
-     * ## 为什么必须释放
-     * [TerminalSessionPool] 持有一条条**真实子进程**（本机 `/system/bin/sh`、proot 会话）；
-     * 子进程**不随 GC 回收**，只有显式关闭才释放。Activity `finish()` 清理 ViewModel 时若不收口，
+     * [TerminalSessionPool] 持有一条条**真实子进程**（本机 `/system/bin/sh`、proot 会话），
+     * 子进程**不随 GC 回收**，只有显式关闭才释放；Activity `finish()` 时若不收口，
      * 反复进出会累积泄漏 shell/proot 进程。
      *
-     * ## 为什么用非挂起的 [TerminalSessionPool.releaseAllAsync]
-     * [onCleared] 是**同步**生命周期钩子（主线程执行）：挂起版 `closeAll()` 需要协程 `await`，
-     * 在这里 `runBlocking` 会卡主线程且关闭子进程可能耗时。`releaseAllAsync()` 做了「最小惊讶」
-     * 取舍——**同步**清空会话表（旧句柄立即失效）+ **异步**关闭后端进程 + 取消输出收集协程，
-     * 既非阻塞又达成防泄漏目标（详见该方法 KDoc）。
-     *
-     * ## 异常安全
-     * `releaseAllAsync()` 内部已对空池 / 后端 `close()` 抛错做 `runCatching`；此处再包一层，
-     * 保证生命周期回调绝不抛异常（回调抛错会拖垮进程收尾）。
+     * 用非挂起的 [TerminalSessionPool.releaseAllAsync] 而非 `closeAll()`：[onCleared] 是**同步**
+     * 钩子（主线程），`runBlocking` 会把主线程卡住。它**同步**清空会话表（旧句柄立即失效）+
+     * **异步**关闭后端进程，既非阻塞又达成防泄漏。内部已对空池 / close 抛错做 `runCatching`，
+     * 此处再包一层，保证生命周期回调绝不抛异常（回调抛错会拖垮进程收尾）。
      */
     override fun onCleared() {
         runCatching { terminalPool.releaseAllAsync() }
@@ -1303,6 +1297,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     private val generation = GenerationRunController(
         scope = viewModelScope,
         activeId = { _activeConversationId.value },
+        onStarted = { _truncationNotice.value = null },
         onFinished = { rebuildMessages ->
             // Phase 2 DoD③：兜底清「正在恢复」——重试收尾事件之外的最后一道保险
             _retryState.value = null
@@ -2025,6 +2020,13 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     private val _retryState = MutableStateFlow<RetryState?>(null)
     val retryState: StateFlow<RetryState?> = _retryState.asStateFlow()
 
+    /** 本轮回答因输出上限被截断（非 null 时 UI 显示提示条）。不落盘；每次开始生成时清空。 */
+    private val _truncationNotice = MutableStateFlow<String?>(null)
+    val truncationNotice: StateFlow<String?> = _truncationNotice.asStateFlow()
+
+    /** 「知道了」→ 收起截断提示（下一条消息发出前不再打扰）。 */
+    fun dismissTruncationNotice() { _truncationNotice.value = null }
+
     /** 过程事件 → UI 实时更新（Hotfix2）。工具并行执行时多线程回调，读写列表加锁防丢更新。
      * hotfix30：_messages 是 active 会话的显示态——owner!=active（用户切到别的会话）
      * 时只落盘（appendToStore 按 owner）不上屏，切回时 loadConversation 从 store 重建。 */
@@ -2076,6 +2078,10 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
             is AgentEvent.RetryFinished -> {
                 _retryState.value = null
             }
+
+            // 输出撞到长度上限：界面上「说到一半」与「说完了」长得一模一样，得明说一句
+            is AgentEvent.OutputTruncated ->
+                _truncationNotice.value = "⚠️ 回答达到输出上限，内容可能不完整——回复「继续」可接着写"
         }
     }
 
@@ -2990,15 +2996,6 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * 把底层技术异常翻译成面向用户的中文提示。
-     *
-     * 分级依据：[LlmHttpException] 的 HTTP 状态码决定（鉴权/参数类不可重试，直接给修复建议）；
-     * 其余 IOException 归为网络问题；兜底才回显脱敏后的原始消息，避免泄露 Key 与堆栈。
-     *
-     * @param e AgentLoop / LLMClient 抛出的原始异常。
-     * @return 可直接渲染进助手气泡的文案。
-     */
-    /**
      * 从服务端错误体里只提取「人话」部分：`message`（+ `code`）。
      *
      * 为什么不直接回显整段 JSON：真机实测 401 卡片里那串
@@ -3020,6 +3017,12 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         return if (code.isNullOrBlank()) clean else "$clean（$code）"
     }
 
+    /**
+     * 把底层技术异常翻译成面向用户的中文提示。
+     *
+     * 分级依据：[LlmHttpException] 的 HTTP 状态码（鉴权/参数类不可重试，直接给修复建议）；
+     * 其余 IOException 归为网络问题；兜底才回显脱敏后的原始消息，避免泄露 Key 与堆栈。
+     */
     private fun friendlyMessage(e: Throwable): String {
         // 本地推理失败：必须先于下面「IOException = 网络问题」的分支。
         // 本地模型根本不出网，把它翻译成「检查网络连接」只会让人往错方向排查。
@@ -3034,12 +3037,8 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
                     // 401/403：附上能直接定位的信息——实际请求端点、Key 指纹、服务端原因，
                     // 让用户凭气泡就能判断是「Key 粘贴不全」还是「端点错了」，而不是再去翻日志。
                     // 指纹只取 head/tail，绝不回显完整 Key。
-                    //
-                    // 【真机第三轮修复】两处改动：
-                    // ① 服务端原文不再整段铺 JSON（`{"error":{"message":…,"type":…,"code":…}}`
-                    //    占了半屏、普通用户完全读不了），只提取 message + code；
-                    // ② URL 在 `/` 后插零宽空格 —— 否则窄气泡里会被硬折成
-                    //    `…/chat/comple` + `tions`，把一个单词劈成两半。
+                    // 服务端原文只取 message + code（整段 JSON 占半屏且不可读）；URL 在 `/`
+                    // 后插零宽空格，否则窄气泡会把 chat/completions 硬折成两半。
                     val endpoint = "${ConfigSanitizer.normalizeBaseUrl(_config.value.baseUrl)}/chat/completions"
                     val breakableEndpoint = endpoint.replace("/", "/\u200B")
                     val finger = keyFingerprint(_config.value.apiKey)

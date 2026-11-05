@@ -38,6 +38,12 @@ internal class GenerationRunController(
     /** 收尾：清「正在恢复」横幅、落盘工具组、按需重建消息列表、刷新日志。 */
     private val onFinished: (rebuildMessages: Boolean) -> Unit,
     /**
+     * 每轮生成**开始**时回调（[start] 是所有入口的唯一汇聚点：send / regenerate 都走这里）。
+     * 宿主用它清掉上一轮的临时提示——只挂在收尾处不够，收尾回调可能紧接着本轮的
+     * 事件之后执行，会把刚置上的提示又清掉。
+     */
+    private val onStarted: () -> Unit = {},
+    /**
      * 生命周期观测点。生产传 [GenerationRunHooks.None]（零开销），harness 传记录实现。
      *
      * 为什么这不是「为了测试而加的钩子」：这套状态机原本是 `private inner class`，
@@ -139,6 +145,7 @@ internal class GenerationRunController(
     ) {
         this.owner = owner
         _generating.value = owner
+        onStarted()
         draftBuffer = if (placeholderDraft) "" else null
         reasoningBuffer = null
         syncDisplay()

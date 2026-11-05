@@ -69,6 +69,9 @@ private class Harness(
     var active: String? = "A"
     val recorder = Recorder()
     val finished = mutableListOf<Boolean>()
+    /** 每轮生成开始的次数（`onStarted` 回调）。宿主的「清上一轮临时提示」就挂在这里。 */
+    var started = 0
+        private set
     val scope = CoroutineScope(
         SupervisorJob() + Dispatchers.Unconfined + CoroutineExceptionHandler { _, e -> onError(e) }
     )
@@ -76,6 +79,7 @@ private class Harness(
         scope = scope,
         activeId = { active },
         onFinished = { finished += it },
+        onStarted = { started++ },
         hooks = recorder,
     )
 }
@@ -219,6 +223,19 @@ fun main() {
         gate.complete(Unit)
         h.controller.job?.join()
         eq("空闲时落当前会话", h.controller.targetConversation(), "B")
+    }
+
+    println("\n[8] onStarted：每轮生成**开始**时回调一次（不清则上一轮提示会残留）")
+    runBlocking {
+        val h = Harness()
+        eq("尚未开始时不回调", h.started, 0)
+        h.controller.start("A", placeholderDraft = false, rebuildMessages = false) { }
+        h.controller.job?.join()
+        eq("一轮跑完恰好回调一次", h.started, 1)
+        h.controller.start("A", placeholderDraft = false, rebuildMessages = false) { }
+        h.controller.job?.join()
+        eq("两轮 → 两次（收尾处没有多余回调）", h.started, 2)
+        eq("收尾回调也各一次", h.finished.size, 2)
     }
 
     println("\n==== 结果：PASS=$pass FAIL=${fails.size} ====")

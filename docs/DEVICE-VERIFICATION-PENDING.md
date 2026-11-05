@@ -102,6 +102,28 @@
 
 ---
 
+## P6 输出被截断时界面要有话说（任何设备都能做）
+
+| | |
+|---|---|
+| 阻塞原因 | 需真实模型真的撞到输出上限（**不能靠造假数据**，否则验的不是这条链路） |
+| 代码 | `RealAgentLoop`（`finishReason=length` → `AgentEvent.OutputTruncated`）→ `ChatViewModel.truncationNotice` → `ChatScreen` 输入栏上方提示条 |
+
+**步骤**：把模型配置里 `max_tokens` 调到很小的值（或用 `deepseek-chat` 让它写一篇长文），
+提一个必然写不完的要求（如「详细解释操作系统的进程调度，至少 3000 字」）→ 等它停下。
+
+**通过标准**
+- 输入栏上方出现 `⚠️ 回答达到输出上限，内容可能不完整——回复「继续」可接着写`；
+- 点「知道了」提示条消失；
+- 回复「继续」后它接着写，**且上一条提示条自动消失**（不是叠两条）；
+- 正常说完的一轮**不出现**这条提示（这是最容易写错的方向：把 `stop` 也当成截断）。
+
+没有可调的 `max_tokens` 时（OpenAI 兼容路径用的是服务端默认值），
+可用 `adb logcat -s AgentKit:V | grep 长度上限` 先确认厂商确实报了 `finish_reason=length`——
+日志有、界面没有 = 链路断了；日志没有 = 这一轮压根没截断，换个更长的要求再试。
+
+---
+
 ## 观察到再说（不阻塞，先记着）
 
 | # | 项 | 观察什么 | 判据 |
@@ -640,3 +662,114 @@ $ curl -fL "$URL" -o app/src/main/assets/shizuku.apk    # RikkaApps/Shizuku v13.
 冷启动 **0 崩溃 / 0 ANR / 0 能力清单不同步**，`Displayed: +34s760ms`，
 `calculator` → `code=calc_ok error=false`，`turn.end status=completed steps=2`，
 三项度量 **白等 0 次 / 写入 3.5KB / 重放 0 次**（`trace-metrics.py` 退出码 0）。
+
+---
+
+## 2026-11-05 第五轮：截断从「可查」走到「可见」
+
+上一轮做完了 `finish_reason` 的读取与归一化（三家厂商 → `length`/`stop`），
+但那只是**可查**：截断时只落一条 W 级日志，用户界面上一个字都没有。
+「回答说到一半停了」和「模型自己说完了」在界面上长得一模一样，用户只会以为模型敷衍。
+
+### 卡点不是设计，是零余量
+
+事件链的下一站是 `RealAgentLoop`（消费者是 `onEvent`）和 `ChatViewModel`（状态）、
+`ChatScreen`（渲染）。三个都在架构守卫的冻结清单里，且其中两个**恰好顶满**：
+
+| 文件 | 改前 | 上限 | 余量 |
+|---|---|---|---|
+| `RealAgentLoop.kt` | 1557 | 1557 | **0** |
+| `ChatViewModel.kt` | 3889 | 3890 | 1 |
+| `ChatScreen.kt` | 3160 | 3160 | **0** |
+
+规矩是「只减不增」。所以第一步不是写功能，是**从别处腾出空间**——
+而腾空间这件事顺手挖出了三类真问题（见下）。
+
+### 腾空间的副产品：三类真问题
+
+**① 三处 KDoc「抢位」——文档描述的函数根本不是它下面那个。**
+
+| 位置 | 现象 |
+|---|---|
+| `ChatViewModel` | `friendlyMessage` 的文档被贴在 `summarizeServerError` 上面，两段 KDoc 相邻；`friendlyMessage` 本身（3023 行）**没有任何文档** |
+| `ChatScreen` | 连续三段 KDoc，只有最后一段属于 `MentionSuggestionBar`；`PlanCard` 与 `AskUserCard` 各自**裸着** |
+| `ChatScreen` | 页面级的 KDoc 被 `MenuTarget` 的 KDoc 顶掉——`ChatScreen` 函数自己没文档 |
+
+Kotlin 里两段 KDoc 相邻不报错、后一段生效，所以这类错位**永远不会红**，
+只会让下一个读代码的人对着「参数说明里写着 `@param e`」的函数找不到 `e`。
+三处都搬回了各自的函数上方，并顺手压掉了冗余表述。
+
+**② 注释里的数字与代码不符。**
+
+类注释的「保留行为」清单写着 `maxSteps=40 / maxParallelTools=5 / providerRetry=3`，
+而构造参数的默认值是 **60**（`@param maxSteps 单轮最大步数（默认 60…）`）。
+同一份文档里两个数，读者只能猜哪个是真的。按代码为准改正，并删掉那句已经失效的
+「与 core/AgentLoop.kt 适配层默认值必须一致」——适配层早就删了，照着去改会找不着。
+
+**③ 我自己写的产物陈旧防护守了一片空白。**
+
+新 harness 里照抄了 `qa_classes_stale` 的调用，但参数传错（把 `.../app/src/main` 当成了仓库根），
+它内部拼出 `.../app/src/main/app/src/main`，永远命中空集合、永远返回「不陈旧」。
+`touch` 一个源文件实测才发现——修好后正确输出 `exit 3` + `SKIP` 文案。
+
+> 这条和上一轮那个「切片不含目标，变异后仍全绿」是同一个病：
+> **断言/守卫必须先证明它会红，才算存在。**
+
+### 链路
+
+```
+LLM 响应 finish_reason=length
+  → FinishReason.normalize() → "length"            （上一轮已做）
+  → RealAgentLoop：整回合第一次见到就发一次事件
+  → AgentEvent.OutputTruncated(reason)
+  → ChatViewModel._truncationNotice（新状态流）
+  → ChatScreen：输入栏上方横幅 +「知道了」
+```
+
+四个刻意的取舍：
+
+1. **每回合只报一次**。多步回合里每一步都可能被截断，逐步报会刷屏，
+   而刷屏的后果是用户学会无视它。
+2. **`stop` / `null` / 空串一律不报**。空集合满足全称命题——
+   写 `!= null` 会把「正常说完」也当成截断，那是比不提示更糟的假警报。
+3. **不落盘、不进历史**。截断是「这一轮的事实」，不是消息内容；
+   塞进 `UiItem.Assistant` 要动存储格式，收益不抵风险。
+4. **提示条的清除挂在 `start()` 而不是 `finish()`**。截断事件是在回合内抛的，
+   紧接着 `onFinished` 就会跑——挂错地方等于刚显示就清掉。为此给
+   `GenerationRunController` 加了 `onStarted` 回调（`send` / `regenerate` 的唯一汇聚点）。
+
+### 验证（本轮**没有**可上的设备，全部在服务器上做）
+
+新增 `scripts/qa/TruncationUiVerification.kt`：7 条断言 / 3 类场景。
+
+| 用例 | 断言 |
+|---|---|
+| 1 | `length` → 恰好 1 次事件，reason 透传 |
+| 2 | `stop` → 0 次 |
+| 3 | `null` → 0 次（不伪造） |
+| 4 | 空串 → 0 次 |
+| 5 | 多步回合每步都截断 → **仍只 1 次** |
+| 6 | 重试救回来的请求 → 照样上报（字段不因重试丢失） |
+| 7 | `onEvent = null` → 不崩 |
+
+**三次变异，每次都要能红**：
+
+| 变异 | 期望 | 实际 |
+|---|---|---|
+| `isTruncated` 改成 `reason != null` | 用例 2、4 红 | `PASS=5 FAIL=2`，正是这两条 |
+| 去掉 `&& !truncatedNotified` | 只有用例 5 红 | `PASS=6 FAIL=1`，事件数 3 不是 1 |
+| 比较原始值 `"max_tokens"`（忘了已归一化） | 用例 1、5、6 红 | `PASS=4 FAIL=3`，三条正例全红 |
+
+第三条最能说明问题：归一化是上一轮做的，如果这一轮有人图省事直接比厂商原始值，
+**反例（stop/null/空串）依然全绿**，只有正例会红——没有正例的断言根本发现不了。
+
+### 当前数字
+
+- `run-all.sh`：**PASS=93 SKIP=1 XFAIL=0 FAIL=0**（SKIP 是未传 APK 的静态反验）
+- 架构守卫：**5/5**，三个冻结文件均未超限，且都已下调上限
+  （`RealAgentLoop` 1557→1553、`ChatViewModel` 3889→3888、`ChatScreen` 3160→3159）
+- 文本断言：**1370 条未增**（新断言全部是行为断言，没有 `contains`）
+
+> 顺带记一笔：`R13-1`（新建会话 200ms 内落盘）在满负载的 `run-all` 里偶发红了一次，
+> 单独连跑 3 次全绿。那是**时间窗断言在慢机器上的固有脆弱**，不是本轮改动引起，
+> 但它是下一个该收紧的地方（改成「等到落盘事件」而不是「等 200 毫秒」）。

@@ -23,6 +23,7 @@ import com.example.agentkit.core.agent.journal.ToolSettleStatus
 import com.example.agentkit.core.agent.journal.TurnJournal
 import com.example.agentkit.core.llm.ChatStreamEvent
 import com.example.agentkit.core.llm.ErrorNormalizer
+import com.example.agentkit.core.llm.FinishReason
 import com.example.agentkit.core.llm.RetryProfile
 import com.example.agentkit.core.Prompt
 import com.example.agentkit.core.PromptAssembler
@@ -54,10 +55,9 @@ class LlmCallTimeoutException(val timeoutMs: Long) : RuntimeException(
 
 /**
  * [AgentLoop] 的默认实现（T01）：回合主循环——规划 -> 调工具 -> 回填 -> 再规划，
- * 直到 LLM 不再请求工具调用。旧 `com.example.agentkit.core.AgentLoop` 具体类的
- * 逻辑整体迁入本类，外部行为逐条保持（见下方「保留行为」清单）。
- * 那个旧具体类曾是薄适配层（原样转发 20 个构造参数），已于 2026-10-30 删除：
- * ChatViewModel 直连本类，避免「两处默认值必须一致」靠人记而反复漏改。
+ * 直到 LLM 不再请求工具调用。外部行为逐条保持（见下方「保留行为」清单）。
+ * 旧的薄适配层（原样转发 20 个构造参数）已删除：ChatViewModel 直连本类，
+ * 避免「两处默认值必须一致」靠人记而反复漏改。
  *
  * **三段式工具执行**（T01 契约化后的回合内工具阶段）：
  *  1. **解析**：registry.descriptorOf(call.name) 拿 [ToolDescriptor]（未知工具 →
@@ -76,21 +76,14 @@ class LlmCallTimeoutException(val timeoutMs: Long) : RuntimeException(
  *
  * **保留行为（回归面，逐条不许丢）**：
  *  - T02 统一契约（formatToolResult 单一出口 + 未知工具模糊匹配文案）；
- *  - T03 并发判据（batchHasMutation 含写串行/全只读并行 + maxParallelTools 分块保序
- *    + E1 局部 images 列表父协程合并）；
- *  - T04 熔断（指纹/check/onExecuted/第 3 次拦截/同批 duplicate 预计算——预计算
- *    仍在 loop 侧，经 [BatchToolExecutor] 重传 executor）；
- *  - T05（每轮 ensureActive / NonCancellable closePendingToolResults /
- *    shouldContinue 优雅收尾 / 取消绝不吞成拒绝 / 取消绝不吞成 Failed）；
- *  - T06 截断；callWithRetry/isRetryable（429/5xx 重试、4xx 快败、取消不重试）；
- *  - buildSystemPrompt（工具 systemPrompt 拼接 + 记忆摘要 + MEMORY_USAGE_PROMPT）；
- *  - maybeCompact 滑动窗口；审批流（needsApproval + ToolApproval；审批回调抛
- *    CancellationException 必须重抛不吞）；checkpoint 回调；onEvent 两个事件
- *    （ToolStarted 执行前 / ToolFinished 终态，并行时按 call.id 归并由 UI 负责）；
- *  - maxSteps=40 / maxParallelTools=5 / providerRetry=3 / maxHistoryMessages=40
- *    默认值；AgentLogger 各日志点保留。（消耗警示：步数上调直接放大 token 消耗与
- *    单回合时长——最坏 N 次 LLM 往返；上下文侧由 maxHistoryMessages/maybeCompact
- *    兜底，调整前需评估。）
+ *  - T03 并发判据（batchHasMutation 写串行 / 全只读并行 + maxParallelTools 分块保序
+ *    + E1 局部 images 父协程合并）；
+ *  - T04 熔断（指纹 / check / onExecuted / 第 3 次拦截 / 同批 duplicate 预计算）；
+ *  - T05（每轮 ensureActive / NonCancellable 闭合 / shouldContinue 优雅收尾 /
+ *    取消绝不吞成拒绝或 Failed）；
+ *  - T06 截断；callWithRetry（429/5xx 重试、4xx 快败、取消不重试）；maybeCompact；
+ *  - buildSystemPrompt；审批流（审批回调抛 CancellationException 必须重抛）；
+ *    checkpoint；onEvent 两个事件（并行按 call.id 归并由 UI 负责）；日志点保留。
  *
  * **取消 vs 失败的两条红线**：
  *  - CancellationException 永远不是失败：绝不被 executor 吞成 outcome、绝不被
@@ -103,8 +96,8 @@ class LlmCallTimeoutException(val timeoutMs: Long) : RuntimeException(
  * @param llmProvider lambda 而非实例：模型配置可在运行时变化（每轮调用时取最新）。
  * @param registry 当前可用工具集合（受 Project 工具白名单约束）。
  * @param systemPrompt 基础系统提示（工具自带提示与记忆摘要在其上拼接）。
- * @param maxSteps 单轮最大步数（默认 **60**；与 core/AgentLoop.kt 适配层默认值必须一致，
- *   W-49 起两处均为 60，改一处务必同步另一处）。
+ * @param maxSteps 单轮最大步数（默认 **60**）。上调直接放大 token 消耗与单回合时长
+ *   （最坏 N 次 LLM 往返），上下文侧靠 maxHistoryMessages/maybeCompact 兜底。
  * @param maxParallelTools 全只读批次并行上限（分块限流，默认 5）。
  * @param providerRetry 供应商瞬时失败重试次数（默认 3，共 4 次尝试；hotfix10 上调：
  *   429 限流序列 10s/30s/60s 需 3 次重试才走得完，2 次会在第 3 次 429 后直接失败）。
@@ -581,6 +574,8 @@ class RealAgentLoop(
         // R5：回合开始事件。工具面规模取「当前暴露面」的可见工具数——
         // 用户报「模型没按我说的做」时，第一眼要确认的就是「它到底看得见哪些工具」。
         clock.turnStarted(userInput.length, exposure0.visible.size)
+        // 截断提示每回合最多报一次：多步循环里同一原因会反复出现，刷屏反而让人忽略。
+        var truncatedNotified = false
 
         repeat(maxSteps) { step ->
             clock.step(step)
@@ -674,6 +669,12 @@ class RealAgentLoop(
                 "LLM 返回：${System.currentTimeMillis() - stepStart}ms，toolCalls=${resp.toolCalls.size}"
             )
             messages.add(resp)
+            // 厂商明说「撞到长度上限」：这条回答就是不完整的，界面上却与「说完了」一模一样。
+            // 只上报事实，不代模型续写——续不续由用户决定。
+            if (FinishReason.isTruncated(resp.finishReason) && !truncatedNotified) {
+                truncatedNotified = true
+                onEvent?.invoke(AgentEvent.OutputTruncated(resp.finishReason))
+            }
             checkpoint?.invoke(messages)
 
             // LLM 不再请求工具调用 -> 给出最终回答，结束循环
@@ -1118,20 +1119,15 @@ class RealAgentLoop(
      *  - 取消（CancellationException）原样上抛、绝不重试；`finally` 立即清状态——
      *    T05 不变量：用户点停止后不得残留「正在恢复」。
      *
-     * **退避（机实测 Bug 1 修复 / 真机第三轮 Bug A1 加长）**：每次宣布「准备重试」后、
-     * 真正重发之前，先走 [retryBackoff] 退避（默认序列 3s → 10s → 25s 封顶）。
-     * 理由有二：
-     *  1. **UI 可见性**：`UnknownHostException`（飞行模式）是**瞬时返回**的，无退避时
-     *     3 次尝试几十毫秒内打完，`RetryStarted` 刚置位就被 `finally` 的 `RetryFinished`
-     *     清掉——用户永远看不到「正在恢复（n/N）」横幅，只看到最后那个错误；
-     *  2. **恢复窗口**：退避给了网络实际的恢复时间，这才是「重试」的意义。上一轮
-     *     （1s/2s/4s，含请求耗时约 12s）被用户判为「太短」，故本轮加长到「半分钟」量级。
-     * 不可重试错误（401/403/400）**不等待**、一次即失败（高频快败路径零新增延迟）。
+     * **退避**：宣布「准备重试」后、真正重发之前先走 [retryBackoff]（默认 3s → 10s →
+     * 25s 封顶）。理由有二：① `UnknownHostException`（飞行模式）是**瞬时返回**的，
+     * 无退避时 3 次尝试几十毫秒打完，「正在恢复」刚置位就被清掉，用户只看得到最终
+     * 报错；② 退避给了网络真正的恢复时间，这才是「重试」的意义。
+     * 不可重试错误（401/403/400）**不等待**、一次即失败（快败路径零新增延迟）。
      *
-     * **网络恢复即刻重试（真机第三轮 Bug A2）**：默认退避钩子是「网络感知」的——
-     * 等待期间由 [NetworkRecoveryWaiter] 监听默认网络，一恢复就**提前结束等待**并立刻
-     * 发起下一次尝试（用户关掉飞行模式后「秒续」）。监听在等待结束（含取消路径）时
-     * 注销；拿不到网络服务 / 注册失败一律降级为纯定时等待，绝不崩。
+     * **网络恢复即刻重试**：默认退避钩子是「网络感知」的——等待期间由
+     * [NetworkRecoveryWaiter] 监听默认网络，一恢复就提前结束等待、立刻重试（关掉飞行
+     * 模式后「秒续」）。监听在等待结束（含取消）时注销；注册失败降级为纯定时等待。
      *
      * **取消优先**：退避期间若协程被取消，必须立刻退出（[delay] 自带取消语义）；
      * 退避钩子本身是否可取消是注入方的自由，故钩子返回后再补一次
