@@ -45,9 +45,27 @@ git ls-remote origin                 → 秒回，能列出全部 refs
 | 拉整仓源码 | `gh-proxy.com` + tarball | **不带** Authorization |
 | **同步本地 git 历史** | `git fetch https://gh-proxy.com/https://github.com/...` | 镜像**只读**，push 会 `No anonymous write access` |
 | 下 APK / artifact | `gh-proxy.com` 直链 | 不带 auth；支持 Range |
-| `git clone` / `git push` 直连 | **不要用** | 见 §1 反例，重试是纯浪费 |
+| `git clone` / `git push` 直连 | **先按 §2.1 判 IP，再决定** | 原写「不要用」，2026-11-05 改判：那是 IP 问题不是协议问题 |
 
-一句话：**读走镜像，写走 MCP，大文件走 REST，git 协议只用来 fetch，不用来 push。**
+**2026-11-05 改判**：上一版把「直连不要用」写成通用规则，实际是**当天那个边缘 IP 的 443 在丢 SYN**。
+同 IP 的 80/22 通、同网段 `.168`/`.165` 的 443 通——所以是**单点**，不是网段、不是域名、不是协议。
+换一个边缘 IP 后 `git push` 直连一次成功（`fb15ad6..9445b67`）。详见
+[`GitHub直连排查与修复-2026-11-05.md`](GitHub直连排查与修复-2026-11-05.md)。
+
+### §2.1 决定要不要绕之前，先量这一个数
+
+```bash
+# 同域名的不同边缘 IP，各试一次 TLS（--resolve 只影响本次请求，不改系统状态）
+for ip in $(getent ahostsv4 github.com | awk '{print $1}' | sort -u) \
+          20.200.245.247 140.82.112.3 140.82.113.3 140.82.114.3; do
+  echo "$ip -> $(curl -s -o /dev/null -m 8 -w '%{http_code}' --resolve github.com:443:$ip https://github.com)"
+done
+```
+
+有任何一个返回 `200`，就 `git config --global http.curloptResolve "github.com:443:<那个IP>"`，直连可用。
+全部不通，才走镜像。**注意这会过期**：手挑的 IP 是缝合，不是修复。
+
+一句话：**读走镜像，写走 MCP，大文件走 REST；直连能不能用，按上面那条命令当场量，别按昨天的结论。**
 
 ---
 
@@ -108,6 +126,9 @@ mcporter list github | head
 | **10-30** | codeload 直连 | Coomi 30MB 传 15 分钟未完成；RikkaHub 18.7MB / 10 分钟（**约 30KB/s**） |
 | **10-30** | `git clone` 直连 | 134 秒 `Failed to connect`；同一时刻 `ls-remote` 秒回 |
 | **10-30** | 镜像 `git fetch` | 秒回，拿到真实 HEAD `16b9731` |
+| **11-05** | `git push` 直连（`curloptResolve` → `20.200.245.247`） | **成功**，`fb15ad6..9445b67`；读通写不通时需加 `http.postBuffer` + `HTTP/1.1` |
+| **11-05** | `git clone` 直连 | 7 分 22 秒未完成，中止；改 API 取 tree 比对（688 个 blob 全等） |
+| **11-05** | `20.205.243.166:443` | 丢 SYN；同 IP 的 80/22 通，同网段 `.168`/`.165` 的 443 通 |
 
 **同一时刻，直连 30KB/s vs 镜像 8.3MB/s，差 250 倍。** 所以「慢」在多数情况下不是配额问题，是没换通道。
 
@@ -130,8 +151,17 @@ mcporter list github | head
 | 11 | 文件 mode | 脚本在 CI 里没有执行位 | `.sh` 用 `100755`，其余 `100644` |
 | 12 | 分支名 | 404 | 参照仓库里 `rikkahub` 默认分支是 `master`，其余是 `main` |
 | 13 | 只看 HTTP 200 就收工 | 以为推上去了 | 推完**读回 blob sha 逐个比对**，不看 200 看内容 |
+| 14 | 非交互环境读不到凭据（11-05 首次记录） | `could not read Username`；`credential.helper` 在管道/后台里返回空 | 用一次性 URL `https://<user>:<token>@host/...`，**不要** `remote add` 存下来 |
+| 15 | SSH 的 `Permission denied (publickey)` 被当成「不通」 | 实际是**通了但拒绝** | `timeout` 才是真不通；`denied` 说明 TCP+TLS 都好，只缺 key |
+| 16 | 读通、写不通（11-05 首次记录） | `ls-remote` 连测三次全通，`push` 报 `GnuTLS recv error (-110)` | `git -c http.postBuffer=524288000 -c http.version=HTTP/1.1 push`；**只在「读通写不通」时用** |
+| 17 | 检出 29 条「差异」其实是路径转义（11-05 首次记录） | 仅远端/仅本地各 29 条，**内容不同 0 条** | `git -c core.quotepath=false ls-tree`；见坑 10 |
+| 18 | 匿名 API 被**出口 IP** 限流 | `API rate limit exceeded for x.x.x.x`，token 其实有效 | 共享出口会把别人的调用算你头上；带 token 再试 |
+| 19 | 固定 IP 有保质期（11-05 首次记录） | 今天能推，改天 `ls-remote` 就超时 | 当一次性缝合，不是修复；失效就重跑 §2.1 |
 
 **第 13 条是本项目最贵的一条**：ref 动了不等于 tree 对，文件数涨了不等于内容对。
+
+**第 17 条是第二贵的**：看到「有差异」就慌着改代码/重推，会白费一整轮。
+判据是「**内容不同 0 条**」——那说明数据是对的，错的是比对的表示层。
 
 ---
 
@@ -145,6 +175,9 @@ mcporter list github | head
 | 「只能走 API 造 commit」 | 仍可用，但不必了：有真实历史后 `base_tree` 直接取本地 HEAD | 同上 |
 | 「沙箱不能编 APK」 | 可以，需 JDK17 + cmdline-tools + 腾讯 gradle 镜像，首次全量约 18 分钟 | 10-19 补充节 |
 | 「gh-proxy 只加速 artifact」 | 也加速 tarball 与 git fetch | 10-30 实测 |
+| 「`git push` 直连不要用」 | **改判：是那个 IP 不行，不是协议不行** | 11-05：`.166:443` 丢 SYN，同一 IP 的 80/22 通、同网段 `.168`/`.165` 的 443 通；换 `20.200.245.247` 后直连 push 一次成功 |
+| 「`git clone` 慢是因为仓库大」 | 不准确：同一通道 `ls-remote` 秒回、clone 7 分钟不完成 | 11-05；核验改用 API 取 tree，成本低两个数量级 |
+| 「连不上就是墙」 | 最含糊的说法，也是最贵的 | 11-05 全文；必须拆成解析 / TCP / TLS / 应用四层去量 |
 
 保存「坑」那一列比保存「状态」那一列有用得多——前者一年后还成立，后者一天就过期。
 
