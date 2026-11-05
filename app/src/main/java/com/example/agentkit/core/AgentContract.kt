@@ -122,7 +122,18 @@ data class AssistantMessage(
      * 与 content 分流存储：思考是「怎么想的」，content 是「想了什么」，
      * 灌进同一字段会让历史请求把模型的自言自语也当上下文发给下一轮。
      */
-    val reasoning: String? = null
+    val reasoning: String? = null,
+    /**
+     * 本次输出「为什么结束」，三家字段已归一化（见 [com.example.agentkit.core.llm.FinishReason]）。
+     *
+     * `length` = 撞到输出长度上限，content 很可能是半截的；`stop` = 模型自己说完；
+     * 其余（`tool_calls` / `safety`…）原样保留。null = 供应商没报这个字段。
+     *
+     * 加它的原因很具体：DeepSeek 官方 `deepseek-chat` 的 `max_tokens` 默认只有 4K，
+     * 而 OpenAI 兼容路径不显式传该参数——长回答会在 4K 处被服务端截断，
+     * 旧实现里 App 完全不知道，用户看到的是「模型话说一半停了」。
+     */
+    val finishReason: String? = null
 ) : ChatMessage
 
 /**

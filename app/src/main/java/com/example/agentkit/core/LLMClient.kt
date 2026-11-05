@@ -19,6 +19,7 @@ import java.io.IOException
 import com.example.agentkit.core.llm.arrOrNull
 import com.example.agentkit.core.llm.objOrNull
 import com.example.agentkit.core.llm.primOrNull
+import com.example.agentkit.core.llm.FinishReason
 import com.example.agentkit.core.llm.KeyPoolPolicy
 import com.example.agentkit.core.llm.KeyPoolRuntime
 
@@ -394,6 +395,9 @@ class OpenAIClient(
         val reasoning = StringBuilder()
         // 功能五（P1-5）：流末 chunk（choices 为空、仅带 usage）单独到达，捕获最后一份非空值
         var usage: com.example.agentkit.core.TokenUsage? = null
+        // 输出为什么结束：该字段只在**最后**一个非 usage chunk 上出现，前面全是 null，
+        // 所以「见到非空就覆盖」。之前整条链路没读它 → 截断在 App 里不可见。
+        var finishReason: String? = null
         val outcome = readSseDataObjects(messages, tools) { obj ->
             val delta = sseDeltaObject(obj)
             if (delta != null) {
@@ -409,6 +413,7 @@ class OpenAIClient(
                 }
             }
             parseOpenAiUsage(obj)?.let { usage = it }
+            FinishReason.fromOpenAi(obj)?.let { finishReason = it }
         }
         // hotfix35：供应商忽略 stream:true（或中转不带 SSE）时返回的是整段 JSON——
         // 旧实现一条 data: 都没匹配上，最终产出空回答（真机「不逐字/直接一句话/
@@ -430,13 +435,15 @@ class OpenAIClient(
         }
         // OpenAI 兼容端点的自动缓存命中量在 prompt_tokens 内部（子集），分母直接用 prompt
         logPromptCacheUsage(usage, cachedInPrompt = true)
+        FinishReason.logIfTruncated("streamChat", finishReason)
         send(
             ChatStreamEvent.Completed(
                 AssistantMessage(
                     text.toString(),
                     accumulator.build(),
                     usage,
-                    reasoning.toString().takeIf { it.isNotBlank() }
+                    reasoning.toString().takeIf { it.isNotBlank() },
+                    finishReason
                 )
             )
         )
@@ -657,11 +664,14 @@ class OpenAIClient(
             ToolCall(id, name, args)
         } ?: emptyList()
 
+        val finish = FinishReason.fromOpenAi(root)
+        FinishReason.logIfTruncated("chat", finish)
         return AssistantMessage(
             content,
             toolCalls,
             parseOpenAiUsage(root),
-            reasoning?.takeIf { it.isNotBlank() }
+            reasoning?.takeIf { it.isNotBlank() },
+            finish
         )
     }
 

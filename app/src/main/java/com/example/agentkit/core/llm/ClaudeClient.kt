@@ -290,11 +290,14 @@ class ClaudeClient(
                 }
             }
         }
+        val finish = FinishReason.fromClaude(root)
+        FinishReason.logIfTruncated("claude", finish)
         return AssistantMessage(
             content.toString(),
             toolCalls,
             parseClaudeUsage(root),
-            reasoning.toString().takeIf { it.isNotBlank() }
+            reasoning.toString().takeIf { it.isNotBlank() },
+            finish
         )
     }
 

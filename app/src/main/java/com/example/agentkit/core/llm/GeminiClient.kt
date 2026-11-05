@@ -282,11 +282,14 @@ class GeminiClient(
                 toolCalls += ToolCall("gemini_${UUID.randomUUID().toString().take(8)}", name, args)
             }
         }
+        val finish = FinishReason.fromGemini(root)
+        FinishReason.logIfTruncated("gemini", finish)
         val message = AssistantMessage(
             content.toString(),
             toolCalls,
             parseGeminiUsage(root),
-            reasoning.toString().takeIf { it.isNotBlank() }
+            reasoning.toString().takeIf { it.isNotBlank() },
+            finish
         )
         // Gemini 的 cachedContentTokenCount 含在 promptTokenCount 里（子集），分母直接用 prompt
         logPromptCacheUsage(message.usage, cachedInPrompt = true)
