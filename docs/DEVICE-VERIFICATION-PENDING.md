@@ -518,6 +518,46 @@ onNewIntent 存在且设置 pendingWorkflowId / 调用 setIntent），13/13 通�
 修法：`StartupTrace.seal()`，`StartupMark.finish()` 里封口；封口后 `mark()` 返回 0 且不记录。
 harness 加 7 条断言（`[8] 收尾后打点失效`），反向变异「删掉短路」→ **4 条红，全在该组**。
 
+### 字段区里三处「白付」的系统调用
+
+顺着 `fields` 段往下查，发现字段初始化器里有三处实时探测：
+
+```kotlin
+private val _shizukuStatus    = MutableStateFlow(ShizukuShell.status())        // binderAlive + hasPermission = 2 次 IPC
+private val _shizukuInstalled = MutableStateFlow(ShizukuShell.isInstalled(app))// PackageManager 查询
+private val _deviceContext    = MutableStateFlow(DeviceContextStore.snapshot())// 读系统服务
+```
+
+关键在于：**`refreshGrants()` 会把这三样原样再刷一遍**（它已经开始 `launch(Dispatchers.IO)`）。
+也就是说字段区那次探测算出来的值，除了当初始值给 UI 看一眼，**没有任何消费者**——
+而 UI 第一眼看到的时候首帧都还没画，用户看不见。
+
+改成静态默认值（`NOT_RUNNING` / `false` / 空 `DeviceContext`），真值由 `refreshGrants` 在 IO 上填。
+`DeviceContext.isEmpty` 有明确语义（"尚无感知数据"），空初值不是假数据。
+
+> 这类改动的收益是**确定但不大**（两次 binder IPC + 一次 PM 查询，几十毫秒级）。
+> 值钱的是那条规矩：**首帧之前的主线程上，不许出现跨进程调用**。
+> 所以同步加了 3 条断言，把规矩变成会红的检查。
+
+### 断言写法本身踩了一个坑（值得记下来）
+
+第一版判据是「`init {` 之前的部分＝字段区」。跑完全绿，看起来没问题；
+按惯例做反向变异——**把探测加回去，仍然是全绿**。
+
+原因：本类第一个方法是 `dismissInterruptedNotice()`（413 行），而 `_shizukuStatus` 在 474 行。
+按「第一个 `fun` 之前」切，字段区在 413 行就截断了，**要检查的字段压根不在切片里**。
+断言于是变成了「检查一个不包含目标的区域」——永远绿。
+
+改成按**字段块**切（`private val _x ...` 起，按括号深度续行），变异才红，且只红对应的那一条：
+
+| 变异 | 结果 |
+|---|---|
+| `_shizukuStatus` 改回 `ShizukuShell.status()` | **只有**「字段区不做 Shizuku 探测」红 |
+| `_deviceContext` 改回 `DeviceContextStore.snapshot()` | **只有**「字段区不做设备上下文快照」红 |
+
+> 这条教训比改动本身重要：**一个没做过变异的断言，不知道自己在守什么**。
+> 它可能绿得理直气壮，而守的是一片空白区域。
+
 ### 同时补上「registry 段里到底谁慢」
 
 `StartupMark` 只回答「这一段慢」，不回答「慢在谁身上」。而 `registry` 段的两种成因修法完全相反：
@@ -547,9 +587,9 @@ I Startup: 工具装配 45 项，合计 …ms；最慢：xxx=…ms, yyy=…ms
 | 编译 | `:app:compileDebugKotlin` **BUILD SUCCESSFUL**（1m14s） |
 | 出包 | `:app:assembleDebug -PnoNative=true` → `app-debug.apk` 28,247,915 字节 |
 | 新 harness | `run-tool-load-profiler-verification.sh` **18 条行为断言全过** |
-| 启动顺序 harness | 19/19（新增 6 条接线断言） |
+| 启动顺序 harness | **22/22**（13 → 19 接线断言，再 +3 条「字段区不做系统调用」） |
 | 启动分段 harness | **32 条**（25 → 32，新增「收尾后打点失效」7 条） |
-| 反向变异 | ① 去掉「首样本跳过」→ **8 条红**；② 阈值 `>=` 改 `>` → **只有**边界那条红；③ 断开 profiler 接线 → 只有「registry 接到启动 profiler」那条红；④ 删掉 `seal` 短路 → **4 条红，全在收尾组** |
+| 反向变异 | ① 去掉「首样本跳过」→ **8 条红**；② 阈值 `>=` 改 `>` → **只有**边界那条红；③ 断开 profiler 接线 → 只有接线那条红；④ 删掉 `seal` 短路 → **4 条红，全在收尾组**；⑤⑥ 字段区改回 IPC → **各自只红对应那一条** |
 | 文本断言 | **1370 未增**（新断言全是行为断言 / `in` 判定，不计入 census） |
 | 架构守卫 | 5/5 通过（`ChatViewModel` 3890 ≤ 3890） |
 | 全量 harness | **`PASS=91 SKIP=0 XFAIL=0 FAIL=0`**，门禁 5/5（基线 90 → 91） |

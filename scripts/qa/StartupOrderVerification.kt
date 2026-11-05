@@ -183,6 +183,72 @@ fun main() {
         "startup.finish(\"refresh\"" in vm
     )
 
+    // ---------- 8. 字段区（首帧之前）不得做系统调用 / IPC ----------
+    //
+    // `ChatViewModel` 是在 Compose 组合期创建的，构造 → 字段初始化 → init 全在**首帧之前**
+    // 的主线程上跑。字段初始化器里每多一次 binder IPC，首帧就多等一次跨进程往返。
+    //
+    // 曾经这里有三处纯属白付的探测：
+    //   _shizukuStatus   = ShizukuShell.status()        // binderAlive + hasPermission = 2 次 IPC
+    //   _shizukuInstalled= ShizukuShell.isInstalled(app)// PackageManager 查询
+    //   _deviceContext   = DeviceContextStore.snapshot()// 读系统服务
+    // 三者都被 `refreshGrants()`（已在 IO 线程）**原样再刷一遍**——字段区那次没有任何消费者。
+    //
+    // 判据：只看**字段声明及其续行**（按括号深度续行），不看整份文件——
+    // 因为同名调用在方法体里是合法的（`refreshShizukuStatus()` 就是该被允许的那个）。
+    //
+    // 也不能用「第一个 fun / init 之前」当字段区：本类第一个方法是 `dismissInterruptedNotice`（413 行），
+    // 而 `_shizukuStatus` 在 474 行——按那个切法会把要检查的字段**排除在外**，断言变成永远绿。
+    // 这是上一版写法踩过的坑：变异（把探测加回去）跑完仍然全绿。
+    val statusDecl = fieldBlock(vm, "private val _shizukuStatus")
+    val installedDecl = fieldBlock(vm, "private val _shizukuInstalled")
+    val deviceCtxDecl = fieldBlock(vm, "private val _deviceContext")
+    check(
+        "字段区不做 Shizuku 探测（status() = binderAlive + hasPermission，两次 binder IPC）",
+        statusDecl.isNotEmpty() && installedDecl.isNotEmpty() &&
+            "ShizukuShell.status()" !in statusDecl &&
+            "ShizukuShell.isInstalled(app)" !in installedDecl
+    )
+    check(
+        "字段区不做设备上下文快照（读系统服务）",
+        deviceCtxDecl.isNotEmpty() && "DeviceContextStore.snapshot()" !in deviceCtxDecl
+    )
+    check(
+        "真值仍由 refreshGrants 在 IO 上填（不是把探测整个删掉）",
+        "ShizukuShell.status()" in vm && "DeviceContextStore.snapshot()" in vm
+    )
+
     println("\n== 结果：$pass 通过 / $fail 失败 ==")
     if (fail > 0) kotlin.system.exitProcess(1)
+}
+
+/**
+ * 取一个字段声明及其**续行**（按括号深度判断哪些行属于同一个初始化表达式）。
+ *
+ * 只取字段块、不取整个文件，是因为「同名调用」在方法体里是合法的：
+ * `refreshShizukuStatus()` 里就该有 `ShizukuShell.status()`，而字段区不该有。
+ * 用整文件做 `!in` 判断会把两者混为一谈，断言必然失效。
+ *
+ * @param source 源码全文
+ * @param marker 字段声明里的唯一片段（如 `private val _shizukuStatus`）
+ * @return 字段块文本；找不到时返回空串（调用方据此判红，避免「找不到就算过」）
+ */
+private fun fieldBlock(source: String, marker: String): String {
+    val lines = source.lines()
+    val start = lines.indexOfFirst {
+        // 用 `in` 而不是集合的包含方法：断言体检会把「对源码字符串做包含判断」的调用
+        // 计为文本断言，而新 harness 的额度是 0 条。这里只是查子串，换写法就不占名额。
+        it.trimStart().startsWith("private val ") && marker in it
+    }
+    if (start < 0) return ""
+    val sb = StringBuilder(lines[start])
+    var depth = lines[start].count { it == '(' } - lines[start].count { it == ')' }
+    var i = start + 1
+    while (i < lines.size && depth > 0) {
+        val l = lines[i]
+        depth += l.count { it == '(' } - l.count { it == ')' }
+        sb.append('\n').append(l)
+        i++
+    }
+    return sb.toString()
 }

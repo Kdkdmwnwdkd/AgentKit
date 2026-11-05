@@ -468,15 +468,14 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     val batteryUnrestricted: StateFlow<Boolean> = _batteryUnrestricted.asStateFlow()
 
     /**
-     * 调试通道（Shizuku）状态（W-13 B 方案）：未运行 / 未授权 / 就绪。
-     *
-     * 初值取一次实时探测（构造时 Shizuku 可能还没启动，随后 [refreshGrants] 会再刷新）。
+     * 调试通道（Shizuku）状态（W-13 B）。初值静态，真值由 [refreshGrants]（IO）填：
+     * 原先调 `status()` = `binderAlive()`+`hasPermission()` 两次 binder IPC，主线程字段区里纯属白付。
      */
-    private val _shizukuStatus = MutableStateFlow(ShizukuShell.status())
+    private val _shizukuStatus = MutableStateFlow(ShizukuShell.Status.NOT_RUNNING)
     val shizukuStatus: StateFlow<ShizukuShell.Status> = _shizukuStatus.asStateFlow()
 
-    /** Shizuku 是否已安装（与「是否在运行」分开：已装就该直接拉起，不再劝人去商店）。 */
-    private val _shizukuInstalled = MutableStateFlow(ShizukuShell.isInstalled(app))
+    /** Shizuku 是否已安装（与「是否在运行」分开：已装就该直接拉起，不再劝人去商店）。初值同理由 [refreshGrants] 填。 */
+    private val _shizukuInstalled = MutableStateFlow(false)
     val shizukuInstalled: StateFlow<Boolean> = _shizukuInstalled.asStateFlow()
 
     /** 界面四态（未安装 / 已装未启动 / 未授权 / 就绪）——文案与按钮动作都由它决定。 */
@@ -530,8 +529,8 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         refreshShizukuStatus()
     }
 
-    /** 当前设备上下文快照（L4 主动感知）：供自动化页展示 Agent 实时感知到的手机状态。 */
-    private val _deviceContext = MutableStateFlow(DeviceContextStore.snapshot())
+    /** 当前设备上下文快照（L4 主动感知）：供自动化页展示 Agent 实时感知到的手机状态。初值为空（`isEmpty` 有明确语义），真值由 [refreshGrants] 填。 */
+    private val _deviceContext = MutableStateFlow(DeviceContext("", "", emptyList(), 0L))
     val deviceContext: StateFlow<DeviceContext> = _deviceContext.asStateFlow()
 
     /** 导入技能仓库（L7）：从 URL / 本机 zip / 内置示例导入到 filesDir/skills/imported。 */
