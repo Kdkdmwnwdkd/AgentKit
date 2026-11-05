@@ -146,7 +146,7 @@ fun main() {
     }
 
     check("R10-17 配置超出窗口一半时按窗口收敛") {
-        // deepseek 64k 窗口：用户把预算调到 100k，实际只能用 32k
+        // 用 64k 窗口举例（纯函数入参，与目录里的实际值无关）：预算调到 100k，只能用 32k
         assertEquals("capped", 32_000, ContextBudget.budgetForProvider("deepseek", 100_000, 64_000))
     }
 
@@ -160,11 +160,27 @@ fun main() {
     }
 
     check("R10-20 目录里的窗口值只填了确定项，未确认的保持 0") {
-        assertEquals("deepseek", 64_000, ProviderCatalog.contextWindowOf("deepseek"))
+        // DeepSeek 官方 Models & Pricing：V3.2 的 chat 与 reasoner 同为 128K。
+        // 这条断言曾钉 64_000（V3/R1 时代口径），已随官方更新订正。
+        assertEquals("deepseek", 128_000, ProviderCatalog.contextWindowOf("deepseek"))
         assertEquals("claude", 200_000, ProviderCatalog.contextWindowOf("claude"))
         // 「OpenAI 兼容」是万能兜底条目，可能对接任意端点，不能猜窗口
         assertEquals("openai 兜底不填", 0, ProviderCatalog.contextWindowOf("openai"))
         assertEquals("未收录", 0, ProviderCatalog.contextWindowOf("nope"))
+    }
+
+    check("R10-21 填了的窗口不得反过来压低默认预算（目录填小会静默砍预算）") {
+        // 语义：预算 = min(configured, 窗口/2)，默认 configured=24_000。
+        // 若某家窗口填成 32_000（/2=16k），默认预算会被悄悄砍到 16k——改的是目录，
+        // 退化却发生在预算上，且没有任何日志。这条拦住那种填法。
+        val offenders = ProviderCatalog.all
+            .filter { it.contextWindow > 0 }
+            .filter { it.contextWindow / 2 < ContextBudget.DEFAULT_BUDGET_TOKENS }
+            .map { "${it.id}=${it.contextWindow}" }
+        assertTrue(
+            "窗口/2 低于默认预算的条目：$offenders",
+            offenders.isEmpty()
+        )
     }
 
     println("\n=== 结果：$passed 通过 / ${failures.size} 失败 ===")

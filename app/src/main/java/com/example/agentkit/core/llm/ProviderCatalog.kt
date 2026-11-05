@@ -97,7 +97,13 @@ object ProviderCatalog {
             style = STYLE_OPENAI, defaultBaseUrl = "https://api.deepseek.com/v1",
             defaultModel = "deepseek-chat",
             popularModels = listOf("deepseek-chat", "deepseek-reasoner"),
-            contextWindow = 64_000,
+            // 官方 Models & Pricing（2025-12 起 V3.2）：chat（非思考）与 reasoner（思考）
+            // **同为 128K**，故一个值可覆盖两个模型。旧值 64_000 是 V3/R1 时代的口径。
+            //
+            // 注意它**不改变默认预算**：预算取 min(configured, 窗口/2)，而默认
+            // configured=24_000 < 64_000/2，改前改后都是 24k。只有用户把预算调到
+            // 32k 以上时，这次修正才把可用的天花板从 32k 抬到 64k。
+            contextWindow = 128_000,
             note = "深度求索官方；reasoner 支持思维链"
         ),
         LlmProvider(
