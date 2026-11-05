@@ -49,18 +49,43 @@ class StartupTrace(
     private var lastTick: Long = clock()
 
     /**
+     * 是否已收尾。收尾后 [mark] 不再记录任何段。
+     *
+     * ## 为什么需要
+     *
+     * 打点写在**会被重复调用的方法**里（比如 `buildInitialSkills()` 在导入/卸载技能时
+     * 会经 `reloadSkills()` 再跑一遍）。启动观测的逻辑终点是 `finish()`——之后的打点
+     * 混进来，`snapshot()` / `summary()` 就会把「启动之后的某次重载」也算成启动分段，
+     * 数字当场失真。
+     */
+    private var sealed = false
+
+    /**
      * 结束上一段并开始下一段。
      *
+     * 已 [seal] 时直接返回 0 且不记录——收尾之后的打点属于「别的观测」，不属于启动分段。
+     *
      * @param name 段名（如 "registry" / "skills" / "refreshLogs"）。
-     * @return 该段耗时（毫秒）。
+     * @return 该段耗时（毫秒）；已收尾时为 0。
      */
     fun mark(name: String): Long = synchronized(lock) {
+        if (sealed) return@synchronized 0L
         val now = clock()
         val delta = now - lastTick
         lastTick = now
         segments += Segment(name, delta)
         delta
     }
+
+    /**
+     * 收尾：此后 [mark] 不再生效。
+     *
+     * 幂等——重复调用不改变任何已记录的段。
+     */
+    fun seal() = synchronized(lock) { sealed = true }
+
+    /** 是否已收尾（供断言与调用方判断）。 */
+    fun isSealed(): Boolean = synchronized(lock) { sealed }
 
     /** 已记录的段（快照，按记录顺序）。 */
     fun snapshot(): List<Segment> = synchronized(lock) { segments.toList() }

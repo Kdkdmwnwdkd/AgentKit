@@ -141,6 +141,48 @@ fun main() {
         "setIntent(intent)" in main
     )
 
+    // ---------- 7. 启动分段的口径与「工具装配逐项计时」的接线 ----------
+    //
+    // 上一轮量到 `skills=718~827ms`、`registry=1070~1213ms`，但这两个数字**起点不对**：
+    // StartupMark 在字段区之前就创建了，于是 `skills` 段把中间几十个字段的初始化也算了进去。
+    // 照着错数字优化，等于上一轮 `refresh` 段的翻版（先疑 refreshGrants，真凶是 refreshLogs）。
+    // 所以先在两处切开口径，再谈优化——这组断言锁的就是「切开了」。
+    //
+    // 为什么这里是文本断言：ChatViewModel 需要 Android `Application`，在纯 JVM harness 里
+    // 无法实例化。所以本 harness 只验「接线是否存在」，计时器**数得对不对**由
+    // ToolLoadProfilerVerification 用假时钟做行为断言。两者分工明确，不是拿文本断言凑数。
+    val vm = File("app/src/main/java/com/example/agentkit/ui/ChatViewModel.kt").readText()
+    val registrySrc = File("app/src/main/java/com/example/agentkit/core/ToolRegistry.kt").readText()
+    val markSrc = File("app/src/main/java/com/example/agentkit/core/StartupMark.kt").readText()
+
+    val fieldsAt = vm.indexOf("startup.mark(\"fields\")")
+    val skillsAt = vm.indexOf("startup.mark(\"skills\")")
+    check(
+        "字段初始化已从 skills 段切出（fields 必须排在 skills 之前）",
+        fieldsAt > 0 && skillsAt > fieldsAt,
+        "fields@$fieldsAt skills@$skillsAt"
+    )
+    check(
+        "registry 之前单独切出 preRegistry（ToolRegistry() 构造极轻，重的是 45 个 register）",
+        vm.indexOf("startup.mark(\"preRegistry\")") > 0
+    )
+    check(
+        "registry 接到启动 profiler（不接则工具装配永远「无样本」）",
+        "ToolRegistry(startup.toolProfiler)" in vm
+    )
+    check(
+        "ToolRegistry.register 真的打点（实参先求值，故此处间隔 = 构造+类加载耗时）",
+        "profiler?.mark(tool.name)" in registrySrc
+    )
+    check(
+        "启动汇总会落工具装配报告（只落段级数字，等于还是只知道「这一段慢」）",
+        "toolProfiler.report()" in markSrc
+    )
+    check(
+        "最后一段由 finish 闭合（否则 refresh 段不进汇总）",
+        "startup.finish(\"refresh\"" in vm
+    )
+
     println("\n== 结果：$pass 通过 / $fail 失败 ==")
     if (fail > 0) kotlin.system.exitProcess(1)
 }

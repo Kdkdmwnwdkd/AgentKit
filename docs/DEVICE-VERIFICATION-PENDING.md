@@ -476,6 +476,91 @@ onNewIntent 存在且设置 pendingWorkflowId / 调用 setIntent），13/13 通�
 > 首帧更早出，但初始化总时长仍受这两段约束。它们是下一轮的对象。
 
 
+## 2026-11-04 第四轮：先把「skills 718ms」这个数字的来源切开
+
+上一轮把 `registry 1070~1213ms` / `skills 718~827ms` 记成了「下一轮的对象」。本轮动手之前
+先核了这两个数字的**起点**，发现口径本身不对——不是优化没做，是**还没到能优化的地步**。
+
+### 问题：段的边界按「上一次打点在哪」划，不是按「做了什么」划
+
+`StartupMark` 在 `ChatViewModel` 第 368 行创建（字段区最前面），而 `skills` 段的第一个打点
+在第 557 行 `buildInitialSkills()` 里。中间这近 190 行字段初始化——`marketStore`、
+`conversationStore`、`bookmarkStore`、`jobStore`、`jobRunner`、终端池……——**全被算进了
+「技能装载」**。它们和技能一个字节的关系都没有。
+
+这和上一轮 `refresh` 段的误判是同一类错误：
+
+> 上一轮把 `refresh=1115ms` 归给 `refreshGrants`（5 处 IPC），改异步后仍是 1115ms；
+> 查时间线才发现真凶是 `refreshLogs()` 的 200 条 `SimpleDateFormat.format()`（638ms）。
+
+当时的教训是「归因要查到底」；这一轮补上更靠前的一环：**先确认这个数字测的是你以为的那段代码**。
+
+### 修法：加两个分隔打点，把四段拆成六段
+
+| 段名 | 覆盖范围（修口径后） |
+|---|---|
+| `fields` | `StartupMark` 创建 → 技能装载开始（字段初始化） |
+| `skills` | `importRepo.loadImported` + `SkillLoader.loadAll` |
+| `preRegistry` | `computeSkillInfos` + 市场/终端等字段 → 45 个 register 之前 |
+| `registry` | 45 个 `register(XxxTool(...))` |
+| `reconcile` / `workflows` / `refresh` | 不变 |
+
+代价是 `ChatViewModel` 多两行，而它是冻结文件（3890 上限）。所以同轮做了一次减法：
+`startup.mark("refresh")` + `startup.logSummary(...)` 合成 `startup.finish("refresh", ...)`
+（`StartupMark` 新增 `finish`），净行数仍是 **3890**，没有抬基线。
+
+### 顺带修掉一个会让数字「看着像真的」的缺陷
+
+`buildInitialSkills()` 不只启动时跑：用户导入/卸载技能会经 `reloadSkills()` 再调一次，
+于是在 `finish()` 之后又打一对 `fields` / `skills` 点。`snapshot()` 会把这两段算进
+**启动**分段——不是崩溃，是静默失真，比崩溃更难发现。
+
+修法：`StartupTrace.seal()`，`StartupMark.finish()` 里封口；封口后 `mark()` 返回 0 且不记录。
+harness 加 7 条断言（`[8] 收尾后打点失效`），反向变异「删掉短路」→ **4 条红，全在该组**。
+
+### 同时补上「registry 段里到底谁慢」
+
+`StartupMark` 只回答「这一段慢」，不回答「慢在谁身上」。而 `registry` 段的两种成因修法完全相反：
+
+- 少数工具构造真重（构造器里读盘、起引擎）→ 该改那几个工具；
+- 均匀摊开（每项 15~25ms）→ 那是 JVM 类加载/校验，改单个工具没有任何用，只能改「什么时候装」。
+
+新增 `ToolLoadProfiler`，接法利用了 Kotlin 的求值顺序：`register(XxxTool(...))` 的实参
+**先求值再进函数体**，因此在 `register()` 开头打一个点，「距上次 `register` 的间隔」
+就等于本次实参的构造 + 类加载耗时——**45 个调用点一行都不用改**。
+
+```
+private val registry = ToolRegistry(startup.toolProfiler).apply { ... }   // 只改这一处
+```
+
+汇总时与分段数字一起落日志：
+
+```
+I Startup: ViewModel 初始化分段：fields=…, skills=…, preRegistry=…, registry=…, …
+I Startup: 工具装配 45 项，合计 …ms；最慢：xxx=…ms, yyy=…ms
+```
+
+### 验证（本轮**没有**可上的设备）
+
+| 项 | 结果 |
+|---|---|
+| 编译 | `:app:compileDebugKotlin` **BUILD SUCCESSFUL**（1m14s） |
+| 出包 | `:app:assembleDebug -PnoNative=true` → `app-debug.apk` 28,247,915 字节 |
+| 新 harness | `run-tool-load-profiler-verification.sh` **18 条行为断言全过** |
+| 启动顺序 harness | 19/19（新增 6 条接线断言） |
+| 启动分段 harness | **32 条**（25 → 32，新增「收尾后打点失效」7 条） |
+| 反向变异 | ① 去掉「首样本跳过」→ **8 条红**；② 阈值 `>=` 改 `>` → **只有**边界那条红；③ 断开 profiler 接线 → 只有「registry 接到启动 profiler」那条红；④ 删掉 `seal` 短路 → **4 条红，全在收尾组** |
+| 文本断言 | **1370 未增**（新断言全是行为断言 / `in` 判定，不计入 census） |
+| 架构守卫 | 5/5 通过（`ChatViewModel` 3890 ≤ 3890） |
+| 全量 harness | **`PASS=91 SKIP=0 XFAIL=0 FAIL=0`**，门禁 5/5（基线 90 → 91） |
+
+> 为什么没有设备数据：本轮的远程环境（构建机 / 验证机）ssh 别名已无法解析，
+> 沙箱内无 KVM、起不了模拟器。所以本轮只做到「编译 + 出包 + 纯 JVM 断言」，
+> **没有**新的段耗时数字。`fields` / `preRegistry` 的实际毫秒数，以及工具装配的 top-N，
+> 都要等下一次上机读日志——这也正是本轮不宣称「启动变快」的原因：
+> 没有测量就没有结论，spec 上的数字只能来自真机。
+
+
 ### 补掉 3：全量 harness 两处「第一次真跑」暴露的陈旧断言
 
 这轮把 APK 路径传给 `run-all.sh`、并且 native 包编出来（AGP 产物

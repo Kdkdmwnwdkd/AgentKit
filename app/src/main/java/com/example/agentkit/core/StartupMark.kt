@@ -35,6 +35,16 @@ class StartupMark(
     private val trace = StartupTrace()
 
     /**
+     * 工具装配逐项计时：[ToolRegistry] 每次 `register` 打一个点，回答
+     * 「`registry` 那一段到底花在哪个工具上、还是均匀摊在类加载上」。
+     *
+     * 放在这里而不是让调用方自己 new 一个：`ChatViewModel` 已是冻结行数的文件，
+     * 每多一个字段都要从别处抠一行出来。门面本来就负责「启动期观测」，
+     * 由它持有 profiler 是零成本的。
+     */
+    val toolProfiler = ToolLoadProfiler()
+
+    /**
      * 结束上一段并开始下一段。
      *
      * @param name 段名（如 "skills" / "registry"）。
@@ -52,5 +62,23 @@ class StartupMark(
      */
     fun logSummary(label: String) {
         AgentLogger.i("Startup", trace.logLine(label, slowThresholdMillis))
+        // 段级数字只说明「registry 这一段慢」，逐项数字才说明「慢在谁身上」。
+        // 两条一起落，事后不必再猜。
+        AgentLogger.i("Startup", toolProfiler.report())
+    }
+
+    /**
+     * 收尾：闭合最后一段并落汇总。
+     *
+     * 存在理由很朴素：`mark("refresh")` 紧跟 `logSummary(...)` 是两行样板，
+     * 而调用方（`ChatViewModel`）的行数是冻结的。合成一次调用，
+     * 语义也更清楚——「这里既结束了最后一段，也给出了总账」。
+     */
+    fun finish(lastSegment: String, label: String) {
+        mark(lastSegment)
+        // 收尾之后不再接受打点：`buildInitialSkills()` 会被 `reloadSkills()` 再调一次，
+        // 那次打点属于「导入技能时的重载」，不是启动分段。不封口就会污染快照。
+        trace.seal()
+        logSummary(label)
     }
 }

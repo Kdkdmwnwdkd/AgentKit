@@ -168,6 +168,31 @@ fun main() {
         eq("段名无重复错乱", trace.snapshot().map { it.name }.distinct().size, 8)
     }
 
+    // ---------- 8. 收尾（seal）之后不再接受打点 ----------
+    //
+    // 打点写在会被**重复调用**的方法里：`buildInitialSkills()` 在导入/卸载技能时会经
+    // `reloadSkills()` 再跑一遍，也就再打一次 `fields` / `skills`。启动观测的逻辑终点
+    // 是 `finish()`，之后那次重载属于「另一个事件」。不封口的话，`snapshot()` 会把
+    // 启动之后的重载也算进启动分段——数字当场失真，而且是那种「看着像真的」的失真。
+    println("\n[8] 收尾后打点失效")
+    run {
+        val trace = StartupTrace(FakeClock(now = 0L, step = 10L))
+        trace.mark("skills")
+        eq("收尾前正常记录", trace.snapshot().size, 1)
+        check("收尾前 isSealed=false", !trace.isSealed())
+
+        trace.seal()
+        check("收尾后 isSealed=true", trace.isSealed())
+
+        val ret = trace.mark("reload")
+        eq("收尾后 mark 返回 0", ret, 0L)
+        eq("收尾后不再新增段", trace.snapshot().size, 1)
+        eq("已记录的段不受影响", trace.snapshot().map { it.name }, listOf("skills"))
+
+        trace.seal()
+        eq("seal 幂等：重复调用不改变段数", trace.snapshot().size, 1)
+    }
+
     println()
     if (fails.isEmpty()) {
         println("✅ StartupTrace 全部通过（$pass 条）")

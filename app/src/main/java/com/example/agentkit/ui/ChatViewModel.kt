@@ -554,6 +554,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
 
     /** 首次构建技能列表：合并 assets 内置技能与 filesDir 已导入技能。 */
     private fun buildInitialSkills(): List<SkillManifest> {
+        startup.mark("fields") // 口径：切掉 368~552 行的字段初始化，别把它算进「技能装载」
         val imported = importRepo.loadImported(app)
         importedIds = imported.map { it.id }.toSet()
         return (SkillLoader.loadAll(app) + imported).also { startup.mark("skills") }
@@ -816,7 +817,8 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     private val _translatingIndex = MutableStateFlow<Int?>(null)
     val translatingIndex: StateFlow<Int?> = _translatingIndex.asStateFlow()
 
-    private val registry = ToolRegistry().apply {
+    private val registry = ToolRegistry(startup.toolProfiler).apply {
+        startup.mark("preRegistry") // 口径：ToolRegistry() 构造极轻，重的是下面 45 个 register
         register(HttpRequestTool())
         register(ReadFileTool(workspace))
         register(WriteFileTool(workspace, WriteBackupHook { fileBackupStore.backupBeforeWrite(it) }))
@@ -992,8 +994,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         refreshGrants() // 已异步（内部 launch(IO)）
         // L8/L9：首屏即有内容可看。200 条日志的 format() 实测占 600ms+（SimpleDateFormat 加锁），挪到 IO
         viewModelScope.launch(Dispatchers.IO) { refreshLogs(); refreshMemories() }
-        startup.mark("refresh")
-        startup.logSummary("ViewModel 初始化分段")
+        startup.finish("refresh", "ViewModel 初始化分段")
     }
 
     /**

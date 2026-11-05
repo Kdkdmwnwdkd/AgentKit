@@ -8,7 +8,14 @@ import kotlinx.serialization.json.Json
  * 工具注册表：维护 name -> AgentTool 的映射，并统一负责「查找 + 调用 + 异常兜底」。
  * 之后的 Skill 插件系统只需把自己的工具 register 进来，Agent 循环无需改动。
  */
-class ToolRegistry {
+class ToolRegistry(
+    /**
+     * 装配期逐项计时（可选）。`register(XxxTool(...))` 的实参**先求值再进函数体**，
+     * 所以在这里打点就能量出「每个工具的构造 + 类加载」耗时，45 个调用点一行都不用改。
+     * 见 [ToolLoadProfiler]。
+     */
+    private val profiler: ToolLoadProfiler? = null
+) {
     private val tools = LinkedHashMap<String, AgentTool>()
 
     /**
@@ -19,6 +26,7 @@ class ToolRegistry {
     private val lock = Any()
 
     fun register(tool: AgentTool): ToolRegistry = apply {
+        profiler?.mark(tool.name)
         synchronized(lock) { tools[tool.name] = tool }
     }
 
