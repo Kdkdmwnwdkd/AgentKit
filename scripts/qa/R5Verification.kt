@@ -308,7 +308,11 @@ private suspend fun testEventSequence() = runBlocking {
         }
         // 等 tool.start 发出（工具挂起后不会再有 tool.end）
         var waited = 0
-        while (observer.ofType("tool.start").isEmpty() && waited < 3_000) {
+        // 2026-11-07：原为 3000ms。全量重编译后的 CI 冷启动（协程调度器初始化 +
+        // 首次类加载）实测会超过 3 秒，导致 tool.start 还没发出就判定失败。
+        // 放宽到 10 秒：本用例只要收到 start 就立即退出，正常机器仍在几十毫秒内结束，
+        // 不影响耗时，只是不再把「机器慢」误报成「卡住定位失效」。
+        while (observer.ofType("tool.start").isEmpty() && waited < 10_000) {
             delay(20); waited += 20
         }
         try {

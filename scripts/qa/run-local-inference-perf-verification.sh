@@ -112,7 +112,7 @@ echo "[5/10] 失败不许静默（真机「发了消息没反应」）"
 expect "空输出抛本地推理异常" "$CLIENT" 'LocalInferenceException\('
 expect "空输出前先落 native 诊断" "$CLIENT" 'nativeDiagnostics\(\)'
 expect "本地异常不参与退避重试" "$LOOP" 'LocalInferenceException -> false'
-expect "本地异常不被译成网络提示" "$VM" 'as\? com\.example\.agentkit\.core\.llm\.local\.LocalInferenceException'
+expect "本地异常不被译成网络提示" "$VM" 'as\? com\.beichen\.polaris\.core\.llm\.local\.LocalInferenceException'
 
 echo "[6/10] 分词预算查询（llama_tokenize 返回负数 = 「需要多少」，不是失败）"
 # 这条是真机上「模型配好了但发不出去」的真凶：第一趟传 nullptr/0 问需求，

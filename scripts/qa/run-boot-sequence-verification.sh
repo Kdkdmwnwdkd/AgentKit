@@ -45,7 +45,7 @@ else
 fi
 
 # 留着 import 但不用，是下一次复发的入口；一并清掉。
-stale_import=$(grep -nE "^import com\.example\.agentkit\.(core\.(CrashLogger|AgentLogger|telemetry\.TraceSink|llm\.local)|runtime|automation)" "$APP" || true)
+stale_import=$(grep -nE "^import com\.beichen\.polaris\.(core\.(CrashLogger|AgentLogger|telemetry\.TraceSink|llm\.local)|runtime|automation)" "$APP" || true)
 if [ -z "$stale_import" ]; then
   good "A3 Application 不再 import 业务初始化类（只留 BootSequence）"
 else

@@ -48,9 +48,9 @@ while IFS= read -r hit; do
   bad "分层违规（未在基线中）：$hit"
   viol=$((viol + 1))
 done < <(grep -rn --include=*.kt \
-  -e '^import com\.example\.agentkit\.ui\.' \
-  -e '^import com\.example\.agentkit\.tools\.' \
-  -e '^import com\.example\.agentkit\.MainActivity' \
+  -e '^import com\.beichen\.polaris\.ui\.' \
+  -e '^import com\.beichen\.polaris\.tools\.' \
+  -e '^import com\.beichen\.polaris\.MainActivity' \
   app/src/main/java/com/beichen/polaris/core 2>/dev/null)
 
 if [ "$viol" -eq 0 ]; then
@@ -70,7 +70,7 @@ while IFS= read -r p; do
     stale=$((stale + 1))
     continue
   fi
-  if ! grep -qE '^import com\.example\.agentkit\.(ui\.|tools\.|MainActivity)' "$p"; then
+  if ! grep -qE '^import com\.beichen\.polaris\.(ui\.|tools\.|MainActivity)' "$p"; then
     bad "基线条目已失效（该文件不再违规，请从 $BASELINE 删除）：$p"
     stale=$((stale + 1))
   fi

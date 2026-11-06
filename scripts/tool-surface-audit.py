@@ -54,7 +54,7 @@ SRC = os.path.join(ROOT, "app", "src", "main", "java")
 # 目录写坏（重复登记、组没定义）时 `run-r13-catalog-verification.sh` 会先红，这里只管照着算。
 
 CATALOG_KT = os.path.join(
-    SRC, "com", "example", "agentkit", "core", "tool", "ToolCatalog.kt")
+    SRC, "com", "beichen", "polaris", "core", "tool", "ToolCatalog.kt")
 
 
 def load_manifest(path: str):
