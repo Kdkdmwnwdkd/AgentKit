@@ -1,6 +1,6 @@
 # AgentKit B 批交付与验证报告
 
-- 仓库：`Kdkdmwnwdkd/AgentKit`
+- 仓库：`Kdkdmwnwdkd/Polaris`
 - 基线（main，A 批合并提交）：`313d5bc`
 - B 批分支提交：`7cae115`（`feature/batch-b-robustness`）
 - **B 批合并提交：`6385edb`（main，merge commit）**

@@ -13,10 +13,10 @@
 ```bash
 # APK 加速直链（always latest，CI 每次构建后自动发的 Release）
 curl -sL --max-time 300 -o app-debug.apk \
-  "https://gh-proxy.com/https://github.com/Kdkdmwnwdkd/AgentKit/releases/download/latest/app-debug.apk"
+  "https://gh-proxy.com/https://github.com/Kdkdmwnwdkd/Polaris/releases/download/latest/app-debug.apk"
 
 # git 同步（只读，秒回）
-git fetch https://gh-proxy.com/https://github.com/Kdkdmwnwdkd/AgentKit.git main
+git fetch https://gh-proxy.com/https://github.com/Kdkdmwnwdkd/Polaris.git main
 
 # 整包 tarball（~18MB/s）
 https://gh-proxy.com/https://github.com/<owner>/<repo>/archive/refs/heads/<branch>.tar.gz
@@ -88,9 +88,9 @@ $ git ls-remote origin HEAD                                              → 730
 
 ```bash
 cd /workspace/AgentKit
-git remote set-url origin https://<USER>:<PAT>@github.com/Kdkdmwnwdkd/AgentKit.git
+git remote set-url origin https://<USER>:<PAT>@github.com/Kdkdmwnwdkd/Polaris.git
 git push origin HEAD:main          # 远端 main 会从 7306b4e 前进到下面的 HEAD
-git remote set-url origin https://github.com/Kdkdmwnwdkd/AgentKit.git   # 把 token 从配置里抹掉
+git remote set-url origin https://github.com/Kdkdmwnwdkd/Polaris.git   # 把 token 从配置里抹掉
 ```
 
 推送的是 **31 个提交 / 31 个文件 / +1608 −102**，全是文本（无二进制）。
@@ -168,7 +168,7 @@ scp -O -P 2222 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
 1. `get_file_contents(owner="Kdkdmwnwdkd", repo="AgentKit", path=..., ref="main")` 取现有文件 sha（更新已存在文件时必须提供）
 2. `push_files(owner, repo, branch="main", message="<提交信息>", files=[{path, content}, ...])` —— **批量多文件一次提交**
 3. 二进制文件（第 1 批的 3 个）如 MCP 不接受二进制 content，改用 `create_or_update_file` 传 base64，或单独处理
-4. 推送后 `WebFetch` 查 CI：`https://api.github.com/repos/Kdkdmwnwdkd/AgentKit/actions/runs?head_sha=<sha>&t=<时间戳>`
+4. 推送后 `WebFetch` 查 CI：`https://api.github.com/repos/Kdkdmwnwdkd/Polaris/actions/runs?head_sha=<sha>&t=<时间戳>`
 5. 全部绿后下载 APK 做二进制验证（`$ART/download_apk.py` + `verify_proot_t02t06.py`）
 
 ## 本地验证现状（推之前已确认全绿）
@@ -275,7 +275,7 @@ git push origin main                      # 此时是快进
 ### 事后同步本地引用（无网做法）
 
 ```bash
-git fetch https://gh-proxy.com/https://github.com/Kdkdmwnwdkd/AgentKit.git main
+git fetch https://gh-proxy.com/https://github.com/Kdkdmwnwdkd/Polaris.git main
 git merge --ff-only <mirror>/main
 git update-ref refs/remotes/origin/main <sha>
 ```

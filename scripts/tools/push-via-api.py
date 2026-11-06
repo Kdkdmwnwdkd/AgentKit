@@ -188,7 +188,7 @@ class Pusher:
 
 def main():
     ap = argparse.ArgumentParser(description='经 GitHub API 推送（绕过 git 协议阻塞）')
-    ap.add_argument('--repo', default='Kdkdmwnwdkd/AgentKit')
+    ap.add_argument('--repo', default='Kdkdmwnwdkd/Polaris')
     ap.add_argument('--branch', default='main')
     ap.add_argument('--token-file', default='/tmp/.ghpat')
     ap.add_argument('--dry', action='store_true', help='只校验 tree，不写入')

@@ -1,6 +1,6 @@
 # AgentKit 信任层收口（A 批）交付与验证报告
 
-- 仓库：`Kdkdmwnwdkd/AgentKit`
+- 仓库：`Kdkdmwnwdkd/Polaris`
 - 合并提交：`313d5bc`（main，merge commit）
 - 修复提交：`45dfd98`（fix(trust): A 批信任层收口）
 - CI：run #323「Build Debug APK」✅ success

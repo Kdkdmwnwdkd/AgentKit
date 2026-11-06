@@ -80,7 +80,7 @@ curl -s -m 10 -o /dev/null -w "api=%{http_code}\n" -H "Authorization: token $GH_
 
 # ② 同步本地历史（秒回，只读）
 cd /workspace/AgentKit
-git fetch "https://gh-proxy.com/https://github.com/Kdkdmwnwdkd/AgentKit.git" main
+git fetch "https://gh-proxy.com/https://github.com/Kdkdmwnwdkd/Polaris.git" main
 git reset --hard FETCH_HEAD                # 未跟踪文件不会被删
 
 # ③ 推小文件（MCP，一次 commit）
@@ -89,7 +89,7 @@ mcporter call github.push_files owner=Kdkdmwnwdkd repo=AgentKit branch=main \
 
 # ④ 推大文件（REST，payload 走文件不进命令行）
 SHA=$(curl -s -H "Authorization: token $GH_TOKEN" \
-  "https://api.github.com/repos/Kdkdmwnwdkd/AgentKit/contents/<path>?ref=main" \
+  "https://api.github.com/repos/Kdkdmwnwdkd/Polaris/contents/<path>?ref=main" \
   | python3 -c "import json,sys;print(json.load(sys.stdin)['sha'])")
 python3 -c "
 import json,base64
@@ -97,11 +97,11 @@ open('/tmp/push.json','w').write(json.dumps({
   'message':'...','content':base64.b64encode(open('<local>','rb').read()).decode(),
   'sha':'$SHA','branch':'main'}))"
 curl -s -X PUT -H "Authorization: token $GH_TOKEN" --data @/tmp/push.json \
-  "https://api.github.com/repos/Kdkdmwnwdkd/AgentKit/contents/<path>"
+  "https://api.github.com/repos/Kdkdmwnwdkd/Polaris/contents/<path>"
 
 # ⑤ 下产物（不带 auth，带了反而 403）
 curl -sL --max-time 300 -o app-debug.apk \
-  "https://gh-proxy.com/https://github.com/Kdkdmwnwdkd/AgentKit/releases/download/latest/app-debug.apk"
+  "https://gh-proxy.com/https://github.com/Kdkdmwnwdkd/Polaris/releases/download/latest/app-debug.apk"
 ```
 
 **MCP 注册（沙箱重置后必做，会清掉 `.mcp.json` 里的 github 条目）：**

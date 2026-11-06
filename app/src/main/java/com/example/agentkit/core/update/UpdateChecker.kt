@@ -36,7 +36,7 @@ data class UpdateInfo(
 object UpdateChecker {
 
     private const val API =
-        "https://api.github.com/repos/Kdkdmwnwdkd/AgentKit/releases/tags/latest"
+        "https://api.github.com/repos/Kdkdmwnwdkd/Polaris/releases/tags/latest"
 
     /**
      * 下载地址固定写死，不从接口返回值里取。
@@ -45,11 +45,11 @@ object UpdateChecker {
      * 而且让远端决定「去哪下载」本身就没必要——这个 App 只有一个包。
      */
     const val DOWNLOAD_URL =
-        "https://ghfast.top/https://github.com/Kdkdmwnwdkd/AgentKit/releases/download/latest/app-debug.apk"
+        "https://ghfast.top/https://github.com/Kdkdmwnwdkd/Polaris/releases/download/latest/app-debug.apk"
 
     /** Release 页面（给「打不开加速链接」时的手动兜底）。 */
     const val RELEASE_PAGE =
-        "https://github.com/Kdkdmwnwdkd/AgentKit/releases/tag/latest"
+        "https://github.com/Kdkdmwnwdkd/Polaris/releases/tag/latest"
 
     suspend fun check(currentCode: Int): Result<UpdateInfo> = withContext(Dispatchers.IO) {
         runCatching {

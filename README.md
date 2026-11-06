@@ -15,7 +15,7 @@ Android 本地 AI Agent —— Kotlin / Jetpack Compose，原创实现，四层�
 
 | 你要找什么 | 看这里 |
 |---|---|
-| **第一次用** | [使用说明](docs/使用说明.md) · [网页版](https://kdkdmwnwdkd.github.io/AgentKit/guide.html) |
+| **第一次用** | [使用说明](docs/使用说明.md) · [网页版](https://kdkdmwnwdkd.github.io/Polaris/guide.html) |
 | **这个项目现在什么样** | [现状 · 路线图 · 踩坑记录](docs/architecture/AgentKit-现状与路线图-2026-10-16.md)：做了什么 / 在做什么 / **踩过的坑逐条（现象→根因→修法→防复发）** |
 | **架构为什么这么切** | [架构方案 v2](docs/architecture/AgentKit-架构方案-v2-2026-11-06.md)：六条评审线的现状结论、缺陷分级与改造顺序 |
 | **参考了谁、借了什么** | [参照谱系](docs/architecture/AgentKit-参照谱系-2026-11-05.md) · [第三方声明](THIRD_PARTY_NOTICES.md) |
@@ -70,6 +70,6 @@ for f in scripts/qa/run-*.sh; do bash "$f" || echo "FAIL $f"; done
 
 ## 仓库
 
-- 地址：`https://github.com/Kdkdmwnwdkd/AgentKit`（分支 `main`）
+- 地址：`https://github.com/Kdkdmwnwdkd/Polaris`（分支 `main`）
 - APK 产物：Release tag `latest`（CI 自动维护 `app-debug.apk`）
-- 加速直链：`https://gh-proxy.com/https://github.com/Kdkdmwnwdkd/AgentKit/releases/download/latest/app-debug.apk`
+- 加速直链：`https://gh-proxy.com/https://github.com/Kdkdmwnwdkd/Polaris/releases/download/latest/app-debug.apk`
