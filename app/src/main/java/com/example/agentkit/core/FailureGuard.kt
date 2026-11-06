@@ -7,7 +7,7 @@ import kotlinx.serialization.json.JsonPrimitive
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * 单个调用指纹的失败状态（T04，设计参照：Coomi 的逐调用失败指纹思路，净室重写，未复制代码）。
+ * 单个调用指纹的失败状态（T04）：同一指纹最多真跑 N 次，超了直接熔断。
  *
  * @property executions 已**真实执行**次数（被熔断拦截的调用不计）。成功会清指纹
  *   （见 [FailureGuard.onExecuted]），故任何存活状态中 executions 恒等于 failures。

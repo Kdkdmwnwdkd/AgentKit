@@ -17,7 +17,7 @@ import com.example.agentkit.core.AgentLogger
  *  - Agent 的操作链路（无障碍、截图、读前台应用）依赖界面状态，后台跑出来的结果不可信；
  *  - Android 对后台启动界面/长任务限制严格，硬跑只会得到一堆失败。
  *  - 通知点开后进入前台执行，用户能看到过程，也能随时叫停——这是诚实且可用的形态。
- *    （Operit 的 WorkflowScheduler 也会受同样限制，只是它把失败藏起来了。）
+ *    这条限制对所有同类实现都成立，差别只在于是把失败藏起来，还是露出来。
  */
 object WorkflowNotifier {
 

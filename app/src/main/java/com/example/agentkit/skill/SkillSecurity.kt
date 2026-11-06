@@ -10,7 +10,7 @@ import com.example.agentkit.core.tool.ToolCatalog
  * 就能拿到全部高危权限（因为 registry 注册了所有工具）。本文件补一层**全局能力门**：
  * 所有工具按危险度分级，skill 按其信任等级被赋予能力上限，越权调用即使写在白名单里也被拦。
  *
- * 设计原则（思路借鉴 RikkaHub 的 skill 权限分级 + Coomi 的 tool capability，净室重写）：
+ * 设计原则：
  *  - 不依赖第三方 skill 的「自证白名单」，而是用应用内置的工具目录
  *    （[com.example.agentkit.core.tool.ToolCatalog]，R-13 起是能力分级的唯一真相源）作为判据。
  *  - 信任等级默认 PACKAGED（打包进 APK，可信全开）；IMPORTED/REMOTE 收紧，且默认禁止脚本执行。

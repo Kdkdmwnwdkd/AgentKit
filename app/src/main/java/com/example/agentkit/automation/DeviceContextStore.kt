@@ -22,7 +22,7 @@ object DeviceContextStore {
     /**
      * 启动后前台确认的最长等待（毫秒，W-7 P0-2）。
      *
-     * 取值对齐 Operit PhoneAgent POST_LAUNCH_DELAY_MS=1000L 的思路（设计参考，非代码复制）：
+     * 取 3 秒的理由：
      * 3s 覆盖「慢启动」应用的窗口切换，又不让调用方干等过久。
      */
     private const val LAUNCH_CONFIRM_TIMEOUT_MS = 3_000L

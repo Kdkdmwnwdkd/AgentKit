@@ -69,7 +69,7 @@ internal const val APP_LIST_MAX_LIMIT: Int = 100
 /**
  * app_launch 启动后的沉降等待（毫秒，W-7 P0-2）。
  *
- * 对齐 Operit PhoneAgent POST_LAUNCH_DELAY_MS=1000L 的思路（设计参考，非代码复制）：
+ * 取 1 秒的经验值：
  * startActivity 后系统窗口切换需要时间，先沉降再确认前台，避免 ui_tree 读到旧窗口。
  */
 internal const val POST_LAUNCH_SETTLE_MS: Long = 1_000L
@@ -470,8 +470,7 @@ internal suspend fun <T> runCatchingRethrowCancel(
  * 1. **短路**：`DeviceContextStore.snapshot().foregroundPackage` 空白说明无障碍服务
  *    从未喂过数据（ui_tree 同样不可用），确认无从谈起——直接返回旧语义的 ok，
  *    避免无障碍没开时白等约 4 秒（判据纯函数见 [deviceContextEverUpdated]）。
- * 2. **沉降**：等 [POST_LAUNCH_SETTLE_MS] 毫秒，给系统窗口切换留时间（对齐 Operit
- *    PhoneAgent POST_LAUNCH_DELAY_MS=1000L 的思路，设计参考非代码复制）。
+ * 2. **沉降**：等 [POST_LAUNCH_SETTLE_MS] 毫秒，给系统窗口切换留时间。
  * 3. **前台确认**：[DeviceContextStore.awaitForegroundPackage] 轮询直到目标包名到前台。
  * 4. **三分支**（映射纯函数见 [launchConfirmationResult]）：已确认 → 硬成功；
  *    未确认 → 仍是 ok（意图已发出）但 code 区分开，引导模型用 ui_tree 看当前界面

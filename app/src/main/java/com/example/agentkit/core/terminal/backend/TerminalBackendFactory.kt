@@ -1,7 +1,7 @@
 package com.example.agentkit.core.terminal.backend
 
 /**
- * 终端后端工厂（T07，设计参照：zafiro · libterm 的后端工厂形态，净室重写）。
+ * 终端后端工厂（T07）。
  *
  * 职责：
  *  - **降级链** [getHighestAvailable]：proot → shizuku → 无线调试 → 本机 user
@@ -11,7 +11,7 @@ package com.example.agentkit.core.terminal.backend
  *  - **可用性缓存 + [clearCache]**：proot 探测要碰文件系统，缓存判定；
  *    **权限/可用性变化后调用 [clearCache] 即可让下一次判定重新探测**。
  *
- * 设计说明（与 zafiro 的差异，已在实现注释中标注）：
+ * 设计说明：
  *  - 缓存的是「**可用性判定**」而非后端**实例**——一个后端 = 一条独立 shell 进程，
  *    不能被多个会话共享，故 [obtain] 每次都构造**新实例**，只在探测这一步做缓存；
  *  - `Su` / `Ssh` 仍未实现：该身份下无候选，[obtain] 返回 null。这不是特例分支——

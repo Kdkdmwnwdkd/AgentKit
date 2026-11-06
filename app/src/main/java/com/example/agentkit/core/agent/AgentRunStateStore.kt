@@ -15,7 +15,7 @@ import kotlinx.serialization.json.Json
  * - 但用户回来看到的应该是「上次在做什么、到哪一步了、怎么继续」，
  *   而不是一片空白 + 重新开始。
  *
- * 这正是对标 Operit / Coomi 的「会话可恢复」形态：**中断可以，但不能失忆**。
+ * 要的是**中断可以，但不能失忆**。
  *
  * ## 与 JobStore 的分工
  * - [com.example.agentkit.core.job.JobStore] 管的是**后台 shell 命令**进程，

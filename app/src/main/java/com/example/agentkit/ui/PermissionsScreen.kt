@@ -231,7 +231,7 @@ fun PermissionsScreen(vm: PermissionStatusContract, onStartGuide: () -> Unit = {
                 }
             }
 
-            // —— 调试通道设置步骤（对齐 Operit 的三步向导 + 厂商坑位）——
+            // —— 调试通道设置步骤（三步向导 + 厂商坑位）——
             if (shizukuUiState != ShizukuShell.UiState.READY) {
                 AkSectionCard(
                     title = "调试通道怎么开",

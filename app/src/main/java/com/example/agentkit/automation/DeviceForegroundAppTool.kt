@@ -21,7 +21,7 @@ import kotlinx.serialization.json.JsonObject
  *
  *  1. **未授权自动打开系统设置页**（`ACTION_USAGE_ACCESS_SETTINGS`）+ 返回结构化
  *     失败——模型拿到失败结果后会把「需要用户去开权限」如实转告用户，而不是
- *     反复重试同一调用。双动作（打开设置 + 结构化错误）与 RikkaHub 同款语义。
+ *     反复重试同一调用。双动作（打开设置 + 结构化错误）与 RikkaHub 同类语义（独立实现，未复制代码）。
  *  2. **前台读取从桶法升级为 UsageEvents 事件配对法**：逐个扫描
  *     ACTIVITY_RESUMED/MOVE_TO_FOREGROUND 事件，取时间序最后一个作为当前前台。
  *     RikkaHub 原版注释：「比 queryAndAggregateUsageStats 更接近系统『屏幕使用

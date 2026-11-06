@@ -11,7 +11,7 @@ import java.io.File
 /**
  * 任务清单存储（W-14）：模型用 `todo_write` / `todo_read` 自己维护步骤清单。
  *
- * 对齐 AiCode 的 task/todo：长任务（10+ 步）里模型容易忘掉「还剩什么」，
+ * 长任务（10+ 步）里模型容易忘掉「还剩什么」，
  * 一份显式清单能显著降低「跑到一半跑偏」的概率；用户也能在对话里看到进度。
  *
  * 存储：`filesDir/todos.json`，`{ "<conversationId>": "<markdown 清单>" }`。

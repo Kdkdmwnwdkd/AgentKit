@@ -7,7 +7,7 @@ import kotlinx.serialization.json.Json
 import java.io.File
 
 /**
- * 功能五（P1-8）：会话草稿独立保存（对标 RikkaHub 每会话草稿 / Coomi README 明示）。
+ * 功能五（P1-8）：会话草稿按会话独立保存——切走再切回，未发送的内容还在。
  *
  * 形态：`drafts.json` 放 App filesDir，`{ 会话id: 草稿文本 }` 单键值表。
  * 为什么不并入 ConversationRecord：草稿是「易失的中间态」——发送即消失、删会话即消失，

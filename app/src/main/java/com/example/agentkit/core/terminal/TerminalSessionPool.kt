@@ -123,7 +123,7 @@ data class SessionSnapshot(
 )
 
 /**
- * 终端会话池（T08，设计参照：zafiro · libterm 的会话池形态，净室重写）。
+ * 终端会话池（T08）。
  *
  * ## 职责
  * 在 [TerminalBackend]（T07）之上维护「**具名会话表**」，对上层（shell 工具）暴露：

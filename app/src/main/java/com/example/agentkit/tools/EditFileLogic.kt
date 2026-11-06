@@ -4,7 +4,7 @@ package com.example.agentkit.tools
  * edit_file 的决策纯函数（W-20）：与 IO / Android 彻底解耦，供 [EditFileTool] 与
  * QA harness（scripts/qa/EditWebSearchVerification.kt）共用同一份真源。
  *
- * 判定顺序（与 AiCode edit 工具的净室对齐：先校验、再动手，绝不写坏文件）：
+ * 判定顺序（先校验、再动手，绝不写坏文件）：
  *  1. old_string 为空 → 拒绝（空串会在每处边界匹配，结果不可预期）；
  *  2. old == new → 拒绝（no-op，别浪费一次写）；
  *  3. 文件中找不到 old_string → stale_not_found（提示重新读取，可能已被其他修改改变）；

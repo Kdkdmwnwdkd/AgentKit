@@ -14,7 +14,8 @@ import java.util.concurrent.TimeUnit
  *
  * 这里换成官方推荐的 UserService：本类运行在 shell 进程内，`ProcessBuilder` 起的是
  * **本地进程**，`waitFor(timeout)` 语义正常，且进程常驻、无需每次跨 binder 建管道。
- * （AiCode 同款路线；Operit / Coomi 走的是 `newProcess` + 无参 `waitFor()`。）
+ * 另一条路 `newProcess` 返回的是远端代理，定时 `waitFor` 未实现会直接抛异常，
+ * 所以这里必须走 UserService。
  *
  * ## 本进程的限制（务必遵守）
  * 不是合法应用进程：**不能用 Context 相关能力**（getContentResolver / registerReceiver /

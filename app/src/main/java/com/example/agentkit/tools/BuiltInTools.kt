@@ -149,7 +149,7 @@ internal fun File.atomicWriteText(text: String) {
 }
 
 /**
- * 分段读取（借鉴 Coomi 的 read_file 设计：默认限制约 64KB，支持按 offset 分批续读，
+ * 分段读取（默认限制约 64KB，支持按 offset 分批续读，
  * 避免一次性把大文件灌爆上下文。
  *
  * T06：回喂文本最终还会经 AgentLoop 的 truncateToolResult 独立截断到 24K 并带分页提示，
@@ -220,7 +220,7 @@ class ReadFileTool(workspace: File) : FileTool(workspace) {
 }
 
 /**
- * 精确编辑（W-20，对齐 AiCode edit 工具的净室重写：字符串匹配 + 唯一性校验 + 原子写）。
+ * 精确编辑（W-20：字符串匹配 + 唯一性校验 + 原子写）。
  *
  * 解决 [WriteFileTool] 全量覆写的痛点：小改动也要把整个文件内容重新生成一遍，
  * 大文件既费 token 又容易把没读全的部分写坏。本工具只替换指定片段。

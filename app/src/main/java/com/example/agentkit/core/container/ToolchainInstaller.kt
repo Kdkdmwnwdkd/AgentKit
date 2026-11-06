@@ -11,7 +11,7 @@ import java.io.File
  * 得自己敲 `apk add nodejs python3 openjdk17`——而手机上的容器没有桌面体验，
  * 这道坎足以让人放弃用容器做开发。
  *
- * 对标 Coomi / AiCode 的「容器开箱即用」：进容器就有完整的语言运行时。
+ * 目标：进容器就有完整的语言运行时，不用先敲一串 `apk add` 才敢动手。
  *
  * ## 设计取舍
  * **不预置运行时镜像**。打包 node+python+JRE 进 APK 会让包体增加数百 MB，

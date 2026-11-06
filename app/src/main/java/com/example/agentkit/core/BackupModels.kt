@@ -3,7 +3,7 @@ package com.example.agentkit.core
 import kotlinx.serialization.Serializable
 
 /**
- * 功能五（P1-4b）：全局备份/恢复的数据契约（对标 RikkaHub Backup.kt / Coomi 导出）。
+ * 功能五（P1-4b）：全局备份/恢复的数据契约。
  *
  * 备份件是一个 ZIP，内含四个 JSON 成员（见 [BackupArchive]）：
  *  - manifest.json      —— [BackupManifest]：自描述信封（版本/时间/条数），恢复前先验它

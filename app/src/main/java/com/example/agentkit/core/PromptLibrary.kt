@@ -3,11 +3,11 @@ package com.example.agentkit.core
 /**
  * 功能五（P1-7）：提示词库的纯函数层（零 IO/Android 依赖，harness 直接断言）。
  *
- * 三条不变量（对标 Coomi promptLibrary.ts 的 parsePrompts/savePrompt，净室重写）：
+ * 三条不变量（读写都按这三条收口，任一条破了就会污染列表渲染）：
  *  ① 读入净化：损坏/缺字段/重复 id 一律丢弃，坏数据不进内存（宁可少一条不崩）；
  *  ② 内置保护：builtin 项不可改不可删——用户只能「另存为自定义」
- *     （Coomi 用 `builtin:` 前缀实现，这里用显式 [PromptItem.builtin] 字段，
- *     不用字符串前缀猜语义）；
+ *     （用显式 [PromptItem.builtin] 字段，不用 id 字符串前缀：
+ *     前缀猜语义会在用户自定义 id 撞上前缀时出错）；
  *  ③ 标签净化：trim + 去空白 + 去重（防手打标签里混进空串污染列表渲染）。
  */
 
@@ -101,7 +101,7 @@ fun sanitizePrompts(raw: List<PromptItem>): List<PromptItem> {
  * 新建/更新一条自定义提示词（纯函数）。
  *
  * 规则：
- *  - title/content 必填（空 → Rejected，与 Coomi savePrompt 同语义）；
+ *  - title/content 必填（空 → Rejected：空标题在列表里无法辨认）；
  *  - draft.builtin = true → Rejected「内置提示词请另存为自定义」——编辑内置的
  *    正确路径是 UI 先复制成自定义项（新 id）再调本函数；
  *  - id 已存在 → 整条替换（保留位置）；否则追加到尾部。

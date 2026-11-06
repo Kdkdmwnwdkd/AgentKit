@@ -333,7 +333,7 @@ object ProotRunner {
      *   宿主同名值**，动态链接器才能找到 `libtalloc.so.2` / `libandroid-shmem.so`；
      * - `PATH` 显式含 `/usr/local/bin`（见 [GUEST_PATH]）；
      * - `GIT_CONFIG_GLOBAL=<guest 路径>`：避免容器内 git 报 dubious ownership / 找不到全局配置；
-     * - `CI=true` / `NO_COLOR=1` / `PAGER=cat`（T10 / rikkahub A13）：非交互三件套，
+     * - `CI=true` / `NO_COLOR=1` / `PAGER=cat`（T10）：非交互三件套，
      *   抑制确认提示（`apt install -y`）、分页器（`git log`）、ANSI 颜色转义残留。
      *
      * @param rootfs      已解压的 rootfs 宿主路径；传 null 则不带 `PROOT_TMP_DIR`
@@ -463,7 +463,7 @@ object ProotRunner {
     }
 
     /**
-     * 构造 guest 内「一次性命令」的 argv（T10 / rikkahub A13：**位置参数传命令**）。
+     * 构造 guest 内「一次性命令」的 argv（T10：**位置参数传命令**）。
      *
      * 形态（7 项 argv，命令以 `$2` 传入，不拼进脚本字符串）：
      * ```

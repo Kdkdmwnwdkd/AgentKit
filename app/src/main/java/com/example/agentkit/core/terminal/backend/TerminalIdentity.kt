@@ -1,7 +1,7 @@
 package com.example.agentkit.core.terminal.backend
 
 /**
- * 终端「身份」维度（T07，设计参照：zafiro · libterm 的终端身份划分，净室实现，未复制代码）。
+ * 终端「身份」维度（T07）。
  *
  * 身份 = 这条终端会话**以谁的权限**执行命令。
  *

@@ -54,7 +54,7 @@ import androidx.compose.ui.composed
  *
  * ## 为什么不用「再来一个文字弹窗」
  * v6 的首启引导（ChatScreen.OnboardingDialog）是纯文字分步说明，用户看完仍然不知道
- * 界面上哪个是输入框、哪个是发送键。竞品（AiCode 的 SpotlightOverlay）的做法是
+ * 界面上哪个是输入框、哪个是发送键。更有效的做法是
  * **在真实界面上开一个洞**：遮罩压暗，只有目标元素亮着，配一句话。
  *
  * ## 锚点怎么来

@@ -18,7 +18,7 @@ data class TruncationResult(
 )
 
 /**
- * 工具输出截断器（T08，设计参照：zafiro · libterm 的输出截断器形态，净室重写）。
+ * 工具输出截断器（T08）。
  *
  * ## 口径对齐（与 `core/ToolLimits.kt` 的关系，明确说明差异）
  * - **上限口径一致**：[DEFAULT_MAX_CHARS] 直接复用 [MAX_TOOL_RESULT_CHARS]（24000），

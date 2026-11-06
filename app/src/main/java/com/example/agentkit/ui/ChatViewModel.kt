@@ -517,7 +517,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app),
         // 按「四态」动作：已装就拉起、未装才去商店——不再一律劝人装
         when (_shizukuUiState.value) {
             ShizukuShell.UiState.NOT_INSTALLED -> {
-                // 优先「一键安装内置 APK」（对齐 Operit 体验）；没有内置包/失败才退官方发布页。
+                // 优先「一键安装内置 APK」；没有内置包、或安装失败才退官方发布页。
                 // 国内应用商店基本没有 Shizuku，market:// 只会落到空白页（真机录像实证）。
                 when (ShizukuInstaller.install(context)) {
                     ShizukuInstaller.Result.INSTALLER_LAUNCHED,
@@ -902,7 +902,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app),
         register(WebClickTool())
         register(WebTypeTool())
         register(WebEvalTool())
-        // W-14：结构化追问 + 任务清单（对齐 RikkaHub ask_user / AiCode todo）
+        // W-14：结构化追问 + 任务清单
         register(AskUserTool())
         // W-25：先计划后执行——提交多步计划并等待用户批准
         register(PlanTool(broker = PlanBroker, planModeEnabled = { _planMode.value }))
@@ -3788,7 +3788,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app),
         // 整条丢掉、换成 LocalChatPrompt，模型收到的只剩「用户问：你能干嘛呢」，自然就开始
         // 介绍自己。一次 1.5 秒的 forward，换来一个错标题。
         //
-        // IRIDIS 不为标题花模型调用（titleFrom：首行截 24 字），照做：省一次前向、省约 1.5 秒，
+        // 标题不为它花一次模型调用（取首行截 24 字）：省一次前向、省约 1.5 秒，
         // 而且标题一定对得上用户的问法。真机 15:02 那两个 prefill 互相抢 CPU 的问题
         // （RSS 4078 MB、整轮 46 秒里标题占 34 秒）也一并消失。
         if (_config.value.providerId == "local-llama") {

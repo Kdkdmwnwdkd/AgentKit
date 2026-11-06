@@ -10,7 +10,7 @@ import com.example.agentkit.core.AgentLogger
 import java.io.File
 
 /**
- * 内置 Shizuku 安装器（W-13 B 方案，对齐 Operit 的「安装内置版本」体验）。
+ * 内置 Shizuku 安装器（W-13 B 方案）。
  *
  * 为什么内置 APK：
  *  - 国内应用商店基本没有 Shizuku，`market://` 会落到空白页（真机录像实证「当前页面已失效」）；

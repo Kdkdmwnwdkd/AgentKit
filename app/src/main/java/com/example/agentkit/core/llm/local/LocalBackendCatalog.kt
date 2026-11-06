@@ -8,13 +8,12 @@ package com.example.agentkit.core.llm.local
  *     接第二家引擎最容易出错的地方恰恰是这些「看着像常量、其实是规则」的东西。
  *  2. 接 MNN / LiteRT 时，改动集中在这三张表里，不会散进 client、ViewModel、UI。
  *
- * 这套「按能力分档登记后端」的结构，设计参照 IRIDIS 的后端注册表形态（净室实现，
- * 未复制代码），但**表里的值不是抄的**：
- * 它按自己的构建能力填（llama.cpp 带 OpenCL 就填 GPU 可用），我们按我们的填。
- * 照抄别人表里的 true，换来的是一台真机上「点了 GPU，转三分钟，回退 CPU」。
+ * 这套「按能力分档登记后端」的结构，关键是**表里的值必须按本项目自己的构建能力填**：
+ * 别人的构建带 OpenCL 就填 GPU 可用，我们得按我们编进 APK 的库来填。
+ * 照抄一张写着 true 的表，换来的是一台真机上「点了 GPU，转三分钟，回退 CPU」。
  */
 
-/** 计算后端。三档，降级顺序 NPU → GPU → CPU（越专用越靠前，和 IRIDIS 一致）。 */
+/** 计算后端。三档，降级顺序 NPU → GPU → CPU（越专用越靠前，回退代价也越大）。 */
 enum class LocalBackend(val label: String) {
     CPU("CPU"),
     GPU("GPU"),

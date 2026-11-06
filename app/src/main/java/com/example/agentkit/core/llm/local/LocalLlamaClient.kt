@@ -450,9 +450,8 @@ class LocalLlamaClient(
         // 系统提示与历史一个字节都没变（KV 前缀命中），只多算「上一条输出 + 一句纠正」
         // 这几十个 token；而成功的收益是整轮任务能继续。
         //
-        // 与参考实现（IRIDIS 的静默重试思路）的差别：那边把纠正提示塞进对话历史由主循环
-        // 判断，我们把它收敛在客户端内部——AgentLoop 看不到这次失败，也就不必为本地模型
-        // 单独改一套控制流。
+        // 另一种做法是把纠正提示塞进对话历史、由主循环判断是否重试；这里把它收敛在客户端
+        // 内部——AgentLoop 看不到这次失败，也就不必为本地模型单独改一套控制流。
         if (looksLikeToolCall && message.toolCalls.isEmpty()) {
             val reason = LocalToolCallParser.parse(text, eff.tools.map { it.name }.toSet()).error
             AgentLogger.i("LocalLlama", "工具调用解析失败（${reason.orEmpty()}），静默重试一次")

@@ -12,7 +12,7 @@ import kotlinx.serialization.json.jsonPrimitive
 /**
  * todo_write / todo_read（W-14）：让模型自己维护任务清单。
  *
- * 对齐 AiCode 的 task/todo 思路：10 步以上的长任务里，模型最容易犯的错不是「不会做」，
+ * 10 步以上的长任务里，模型最容易犯的错不是「不会做」，
  * 而是「做到一半忘了还剩什么」，然后重复劳动或提前收工。
  * 一份显式清单把「计划」外化到上下文里，每步都能对齐。
  *

@@ -31,10 +31,10 @@ import kotlinx.serialization.json.put
 import java.io.File
 
 /**
- * Skill 执行引擎（Phase 2 核心，原创实现，思路借鉴 RikkaHub 的 QuickJS 脚本 + Coomi 的 Skill 路由）：
+ * Skill 执行引擎（Phase 2 核心）：
  *
  * 一个 Skill 现在有两种运行形态：
- *  1. prompt 形态（无 entry）：只把指令正文作为 use_skill 的返回，由模型自行遵循（RikkaHub 的 use_skill 思路）。
+ *  1. prompt 形态（无 entry）：只把指令正文作为 use_skill 的返回，由模型自行遵循。
  *  2. script 形态（有 entry + 可用 JsEngine）：执行 main.js，脚本通过 [SkillRuntimeBridge] 安全调用工具。
  *
  * 脚本与工具之间隔离在 [SkillRuntimeBridge] 里：脚本只能调用技能 manifest 中声明过的 tools 白名单，

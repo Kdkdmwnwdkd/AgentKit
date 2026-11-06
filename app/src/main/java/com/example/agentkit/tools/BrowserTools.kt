@@ -10,7 +10,7 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
 
 /*
- * W-15 浏览器工具五件套（对齐 Operit 的 browser_* / AiCode BrowserTool）：
+ * W-15 浏览器工具五件套：
  *   web_open → web_snapshot → web_click / web_type → web_snapshot 循环。
  *
  * 与 http_request 的分工：

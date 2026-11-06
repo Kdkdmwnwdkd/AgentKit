@@ -7,11 +7,11 @@ import kotlinx.serialization.json.JsonObject
  * 工具统一接口：Agent 核心只依赖这个抽象，完全不接触任何 Android API。
  * 所有能力（文件、网络、剪贴板…）都通过 execute() 暴露给 LLM。
  *
- * 设计借鉴（净室重写，非抄源码）：
- *  - [systemPrompt]：工具可自带一段提示词，注入到系统提示里（RikkaHub 思路）。
- *  - [needsApproval]：危险工具可声明调用前需用户审批（RikkaHub / Coomi approval 思路）。
+ * 三个可选声明的分工：
+ *  - [systemPrompt]：工具可自带一段提示词，注入到系统提示里。
+ *  - [needsApproval]：危险工具可声明调用前需用户审批。
  *  - [readOnly]：是否只读（无副作用）。并发判据用——本批任一工具非只读即整批串行，
- *    全批只读才并行（T03，coomi A2 has_mutation 思路）。默认 false（未知工具按写处理，
+ *    全批只读才并行（T03）。默认 false（未知工具按写处理，
  *    走向串行这一安全侧）。
  *  - execute 返回统一契约 [ToolResult]（T02：ok/code/message/hint/data，失败 hint 必填）。
  */

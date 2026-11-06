@@ -12,15 +12,15 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
 
-/** 注入系统提示时，单技能指令的最大字节数（对齐 Coomi 的 MAX_SKILL_CONTEXT_BYTES=64KB）。 */
+/** 注入系统提示时，单技能指令的最大字节数（64KB：再大就会挤掉对话历史）。 */
 const val MAX_SKILL_CONTEXT_BYTES = 64 * 1024
 
 /**
  * Skill 清单 frontmatter：对应一个 Skill 目录下的 skill.json。
  * 第一阶段只负责「解析 + use_skill 按需加载 + 工具白名单」，脚本执行（main.js）放到第二阶段。
  *
- * 元数据字段（keywords/file_types/tool_requirements/risks）借鉴 Coomi 的 Skill 元数据，
- * 用于下面的 [SkillRouter] 智能打分路由，而非把全部技能一股脑塞进系统提示。
+ * 元数据字段（keywords/file_types/tool_requirements/risks）供下面的 [SkillRouter] 打分路由，
+ * 只把高分技能注入系统提示，而不是把全部技能一股脑塞进去。
  */
 @Serializable
 data class SkillManifest(
@@ -111,7 +111,7 @@ data class ModelConfig(
     val customBody: String = ""
 )
 
-/** 路由上下文：根据本次请求的特征给 Skill 打分（Coomi SkillRouter 思路，净室重写）。 */
+/** 路由上下文：根据本次请求的特征给 Skill 打分。 */
 data class SkillRouteContext(
     val query: String = "",
     val attachments: List<String> = emptyList(),
