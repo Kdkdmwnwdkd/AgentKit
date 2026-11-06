@@ -82,9 +82,11 @@ class Pusher:
                                      headers=self.h, timeout=90, **kw)
                 if r.status_code in (200, 201):
                     return r.json()
-                if r.status_code in (429, 500, 502, 503, 504):
+                if r.status_code in (400, 429, 500, 502, 503, 504):
+                    # 400 在此处几乎总是传输层截断（同一请求重发即成功），
+                    # 实测连续上传多个 blob 时会出现，故一并重试
                     last = f'HTTP {r.status_code}'
-                    time.sleep(2 + 3 * attempt)
+                    time.sleep(2 + 2 * attempt)
                     continue
                 raise RuntimeError(f'{method} {path} -> {r.status_code}: {r.text[:300]}')
             except (requests.exceptions.ConnectionError, requests.exceptions.Timeout,
@@ -157,13 +159,17 @@ class Pusher:
                                     'type': 'blob', 'sha': newsha})
                     continue
             data = git('show', f'{c}:{path}', binary=True)
-            got = self.call('POST', '/git/blobs', json={
-                'content': base64.b64encode(data).decode(), 'encoding': 'base64'})
+            payload = {'content': base64.b64encode(data).decode(), 'encoding': 'base64'}
+            try:
+                got = self.call('POST', '/git/blobs', json=payload)
+            except RuntimeError as e:
+                print(f'   ✘ blob 失败：{path}  {len(data)}B  b64={len(payload["content"])}  {e}')
+                raise
             if got['sha'] != blob_sha(data):
                 sys.exit(f'❌ blob sha 不符：{path}')
             entries.append({'path': path, 'mode': mode, 'type': 'blob', 'sha': got['sha']})
             uploaded += 1
-            time.sleep(0.05)
+            time.sleep(0.25)
 
         tree = self.call('POST', '/git/trees',
                          json={'base_tree': remote_tree, 'tree': entries})
