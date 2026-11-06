@@ -191,7 +191,9 @@ fun main(args: Array<String>) {
     val reporter = File(src, "com/example/agentkit/core/capability/CapabilityAuditReporter.kt")
         .readText(Charsets.UTF_8)
     val auditAt = vm.indexOf("CapabilityAuditReporter.report(")
-    val mcpAt = vm.indexOf("registerMcpTools()")
+    // R-07 起 MCP 工具同步改名为 refreshMcpTools()（注册/撤销统一在 McpToolSync 里决策）。
+    // 锚点带 8 空格缩进 + 前导换行：定义行是 `private fun refreshMcpTools() {`，不能被误命中。
+    val mcpAt = vm.indexOf("\n        refreshMcpTools()")
     check("启动时跑一次审计", auditAt > 0)
     check("审计在 MCP 注册之前", auditAt in 1 until mcpAt, "audit=$auditAt mcp=$mcpAt")
     check("自检实现在 core（不在 UI 层）", reporter.indexOf("CapabilityManifest.audit(tools)") >= 0)
