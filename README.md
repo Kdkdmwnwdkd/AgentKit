@@ -1,11 +1,14 @@
-# AgentKit
+# 北辰 · Polaris
 
 Android 本地 AI Agent —— Kotlin / Jetpack Compose，原创实现，四层分离架构。
 
 一个跑在手机上的 AI 助手：多轮工具调用、三家大模型协议原生适配、屏幕理解与操控、
 终端与容器能力、跨会话长期记忆。**零第三方新增依赖**，视觉与交互按自研规范落地。
 
-> 规模：Kotlin 源码 **252 文件 / 66,658 行** ｜ 源码级 QA **69 个 harness** ｜ 版本号 = CI 构建号（`1.N`）
+> 产品名**北辰**（Polaris）。工程内部沿用的 `AgentKit` 与包名 `com.example.agentkit` 是历史代号，
+> 不出现在桌面、系统设置或 App 内任何位置，仅为兼容已装应用升级链而保留。
+
+> 规模：Kotlin 源码 **301 文件 / 75,202 行** ｜ 源码级 QA **95 个 Kotlin harness + 116 个 shell 校验** ｜ 版本号 = CI 构建号（`1.N`）
 >
 > 上面这两个数字会随提交漂移，别当契约看：`find app/src/main -name '*.kt' | wc -l` 自己数一遍更快。
 
