@@ -188,7 +188,10 @@ private fun testSerializationRoundTrip() {
         // 追加 3 个变体后 selectedIndex=2；左移两次切到 0（验证持久化的是「选中态」而非默认值）
         store.selectVariant(id, 0, -1)
         store.selectVariant(id, 0, -1)
-        assertTrue("file persisted", awaitFile(file) { it.contains("回答A") && it.contains("回答C") })
+        // R-10 起消息落在分片 conversations.d/<id>.json，index 只留 id 列表（不含正文）；
+        // 判据跟着存储布局走，否则会一直等一个永远不含正文的 index 文件。
+        val shard = File(File(dir, "conversations.d"), "$id.json")
+        assertTrue("shard persisted", awaitFile(shard) { it.contains("回答A") && it.contains("回答C") })
 
         // 重开：新的 ConversationStore 实例读同一文件
         val reopened = ConversationStore(file)

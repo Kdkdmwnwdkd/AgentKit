@@ -377,10 +377,13 @@ private suspend fun testReadOnlyAndUnsupportedIdentity() {
         assertEquals("shell_close readOnly", false, close.readOnly)
     }
 
-    check("identity=su（首期未实现）经 shell_run → identity_unsupported") {
+    // R-20 起工具层把「合法但未实现」与「无可用后端」分开报：
+    // shell_run 先判取值合法性 → identity_not_implemented；
+    // 池层（TerminalSessionPool.open）仍是 identity_unsupported（见 R12 D7）。
+    check("identity=su（首期未实现）经 shell_run → identity_not_implemented") {
         val r = run.execute(json("command" to "pwd", "identity" to "su"))
         assertTrue("not ok", !r.ok)
-        assertEquals("code", "identity_unsupported", r.code)
+        assertEquals("code", "identity_not_implemented", r.code)
     }
 
     pool.closeAll()

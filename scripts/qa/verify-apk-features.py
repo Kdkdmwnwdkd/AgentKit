@@ -306,7 +306,7 @@ POOL_GROUPS = {
         ("选 Key 纯函数", "pickUsable"),
         ("最早恢复时间函数", "earliestRecoveryMs"),
         ("冷却时长函数", "cooldownMs"),
-        ("备用 Key UI 模型", "BackupKeyUi"),
+        ("备用 Key UI 模型", "Lcom/example/agentkit/ui/BackupKeyUi;"),
         ("主 Key 槽位 id", "primary"),
     ],
 }

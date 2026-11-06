@@ -825,7 +825,7 @@ private fun testPromptLibrary() {
         assertContains("S7", picker, "onManage: () -> Unit")
     }
     check("S8 管理页 + 路由 + 设置页入口（三处齐活）") {
-        assertContains("S8", picker, "fun PromptLibraryScreen(vm: ChatViewModel)")
+        assertContains("S8", picker, "fun PromptLibraryScreen(vm: PromptLibraryContract)")
         assertContains("S8", picker, "title = \"内置提示词\"")
         assertContains("S8", picker, "danger = true")
         assertContains("S8", scaffold, "PROMPTS(\"prompts\", \"提示词库\", \"提示词库\", Icons.Outlined.AutoAwesome)")
@@ -1407,14 +1407,14 @@ private fun testChatBackground() {
         assertContains("AA3", loader, "不引 Coil/Picasso")
     }
     check("AA4 全局背景层 Image + scrim（hotfix33 起挂 App 根层，AppBackgroundLayer）") {
-        assertContains("AA4", loader, "fun AppBackgroundLayer(vm: ChatViewModel)")
+        assertContains("AA4", loader, "fun AppBackgroundLayer(vm: ChatBackgroundRef)")
         assertContains("AA4", loader, "ContentScale.Crop")
         assertContains("AA4", loader, "alpha = alpha")
         assertContains("AA4", loader, "MaterialTheme.colorScheme.surface.copy(alpha = 0.25f)")
         assertContains("AA4", loader, "loadChatBackground(context, it, config.screenWidthDp, config.screenHeightDp)")
     }
     check("AA5 壁纸与颜色页：SAF 持久化选图 + 换一张/清除 + 浓度滑杆") {
-        assertContains("AA5", appearance, "private fun BackgroundSection(vm: ChatViewModel)")
+        assertContains("AA5", appearance, "private fun BackgroundSection(vm: ChatAppearanceContract)")
         assertContains("AA5", appearance, "Intent.ACTION_OPEN_DOCUMENT")
         assertContains("AA5", appearance, "FLAG_GRANT_PERSISTABLE_URI_PERMISSION")
         assertContains("AA5", appearance, "takePersistableUriPermission(")
@@ -1490,7 +1490,7 @@ private fun testJsonSafeAndGlobalBackground() {
         assertTrue("AB4", !appearance.contains("valueRange = 0.05f..0.60f"))
     }
     check("AB5 全局背景：AppBackgroundLayer + 根底色透明切换 + 对话页不再自绘") {
-        assertContains("AB5", loader, "fun AppBackgroundLayer(vm: ChatViewModel)")
+        assertContains("AB5", loader, "fun AppBackgroundLayer(vm: ChatBackgroundRef)")
         assertContains("AB5", scaffold, "AppBackgroundLayer(vm)")
         assertContains("AB5", scaffold, "if (hasAppBackground) Color.Transparent")
         assertContains("AB5", scaffold, "else MaterialTheme.colorScheme.background")

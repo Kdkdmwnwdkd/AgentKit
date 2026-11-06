@@ -1066,7 +1066,12 @@ private suspend fun testRound1StopScope() {
         // R-19：stop() 已删，用 shouldContinue 表达同一场景。第 1 回合把它置 false，
         // 第 2 回合置回 true——验证「收尾决定只在当轮生效」，不会像布尔标志那样跨轮残留。
         val keepGoing = AtomicBoolean(true)
-        val stopper = FakeTool("stopper", readOnly = true, onExecute = { keepGoing.set(false) })
+        // 只有第 1 回合那次执行要求收尾。若每次执行都置 false，第 2 回合工具一跑就被收尾，
+        // 这条断言永远测不到「判定每次现算」——看似变红，其实是夹具自身把场景写死了。
+        val stopOnce = AtomicBoolean(true)
+        val stopper = FakeTool("stopper", readOnly = true, onExecute = {
+            if (stopOnce.compareAndSet(true, false)) keepGoing.set(false)
+        })
         val reg = ToolRegistry().register(stopper)
         val calls = listOf(ToolCall("c0", "stopper", argsOf()))
         val fake = FakeLlm(

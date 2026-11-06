@@ -196,13 +196,21 @@ jobs:
             && ls -lh /tmp/kotlinc/lib/kotlinx-serialization-compiler-plugin.jar || echo "WARN: 序列化插件下载失败"
           {
             echo '#!/usr/bin/env bash'
-            # 官方 kotlinc 会自动带上 stdlib；直接调 K2JVMCompiler 不会，
-            # 调用方没给 -classpath 时补上，否则报 "cannot access built-in declaration kotlin.Int"
+            # 官方 kotlinc 会自动带上 stdlib；直接调 K2JVMCompiler 不会。调用方可能写 -cp
+            # 也可能写 -classpath，只「前置注入 STD」会被后面的 -cp 覆盖，等于没注入——
+            # CI 上 r10/r12/capability-manifest/kernel-exposure 就是这么缺 stdlib 的
+            # （报 cannot access built-in declaration 'kotlin.Int' / cannot infer type）。
+            # 统一重写成 -classpath "<原值>:$STD"，两种写法都吃到标准库。
             echo 'STD="'"$STD"'"'
-            echo 'if ! printf "%s\n" "$@" | grep -q -- "-classpath"; then'
-            echo '  set -- -classpath "$STD" "$@"'
-            echo 'fi'
-            echo "exec java -cp \"$KJAR:$STD:$TROVE:$ANN\" org.jetbrains.kotlin.cli.jvm.K2JVMCompiler \"\$@\""
+            echo 'ARGS=(); HAVE_CP=0'
+            echo 'while [ $# -gt 0 ]; do'
+            echo '  case "$1" in'
+            echo '    -cp|-classpath) ARGS+=("-classpath" "$2:$STD"); HAVE_CP=1; shift 2;;'
+            echo '    *) ARGS+=("$1"); shift;;'
+            echo '  esac'
+            echo 'done'
+            echo 'if [ "$HAVE_CP" = 0 ]; then ARGS=(-classpath "$STD" "${ARGS[@]}"); fi'
+            echo "exec java -cp \"$KJAR:$STD:$TROVE:$ANN\" org.jetbrains.kotlin.cli.jvm.K2JVMCompiler \"\${ARGS[@]}\""
           } > /tmp/kotlinc/bin/kotlinc
           chmod +x /tmp/kotlinc/bin/kotlinc
           /tmp/kotlinc/bin/kotlinc -version
