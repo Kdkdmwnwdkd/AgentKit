@@ -27,8 +27,15 @@ if [ -z "${KOTLINC_JAR:-}" ] || [ -z "${STDLIB:-}" ]; then
     STDLIB=${STDLIB:-$KC_HOME/lib/kotlin-stdlib.jar}
   fi
 fi
-[ -z "${KOTLINC_BIN:-}" ] && [ -z "${KOTLINC_JAR:-}" ] && { echo "SKIP: 找不到 kotlinc" >&2; exit 3; }
-[ -f "${COROUTINES:-}" ] || { echo "SKIP: 缺少 kotlinx-coroutines-core-jvm" >&2; exit 3; }
+# R-17：同 capability-manifest —— 统一协议 + 可核验的缺件路径
+[ -z "${KOTLINC_BIN:-}" ] && [ -z "${KOTLINC_JAR:-}" ] && {
+  echo "KS_HARNESS_SKIP $(basename "$0") 找不到 Kotlin 编译器（${KOTLINC_JAR:-$KC_HOME/lib/kotlin-compiler.jar}）" >&2
+  exit 3
+}
+[ -f "${COROUTINES:-}" ] || {
+  echo "KS_HARNESS_SKIP $(basename "$0") 缺少 kotlinx-coroutines-core-jvm：${COROUTINES:-（未解析到路径，Gradle 缓存未就绪）}" >&2
+  exit 3
+}
 
 DEPS=$STDLIB:$COROUTINES
 [ -n "${JB_ANNOTATIONS:-}" ] && [ -f "${JB_ANNOTATIONS:-}" ] && DEPS=$DEPS:$JB_ANNOTATIONS

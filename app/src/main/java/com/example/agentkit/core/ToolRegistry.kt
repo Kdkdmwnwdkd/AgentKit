@@ -25,13 +25,106 @@ class ToolRegistry(
      */
     private val lock = Any()
 
+    /**
+     * R-07：**持有者**索引。`name -> 注册它的 owner`（只在 [registerOwned] 装进来的工具上有值）。
+     *
+     * 注册不是一次性动作，而是一条有生命周期的**副作用**：MCP 服务器被停用/删除后，
+     * 它装进来的工具必须跟着消失。修前工具表只增不减，停用的服务器仍会把调用打到死连接上。
+     */
+    private val ownerOf = HashMap<String, String>()
+
+    /** `owner -> 名下工具名`。回卷时按这里逐个比对，不靠名字前缀猜。 */
+    private val ownedNames = HashMap<String, MutableSet<String>>()
+
     fun register(tool: AgentTool): ToolRegistry = apply {
         profiler?.mark(tool.name)
-        synchronized(lock) { tools[tool.name] = tool }
+        synchronized(lock) {
+            detachFromOwnerLocked(tool.name)
+            tools[tool.name] = tool
+        }
     }
 
-    fun unregister(name: String): ToolRegistry = apply {
-        synchronized(lock) { tools.remove(name) }
+    /** 该工具当前由谁持有；null = 宿主内置（不参与回卷），无论存不存在。 */
+    fun ownerOf(name: String): String? = synchronized(lock) { ownerOf[name] }
+
+    /**
+     * R-07：**整体替换**某持有者名下的工具集，返回本次的增量。
+     *
+     * 语义是「同步到目标状态」而不是「再注册一批」：
+     *  - 目标里没有的 → 撤销；
+     *  - 目标里有、表里没有的 → 安装；
+     *  - 两者都有的 → 覆盖（服务器可能改了 schema）；
+     *  - 与**内置工具**同名的 → 跳过，记进 [OwnerSync.skipped]。
+     *
+     * 幂等：同一份目标重复调用，第二次 `installed = revoked = 0`。定时/多次触发
+     * （启动一次 + 用户每次改配置一次）不会把工具表搅乱。
+     *
+     * 只删 `ownerOf[name] == owner` 的项：另一个持有者的同名工具、以及内置工具，
+     * 不会因为「别人回卷」而被误删。
+     */
+    fun registerOwned(owner: String, items: List<AgentTool>): OwnerSync = synchronized(lock) {
+        val desired = LinkedHashMap<String, AgentTool>()
+        items.forEach { desired[it.name] = it } // 同名后者胜，与 register 的覆盖语义一致
+        val owned = ownedNames.getOrPut(owner) { LinkedHashSet() }
+
+        var revoked = 0
+        (owned.toList() - desired.keys).forEach { name ->
+            if (ownerOf[name] == owner) {
+                tools.remove(name)
+                ownerOf.remove(name)
+                revoked++
+            }
+            owned.remove(name)
+        }
+
+        var installed = 0
+        val skipped = mutableListOf<String>()
+        desired.forEach { (name, tool) ->
+            val holder = ownerOf[name]
+            if (holder == null && tools.containsKey(name)) {
+                skipped += name // 内置工具优先，外部工具不得顶掉它
+                return@forEach
+            }
+            // 幂等以「名字」为准：同一份配置重复同步不该报告「又装了 2 个」。
+            // 实例仍然刷新（重连后 schema 可能变），但不计入增量。
+            val alreadyOwned = holder == owner && name in owned
+            if (!alreadyOwned) {
+                if (holder != null && holder != owner) ownedNames[holder]?.remove(name)
+                profiler?.mark(name)
+                installed++
+            }
+            tools[name] = tool
+            ownerOf[name] = owner
+            owned += name
+        }
+        if (owned.isEmpty()) ownedNames.remove(owner)
+        OwnerSync(installed = installed, revoked = revoked, total = owned.size, skipped = skipped)
+    }
+
+    /**
+     * R-07：撤销某持有者名下的**全部**工具（服务器被删/被停用时的收口）。
+     * 返回实际撤掉的数量；未注册过的 owner 是 no-op。
+     */
+    fun unregisterOwner(owner: String): Int = synchronized(lock) {
+        val owned = ownedNames.remove(owner) ?: return 0
+        var revoked = 0
+        owned.forEach { name ->
+            if (ownerOf[name] == owner) {
+                tools.remove(name)
+                ownerOf.remove(name)
+                revoked++
+            }
+        }
+        revoked
+    }
+
+    /** 工具被内置注册/显式 unregister 顶掉时，把它从原持有者的名册里摘掉。 */
+    private fun detachFromOwnerLocked(name: String) {
+        val prev = ownerOf.remove(name) ?: return
+        ownedNames[prev]?.let { set ->
+            set.remove(name)
+            if (set.isEmpty()) ownedNames.remove(prev)
+        }
     }
 
     fun get(name: String): AgentTool? = synchronized(lock) { tools[name] }
@@ -182,6 +275,23 @@ class ToolRegistry(
                 }
             )
     }
+}
+
+/**
+ * R-07：一次 [ToolRegistry.registerOwned] 的增量。
+ *
+ * @param installed 本次新装/覆盖的工具数
+ * @param revoked   本次撤掉的工具数
+ * @param total     调用后该持有者名下仍生效的工具数
+ * @param skipped   因与内置工具同名而未装的工具名（外部不得顶掉内置）
+ */
+data class OwnerSync(
+    val installed: Int,
+    val revoked: Int,
+    val total: Int,
+    val skipped: List<String> = emptyList()
+) {
+    val changed: Boolean get() = installed > 0 || revoked > 0
 }
 
 /**

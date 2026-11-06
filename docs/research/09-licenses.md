@@ -14,7 +14,7 @@
 | eclipse-jgit/jgit | EDL-1.0（BSD 式） | 宽松 | ✅ **可直接依赖** | 保留声明即可 |
 | Rosemoe/sora-editor | LGPL-2.1 | 弱 Copyleft | ⚠️ **库方式可用**（附义务），本方案已决定不引 | 动态/独立库使用 + 提供源码书面要约即可；我们选自绘，零义务 |
 | proot | GPL-3.0 | 强 Copyleft | ⚠️ **仅二进制随包**，代码零引用 | 独立可执行文件 + 附 LICENSE + 源码书面要约；不静态链接进我们的 .so |
-| AnLinux | Apache-2.0（脚本） | 宽松 | ✅ **思路照搬**（脚本我们自己写） | 脚本逻辑不构成衍生 |
+| AnLinux | Apache-2.0（脚本） | 宽松 | ✅ **采纳思路**（脚本自行编写） | 脚本逻辑不构成衍生 |
 | rikkahub/rikkahub | AGPL-3.0 | 强 Copyleft+网络 | ❌ **只吸收架构思想，净室重写** | 连"参考后重写"都要留档证明独立性 |
 | AAswordman/Operit | LGPL-3.0 | 弱 Copyleft | ❌ **只吸收架构思想** | 代码引用会污染整体 |
 | jieapi/AiCode | GPL-3.0 | 强 Copyleft | ❌ **只吸收架构思想** | 同上 |

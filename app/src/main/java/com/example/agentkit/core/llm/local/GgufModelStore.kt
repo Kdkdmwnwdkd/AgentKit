@@ -1,5 +1,6 @@
 package com.example.agentkit.core.llm.local
 
+import com.example.agentkit.core.llm.LlmHttp
 import android.content.Context
 import android.provider.OpenableColumns
 import com.example.agentkit.core.AgentLogger
@@ -56,10 +57,7 @@ class GgufModelStore(private val context: Context) {
 
     private val modelsDir: File = LocalLlamaSetting.modelsDir(context)
 
-    private val client = OkHttpClient.Builder()
-        .connectTimeout(30, TimeUnit.SECONDS)
-        .readTimeout(120, TimeUnit.SECONDS)   // 大文件单次读取间隔可能很久
-        .build()
+    private val client = LlmHttp.download
 
     /** 内置目录：按参数量升序，越靠后越吃内存。 */
     fun catalog(): List<GgufCatalogEntry> = listOf(

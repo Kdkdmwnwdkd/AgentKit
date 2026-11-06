@@ -32,6 +32,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.agentkit.core.container.RootfsManager
+import com.example.agentkit.ui.contract.PermissionReadout
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -53,7 +54,7 @@ import kotlinx.coroutines.withContext
  */
 @Composable
 fun ReadinessCard(
-    vm: ChatViewModel,
+    vm: PermissionReadout,
     onOpenContainer: () -> Unit,
     modifier: Modifier = Modifier
 ) {

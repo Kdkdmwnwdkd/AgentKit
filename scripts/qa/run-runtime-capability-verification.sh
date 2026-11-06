@@ -31,6 +31,7 @@ BUDGET="$ROOT/app/src/main/java/com/example/agentkit/core/agent/ToolBudget.kt"
 CONTRACT="$ROOT/app/src/main/java/com/example/agentkit/core/AgentContract.kt"
 EXECUTOR="$ROOT/app/src/main/java/com/example/agentkit/core/agent/ToolExecutor.kt"
 APP="$ROOT/app/src/main/java/com/example/agentkit/AgentKitApplication.kt"
+BOOT="$ROOT/app/src/main/java/com/example/agentkit/startup/BootSequence.kt"
 
 pass=0
 fail=0
@@ -100,8 +101,8 @@ reject "没有残留 5 分钟默认值"            "$LLM" 'DEFAULT_IDLE_MINUTES 
 
 echo
 echo "== 静态：接线与两道闸门 =="
-expect "Application 启动运行层"    "$APP" 'LocalLlmRuntime.init(this)'
-expect "Application 启动租约节拍"  "$APP" 'LeaseRegistry.start()'
+expect "启动顺序里拉起运行层"    "$BOOT" 'LocalLlmRuntime.init(app)'
+expect "启动顺序里拉起租约节拍"  "$BOOT" 'LeaseRegistry.start(AppScope.app)'
 expect "本地模型登记租约"          "$LLM" 'LeaseRegistry.register(lease)'
 expect "本地模型注册空闲释放器"    "$LLM" 'LeaseRegistry.registerIdleReleaser(lease.id)'
 expect "释放前问能否安全释放"      "$LEASE_IF" 'val isSafeToRelease: Boolean'

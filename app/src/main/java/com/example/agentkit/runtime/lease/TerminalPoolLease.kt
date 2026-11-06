@@ -1,5 +1,6 @@
 package com.example.agentkit.runtime.lease
 
+import com.example.agentkit.core.AppScope
 import com.example.agentkit.core.AgentLogger
 import com.example.agentkit.core.terminal.TerminalSessionPool
 import kotlinx.coroutines.CoroutineScope
@@ -85,7 +86,7 @@ class TerminalPoolLease(
         val count = liveSessions()
         if (count == 0) return
         AgentLogger.i(TAG, "空闲回收终端会话：后端=$backendKey 会话数=$count（$reason）")
-        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+        AppScope.app.launch {
             runCatching { pool.closeAll() }
                 .onFailure { AgentLogger.w(TAG, "终端会话回收失败（$reason）", it) }
         }

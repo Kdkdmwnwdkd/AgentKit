@@ -22,7 +22,7 @@ text scripts/qa/PermissionGuideVerification.kt 40
 # 已经由 KernelExposureVerification 的行为断言覆盖，这条只负责防止有人把表加回来。
 text scripts/qa/run-local-agent-prompt-verification.sh 38
 text scripts/qa/CrashLogVerification.kt 36
-text scripts/qa/T01Verification.kt 32
+text scripts/qa/T01Verification.kt 31
 text scripts/qa/run-runtime-capability-verification.sh 30
 text scripts/qa/BatchBVerification.kt 29
 text scripts/qa/ConversationsScreenVerification.kt 24
@@ -57,7 +57,7 @@ text scripts/qa/ContextBudgetVerification.kt 5
 text scripts/qa/W32Verification.kt 5
 text scripts/qa/KeyPoolVerification.kt 4
 text scripts/qa/MemoryRetrievalVerification.kt 4
-text scripts/qa/R13Verification.kt 4
+text scripts/qa/R13Verification.kt 3
 text scripts/qa/W28Verification.kt 4
 text scripts/qa/W30Verification.kt 4
 text scripts/qa/R12Verification.kt 3
@@ -72,4 +72,7 @@ text scripts/qa/ShizukuResultVerification.kt 1
 text scripts/qa/W34Verification.kt 1
 text scripts/qa/W46Verification.kt 1
 # 2026-11-04 收紧 1373 → 1370：同上，3 条子串断言换成了结构化比较。
-text __TOTAL__ 1370
+# 2026-11-05 收紧 1370 → 1369（R-19）：T01 删掉「无在飞回合 stop 是 no-op」用例
+#   （stop 通道已删除，被测对象不存在），该用例里 1 条子串断言随之消失。
+#   R19HooksVerification 是行为断言（真跑 object），0 条文本断言，未占用额度。
+text __TOTAL__ 1369

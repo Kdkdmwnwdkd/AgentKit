@@ -1,0 +1,48 @@
+# 契约方法台账（R-19）
+#
+# 解决的问题：读代码时分不清「这个方法在生产上真的会发生」和「它只是存在」。
+# 典型例子：`ConversationStore.flush()` 的注释写着「App 切后台时调用」，而全仓
+# 一次都没调用过——注释比代码更有说服力，于是风险被一句话掩盖了。
+#
+# 三种状态，含义是**可执行**的，不是形容词：
+#   WIRED    生产代码（app/src/main）里确实有调用点。runner 会 grep [EXPECT] 那一列；
+#            调用点被删了就红——不是靠人记得回来改。
+#   DELETED  方法已经从源码删除。runner 验证「确实找不到定义」；
+#            只写 DELETED 不删代码，等于把台账当成了免罪符。
+#   RESERVED 实现完整、但没有生产调用点，明确保留（附保留理由与接线条件）。
+#            runner 验证「现在仍然零调用」；一旦有人接上线，这里会红，提醒改成 WIRED。
+#
+# 收条目的标准：**契约方法**（public、有行为）。不登记的：Android 生命周期回调
+# （系统调）、私有辅助函数、单文件内的局部工具——它们零调用就是编译器会报的死代码。
+#
+# 为什么 WIRED 要比对完整调用片段：[SYMBOL] 常常是 `flush` 这种烂大街的名字，
+# 只 grep `flush(` 会被 `out.flush()`（几十处）喂饱，等于没有判据。EXPECT 写的是
+# 「能证明这次接线存在的最小片段」，它必须包含接收者或限定的对象。
+#
+# 冻结：条目总数写在 runner 里。加条目要同步改那个数字，改的时候必须回答
+# 「这条为什么值得进台账」。数字只升不降——删条目等于把一条已裁决的事实抹掉。
+#
+# 格式：STATUS | SYMBOL | FILE | EXPECT | REASON（竖线分隔，字段内不要再出现竖线）
+#   EXPECT 列：WIRED = 必须存在的调用片段；DELETED/RESERVED = 写 `-`
+
+# ── 已接线 ────────────────────────────────────────────────────────────────
+WIRED | flush | core/ConversationStore.kt | (owner as ConversationStore).flush() | R-19 接入 AppBackgroundHooks：切后台（前台 Activity 归零）立刻补一次落盘，不再赌 400ms 去抖窗口
+WIRED | fireAll | core/lifecycle/AppBackgroundHooks.kt | AppBackgroundHooks.fireAll( | R-19 新增；AgentKitApplication.onActivityStopped 在计数归零时触发
+
+# ── 已删除 ────────────────────────────────────────────────────────────────
+DELETED | stop | core/agent/AgentLoop.kt | - | 优雅收尾通道：实现完整但生产零调用，用户点停止走 Job.cancel（立即停）。留着会让读者以为有两套停止机制
+DELETED | unregister | core/ToolRegistry.kt | - | 单条注销：只有 harness 用过，MCP 回卷走 registerOwned/unregisterOwner。已删除，R07 的 A7 用例改测内置覆盖路径
+
+# ── 保留（实现完整，无生产调用点）─────────────────────────────────────────
+# 这些是真技术债，不是残留：每一行都对应一个「做了一半的功能」。写在这里是为了
+# 让下一个人一眼看到「能力已存在，缺的是一个入口」，而不是重新实现一遍。
+RESERVED | hasUnseen | core/CrashLogger.kt | - | 崩溃日志未读标记：崩溃页至今没有红点入口，判断逻辑已就绪
+RESERVED | markSeen | core/CrashLogger.kt | - | 同上，配对方法；接线时要与 hasUnseen 一起接
+RESERVED | popularModels | core/llm/ProviderCatalog.kt | - | 供应商常用模型建议：设置页仍让用户手填模型名，目录里已有数据
+RESERVED | isDownloaded | core/llm/local/GgufModelStore.kt | - | 模型列表未显示「已下载」态，下载页只能靠文件管理器确认
+RESERVED | detectFormat | core/llm/local/LocalBackendCatalog.kt | - | 本地模型格式识别：能力矩阵已实现，导入流程尚未接入
+RESERVED | keyEvent | automation/ShellUiBackend.kt | - | 按键注入（返回/Home/音量）：尚无对应工具暴露给模型
+RESERVED | getUiTreeJson | automation/AgentAccessibilityService.kt | - | 无障碍树 JSON 导出：有快照能力，没有对外入口
+RESERVED | runNow | workflow/WorkflowWorker.kt | - | 定时任务「立即执行一次」：调度器已能跑，UI 没有按钮
+RESERVED | exportNdjson | core/agent/journal/RunJournal.kt | - | 单回合事件导出：诊断包导出的是整目录，没有按回合导出的入口
+RESERVED | outstandingCount | runtime/lease/LeaseRegistry.kt | - | 租约未归还计数：只有 harness 读它，诊断页尚未展示

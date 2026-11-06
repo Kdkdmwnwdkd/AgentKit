@@ -37,6 +37,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.agentkit.ui.contract.ChatAppearanceContract
 
 /**
  * 壁纸与颜色（W-67）：从设置页拆出来的独立子页。
@@ -59,7 +60,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
  */
 @Composable
 fun AppearanceScreen(
-    vm: ChatViewModel,
+    vm: ChatAppearanceContract,
     themeMode: ThemeMode,
     onThemeModeChange: (ThemeMode) -> Unit,
     dynamicColor: Boolean,
@@ -262,7 +263,7 @@ private fun AccentPicker() {
  * 又说浓度，文字挤成两行，收进独立页后没必要再这样省地方。
  */
 @Composable
-private fun BackgroundSection(vm: ChatViewModel) {
+private fun BackgroundSection(vm: ChatAppearanceContract) {
     val context = LocalContext.current
     val bgUri by vm.chatBackgroundUri.collectAsStateWithLifecycle()
     val bgAlpha by vm.chatBackgroundAlpha.collectAsStateWithLifecycle()

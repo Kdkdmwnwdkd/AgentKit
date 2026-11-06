@@ -27,8 +27,8 @@ if [ -z "${KOTLINC_JAR:-}" ] || [ -z "${STDLIB:-}" ]; then
     STDLIB=${STDLIB:-$KC_HOME/lib/kotlin-stdlib.jar}
   fi
 fi
-[ -z "${KOTLINC_BIN:-}" ] && [ -z "${KOTLINC_JAR:-}" ] && { echo "SKIP: 找不到 kotlinc" >&2; exit 3; }
-[ -f "${STDLIB:-}" ] || { echo "SKIP: 缺少 kotlin-stdlib" >&2; exit 3; }
+[ -z "${KOTLINC_BIN:-}" ] && [ -z "${KOTLINC_JAR:-}" ] && { echo "KS_HARNESS_SKIP $(basename "$0") 找不到 Kotlin 编译器（${KOTLINC_JAR:-$KC_HOME/lib/kotlin-compiler.jar}）" >&2; exit 3; }
+[ -f "${STDLIB:-}" ] || { echo "KS_HARNESS_SKIP $(basename "$0") 缺少 kotlin-stdlib：${STDLIB:-未解析到路径}" >&2; exit 3; }
 
 DEPS=$STDLIB
 [ -n "${JB_ANNOTATIONS:-}" ] && [ -f "${JB_ANNOTATIONS:-}" ] && DEPS=$DEPS:$JB_ANNOTATIONS

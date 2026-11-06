@@ -43,6 +43,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.agentkit.ui.contract.SkillLibraryContract
 
 /**
  * 技能中心页（视觉规范 §3.6 信任色板 + UX v1 §1.5）。
@@ -59,7 +60,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
  */
 @Composable
 fun SkillsScreen(
-    vm: ChatViewModel,
+    vm: SkillLibraryContract,
     /** W-48：跳到插件市场；默认空实现，方便 harness/预览单独渲染技能页。 */
     onOpenMarket: () -> Unit = {}
 ) {

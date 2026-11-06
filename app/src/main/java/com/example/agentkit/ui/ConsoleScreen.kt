@@ -35,6 +35,7 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.agentkit.automation.DeviceContext
+import com.example.agentkit.ui.contract.ConsoleContract
 
 /**
  * 控制台页（UX v1 §1.3 控制台结构直译，替代旧「自动化」大杂页）。
@@ -51,7 +52,7 @@ import com.example.agentkit.automation.DeviceContext
  */
 @Composable
 fun ConsoleScreen(
-    vm: ChatViewModel,
+    vm: ConsoleContract,
     unreadErrors: Int,
     onNavigate: (AppDest) -> Unit
 ) {

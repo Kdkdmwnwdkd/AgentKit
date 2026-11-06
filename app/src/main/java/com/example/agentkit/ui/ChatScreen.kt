@@ -1,6 +1,7 @@
 package com.example.agentkit.ui
 
 import com.example.agentkit.core.UiItem
+import com.example.agentkit.core.uiKey
 import android.app.Activity
 import android.content.ClipData
 import android.content.ClipboardManager
@@ -91,6 +92,7 @@ import androidx.compose.material3.Surface
 import com.example.agentkit.core.text.ChatTime
 import com.example.agentkit.core.text.SpeechLogic
 import com.example.agentkit.core.agent.AskUserBroker
+import com.example.agentkit.core.agent.APPROVAL_TIMEOUT_MS
 import com.example.agentkit.core.agent.PlanBroker
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -134,6 +136,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.agentkit.core.ModelProfile
 import com.example.agentkit.core.TokenUsage
 import com.example.agentkit.core.llm.ProviderCatalog
+import com.example.agentkit.ui.contract.*
 import java.util.Locale
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -166,7 +169,9 @@ private data class MenuTarget(
  */
 @Composable
 fun ChatScreen(
-    vm: ChatViewModel,
+    vm: ChatScreenContract,
+    // 只读权限三态：只转给 ReadinessCard，不并进 vm（对话页拿不到刷新/跳设置的权力）。
+    permission: PermissionReadout,
     onOpenModel: () -> Unit,
     onOpenGuide: () -> Unit,
     onOpenContainer: () -> Unit,
@@ -189,9 +194,7 @@ fun ChatScreen(
     var showPromptPicker by remember { mutableStateOf(false) }
     val pendingApproval by vm.pendingApproval.collectAsStateWithLifecycle()
     val config by vm.config.collectAsStateWithLifecycle()
-    // 功能四（模型快速切换，录屏反馈「保存了好多个模型，要换的时候不给换，
-    // 都不知道现在用哪个」）：对话页常驻当前模型指示条 + 一键切换弹窗，
-    // 不再深埋三层（抽屉 → 模型配置 → 顶部横向档案条）且切换无任何反馈。
+    // 功能四（录屏反馈「存了多个模型却换不了、不知道在用哪个」）：常驻模型指示条 + 一键切换，不再深埋三层且切换有反馈。
     val profiles by vm.profiles.collectAsStateWithLifecycle()
     // W-30：翻译结果（按消息下标）与正在翻译的下标
     val translations by vm.translations.collectAsStateWithLifecycle()
@@ -208,8 +211,7 @@ fun ChatScreen(
     val localModelName by vm.localActive.collectAsStateWithLifecycle()
     val modelReady by vm.modelReady.collectAsStateWithLifecycle()
 
-    // v6：首次启动只弹一次引导。关掉即落盘，之后从对话页不再出现；
-    // 模型配好后 modelReady 为真，也不会再弹（所以不需要额外的"已完成"标记）。
+    // v6：引导首次启动只弹一次（关掉即落盘）；modelReady 为真时也不再弹，无需额外「已完成」标记。
     val onboardingCtx = LocalContext.current
     var showOnboarding by remember { mutableStateOf(false) }
     LaunchedEffect(modelReady) {
@@ -419,7 +421,7 @@ fun ChatScreen(
         // 放在分支之外——空会话和非空会话都该看到，而不是只有第一次才有。
         // 折叠态只占一行，点开才展开；不拦路、不弹窗。
         ReadinessCard(
-            vm = vm,
+            vm = permission,
             onOpenContainer = onOpenContainer,
             modifier = Modifier.padding(
                 horizontal = AgentSpacing.space4,
@@ -439,8 +441,7 @@ fun ChatScreen(
                 state = listState,
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(
-                    // W-96：左右 16 → 20dp。16dp 时头像与气泡两头的圆角几乎贴住屏幕边，
-                    // 一屏看下来像「被塞满」；20dp 也是 Dimens 里给页面左右定的默认值。
+                    // W-96：左右 16 → 20dp（16dp 时头像与气泡的圆角几乎贴住屏幕边，像被塞满）。
                     start = AgentSpacing.space5,
                     end = AgentSpacing.space5,
                     // W-96：底部只留 8dp 时，最后一条气泡的圆角几乎贴着输入栏上沿；
@@ -449,9 +450,9 @@ fun ChatScreen(
                     bottom = AgentSpacing.space3
                 )
             ) {
-                // 同发送者间距 8dp、换手 24dp（W-96 从 16dp 提起）：
-                // 3:1 的间距差就是「分组」的全部视觉线索，不用分隔线
-                itemsIndexed(messages) { index, item ->
+                // 同发送者 8dp、换手 24dp（W-96 从 16dp 提起）：3:1 的间距差就是分组的全部线索。
+                // R-05：key 用数据主键（工具卡 call.id、气泡轮次下标），免得插一张卡就整表重建。
+                itemsIndexed(messages, key = { index, item -> item.uiKey(index) }) { index, item ->
                     val prev = messages.getOrNull(index - 1)
                     val gap = when {
                         prev == null -> 0.dp
@@ -2536,19 +2537,21 @@ private fun DataImage(dataUrl: String) {
 private suspend fun <T> withContextIo(block: () -> T): T =
     withContext(Dispatchers.IO) { block() }
 
-/** 工具调用四态（§6.3 状态文字双编码）。 */
-private enum class ToolStatus { RUNNING, DONE, FAILED, REJECTED }
+/** 工具调用五态（§6.3 状态文字双编码）。 */
+private enum class ToolStatus { RUNNING, DONE, FAILED, REJECTED, INTERRUPTED }
 
 /**
- * 工具调用四态（§6.3 状态文字双编码）。
+ * 工具调用五态（§6.3 状态文字双编码）。
  *
  * 「已拒绝」判据 = AgentLoop 在审批被拒时回填的结果文案（core/AgentLoop：「用户拒绝了该危险操作」）：
  * 拒绝是用户决策不是故障，用中性色（继承 v2.1 R3）。
  * Hotfix2 起 UiItem.Tool 有 RUNNING 实例（running=true）：AgentEvent.ToolStarted 已上报、
  * ToolFinished 未到——过程透明化，用户能看见 AI 正在调什么工具。
+ * R-06 起有 INTERRUPTED：中断不是失败（工具可能已经生效），也不再转圈（没有人在等了）。
  */
 private fun UiItem.Tool.status(): ToolStatus = when {
     running -> ToolStatus.RUNNING
+    interrupted -> ToolStatus.INTERRUPTED
     isError && result.contains("用户拒绝了") -> ToolStatus.REJECTED
     isError -> ToolStatus.FAILED
     else -> ToolStatus.DONE
@@ -2565,17 +2568,14 @@ private fun ToolCard(item: UiItem.Tool) {
     var expanded by remember { mutableStateOf(false) }
     val ak = LocalAkColors
     val status = item.status()
-    val statusColor = when (status) {
-        ToolStatus.RUNNING -> MaterialTheme.colorScheme.primary
-        ToolStatus.DONE -> ak.success
-        ToolStatus.FAILED -> MaterialTheme.colorScheme.error
-        ToolStatus.REJECTED -> MaterialTheme.colorScheme.onSurfaceVariant
-    }
-    val statusText = when (status) {
-        ToolStatus.RUNNING -> "执行中"
-        ToolStatus.DONE -> "已完成"
-        ToolStatus.FAILED -> "已失败"
-        ToolStatus.REJECTED -> "已拒绝"
+    // 颜色与文案一起算：它们是同一个事实的两个投影。分两个 when 写，新增状态时漏改一处
+    // 就会出现「灰点 + 已完成」；中性色的理由见 ToolStatus 的 KDoc（拒绝/中断都不是故障）。
+    val (statusColor, statusText) = when (status) {
+        ToolStatus.RUNNING -> MaterialTheme.colorScheme.primary to "执行中"
+        ToolStatus.DONE -> ak.success to "已完成"
+        ToolStatus.FAILED -> MaterialTheme.colorScheme.error to "已失败"
+        ToolStatus.REJECTED -> MaterialTheme.colorScheme.onSurfaceVariant to "已拒绝"
+        ToolStatus.INTERRUPTED -> MaterialTheme.colorScheme.onSurfaceVariant to "已中断"
     }
     val chevronRotation by animateFloatAsState(
         targetValue = if (expanded) 180f else 0f,
@@ -2745,13 +2745,11 @@ private const val COLLAPSE_LINES = 20
 private const val COLLAPSE_CHARS = 600
 
 /**
- * 危险操作审批的等待秒数。
- *
- * 10 秒实测不够：用户要读命令内容、判断风险、再点按钮，真机连试 3 次全部超时被拒。
- * 30 秒够读完一条复杂命令，同时仍保留「自动拒绝」这个 fail-safe
- * （不能让弹窗永远挂着，否则 Agent 会一直卡在等待里）。
+ * 审批等待秒数，由 [APPROVAL_TIMEOUT_MS] 派生（不单独写数字）。10s 实测不够——读命令、
+ * 判断风险、点按钮，真机连试三次全被超时拒绝；30s 够读完一条复杂命令，且仍保留
+ * 「自动拒绝」这个 fail-safe。真正执行超时的是 ViewModel 的 awaitApprovalDecision。
  */
-private const val APPROVAL_TIMEOUT_SEC = 30
+private val APPROVAL_TIMEOUT_SEC: Int = (APPROVAL_TIMEOUT_MS / 1000).toInt()
 
 /**
  * 危险操作审批 Dialog（§6.4 招牌组件：简洁但警觉）。
@@ -2762,12 +2760,13 @@ private const val APPROVAL_TIMEOUT_SEC = 30
  * @param visible 退场时置 false：fade 150ms（AkMotionExit）后由宿主卸载。
  */
 @Composable
-private fun ApprovalDialog(request: ApprovalRequest, visible: Boolean, vm: ChatViewModel) {
+private fun ApprovalDialog(request: ApprovalRequest, visible: Boolean, vm: ChatScreenContract) {
     val ak = LocalAkColors
     val view = LocalView.current
     var askNoMore by remember(request) { mutableStateOf(false) }
 
-    // 倒计时：超时排空 → 自动拒绝；剩余 5s 时 polite 播报一次（§6.4 TalkBack）
+    // 倒计时只做展示（进度条 + 无障碍播报）：真正的超时在 ViewModel 的 awaitApprovalDecision，
+    // 弹窗被卸载时那里照样生效。这里**不再**自行 denyApproval——两处实现迟早漂移。
     //
     // 【真机第三轮修复】10s → 30s。
     // 实测连试 3 次、3 次都因超时被自动拒绝（读命令 + 判断风险 + 点按钮，10 秒不够）；
@@ -2790,7 +2789,6 @@ private fun ApprovalDialog(request: ApprovalRequest, visible: Boolean, vm: ChatV
             if (left <= 0f) break
             delay(100)
         }
-        vm.denyApproval()
     }
 
     val enterSpec = if (visible) AkMotionDialog else AkMotionExit
@@ -2895,11 +2893,11 @@ private fun ApprovalDialog(request: ApprovalRequest, visible: Boolean, vm: ChatV
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         AkCheckbox(
-                            checked = askNoMore,
-                            onCheckedChange = { askNoMore = it }
+                            checked = askNoMore && request.grant.memorizable, // R-08：删除类勾了也不记
+                            onCheckedChange = { if (request.grant.memorizable) askNoMore = it }
                         )
                         Text(
-                            text = "本次会话不再询问" + request.groupLabel.ifBlank { "同类操作" },
+                            text = request.grant.memoLabel,
                             style = MaterialTheme.typography.bodyLarge,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier

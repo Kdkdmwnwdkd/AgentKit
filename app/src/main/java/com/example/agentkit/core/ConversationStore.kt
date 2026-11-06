@@ -1,6 +1,7 @@
 package com.example.agentkit.core
 
 import com.example.agentkit.core.io.AtomicJsonFile
+import com.example.agentkit.core.lifecycle.AppBackgroundHooks
 import com.example.agentkit.core.telemetry.StoreWriteTrace
 import com.example.agentkit.core.llm.objOrNull
 import com.example.agentkit.core.UiItem
@@ -19,12 +20,16 @@ import java.util.concurrent.Executors
  *
  * 持久化形态学 MemoryStore（app/src/main/java/com/example/agentkit/memory/MemoryStore.kt，
  * 先读它学原子写模式）：
- *  - 文件 conversations.json 放 App filesDir，tmp + rename 原子写 + .bak 备份；
- *  - `Json { ignoreUnknownKeys = true; prettyPrint = true }`，`synchronized(lock)` 护 items；
- *  - 与 MemoryStore 的唯一差异：落盘走单线程执行器**异步串行**——工具事件（开始/结束）
- *    每次都触发一次追加，主线程同步重写整个文件会 jank；串行执行器 FIFO 保序、不交叉。
+ *  - 原子写统一走 AtomicJsonFile（tmp → fsync → .bak → rename），`synchronized(lock)` 护 items；
+ *  - 落盘走单线程执行器**异步串行 + 400ms 去抖**——工具事件（开始/结束）每次都追加消息，
+ *    主线程同步写盘会 jank；串行执行器 FIFO 保序、不交叉。
  *
- * 跨包引用说明（UiItem 定义在 ui 包）：UiItem ↔ MsgRecord 映射与存储同文件，
+ * R-10 分片：主文件 conversations.json 只存 id 清单（[ConversationIndex]），
+ * 每个会话单独落在 `conversations.d/<id>.json`（[ConversationShard]，只存 turn 真源）。
+ * 追加一条消息只重写那**一个**分片，不再序列化全库、不再整库复制 .bak、不再
+ * `messages`/`turns` 双写；旧整库文件在首次加载时一次性迁移（原文件由 .bak 兜住）。
+ *
+ * 跨包引用说明（UiItem 下沉在 core）：UiItem ↔ MsgRecord 映射与存储同文件，
  * 避免 VM 里散落「内存格式 / 存储格式 / 历史格式」三家转换；core 不反向依赖 ui 的其他东西。
  */
 
@@ -37,14 +42,22 @@ internal const val ROLE_USER = "user"
 internal const val ROLE_ASSISTANT = "assistant"
 internal const val ROLE_TOOL = "tool"
 
+/**
+ * R-06：给「没跑完就被中断」的工具卡补的结果文案（唯一一处，UI 与落盘共用）。
+ *
+ * 措辞刻意不写「失败」：用户点停止时工具可能已经生效（写文件、发请求），
+ * 说「失败」会让人以为没发生，说「已完成」更糟。只陈述可确认的事实——没有拿到结果。
+ */
+internal const val TOOL_INTERRUPTED_NOTE = "⏹ 该调用未完成：运行被中断，未取得真实结果（写操作可能已生效）。"
+
 /** 新对话默认标题：首条 user 消息到达时按内容前 [TITLE_CHARS] 字自动命名。 */
 private const val DEFAULT_TITLE = "新对话"
 
 /**
  * 单条消息内容/入参的落盘上限。
  * 为什么截断：ui_tree 转储、read_file 大文件等工具结果可达数十 KB，200 条不截断的
- * 会话能把 conversations.json 撑到 MB 级，每次追加都全量重写会明显卡顿。
- * UI 气泡仍显示完整结果——截断只影响落盘的那一份。
+ * 会话能把单个分片撑到 MB 级。分片后只重写这一个文件，但流式追加仍会反复 fsync 它，
+ * 截断仍是必要的。UI 气泡仍显示完整结果——截断只影响落盘的那一份。
  */
 private const val MAX_FIELD_CHARS = 4000
 
@@ -99,7 +112,18 @@ data class MsgRecord(
     /**
      * W-30：消息时间（epoch 毫秒）。0 = 旧数据/未记录——UI 不显示时间行，而不是写个 1970。
      */
-    val timeMs: Long = 0
+    val timeMs: Long = 0,
+    /**
+     * R-06：该 tool 记录**只有「执行中」的占位，终态还没来**。
+     *
+     * 为什么要落这个标记，而不是「结果为空就当没跑完」：工具正常返回空输出（静默命令、
+     * grep 无匹配）同样是空结果，按空判断会把真终态误改成「已中断」。这个标记是
+     * 「这一段写于 ToolStarted、ToolFinished 尚未到达」的唯一证据，取消 / 失败 /
+     * 进程被杀三条路径都靠它区分「没跑完」与「跑完了没输出」。
+     *
+     * 旧文件没有该字段 → false（历史记录按终态看待，与改动前一致）。
+     */
+    val pending: Boolean = false
 )
 
 /**
@@ -166,11 +190,13 @@ internal fun UiItem.toMsgRecord(): MsgRecord = when (this) {
         toolName = call.name,
         // arguments 是 JsonObject，toString() 即标准 JSON 文本，直接存
         toolArgs = call.arguments.toString().take(MAX_FIELD_CHARS),
-        isError = isError
+        isError = isError,
+        // R-06：只有「执行中」这一段落 pending=true；终态落盘时一并清掉
+        pending = running && !interrupted
     )
 }
 
-/** MsgRecord → UiItem（读取侧映射）；running 一律 false——落盘的 tool 只有终态与空结果占位。 */
+/** MsgRecord → UiItem（读取侧映射）。 */
 internal fun MsgRecord.toUiItem(): UiItem = when (role) {
     ROLE_TOOL -> UiItem.Tool(
         call = ToolCall(
@@ -179,7 +205,11 @@ internal fun MsgRecord.toUiItem(): UiItem = when (role) {
             arguments = parseToolArgs(toolArgs)
         ),
         result = content,
-        isError = isError
+        isError = isError,
+        // R-06：把「落盘时还在执行」还原成执行中。要不要显示成转圈由调用方裁决
+        // （[com.example.agentkit.ui.ConversationProjection.loadOf] 只在「这条会话确实
+        // 正在跑」时保留 running，否则翻成「已中断」）——这里只管忠实还原事实。
+        running = pending
     )
 
     ROLE_USER -> UiItem.User(content, timeMs = timeMs)
@@ -258,15 +288,28 @@ class ConversationStore(file: File) {
 
     private val file: File = file
 
-    /** 上一版良好快照：主文件损坏时由 [load] 回退读取（同 MemoryStore）。 */
-    private val bakFile = File(file.parentFile, file.name + ".bak")
-
-    /** 原子写中转文件：写完 rename 替换主文件，半截 JSON 不会落地。 */
-    private val tmpFile = File(file.parentFile, file.name + ".tmp")
+    /**
+     * R-10：分片目录（`<主文件名去扩展名>.d/`）。一个 `<id>.json` 装一个会话，
+     * 主文件退化成 [ConversationIndex]（只存 id 清单，不含任何消息正文）。
+     */
+    private val shardDir = File(file.parentFile, file.nameWithoutExtension + SHARD_DIR_SUFFIX)
 
     private val json = Json { ignoreUnknownKeys = true; prettyPrint = true }
     private val lock = Any()
     private val items = mutableListOf<ConversationRecord>()
+
+    /** R-10：自上次落盘以来被改动的会话 id——只写这些分片，不再全库重写。 */
+    private val dirtyIds = LinkedHashSet<String>()
+    /** R-10：被删除的会话 id（落盘时清掉对应分片，避免孤儿文件）。 */
+    private val removedIds = LinkedHashSet<String>()
+    /**
+     * R-10 诊断：最近一次落盘真正写出的分片 id 集合。
+     * 「改 1 个会话只写 1 个分片」的硬证据——只数 [persistCount] 分不清
+     * 「一次写只碰了一个分片」和「一次写又把全库重写了一遍」。
+     */
+    @Volatile
+    var lastWrittenShardIds: Set<String> = emptySet()
+        private set
 
     /**
      * 落盘执行器：**单线程 + 延迟调度**（去抖），daemon。
@@ -315,6 +358,11 @@ class ConversationStore(file: File) {
     init {
         runCatching { file.parentFile?.mkdirs() }
         load()
+        // R-19：`flush()` 写了很久，但全仓没有调用者——「切后台补一次落盘」这条注释
+        // 承诺的行为从未发生。这里把存储层挂到进程级后台广播上：切后台即刻止血，
+        // 不再赌 400ms 去抖窗口。注册是弱引用（见 AppBackgroundHooks 的注释），
+        // 本实例被回收后该 hook 自动失效，不会去写一个没人用的 store。
+        AppBackgroundHooks.register(this) { owner -> (owner as ConversationStore).flush() }
     }
 
     /**
@@ -358,6 +406,7 @@ class ConversationStore(file: File) {
             val idx = items.indexOfFirst { it.id == convId }
             if (idx < 0) return
             items[idx] = items[idx].copy(pinned = pinned)
+            dirtyIds.add(convId)
         }
         schedulePersist()
     }
@@ -377,7 +426,10 @@ class ConversationStore(file: File) {
             updatedAt = now,
             messages = emptyList()
         )
-        synchronized(lock) { items.add(rec) }
+        synchronized(lock) {
+            items.add(rec)
+            dirtyIds.add(rec.id)
+        }
         schedulePersist(urgent = true)
         return rec.id
     }
@@ -410,6 +462,7 @@ class ConversationStore(file: File) {
                 messages = messages,
                 turns = turns
             )
+            dirtyIds.add(convId)
         }
         schedulePersist()
     }
@@ -452,6 +505,56 @@ class ConversationStore(file: File) {
     }
 
     /**
+     * 把某会话里仍是「执行中」占位的工具记录补成终态（R-06）。幂等。
+     *
+     * ## 为什么必须补
+     * 工具卡是**两段写**：`ToolStarted` 先落一条空结果占位，`ToolFinished` 按 id 覆盖成终态。
+     * 取消 / 失败 / 进程被杀时第二段永远不来，占位就留在文件里——重新载入后它既不是失败
+     * 也不是成功（改动前按空结果渲染成「已完成」，等于对着一条没跑完的调用说「已完成」），
+     * 而且下一次运行也没有人认领它。
+     *
+     * 判据只看 [MsgRecord.pending]，**不看「结果为空」**：静默命令、grep 无匹配这类
+     * 正常返回的空输出同样是空结果，按空判会把真终态改成「已中断」。
+     *
+     * @return 补了几条；0 = 无需补（不动内存、不触发落盘）
+     */
+    fun settlePendingTools(convId: String): Int {
+        var settled = 0
+        synchronized(lock) {
+            val idx = items.indexOfFirst { it.id == convId }
+            if (idx < 0) return 0
+            val conv = items[idx]
+            val turns = conv.turns.map { turn ->
+                if (turn.trace.none { it.role == ROLE_TOOL && it.pending }) turn
+                else turn.copy(
+                    trace = turn.trace.map { rec ->
+                        if (rec.role != ROLE_TOOL || !rec.pending) rec
+                        else {
+                            settled++
+                            rec.copy(
+                                // 占位的内容恒为空；真有半截内容时保留它，只补状态
+                                content = rec.content.ifBlank { TOOL_INTERRUPTED_NOTE },
+                                isError = true,
+                                pending = false
+                            )
+                        }
+                    }
+                )
+            }
+            if (settled > 0) {
+                items[idx] = conv.copy(
+                    updatedAt = System.currentTimeMillis(),
+                    turns = turns,
+                    messages = ConversationBranch.flatten(turns)
+                )
+                dirtyIds.add(convId)
+            }
+        }
+        if (settled > 0) schedulePersist(urgent = true)
+        return settled
+    }
+
+    /**
      * 左右切换某轮的选中变体（Phase 2 DoD②），[delta] = -1 左 / +1 右。
      * 委托 [ConversationBranch.select]（边界 clamp：首个左移、末个右移原地不动；单变体轮不响应）。
      * 切换后同步写回 `messages = flatten(turns)`，保证「下一次请求的历史」用的是选中变体。
@@ -472,6 +575,7 @@ class ConversationStore(file: File) {
                 turns = turns,
                 messages = ConversationBranch.flatten(turns)
             )
+            dirtyIds.add(convId)
         }
         schedulePersist()
         return selected
@@ -492,6 +596,7 @@ class ConversationStore(file: File) {
                 turns = turns,
                 messages = ConversationBranch.flatten(turns)
             )
+            dirtyIds.add(convId)
         }
         schedulePersist()
     }
@@ -517,6 +622,7 @@ class ConversationStore(file: File) {
                 turns = turns,
                 messages = ConversationBranch.flatten(turns)
             )
+            dirtyIds.add(convId)
         }
         schedulePersist()
         return remaining
@@ -531,6 +637,7 @@ class ConversationStore(file: File) {
                 title = title.trim().ifBlank { DEFAULT_TITLE },
                 updatedAt = System.currentTimeMillis()
             )
+            dirtyIds.add(convId)
         }
         schedulePersist()
     }
@@ -547,13 +654,18 @@ class ConversationStore(file: File) {
                 workspaceDir = dir.trim().trim('/'),
                 updatedAt = System.currentTimeMillis()
             )
+            dirtyIds.add(convId)
         }
         schedulePersist()
     }
 
     /** 删除会话（含其全部消息，不可恢复——UI 层已有二次确认）。 */
     fun delete(convId: String) {
-        synchronized(lock) { items.removeAll { it.id == convId } }
+        synchronized(lock) {
+            items.removeAll { it.id == convId }
+            dirtyIds.remove(convId)
+            removedIds.add(convId)
+        }
         schedulePersist(urgent = true)
     }
 
@@ -585,8 +697,14 @@ class ConversationStore(file: File) {
      */
     fun replaceAll(list: List<ConversationRecord>) {
         synchronized(lock) {
+            val oldIds = items.map { it.id }.toSet()
             items.clear()
             items.addAll(list.map { migrate(it) })
+            val newIds = items.map { it.id }.toSet()
+            dirtyIds.clear()
+            dirtyIds.addAll(newIds)
+            removedIds.clear()
+            removedIds.addAll(oldIds - newIds)
         }
         schedulePersist(urgent = true)
     }
@@ -594,18 +712,108 @@ class ConversationStore(file: File) {
     /* ------------------------------ 内部实现 ------------------------------ */
 
     /**
-     * 读盘：优先主文件，缺失或损坏时回退 .bak；两者都不可用退化为空列表
-     * （宁可没有聊天记录，也不能因为文件坏掉崩掉主流程）。
+     * 读盘（R-10）：主文件是 [ConversationIndex] 时按 id 逐个读分片；
+     * 主文件还是旧「整库 JSON 数组」时一次性迁移为分片——旧数组由
+     * [AtomicJsonFile.write] 自动留成 `.bak`，可回退，不删用户数据。
+     *
+     * 主文件损坏 / 半截 JSON 由 [AtomicJsonFile.readWithBackupOrNull] 回退 `.bak`；
+     * 单个分片损坏由该分片自己的 `.bak` 兜底——容错粒度从「整库」细到「单会话」。
      * 读入的每条会话都过 [migrate]（旧格式 → 轮次变体，向后兼容）。
      */
     private fun load() {
-        val parsed = parseOrNull(readTextOrEmpty(file)) ?: parseOrNull(readTextOrEmpty(bakFile))
-        if (parsed != null) {
+        val raw = AtomicJsonFile.readWithBackupOrNull(file) { text ->
+            parseIndexOrNull(text) != null || parseOrNull(text) != null
+        }
+        if (raw == null) {
+            // 主 index 与 .bak 都不可用：分片才是数据真源，扫描目录重建索引。
+            // 旧实现「整库单文件」在这里只能认输，分片后每个会话各自完好。
+            recoverFromShards()
+            return
+        }
+        val index = parseIndexOrNull(raw)
+        if (index != null) {
+            val records = index.ids.mapNotNull { id -> readShard(id) }
             synchronized(lock) {
                 items.clear()
-                items.addAll(parsed.map { migrate(it) })
+                items.addAll(records.map { migrate(it) })
             }
+            return
         }
+        val legacy = parseOrNull(raw) ?: return
+        val migrated = legacy.map { migrate(it) }
+        synchronized(lock) {
+            items.clear()
+            items.addAll(migrated)
+        }
+        migrateLegacyToShards(migrated)
+    }
+
+    /** 主文件新格式判定：JSON 对象 + schemaVersion ≥ 2。旧整库是数组，天然不匹配。 */
+    private fun parseIndexOrNull(text: String): ConversationIndex? =
+        if (!text.trimStart().startsWith("{")) null
+        else runCatching { json.decodeFromString<ConversationIndex>(text) }
+            .getOrNull()?.takeIf { it.schemaVersion >= ConversationIndex.SCHEMA_VERSION }
+
+    /** 分片解析（单个会话）。 */
+    private fun parseShardOrNull(text: String): ConversationShard? =
+        if (text.isBlank()) null
+        else runCatching { json.decodeFromString<ConversationShard>(text) }.getOrNull()
+
+    /**
+     * 分片文件名：合法 id 原样；其它（备份里可能夹带的历史脏 id）按 UTF-8 hex 编码，
+     * 杜绝 `../` 之类的路径穿越，且保证同一 id 的加载与写入落到同一个文件。
+     */
+    private fun shardFile(id: String): File {
+        val safe = if (SAFE_ID.matches(id)) id
+        else "h-" + id.toByteArray(Charsets.UTF_8)
+            .joinToString("") { "%02x".format(it.toInt() and 0xff) }
+        return File(shardDir, "$safe.json")
+    }
+
+    /** 读一个分片：主分片坏了回退该分片的 .bak；两者都不可用返回 null（该会话跳过，不崩）。 */
+    private fun readShard(id: String): ConversationRecord? {
+        val raw = AtomicJsonFile.readWithBackupOrNull(shardFile(id)) { text ->
+            parseShardOrNull(text) != null
+        } ?: return null
+        return parseShardOrNull(raw)?.toRecord()
+    }
+
+    /** 写一个分片：只编码 turn 真源，`messages` 不落盘（R-10 消除双写）。返回写出的字节数。 */
+    private fun writeShard(rec: ConversationRecord): Int {
+        val payload = runCatching { json.encodeToString(ConversationShard.of(rec)) }.getOrNull() ?: return 0
+        return if (AtomicJsonFile.write(shardFile(rec.id), payload)) payload.toByteArray(Charsets.UTF_8).size else 0
+    }
+
+    /** 旧整库数组 → 分片 + 新 index（一次性，启动时最多跑一次）。 */
+    private fun migrateLegacyToShards(records: List<ConversationRecord>) {
+        runCatching { shardDir.mkdirs() }
+        for (rec in records) writeShard(rec)
+        val payload = json.encodeToString(ConversationIndex(ids = records.map { it.id }))
+        // file 此刻仍是旧整库数组：AtomicJsonFile 会先把它复制成 .bak，再 rename 成 index。
+        AtomicJsonFile.write(file, payload)
+    }
+
+    /**
+     * 主索引彻底损坏（含 .bak 也坏）时按分片目录重建 index。
+     * 只认 `*.json` 分片，天然排除 `*.json.bak`；文件名是安全编码后的 id stem，
+     * 与 [shardFile] 的映射一一对应，读回的 record 仍用分片内容里的真实 id。
+     */
+    private fun recoverFromShards() {
+        val ids = runCatching {
+            shardDir.listFiles()
+                ?.filter { it.isFile && it.name.endsWith(".json") }
+                ?.map { it.name.removeSuffix(".json") }
+                ?.sorted()
+                .orEmpty()
+        }.getOrDefault(emptyList())
+        if (ids.isEmpty()) return
+        val records = ids.mapNotNull { id -> readShard(id) }
+        synchronized(lock) {
+            items.clear()
+            items.addAll(records.map { migrate(it) })
+        }
+        val payload = runCatching { json.encodeToString(ConversationIndex(ids = ids)) }.getOrNull() ?: return
+        runCatching { AtomicJsonFile.write(file, payload) }
     }
 
     /**
@@ -659,19 +867,27 @@ class ConversationStore(file: File) {
         }
     }
 
+    /** 一次落盘要处理的脏集快照：在锁内一次取齐，锁外只碰文件，不读内存态。 */
+    private data class PersistBatch(
+        val dirty: Set<String>,
+        val removed: Set<String>,
+        val records: List<ConversationRecord>
+    )
+
     /**
      * 把脏数据写下去（幂等：没有脏标记就直接返回）。
      *
      * 标志在写之前清除——写的过程中产生的新变更会重新置脏并排下一轮，
-     * 不会因为「清得太晚」被吞掉。
+     * 不会因为「清得太晚」被吞掉。只有真的写出了内容才计 [persistCount]：
+     * 写方法「锁内改脏集 / 锁外置标记」之间有一个极窄窗口，可能排出一次空任务，
+     * 把空任务计进去会让去抖判据（R13-3）失真。
      */
     private fun flushNow() {
         if (!persistDirty.getAndSet(false)) return
         // 取走累积计数（与清脏标记同一处），保证「合并了几次」与「这次写」一一对应
         val mutations = pendingMutations.getAndSet(0)
         runCatching {
-            persist(mutations)
-            persistCount++
+            if (persist(mutations)) persistCount++
         }
     }
 
@@ -679,35 +895,73 @@ class ConversationStore(file: File) {
      * 立即落盘（App 切后台 / 进程即将退出 / 用户点了「导出」时调用）。
      *
      * 不去抖窗口里干等：把写任务直接插到调度器队列，会在 400ms 内完成。
+     * 不再先判 persistDirty——无条件排任务，由 [flushNow] 的幂等挡住空写，
+     * 顺带堵住「锁内已改脏集、锁外还没置标记」这个窗口里漏掉的一次 flush。
      */
     fun flush() {
-        if (!persistDirty.get()) return
         runCatching { persistScheduler.execute { flushNow() } }
     }
 
     /**
-     * 原子写：完整快照编码后写入 .tmp；上一版主文件备份为 .bak；最后 rename 替换主文件。
-     * rename（同一目录）是原子的，写一半被杀进程也不会把文件打成半截 JSON。
+     * R-10：只把**脏会话**写成各自的分片；会话集合变了才顺带重写轻量 index。
+     *
+     * 与旧实现的三点差别：① 不再 `encodeToString(items)` 序列化全库；
+     * ② `.bak` 由 [AtomicJsonFile] 落在**单个分片**上，不再复制整库；
+     * ③ 每个分片只存 turn 真源，`messages` 读时现算，双写消失。
+     *
+     * @return 是否真的写出了内容（供 [flushNow] 决定计不计 [persistCount]）。
      */
-    private fun persist(mutations: Int = 1) {
-        val snapshot = synchronized(lock) { items.toList() }
-        val payload = runCatching { json.encodeToString(snapshot) }.getOrNull() ?: return
-        // 会话是最贵的数据：丢了不是「少一条记录」，是整段对话蒸发。
-        // 统一原子写保证「写完 → fsync → rename」，断电最差回到上一版。
+    private fun persist(mutations: Int = 1): Boolean {
+        val batch = synchronized(lock) {
+            val b = PersistBatch(
+                dirty = dirtyIds.toSet(),
+                removed = removedIds.toSet(),
+                records = items.toList()
+            )
+            dirtyIds.clear()
+            removedIds.clear()
+            b
+        }
+        if (batch.dirty.isEmpty() && batch.removed.isEmpty()) return false
+
         val started = System.currentTimeMillis()
-        AtomicJsonFile.write(file, payload)
-        // P5-1：落盘计量（字节数按 UTF-8 算——中文内容按字符数会低估一半以上）。
-        // 放在写成功之后：失败时 AtomicJsonFile 自己会留痕，这里只统计真实写出的量。
+        runCatching { shardDir.mkdirs() }
+        // 删除会话：清掉分片与它的 .bak，避免孤儿文件越攒越多
+        for (id in batch.removed) {
+            val shard = shardFile(id)
+            runCatching { shard.delete() }
+            runCatching { AtomicJsonFile.backupOf(shard).delete() }
+        }
+        val byId = batch.records.associateBy { it.id }
+        var bytes = 0
+        var written = 0
+        for (id in batch.dirty) {
+            val rec = byId[id] ?: continue
+            val n = writeShard(rec)
+            if (n > 0) { bytes += n; written++ }
+        }
+        // index 每次落盘都刷新：它只有 id 清单（O(会话数) 字节、不含消息正文），
+        // 换来两点硬保证：① 主文件的 .bak 始终是新鲜的上一版，index 坏了能回退；
+        // ② ids 与分片目录始终同步。这仍远不是「整库全量重写」。
+        val indexPayload = runCatching {
+            json.encodeToString(ConversationIndex(ids = batch.records.map { it.id }))
+        }.getOrNull()
+        var indexWritten = false
+        if (indexPayload != null && AtomicJsonFile.write(file, indexPayload)) {
+            bytes += indexPayload.toByteArray(Charsets.UTF_8).size
+            indexWritten = true
+        }
+        lastWrittenShardIds = batch.dirty
+        // P5-1：落盘计量（字节数按 UTF-8 算）。bytes 是这一次真正写出的总量——
+        // 分片后它随「改了几个会话」变，而不是恒等于整库大小。
         StoreWriteTrace.write(
             store = "conversations",
-            bytes = payload.toByteArray(Charsets.UTF_8).size,
+            bytes = bytes,
             durationMs = System.currentTimeMillis() - started,
             coalesced = mutations,
         )
+        return written > 0 || batch.removed.isNotEmpty() || indexWritten
     }
-
-    private fun readTextOrEmpty(f: File): String =
-        runCatching { if (f.exists()) f.readText() else "" }.getOrDefault("")
 
     private fun parseOrNull(text: String): List<ConversationRecord>? =
         if (text.isBlank()) null
@@ -722,5 +976,11 @@ class ConversationStore(file: File) {
 
         /** 自动命名时取用户首条消息的前 N 个字符。 */
         const val TITLE_CHARS = 12
+
+        /** R-10：分片目录后缀（`conversations.json` → `conversations.d/`）。 */
+        const val SHARD_DIR_SUFFIX = ".d"
+
+        /** R-10：可直接当文件名的会话 id（UUID 与备份数据均落在此集合内）。 */
+        val SAFE_ID = Regex("[A-Za-z0-9_-]{1,128}")
     }
 }

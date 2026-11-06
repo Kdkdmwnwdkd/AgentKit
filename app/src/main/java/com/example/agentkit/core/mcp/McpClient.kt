@@ -1,5 +1,6 @@
 package com.example.agentkit.core.mcp
 
+import com.example.agentkit.core.llm.LlmHttp
 import com.example.agentkit.core.llm.primOrNull
 import com.example.agentkit.core.llm.arrOrNull
 import com.example.agentkit.core.llm.objOrNull
@@ -117,10 +118,7 @@ class McpClient(
     companion object {
         private val JSON_MEDIA = "application/json; charset=utf-8".toMediaType()
 
-        fun defaultHttp(): OkHttpClient = OkHttpClient.Builder()
-            .connectTimeout(10, TimeUnit.SECONDS)
-            .readTimeout(60, TimeUnit.SECONDS)
-            .build()
+        fun defaultHttp(): OkHttpClient = LlmHttp.llm
 
         /**
          * 从响应体提取 JSON 负载：直接 JSON 则原样；SSE（`data: {...}` 行）则拼接/取首个 data。

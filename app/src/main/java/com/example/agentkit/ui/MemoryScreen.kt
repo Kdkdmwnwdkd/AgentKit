@@ -95,6 +95,7 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.agentkit.memory.MemoryForceLayout
 import com.example.agentkit.memory.MemoryItem
+import com.example.agentkit.ui.contract.MemoryBankContract
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import java.time.Instant
@@ -112,7 +113,7 @@ import kotlin.math.sin
  * 一级页面：顶栏走 [PageTopBar]（标题「记忆库」+ 右上「刷新」）。
  */
 @Composable
-fun MemoryScreen(vm: ChatViewModel) {
+fun MemoryScreen(vm: MemoryBankContract) {
     val memories by vm.memories.collectAsStateWithLifecycle()
     var query by rememberSaveable { mutableStateOf("") }
     var draft by rememberSaveable { mutableStateOf("") }

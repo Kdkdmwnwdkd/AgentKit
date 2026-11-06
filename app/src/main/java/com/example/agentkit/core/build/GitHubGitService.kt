@@ -1,5 +1,6 @@
 package com.example.agentkit.core.build
 
+import com.example.agentkit.core.llm.LlmHttp
 import com.example.agentkit.core.llm.primOrNull
 import com.example.agentkit.core.llm.arrOrNull
 import com.example.agentkit.core.llm.objOrNull
@@ -53,11 +54,7 @@ class GitHubGitService(
     private val cfg: GitHubConfig,
     http: OkHttpClient? = null
 ) {
-    private val http: OkHttpClient = http ?: OkHttpClient.Builder()
-        .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(30, TimeUnit.SECONDS)
-        .writeTimeout(30, TimeUnit.SECONDS)
-        .build()
+    private val http: OkHttpClient = http ?: LlmHttp.short
 
     private val json = Json { ignoreUnknownKeys = true }
 

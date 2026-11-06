@@ -48,16 +48,17 @@ SRC = os.path.join(ROOT, "app", "src", "main", "java")
 # （有哪些组）。抄的时候没人拦，于是 P3-3 给清单加了 `mcp` 组、这张表就再也没跟上——
 # 与 `LocalAgentPrompt.ORDER` 那次是同一个病：同一份知识，两个副本，一个改一个不改。
 #
-# 现在直接从 `CapabilityManifest.kt` 解析：组名、成员、常驻、动态全以清单为准。
-# 清单改完这里不用动，量出来的数字自然跟着变。清单写坏（比如工具重复登记）时
-# `run-capability-manifest-verification.sh` 会先红，这里只管照着算。
+# 现在直接从 `core/tool/ToolCatalog.kt` 解析：组、成员、顺序、常驻、动态全以目录为准。
+# R-13 之前这份数据在 `CapabilityManifest.kt`，那里改成派生视图后，审计必须跟着搬到真源——
+# 盯着视图算，等于在量一份已经不由人维护的副本。
+# 目录写坏（重复登记、组没定义）时 `run-r13-catalog-verification.sh` 会先红，这里只管照着算。
 
-MANIFEST_KT = os.path.join(
-    SRC, "com", "example", "agentkit", "core", "capability", "CapabilityManifest.kt")
+CATALOG_KT = os.path.join(
+    SRC, "com", "example", "agentkit", "core", "tool", "ToolCatalog.kt")
 
 
 def load_manifest(path: str):
-    """解析清单 → (顺序化的组名列表, 组→成员, 常驻组集合, 动态组集合)。"""
+    """解析目录 → (顺序化的组名列表, 组→成员, 常驻组集合, 动态组集合)。"""
     src = open(path, encoding="utf-8").read()
     groups, members, pinned, dynamic = [], {}, set(), set()
 
@@ -65,8 +66,8 @@ def load_manifest(path: str):
     # 否则兜底桶会被静默跳过——**静默跳过正是这次要消灭的那类 bug**。
     consts = dict(re.findall(r'const val (\w+)\s*(?::\s*String)?\s*=\s*"([a-z_]+)"', src))
 
-    # 逐段切 `CapabilityGroup(` 到与之配平的右括号（跳过 `data class CapabilityGroup(` 这个声明）
-    for m in re.finditer(r'(?<!class )CapabilityGroup\(', src):
+    # 逐段切 `CatalogGroup(` 到与之配平的右括号（跳过 `data class CatalogGroup(` 这个声明）
+    for m in re.finditer(r'(?<!class )CatalogGroup\(', src):
         if src[max(0, m.start() - 6):m.start()].endswith("class "):
             continue
         i, depth = m.end(), 1
@@ -76,26 +77,27 @@ def load_manifest(path: str):
         block = src[m.end():i]
         head = re.match(r'\s*(?:"([a-z_]+)"|([A-Z][A-Za-z0-9_]*))\s*,', block)
         if not head:
-            raise SystemExit("无法解析 CapabilityGroup 的组名（工具面审计的解析器要跟着清单改）：%s"
+            raise SystemExit("无法解析 CatalogGroup 的组名（工具面审计的解析器要跟着目录改）：%s"
                              % block[:60].replace("\n", " "))
         g = head.group(1) or consts.get(head.group(2), "")
         if not g:
-            raise SystemExit("CapabilityGroup 用了未知常量 %s（审计脚本解析不到它的值）" % head.group(2))
-        names = []
-        tools = re.search(r'tools\s*=\s*listOf\(([^)]*)\)', block, re.S)
-        if tools:
-            names = re.findall(r'"([a-z0-9_]+)"', tools.group(1))
+            raise SystemExit("CatalogGroup 用了未知常量 %s（审计脚本解析不到它的值）" % head.group(2))
         groups.append(g)
-        members[g] = names
+        members[g] = []
         if re.search(r'pinned\s*=\s*true', block):
             pinned.add(g)
         if re.search(r'dynamic\s*=\s*true', block):
             dynamic.add(g)
 
+    # 成员从 `CatalogTool("name", "group", ...)` 按出现顺序收集——顺序即工具表顺序，
+    # 不能排序：排了就和真实发送给模型的工具表对不上，预算量得再准也没意义。
+    for m in re.finditer(r'CatalogTool\(\s*"([a-z0-9_]+)"\s*,\s*"([a-z0-9_]+)"', src):
+        members.setdefault(m.group(2), []).append(m.group(1))
+
     return groups, members, pinned, dynamic
 
 
-GROUP_ORDER, GROUP_MEMBERS, PINNED, DYNAMIC = load_manifest(MANIFEST_KT)
+GROUP_ORDER, GROUP_MEMBERS, PINNED, DYNAMIC = load_manifest(CATALOG_KT)
 
 # 工具名 → 组（清单是精确成员表；misc 不在表内，它是兜底）
 MEMBER_OF = {n: g for g, ns in GROUP_MEMBERS.items() for n in ns}

@@ -15,8 +15,10 @@ source "$ROOT/scripts/qa/lib/deps.sh"
 CACHE="$QA_GRADLE_CACHE"
 KOTLINC=$(qa_find_jar "$CACHE/org.jetbrains.kotlin/kotlin-compiler-embeddable" "kotlin-compiler-embeddable-*.jar")
 STDLIB=$(qa_find_jar "$CACHE/org.jetbrains.kotlin/kotlin-stdlib" "kotlin-stdlib-*.jar")
-TROVE=$(qa_find_jar "$CACHE/org.jetbrains.intellij.deps/trove4j" "trove4j-*.jar")
-JB_ANNOTATIONS=$(qa_find_jar "$CACHE/org.jetbrains/annotations" "annotations-*.jar")
+# trove4j / annotations 用带回落的版本：编译器内部要用，缺了不是「跑不了」而是
+# `ClassNotFoundException: gnu.trove.THashMap`——报错形态完全不像依赖缺失。
+TROVE=$(qa_find_jar_or_local "$CACHE/org.jetbrains.intellij.deps/trove4j" "trove4j-*.jar" "trove4j.jar")
+JB_ANNOTATIONS=$(qa_find_jar_or_local "$CACHE/org.jetbrains/annotations" "annotations-*.jar" "annotations.jar")
 COROUTINES=$(qa_find_jar "$CACHE/org.jetbrains.kotlinx/kotlinx-coroutines-core-jvm" "kotlinx-coroutines-core-jvm-*.jar")
 
 [ -n "${KOTLINC:-}" ] || KOTLINC="$KC_HOME/lib/kotlin-compiler.jar"

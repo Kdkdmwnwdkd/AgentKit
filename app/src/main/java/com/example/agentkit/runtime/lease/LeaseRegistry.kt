@@ -1,10 +1,9 @@
 package com.example.agentkit.runtime.lease
 
 import com.example.agentkit.core.AgentLogger
+import com.example.agentkit.core.AppScope
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -154,8 +153,12 @@ object LeaseRegistry {
      * 启动节拍器。幂等（已在跑则 no-op）。
      *
      * 启动回收器**不等于**立刻释放任何资源——第一次检查在 [checkIntervalMs] 之后。
+     *
+     * 默认作用域是 [AppScope.app]：节拍器要活到进程结束，不该跟着某个实例走。
+     * 早先这里在默认参数里自建了一个默认调度器的 scope，R14 收口时漏掉了它
+     * （默认参数不是字段，按字段 grep 找不到）。
      */
-    fun start(scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)) {
+    fun start(scope: CoroutineScope = AppScope.app) {
         if (watchJob?.isActive == true) return
         watchJob = scope.launch {
             while (isActive) {

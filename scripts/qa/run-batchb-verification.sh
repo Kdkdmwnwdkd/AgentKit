@@ -53,6 +53,7 @@ SRCS=(
   "$SRC/core/container/ToolchainInstaller.kt"
   "$SRC/core/workspace/FileBackupStore.kt"
   "$SRC/core/workspace/TextDiff.kt"
+  "$SRC/core/tool/ToolCatalog.kt"
   "$SRC/skill/SkillSecurity.kt"
   "$ROOT/scripts/qa/BatchBVerification.kt"
 )

@@ -21,6 +21,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.agentkit.ui.contract.ChatBackgroundRef
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlin.math.max
@@ -78,7 +79,7 @@ suspend fun loadChatBackground(
  * 注意：调用方需在无图时保留自身不透明底色、有图时让底色透明，否则照片被盖住。
  */
 @Composable
-fun AppBackgroundLayer(vm: ChatViewModel) {
+fun AppBackgroundLayer(vm: ChatBackgroundRef) {
     val uri by vm.chatBackgroundUri.collectAsStateWithLifecycle()
     val alpha by vm.chatBackgroundAlpha.collectAsStateWithLifecycle()
     val context = LocalContext.current

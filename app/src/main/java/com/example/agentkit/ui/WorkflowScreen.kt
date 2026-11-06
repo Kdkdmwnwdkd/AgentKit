@@ -28,6 +28,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.core.app.NotificationManagerCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.agentkit.ui.contract.WorkflowContract
 import com.example.agentkit.workflow.Workflow
 import com.example.agentkit.workflow.describeTrigger
 
@@ -39,7 +40,7 @@ import com.example.agentkit.workflow.describeTrigger
  *  - 页面只负责「看、开关、删、立即运行」——低频管理动作，一屏够用。
  */
 @Composable
-fun WorkflowScreen(vm: ChatViewModel) {
+fun WorkflowScreen(vm: WorkflowContract) {
     val list by vm.workflows.collectAsStateWithLifecycle()
     val ctx = LocalContext.current
     // W-19：通知权限没开时，定时任务到点不会有任何提示——必须在页面上明说并给入口

@@ -1,5 +1,6 @@
 package com.example.agentkit.core.media.providers
 
+import com.example.agentkit.core.llm.LlmHttp
 import com.example.agentkit.core.llm.primOrNull
 import com.example.agentkit.core.llm.objOrNull
 import com.example.agentkit.core.media.MediaException
@@ -42,10 +43,7 @@ class MiniMaxMediaProvider(private val apiKey: String) : MediaProvider {
     override val kinds = setOf(MediaKind.TEXT_TO_VIDEO)
 
     private val json = Json { ignoreUnknownKeys = true }
-    private val http = OkHttpClient.Builder()
-        .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(120, TimeUnit.SECONDS)
-        .build()
+    private val http = LlmHttp.llm
 
     override suspend fun submit(request: MediaRequest): MediaTaskHandle = withContext(Dispatchers.IO) {
         requireKey()

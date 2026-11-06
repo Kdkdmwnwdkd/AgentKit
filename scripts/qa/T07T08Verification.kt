@@ -399,7 +399,10 @@ private fun testFactoryDegradeAndCache() = runBlocking {
         assertTrue("probed again", proot.probeCount >= 2)
     }
 
-    check("未实现身份对工厂不可用（不引入依赖）") {
+    check("设备只有 App 身份后端时，更高档的请求取不到后端（不虚报可用）") {
+        // R-12：标题改过。原来叫「未实现身份对工厂不可用」——在 uid 2000 成为真实档位之后，
+        // `Shizuku` 已经不是「未实现」，只是这台设备（这个假工厂）没有那条通道。
+        // 断言本身不变：拿不到就是拿不到，只是原因从「身份不存在」变成了「权限不够」。
         val factory = TerminalBackendFactory(
             listOf(
                 FakeProvider(TerminalIdentity.User, TerminalBackend.KEY_USER, true) { FakeShellBackend(TerminalBackend.KEY_USER) }

@@ -1,5 +1,6 @@
 package com.example.agentkit.core.terminal.backend
 
+import com.example.agentkit.core.AppScope
 import com.example.agentkit.core.AgentLogger
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -48,7 +49,7 @@ abstract class ProcessBackendBase(
 
     private var process: Process? = null
     private val exit = CompletableDeferred<Int>()
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val scope = CoroutineScope(SupervisorJob() + AppScope.io)
     private var readerJob: Job? = null
     private var waiterJob: Job? = null
 

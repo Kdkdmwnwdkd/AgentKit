@@ -15,6 +15,7 @@ PROBE="$DIR/AndroidDeviceProbe.kt"
 # LocalBackend 枚举住在后端目录里，画像层只是引用它，编的时候要一起带上。
 CATALOG="$DIR/LocalBackendCatalog.kt"
 APP="app/src/main/java/com/example/agentkit/AgentKitApplication.kt"
+BOOT="app/src/main/java/com/example/agentkit/startup/BootSequence.kt"
 
 PASS=0
 FAIL=0
@@ -71,9 +72,9 @@ has "内存读 /proc/meminfo" "$PROBE" "/proc/meminfo"
 echo "== 静态：画像在后台采，不许拖慢冷启动 =="
 
 # onCreate 是启动最敏感的路径。EGL 上下文创建哪怕只有 20ms，也不该压在这里。
-has "画像在独立线程采集" "$APP" "name = \"device-probe\""
-has "线程是 daemon（不阻止退出）" "$APP" "isDaemon = true"
-has "采集整体 runCatching" "$APP" "runCatching { AndroidDeviceProbe.profile(this) }"
+has "画像在独立线程采集" "$BOOT" "name = \"device-probe\""
+has "线程是 daemon（不阻止退出）" "$BOOT" "isDaemon = true"
+has "采集整体 runCatching" "$BOOT" "runCatching { AndroidDeviceProbe.profile(app) }"
 
 echo "== 行为：真编一遍 =="
 
@@ -84,6 +85,10 @@ elif [ -x "$HOME/.sdkman/candidates/kotlin/current/bin/kotlinc" ]; then
     KOTLINC="$HOME/.sdkman/candidates/kotlin/current/bin/kotlinc"
 elif [ -x /opt/kotlinc/bin/kotlinc ]; then
     KOTLINC="/opt/kotlinc/bin/kotlinc"
+# CI 的 shim 造在 /tmp/kotlinc/bin 且**没有加进 PATH**（见 workflow「Prepare kotlinc shim」）。
+# 少了这一条，行为断言在 CI 里一直 SKIP —— 之前只查 command -v，等于没验。
+elif [ -x /tmp/kotlinc/bin/kotlinc ]; then
+    KOTLINC="/tmp/kotlinc/bin/kotlinc"
 fi
 
 if [ -z "$KOTLINC" ]; then

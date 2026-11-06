@@ -1,5 +1,6 @@
 package com.example.agentkit.terminal
 
+import com.example.agentkit.core.AppScope
 import com.example.agentkit.core.AgentLogger
 import com.example.agentkit.core.ProcessEnv
 import android.os.Handler
@@ -69,7 +70,7 @@ class TerminalSession(
     var onExit: ((Int) -> Unit)? = null
 
     private var handle: Long = 0L
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val scope = CoroutineScope(SupervisorJob() + AppScope.io)
     private val main = Handler(Looper.getMainLooper())
 
     @Volatile

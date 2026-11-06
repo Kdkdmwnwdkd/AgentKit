@@ -68,6 +68,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import com.example.agentkit.ui.contract.ModelConfigContract
 import kotlinx.coroutines.launch
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -117,7 +118,7 @@ import com.example.agentkit.core.ModelProfile
  * @param onBack 「取消 / 保存」后回对话页（抽屉路由由宿主持有）。
  */
 @Composable
-fun ModelConfigScreen(vm: ChatViewModel, onBack: () -> Unit) {
+fun ModelConfigScreen(vm: ModelConfigContract, onBack: () -> Unit) {
     val config by vm.config.collectAsStateWithLifecycle()
     val profiles by vm.profiles.collectAsStateWithLifecycle()
     val activeProfileId by vm.activeProfileId.collectAsStateWithLifecycle()
@@ -144,8 +145,7 @@ fun ModelConfigScreen(vm: ChatViewModel, onBack: () -> Unit) {
     var balanceLoading by remember { mutableStateOf(false) }
     var balanceText by remember(config) { mutableStateOf<String?>(null) }
     var tab by rememberSaveable { mutableStateOf(0) }
-    // 功能二：新建档案对话框开关（用户录屏反馈「点＋新增没有任何 visible 反馈」——
-    // 旧行为直接静默建副本，新 chip 还被横向滚动条挤到屏外；参照 App 改为先弹命名框）
+    // 功能二：新建档案先弹命名框（旧行为静默建副本、新 chip 被挤出屏外，录屏反馈「点＋没反应」）。
     var showAdd by rememberSaveable { mutableStateOf(false) }
 
     val dirty = baseUrl != config.baseUrl || apiKey != config.apiKey ||
@@ -304,7 +304,7 @@ fun ModelConfigScreen(vm: ChatViewModel, onBack: () -> Unit) {
 
 /** 「本地模型」页签打开时刷新清单与加载状态（下载完成后回到前台也刷新）。 */
 @Composable
-private fun LocalTabRefreshEffect(vm: ChatViewModel, tab: Int) {
+private fun LocalTabRefreshEffect(vm: ModelConfigContract, tab: Int) {
     LaunchedEffect(tab) { if (tab == 1) vm.refreshLocalModels() }
 }
 
@@ -662,7 +662,7 @@ private fun ProviderOptionRow(
 /** 「模型」Tab：接入字段 + Key 自检 + 测试连接四态 + 结果卡 + 保存/取消（§6.8）。 */
 @Composable
 private fun ModelTab(
-    vm: ChatViewModel,
+    vm: ModelConfigContract,
     baseUrl: String,
     onBaseUrl: (String) -> Unit,
     apiKey: String,
@@ -1138,7 +1138,7 @@ private fun AddProfileDialog(
  */
 @Composable
 private fun ModelPickerSheet(
-    vm: ChatViewModel,
+    vm: ModelConfigContract,
     baseUrl: String,
     apiKey: String,
     providerId: String,
@@ -1417,7 +1417,7 @@ private fun modelTags(id: String): List<String> {
  * 所有状态都由 ChatViewModel 的 StateFlow 驱动，Composable 无副作用（除刷新 effect）。
  */
 @Composable
-private fun LocalModelsTab(vm: ChatViewModel) {
+private fun LocalModelsTab(vm: ModelConfigContract) {
     val models by vm.localModels.collectAsStateWithLifecycle()
     val active by vm.localActive.collectAsStateWithLifecycle()
     val loaded by vm.localLoaded.collectAsStateWithLifecycle()
@@ -1827,7 +1827,7 @@ private fun LocalModelsTab(vm: ChatViewModel) {
 
 /** 「模型」页签里本地模式的状态摘要（点「本地模型」页签可管理）。 */
 @Composable
-private fun LocalModeSummaryCard(vm: ChatViewModel, onOpenLocalTab: () -> Unit = {}) {
+private fun LocalModeSummaryCard(vm: ModelConfigContract, onOpenLocalTab: () -> Unit = {}) {
     val active by vm.localActive.collectAsStateWithLifecycle()
     val loaded by vm.localLoaded.collectAsStateWithLifecycle()
     val models by vm.localModels.collectAsStateWithLifecycle()

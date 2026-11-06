@@ -73,6 +73,56 @@ zero_assertions() {
   return 1
 }
 
+# SKIP 的说辞必须成立（R-17）。
+#
+# SKIP 是本项目唯一「什么都没验证也算过」的状态，而它的判据完全由 runner 自述：
+# 只要 `echo skip; exit 3`，一个 harness 就能从统计里永久消失，而门禁 5 只比 PASS
+# 总数——新增一个这样的 runner，总数不变，谁也看不出来。它比「断言失败」隐蔽得多，
+# 因为失败会红，消失只会让分母变小。
+#
+# 两条收紧：
+#   ① 必须用 `KS_HARNESS_SKIP` 前缀。裸的 `skip` 字样不算数——真实错误信息里带
+#      "skip" 太常见了（`skipping optimization`、`SKIP` 段内提示），当理由是错的；
+#   ② 理由里写到的绝对路径必须**真的不存在**。声称「缺少 app/build/...」，而那个
+#      目录好好地在，就不是环境问题，是 runner 的判据坏了。
+# 没有任何路径可核验的（例如「Gradle 缓存未就绪」），交给 gate.sh 的登记册管。
+skip_claim() { echo "$1" | grep -m1 -F 'KS_HARNESS_SKIP' || true; }
+
+skip_claim_is_true() {
+  local claim="$1" p paths
+  paths=$(printf '%s' "$claim" | grep -oE '/[A-Za-z0-9_./+-]+' || true)
+  [ -z "$paths" ] && return 0        # 无可核验对象，由 skip-allowlist.txt 兜底
+  while IFS= read -r p; do
+    [ -e "$p" ] && return 1          # 缺件其实在 → 理由不成立
+  done <<< "$paths"
+  return 0
+}
+
+# 「结果行里明确写了非零失败」（R-04）。
+#
+# 为什么单列一个判定：「10 失败」里含有子串「0 失败」，旧的通过标记正则会把它收下。
+# 更糟的是那种「子步骤打 FAIL=0、总结果打 3 失败」的脚本——两行都在，先匹配到谁全看
+# 正则顺序。失败必须优先于通过，这条和 R-02（标题写错会话）一样，属于「计数器说的是
+# 一回事，读的人理解成另一回事」。
+#
+# 只认带汇上下文词的**结果行**，且数字前必须是边界：宁可漏检（rc 通常已经非零），
+# 不可误杀——误杀会让整轮门禁红，比漏检更难查。
+# 只看**最后一行非空输出**，不 grep 全文。
+#
+# 第一版按「含汇上下文词的行」判，上线即把 run-runall-verification 自己的日志判红：
+# 那条自测会打印「场景 15：子步骤 FAIL=0 + 总结果 3 失败」——**描述失败的文字**
+# 被当成了失败本身。这和 zero_assertions 当初被「0 通过 / 0 失败（空跑）」骗过是同一种错。
+# 正常脚本的结论在最后一行；自测的最终结论（32 passed, 0 failed）也在最后一行，
+# 中间那些嵌套汇总不会被看到。漏检由 rc 兜底——不设 -e 且最后一行不写汇总的脚本，
+# 本来就是 rc 判据的责任。
+nonzero_failures() {
+  local last
+  last=$(echo "$1" | grep -v '^[[:space:]]*$' | tail -1)
+  echo "$last" | grep -qE "(^|[^0-9])[1-9][0-9]* *(失败|failed)" && return 0
+  echo "$last" | grep -qE "FAIL[:=] *[1-9][0-9]*" && return 0
+  return 1
+}
+
 for s in $RUNNER_GLOB; do
   [ -f "$s" ] || continue
   [ "$(basename "$s")" = "run-all.sh" ] && continue
@@ -92,8 +142,21 @@ for s in $RUNNER_GLOB; do
   echo "$out" > "$LOG_DIR/$(basename "$s" .sh).log"
 
   if [ $rc -eq 3 ] && echo "$out" | grep -qi "skip"; then
-    skip=$((skip + 1))
-    echo "SKIP  $(basename "$s")"
+    # R-17：先核验理由，再决定它算不算「跳过」。理由站不住时不降级为 SKIP——
+    # 那是把「runner 说错了话」当成「环境不具备」，等于给假绿发通行证。
+    claim=$(skip_claim "$out")
+    if [ -z "$claim" ]; then
+      fail=$((fail + 1)); failed="$failed $s"
+      echo "FAIL  $s（exit=3 且提到 skip，但没有 KS_HARNESS_SKIP 行，理由无法核验）"
+      echo "$out" | tail -8
+    elif ! skip_claim_is_true "$claim"; then
+      fail=$((fail + 1)); failed="$failed $s"
+      echo "FAIL  $s（SKIP 理由不成立：声称缺的东西其实在）"
+      echo "      $claim"
+    else
+      skip=$((skip + 1))
+      echo "SKIP  $(basename "$s")"
+    fi
   elif [ $rc -eq 3 ]; then
     # exit 3 是约定的「环境不具备」码，但**脚本自己没说明理由**时不能当跳过：
     # 真实错误恰好返回 3（某些编译器/工具会）会被这里静默吞掉，表现是「少了一个 PASS」，
@@ -127,9 +190,23 @@ for s in $RUNNER_GLOB; do
       echo "FAIL  $s（输出显示 0 条断言：跑了但什么都没验证） 完整日志：$LOG_DIR/$(basename "$s" .sh).log"
       echo "$out" | tail -8
     fi
+  # R-04：失败也要先于通过判定。`10 失败` 里含 `0 失败`，旧正则直接判 PASS；
+  # 而 `set -e` 没开、脚本末尾又是 echo 的情况下，rc 也是 0——两级证据同时失效。
+  elif nonzero_failures "$out"; then
+    if is_known_broken "$s"; then
+      xfail=$((xfail + 1))
+      echo "XFAIL $s（已知失效，见 known-broken.txt）"
+    else
+      fail=$((fail + 1)); failed="$failed $s"
+      echo "FAIL  $s（结果行写了非零失败，却被通过标记掩盖） 完整日志：$LOG_DIR/$(basename "$s" .sh).log"
+      echo "$out" | grep -E '结果|汇总|RESULT|SUMMARY|TOTAL|统计|小计' | tail -3
+    fi
   # W-47：补 "FAIL: 0" —— retry/t01 这类 runner 的汇总是 "PASS: 9  FAIL: 0  TOTAL: 9"，
   # 旧模式只认 "FAIL=0"，于是明明全绿的脚本被判「无通过标记」。
-  elif echo "$out" | grep -qE "0 failed|FAIL=0|FAIL: 0|0 失败|_OK [0-9]|全部通过"; then
+  #
+  # R-04：每个计数都加左边界。`(^|[^0-9])0 失败` 不会命中 `10 失败`；
+  # `FAIL=0([^0-9]|$)` 不会命中 `FAIL=01`（后者是坏的，不该算通过）。
+  elif echo "$out" | grep -qE "(^|[^0-9])0 failed|FAIL=0([^0-9]|$)|FAIL: 0([^0-9]|$)|(^|[^0-9])0 失败|_OK [0-9]|全部通过"; then
     if is_known_broken "$s"; then
       echo "XPASS $s（已修复！请从 known-broken.txt 移除）"
     fi

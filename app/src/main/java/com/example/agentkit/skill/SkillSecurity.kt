@@ -1,5 +1,7 @@
 package com.example.agentkit.skill
 
+import com.example.agentkit.core.tool.ToolCatalog
+
 /**
  * Skill 安全内核（L5「契约化只读」的硬约束层，净室原创）。
  *
@@ -9,122 +11,63 @@ package com.example.agentkit.skill
  * 所有工具按危险度分级，skill 按其信任等级被赋予能力上限，越权调用即使写在白名单里也被拦。
  *
  * 设计原则（思路借鉴 RikkaHub 的 skill 权限分级 + Coomi 的 tool capability，净室重写）：
- *  - 不依赖第三方 skill 的「自证白名单」，而是用应用内置的 [CapabilityRegistry] 作为唯一真相源。
+ *  - 不依赖第三方 skill 的「自证白名单」，而是用应用内置的工具目录
+ *    （[com.example.agentkit.core.tool.ToolCatalog]，R-13 起是能力分级的唯一真相源）作为判据。
  *  - 信任等级默认 PACKAGED（打包进 APK，可信全开）；IMPORTED/REMOTE 收紧，且默认禁止脚本执行。
  */
 
-/** 工具能力分级：决定哪些工具能被哪一级信任的 skill 调用。 */
-enum class Capability {
-    /** 只读沙箱资源，几乎无副作用（如 read_file）。 */
-    SAFE,
-    /** 涉及网络/通知/剪贴板/写文件等，可能外发数据或产生副作用。 */
-    PRIVILEGED,
-    /** 触碰系统高危权限（无障碍操控、录屏、设备感知），极危险。 */
-    DANGEROUS
-}
+/**
+ * 兼容别名：能力分级的真源已迁到 [com.example.agentkit.core.tool.Capability]（R-13）。
+ *
+ * 保留是为了让 `import com.example.agentkit.skill.Capability` 的既有代码与 harness
+ * 继续编译——typealias 只是别名，不是第二份定义，改真源不需要动这里。
+ */
+typealias Capability = com.example.agentkit.core.tool.Capability
 
 /**
- * 工具 → 能力分级的全局唯一真相源。集中在此定义，skill 的 manifest 白名单无法改变它。
+ * 工具 → 能力分级的查询入口。
+ *
+ * ## R-13：这里不再持有那张表
+ *
+ * 修前本对象有一张 56 行的手写 map。它与 `CapabilityManifest.capabilities`、
+ * 工具类里的 `name`、`ApprovalGrouping.groupOf` 三处互不知道——加一个工具要改四遍，
+ * 漏改也不会编译失败：新工具被 fail-closed 当成 DANGEROUS，imported 技能一调就报越权，
+ * 而排查得从「技能为什么被拒」倒推回这张表。
+ *
+ * 现在分级跟着工具走，只有 `core/tool/ToolCatalog.kt` 一处记录。本对象只剩查询，
+ * 对外签名一个没变（skill 运行时、UI 调试页、harness 都按旧签名调用）。
  */
 object CapabilityRegistry {
-    private val table: Map<String, Capability> = mapOf(
-        // —— 危险：设备操控 / 感知（L1–L4 高危权限工具）——
-        "ui_tree" to Capability.DANGEROUS,
-        "ui_tap" to Capability.DANGEROUS,
-        "ui_long_press" to Capability.DANGEROUS,
-        "ui_swipe" to Capability.DANGEROUS,
-        "ui_input" to Capability.DANGEROUS,
-        "ui_key" to Capability.DANGEROUS,
-        "ui_click" to Capability.DANGEROUS,
-        "ui_screenshot" to Capability.DANGEROUS,
-        "device_notifications" to Capability.DANGEROUS,
-        "device_foreground_app" to Capability.DANGEROUS,
-        // —— 危险：命令 / 安装 / 仓库写 ——
-        "shell_run" to Capability.DANGEROUS,
-        "shell_background" to Capability.DANGEROUS,
-        // B 批：容器运行时安装——会下载并写入容器文件系统，语义等同「在设备上装东西」
-        "container_toolchain" to Capability.DANGEROUS,
-        "app_install" to Capability.DANGEROUS,
-        "app_uninstall" to Capability.DANGEROUS,
-        "app_stop" to Capability.DANGEROUS,
-        "github_commit" to Capability.DANGEROUS,
-        // —— 危险：浏览器写操作（可提交表单 / 执行页面脚本）——
-        "web_click" to Capability.DANGEROUS,
-        "web_type" to Capability.DANGEROUS,
-        "web_eval" to Capability.DANGEROUS,
-        // —— L9 记忆库：写/删是 DANGEROUS ——
-        // memory_write / memory_forget 会永久改变长期人格状态（即使技能被卸载，写入的记忆仍残留，
-        // 等价于「持久投毒」）。imported 的能力上限恰好是 PRIVILEGED，若此处定 PRIVILEGED，
-        // 第三方导入技能就能随意写/删记忆。因此提升为 DANGEROUS，交给全局能力门拦住 imported/remote。
-        // 只读检索不改变状态，保持 SAFE。
-        "memory_write" to Capability.DANGEROUS,
-        "memory_forget" to Capability.DANGEROUS,
-        "memory_search" to Capability.SAFE,
-        "memory_list" to Capability.SAFE,
-        // —— 敏感：网络 / 通知 / 剪贴板 / 写文件 / 应用启动 ——
-        "http_request" to Capability.PRIVILEGED,
-        "clipboard" to Capability.PRIVILEGED,
-        "send_notification" to Capability.PRIVILEGED,
-        "write_file" to Capability.PRIVILEGED,
-        "edit_file" to Capability.PRIVILEGED,
-        "app_launch" to Capability.PRIVILEGED,
-        "github_clone" to Capability.PRIVILEGED,
-        "ocr_image" to Capability.PRIVILEGED,
-        "speak" to Capability.PRIVILEGED,
-        "todo_write" to Capability.PRIVILEGED,
-        "use_skill" to Capability.PRIVILEGED,
-        "spawn_agents" to Capability.PRIVILEGED,
-        "shell_close" to Capability.PRIVILEGED,
-        "web_open" to Capability.PRIVILEGED,
-        "web_search" to Capability.PRIVILEGED,
-        "web_snapshot" to Capability.PRIVILEGED,
-        "workflow_create" to Capability.PRIVILEGED,
-        "workflow_delete" to Capability.PRIVILEGED,
-        "workflow_toggle" to Capability.PRIVILEGED,
-        // —— 安全：只读 / 本地纯计算 / 咨询 ——
-        "read_file" to Capability.SAFE,
-        "app_list" to Capability.SAFE,
-        "ask_user" to Capability.SAFE,
-        "calculator" to Capability.SAFE,
-        "conversation_search" to Capability.SAFE,
-        "github_status" to Capability.SAFE,
-        "github_log" to Capability.SAFE,
-        "github_diff" to Capability.SAFE,
-        "load_skill" to Capability.SAFE,
-        "plan_propose" to Capability.SAFE,
-        "shell_jobs" to Capability.SAFE,
-        "todo_read" to Capability.SAFE,
-        "workflow_list" to Capability.SAFE,
-    )
 
     /**
      * 查某工具的能力分级。
      *
-     * **未知工具按 DANGEROUS 处理**：这是安全侧默认（fail-closed）。
-     * 旧实现按 SAFE 处理，等于「新工具只要忘了登记就自动放行」——`shell_run` /
-     * `edit_file` / `github_commit` 都曾因此被 imported 技能当成安全工具。
-     * 新增工具必须显式登记到 [table]，[audit] 与 harness 守着这条。
+     * **未知工具按 [Capability.DANGEROUS] 处理**（fail-closed）：旧实现按 SAFE 处理，
+     * 等于「新工具只要忘了登记就自动放行」。现在「忘了登记」在目录层面就会被
+     * [com.example.agentkit.core.tool.ToolCatalog.audit] 抓住；这里的默认值只兜底
+     * MCP 动态工具——它们的名字连上服务器才知道，目录里本来就不该有。
      */
-    fun cap(toolName: String): Capability = table[toolName] ?: Capability.DANGEROUS
+    fun cap(toolName: String): Capability = ToolCatalog.capabilityOf(toolName)
 
     /** 返回全部已知危险工具名（供 UI / 审计展示）。 */
-    fun dangerousTools(): List<String> = table.filterValues { it == Capability.DANGEROUS }.keys.toList()
+    fun dangerousTools(): List<String> =
+        ToolCatalog.tools.filter { it.capability == Capability.DANGEROUS }.map { it.name }
 
     /** 已登记的工具名（只读快照，供审计与调试页使用）。 */
-    val knownTools: Set<String> get() = table.keys
+    val knownTools: Set<String> get() = ToolCatalog.toolNames.toSet()
 
     /**
      * 与「受治理的工具全集」对账，返回人话问题列表（空 = 对得上）。
      *
-     * ## 为什么要单独对账
+     * ## 为什么这条不能只看 [cap]
      *
      * [cap] 是 fail-closed 的：查不到就当 DANGEROUS。这让「漏登记」在**安全**上无害，
-     * 却在**可解释性**上有害——一个标了 SAFE 语义的新工具（比如某个只读查询）忘了登记，
-     * 表现是 imported/remote 技能调它时拿到一句「能力越权：…无权调用 xxx（DANGEROUS）」，
-     * 而工具本身明明只读。查这个问题要从「技能为什么被拒」倒推回这张表，中间没有任何线索。
+     * 却在**可解释性**上有害——一个标了 SAFE 语义的新工具忘了登记，表现是
+     * imported/remote 技能调它时拿到「能力越权：…无权调用 xxx（DANGEROUS）」，
+     * 而工具本身明明只读。查这个问题要从「技能为什么被拒」倒推回目录，中间没有线索。
      *
-     * 反方向同样要查：工具删了、表没删，条目就是死的，`dangerousTools()` 的展示、
-     * 审批弹窗的分级说明都会指着不存在的东西。
+     * 反方向同样要查：工具删了、目录没删，`dangerousTools()` 的展示与审批弹窗的分级说明
+     * 都会指着不存在的东西。
      *
      * ## 入参口径
      *
@@ -134,8 +77,9 @@ object CapabilityRegistry {
      */
     fun audit(governedTools: Collection<String>): List<String> {
         val governed = governedTools.toSet()
-        val missing = governed.filter { it !in table }.sorted()
-        val stale = table.keys.filter { it !in governed }.sorted()
+        val known = ToolCatalog.toolNames.toSet()
+        val missing = governed.filter { it !in known }.sorted()
+        val stale = known.filter { it !in governed }.sorted()
         return buildList {
             if (missing.isNotEmpty()) {
                 add(

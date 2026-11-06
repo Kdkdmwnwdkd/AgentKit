@@ -99,7 +99,7 @@
 ### M-11 · 本地模型工具暴露降级
 - **唯一方案**：**阈值驱动**（不是无条件降级）。`ToolRegistry.list()` 的可见集按当前 provider 决定：当 `isLocalProvider == true` **或** 工具总数 > 12 时，只暴露**核心集 + `tool_search` + `tool_proxy`**；其余进 `HiddenToolCatalog(name, description, keywords, paramHints)`。`tool_search(query)` 用关键词包含 + 描述打分（**无向量依赖**）返回 top-6；`tool_proxy(name, argsJson)` 转发真实工具。local-llama 路径另加 `ToolCallRepairer`：JSON 解析失败先补括号 → 再正则捞最后一个完整调用 → 都失败则回灌 `ToolMessage(isError=true, "上次工具调用格式不合法，请重新输出完整 JSON")`，**最多 2 次**，第 3 次终止循环。
 - **来源**：`operit.md` #3,#7（`CliToolModeSupport.kt:21-31` / `buildTruncatedToolRepairSuffix`）／`coomi.md` §3.5.1（**反向**：外部命令兜底）／`zafiro.md` §1（**反向**：无本地模型）
-- **合并掉了**：「降级」+「修复器」两条 → 一个批次；**不照搬 operit 的「只给 2 个」**（我们当前仅 5 个内置工具，见 §2.4 裁决）。
+- **合并掉了**：「降级」+「修复器」两条 → 一个批次；**不沿用 operit 的「只给 2 个」**（我们当前仅 5 个内置工具，见 §2.4 裁决）。
 
 ### M-12 · 权限模型
 - **唯一方案**：**两套语义分开，不要混**：① **终端身份**走 operit **严格模式**——用户选了哪级就用哪级，不可用时**直接失败并说明原因，不静默降级**（防「以为提权了其实没有」）；② **权限获取**走 zafiro **降级链**——`Permission` × `Channel`，`PermissionEngine`（纯 Kotlin、可单测、带完整 `attempts` 轨迹）按链 `SHIZUKU → SYSTEM_DIALOG → JUMP_SETTINGS` 依次尝试；③ `PermissionSpec` 作为**全仓唯一的 `Build.VERSION.SDK_INT` 分叉点**，收拢散落判断；④ Shizuku 授权后**必须 `verify()` 复查真实状态**（退出码 ≠ 权限状态）；⑤ 执行前 `ExecutionRules`（用户可配正则规则 + ALWAYS/LOCKED_ONLY/CONFIRM/DISABLED 四模式 + shell 嵌套载荷挖掘深度 8）。
@@ -199,7 +199,7 @@
 | `operit.md` #3 | CLI 模式**只暴露 2 个工具**（`search` + `proxy`），其余进隐藏目录 |
 | AgentKit 现状 | `ToolRegistry.list()` 全量下发（当前 5 个内置 + UI 自动化若干 + MCP + Skill） |
 
-**裁决：采纳降级，但改为「阈值驱动」，不照搬「只给 2 个」。** 理由：
+**裁决：采纳降级，但改为「阈值驱动」，不沿用「只给 2 个」。** 理由：
 1. Operit 的极端降级是因为它有 **160~180 个工具**；我们当前内置只有 **5 个**，此刻硬降到 2 个会**砍掉刚需能力、徒增一轮 `tool_search` 往返**；
 2. 但增长是确定的（MCP 接入后工具名会暴增、Skill 会注册工具），所以做成**自动触发**：`isLocalProvider == true` **或** 工具总数 > **12** 时启用 CLI 模式，只暴露「核心集（read_file / write_file / edit_file / bash / list_dir）+ `tool_search` + `tool_proxy`」；
 3. 阈值做成常量 `CLI_MODE_TOOL_THRESHOLD = 12`，可在设置里覆盖。**这样既不在今天过度设计，也不会在工具涨到 40 个时本地模型彻底不可用。**

@@ -21,6 +21,9 @@
 
 import com.example.agentkit.core.*
 import com.example.agentkit.core.agent.RealAgentLoop
+import com.example.agentkit.core.llm.ChatStreamEvent
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.coroutineScope
@@ -90,6 +93,35 @@ private class FaultLlm(
         // 默认 streamChat = chat() + 单条 Completed，故重试以「整次收集」为粒度；这里只覆盖 chat
         val behavior = behaviors.getOrElse(index) { behaviors.last() }
         return behavior(index)
+    }
+
+    override suspend fun testPing(): PingResult = PingResult(200, "")
+}
+
+/**
+ * R-09：能吐字再失败的流式客户端。FaultLlm 走默认 streamChat（先 chat 后 Completed），
+ * 模拟不了「已经往外吐了一段再断」——而那正是重试重放的现场。
+ *
+ * @param chars 每次尝试先吐多少字
+ * @param failTimes 前几次失败（-1 = 永远失败）
+ */
+private class StreamFaultLlm(
+    private val chars: Int,
+    private val failTimes: Int = -1
+) : LLMClient {
+    override val id: String = "fault-stream"
+    var calls: Int = 0
+        private set
+
+    override suspend fun chat(messages: List<ChatMessage>, tools: List<AgentTool>): AssistantMessage =
+        AssistantMessage("完整回答")
+
+    override fun streamChat(messages: List<ChatMessage>, tools: List<AgentTool>): Flow<ChatStreamEvent> = flow {
+        val index = calls
+        calls++
+        if (chars > 0) emit(ChatStreamEvent.TextDelta("字".repeat(chars)))
+        if (failTimes < 0 || index < failTimes) throw LlmHttpException(500, "server boom")
+        emit(ChatStreamEvent.Completed(AssistantMessage("完整回答")))
     }
 
     override suspend fun testPing(): PingResult = PingResult(200, "")
@@ -394,6 +426,41 @@ private suspend fun testBoundaries() {
     }
 }
 
+/**
+ * 用例 6（R-09）：已经上屏一大段之后再失败，**不许整次重发**。
+ *
+ * 判据是请求次数：吐了 200 字后 500，必须只请求 1 次。多于 1 次，用户就会先看到
+ * 前半段、再看到同一段从头长一遍——这正是修前「重试导致已上屏文本重放」的现场。
+ */
+private suspend fun testNoRetryAfterVisibleOutput() {
+    println("\n== 用例 6：可见输出后失败不重试（R-09）==")
+
+    check("吐 200 字后 500 → 只请求 1 次、异常照常上抛") {
+        val llm = StreamFaultLlm(chars = 200)
+        val loop = RealAgentLoop(
+            llmProvider = { llm },
+            registry = ToolRegistry(),
+            providerRetry = 2,
+            retryBackoff = INSTANT_BACKOFF
+        )
+        val error = runCatching { loop.send("hi") }.exceptionOrNull()
+        assertTrue("失败必须上抛（不能吞掉，否则 UI 停在运行中）", error != null)
+        assertEquals("请求次数", 1, llm.calls)
+    }
+
+    check("一个字没吐就 500 → 照常重试（429/连接失败的主场景）") {
+        val llm = StreamFaultLlm(chars = 0, failTimes = 1)
+        val loop = RealAgentLoop(
+            llmProvider = { llm },
+            registry = ToolRegistry(),
+            providerRetry = 2,
+            retryBackoff = INSTANT_BACKOFF
+        )
+        loop.send("hi")
+        assertEquals("请求次数", 2, llm.calls)
+    }
+}
+
 /* ------------------------------ 入口 ------------------------------ */
 
 fun main() = runBlocking {
@@ -404,6 +471,7 @@ fun main() = runBlocking {
     testCancelDuringRetry()
     testExhaustRetries()
     testBoundaries()
+    testNoRetryAfterVisibleOutput()
 
     println("\n== 汇总 ==")
     println("PASS: $passed  FAIL: ${failures.size}  TOTAL: ${passed + failures.size}")

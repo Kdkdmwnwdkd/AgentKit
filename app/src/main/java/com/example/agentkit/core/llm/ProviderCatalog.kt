@@ -52,6 +52,18 @@ data class LlmProvider(
      */
     val contextWindow: Int = 0,
     /**
+     * 单次输出上限（token）。**0 = 不发送**，交给服务端默认值。
+     *
+     * 为什么要有：OpenAI 兼容路径原先一个 `max_tokens` 都不传，35 家里 28 家
+     * 用的是各家服务端默认——DeepSeek 官方 chat 默认只有 4K，长回答在 4K 处被
+     * 砍断，而 App 只能事后从 `finish_reason=length` 看到「被截断」。让它可见
+     * 是必要的，但让它不发生才解决问题。
+     *
+     * 为什么默认 0 而不是给个通用值：o1 / gpt-5 系列只认 `max_completion_tokens`，
+     * 传 `max_tokens` 会直接 400。所以规则只能是「声明才发」，不能一律硬塞。
+     */
+    val maxOutputTokens: Int = 0,
+    /**
      * 重试档位（R10）：这家愿意重试几次、认哪些码。
      *
      * 默认按**分组 + 协议风格**推导：聚合组走 [RetryProfile.AGGREGATOR]（多一次、
@@ -104,6 +116,10 @@ object ProviderCatalog {
             // configured=24_000 < 64_000/2，改前改后都是 24k。只有用户把预算调到
             // 32k 以上时，这次修正才把可用的天花板从 32k 抬到 64k。
             contextWindow = 128_000,
+            // 输出上限：V3.2 的 chat 与 reasoner 官方口径同为 8K（V3/R1 时代 chat
+            // 只有 4K）。取 8K 是保守值——服务端超出的部分本来也不给，
+            // 写小了才会在 4K 就断。
+            maxOutputTokens = 8_192,
             note = "深度求索官方；reasoner 支持思维链"
         ),
         LlmProvider(

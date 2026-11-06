@@ -37,6 +37,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.agentkit.skill.market.MarketInstallState
 import com.example.agentkit.skill.market.MarketUiItem
+import com.example.agentkit.ui.contract.SkillMarketContract
 import java.util.Locale
 
 /**
@@ -54,7 +55,7 @@ import java.util.Locale
  *  - 状态行（`marketStatus`）承担所有反馈：刷新结果、源错误、安装成功/失败，页面不再弹 Toast。
  */
 @Composable
-fun SkillMarketScreen(vm: ChatViewModel) {
+fun SkillMarketScreen(vm: SkillMarketContract) {
     val sources by vm.marketSources.collectAsStateWithLifecycle()
     val items by vm.marketItems.collectAsStateWithLifecycle()
     val loading by vm.marketLoading.collectAsStateWithLifecycle()

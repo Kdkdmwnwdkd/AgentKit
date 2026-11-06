@@ -73,6 +73,7 @@ import java.net.InetSocketAddress
 import kotlin.text.Charsets
 import java.util.Collections
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
 /* ------------------------------ 迷你断言框架 ------------------------------ */
@@ -723,14 +724,19 @@ private suspend fun testT01CancelClosure() = runBlocking {
         assertTrue("invariant", invariantHolds(history))
     }
 
-    check("stop() API（新通道）：工具执行中请求停止 → 优雅收尾，第二轮 LLM 不发生") {
-        var loopRef: com.example.agentkit.core.agent.AgentLoop? = null
+    check("shouldContinue 通道：工具执行中要求收尾 → 优雅停止，第二轮 LLM 不发生") {
+        // R-19：原来是 loop.stop()。那条通道全仓零调用、已删除；这里改用生产可注入的
+        // shouldContinue 钩子触发同一段收尾代码（`if (!shouldContinueNow())`），
+        // 断言一条不少——测的是行为，不是某个方法名。
+        val keepGoing = AtomicBoolean(true)
         val reg = ToolRegistry()
-        reg.register(FakeTool("stopper", readOnly = true, onExecute = { loopRef?.stop() }))
+        reg.register(FakeTool("stopper", readOnly = true, onExecute = { keepGoing.set(false) }))
         val calls = listOf(ToolCall("c0", "stopper", argsOf()))
         val fake = FakeLlm(listOf(AssistantMessage("", calls), AssistantMessage("next")))
-        val loop = RealAgentLoop(llmProvider = { fake }, registry = reg, maxParallelTools = 5, providerRetry = 0)
-        loopRef = loop
+        val loop = RealAgentLoop(
+            llmProvider = { fake }, registry = reg, maxParallelTools = 5, providerRetry = 0,
+            shouldContinue = { keepGoing.get() }
+        )
         val history = loop.send("x")
         assertContains("stop note", (history.last() as AssistantMessage).content, "已根据请求停止")
         assertEquals("second round never happens", 1, fake.rounds.get())
@@ -1051,38 +1057,37 @@ private suspend fun testT01UnknownTool() {
     }
 }
 
-/* ------------------------------ Round1 修复：stop 回合作用域 ------------------------------ */
+/* ------------------------------ Round1 修复：收尾决定的回合作用域 ------------------------------ */
 
 private suspend fun testRound1StopScope() {
-    println("\n== Round1-stop 回合作用域：stop 后新一轮不受残留标志影响 ==")
+    println("\n== 收尾决定回合作用域：第 1 回合收尾不影响第 2 回合 ==")
 
-    check("第 1 回合工具执行中 stop()：优雅收尾；同一 loop 第 2 回合完整运行（残留标志不误伤）") {
-        var loopRef: com.example.agentkit.core.agent.AgentLoop? = null
-        var stopped = false
-        val stopper = FakeTool("stopper", readOnly = true, onExecute = {
-            if (!stopped) {
-                stopped = true
-                loopRef?.stop()
-            }
-        })
+    check("第 1 回合工具执行中要求收尾：优雅停止；同一 loop 第 2 回合完整运行（判定每次现算）") {
+        // R-19：stop() 已删，用 shouldContinue 表达同一场景。第 1 回合把它置 false，
+        // 第 2 回合置回 true——验证「收尾决定只在当轮生效」，不会像布尔标志那样跨轮残留。
+        val keepGoing = AtomicBoolean(true)
+        val stopper = FakeTool("stopper", readOnly = true, onExecute = { keepGoing.set(false) })
         val reg = ToolRegistry().register(stopper)
         val calls = listOf(ToolCall("c0", "stopper", argsOf()))
         val fake = FakeLlm(
             listOf(
-                AssistantMessage("", calls),           // 第 1 回合 round1：工具（执行中 stop）
-                AssistantMessage("", calls),           // 第 2 回合 round1：工具（stop 已一次性生效，不再停）
+                AssistantMessage("", calls),           // 第 1 回合 round1：工具（执行中要求收尾）
+                AssistantMessage("", calls),           // 第 2 回合 round1：工具（钩子已置回 true）
                 AssistantMessage("second-turn-final")  // 第 2 回合 round2：终答
             )
         )
-        val loop = RealAgentLoop(llmProvider = { fake }, registry = reg, maxParallelTools = 5, providerRetry = 0)
-        loopRef = loop
-        // 第 1 回合：工具执行中 stop → 优雅收尾，第二轮 LLM 不发生
+        val loop = RealAgentLoop(
+            llmProvider = { fake }, registry = reg, maxParallelTools = 5, providerRetry = 0,
+            shouldContinue = { keepGoing.get() }
+        )
+        // 第 1 回合：工具执行中置 false → 优雅收尾，第二轮 LLM 不发生
         val h1 = loop.send("x")
         assertContains("turn1 stop note", (h1.last() as AssistantMessage).content, "已根据请求停止")
         assertEquals("turn1 rounds", 1, fake.rounds.get())
         assertEquals("turn1 executions", 1, stopper.executions)
         assertTrue("turn1 invariant", invariantHolds(h1))
-        // 第 2 回合：同一 loop 再发——残留标志必须在 send() 入口被重置，完整跑完
+        // 第 2 回合：钩子置回 true，同一 loop 再发——必须完整跑完（没有残留的停止意图）
+        keepGoing.set(true)
         val h2 = loop.send("again")
         assertEquals("turn2 rounds", 3, fake.rounds.get())
         assertEquals("turn2 executions", 2, stopper.executions)
@@ -1091,18 +1096,6 @@ private suspend fun testRound1StopScope() {
         assertTrue("turn2 invariant", invariantHolds(h2))
     }
 
-    check("无在飞回合时 stop()：明确 no-op——下一轮 send() 完整运行不受影响") {
-        val reg = ToolRegistry().register(FakeTool("r", readOnly = true))
-        val calls = listOf(ToolCall("c0", "r", argsOf()))
-        val fake = FakeLlm(listOf(AssistantMessage("", calls), AssistantMessage("done")))
-        val loop = RealAgentLoop(llmProvider = { fake }, registry = reg, providerRetry = 0)
-        loop.stop() // 无在飞回合（首轮之前）
-        val history = loop.send("x")
-        assertEquals("rounds", 2, fake.rounds.get())
-        assertEquals("final", "done", (history.last() as AssistantMessage).content)
-        assertTrue("no stop note", !(history.last() as AssistantMessage).content.contains("已根据请求停止"))
-        assertTrue("invariant", invariantHolds(history))
-    }
 }
 
 /* ------------------------------ Round1 修复：SSE 网络段 IO 调度 ------------------------------ */

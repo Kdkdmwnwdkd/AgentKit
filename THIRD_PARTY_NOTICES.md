@@ -9,13 +9,17 @@
 > | `DEPENDENCIES.md` | **分发物**里的第三方东西（Maven 包、随包二进制、llama.cpp 源码） | 会打进 APK |
 > | 本文件 | **读过但没抄**的参照项目（做法、架构、产品判断） | 一行都不进 APK |
 >
-> 最后核对：1.143（2026-10-30）。
+> 最后核对：1.143（2026-10-30）｜许可证复核：**2026-11-05**。
+>
+> 许可证是会变的：Coomi 在 2026-11 前已从 Apache-2.0 改为 MIT 并整体换成 Rust 技术栈，
+> 同地址下的原 Android 版已不存在。所以下表的「许可证」一栏是**某个时点的快照**，
+> 复核时按标注日期重查，不要当永久事实。
 
 ---
 
 ## 1. 一句话结论
 
-北辰的代码**全部为独立编写**。外部项目只用于「理解机制」，没有任何一行代码、
+AgentKit 的代码**全部为独立编写**。外部项目只用于「理解机制」，没有任何一行代码、
 任何一种命名体系、任何一段注释被复制进来。可核对的事实：
 
 - 全部业务代码在 `app/src/main/java/com/example/agentkit/`，包名与任何参照项目不同；
@@ -29,7 +33,7 @@
 
 ## 2. 参照项目台账
 
-### 2.1 五个 Agent 类参照（运行层改造期间通读）
+### 2.1 六个 Agent 类参照（运行层改造期间通读）
 
 | 项目 | 许可证 | 读了什么 | 借了什么（思想层） | 代码进入 | 风险 |
 |---|---|---|---|---|---|
@@ -37,13 +41,14 @@
 | [rikkahub/rikkahub](https://github.com/rikkahub/rikkahub) | **AGPL-3.0** | AgentLoop 状态机、Hooks、设置页组织 | ① 工具调用前后钩子严格配对；② 「多助手 = 一整套配置档案」的产品形态 | 否 | **高：只取思路** |
 | [AAswordman/Operit](https://github.com/AAswordman/Operit) | LGPL-3.0 | 工具注册与权限分级、容器接入、设置页信息架构 | ① 单结果独立截断（不可整批截）；② 「提示只列子集、其余靠搜索」的方向 | 否 | 中 |
 | [jieapi/AiCode](https://github.com/jieapi/AiCode) | **GPL-3.0** | 内置 rootfs + proot 落地、检查点机制 | ① 首启解压 rootfs 的流程；② 检查点快照的粒度取舍 | 否 | **高：只取思路** |
+| [deepseek-ai/deepseek-harness](https://github.com/deepseek-ai/deepseek-harness) | MIT | Agent harness 的分层（session / system-prompt / tools / scope / llm） | 用作**对照校验**：确认自身分层无漏项；未引入任何代码（TypeScript 与 Kotlin 之间不存在代码流动） | 否 | 低 |
 | [TensorHub-ORG/Coomi](https://github.com/TensorHub-ORG/Coomi) | Apache-2.0 | 换栈后架构（Java 壳 + Rust 引擎 + Vue WebView） | ① 逐工具失败指纹与退避的形态；② **反例**：换栈不能解决入口拥挤 | 否 | 低 |
 
 ### 2.2 其他参照
 
 | 项目 | 许可证 | 借了什么 | 代码进入 | 风险 |
 |---|---|---|---|---|
-| zafiro / libterm（终端后端形态） | — | 终端后端三层切分（接口 / 工厂 / 会话池）、输出截断器形状 | 否（净室重写） | 低 |
+| [niki914/zafiro](https://github.com/niki914/zafiro) / libterm（终端后端形态） | MIT | 终端后端三层切分（接口 / 工厂 / 会话池）、输出截断器形状 | 否（净室重写） | 低 |
 | [Termux](https://github.com/termux/termux-app)（proot 预编译） | GPL-2.0 | 不涉及——**这是真正的分发物**，按 GPL-2.0 合规处理，见 `DEPENDENCIES.md` §4 | 二进制，独立进程调用 | 已处理 |
 | [ggml-org/llama.cpp](https://github.com/ggml-org/llama.cpp) | MIT | 本地推理引擎（源码依赖） | 是，见 `DEPENDENCIES.md` §3 | 已处理 |
 

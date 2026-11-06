@@ -1,5 +1,6 @@
 package com.example.agentkit.skill.market
 
+import com.example.agentkit.core.llm.LlmHttp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
@@ -134,12 +135,6 @@ class MarketClient(
          * 用 `callTimeout` 而不是只设读超时，是因为「慢速滴流」的服务器每次都能在 20s 内
          * 吐几个字节，读超时永远不触发；整通上限能兜住这种拖时间。
          */
-        fun defaultClient(): OkHttpClient = OkHttpClient.Builder()
-            .connectTimeout(10, TimeUnit.SECONDS)
-            .readTimeout(20, TimeUnit.SECONDS)
-            .writeTimeout(20, TimeUnit.SECONDS)
-            .callTimeout(60, TimeUnit.SECONDS)
-            .retryOnConnectionFailure(true)
-            .build()
+        fun defaultClient(): OkHttpClient = LlmHttp.short
     }
 }

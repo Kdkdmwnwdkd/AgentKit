@@ -1,5 +1,6 @@
 package com.example.agentkit.core.terminal
 
+import com.example.agentkit.core.AppScope
 import com.example.agentkit.core.AgentLogger
 import com.example.agentkit.core.terminal.backend.TerminalBackend
 import com.example.agentkit.core.terminal.backend.TerminalBackendFactory
@@ -33,7 +34,9 @@ val TERMINAL_HANDLE_REGEX = Regex("^[0-9a-f]{4}$")
  *
  * @param ok 是否成功
  * @param handle 成功时的对外句柄（[TERMINAL_HANDLE_REGEX]）；失败为 null
- * @param identity 该会话**固化**的身份（开辟时写入，后续不可变）
+ * @param identity 该会话**实际**执行身份（R-12：取后端声明值，不是请求值）。
+ *   请求是下限，所以它可能高于请求——`identity=user` 落到 Shizuku 通道时这里是
+ *   `Shizuku`（uid 2000）。上层报告权限时必须用它，用请求值会说假话。
  * @param backendKey 会话所属池（`user` / `proot`），用于分池
  * @param alias 会话别名（同池内唯一）
  * @param reused true 表示复用了同池同别名的既有存活会话（未新建后端）
@@ -161,7 +164,7 @@ class TerminalSessionPool(
 ) {
 
     /** 收集输出用的协程作用域（读流并发于「写命令」，故需独立调度）。 */
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val scope = CoroutineScope(SupervisorJob() + AppScope.io)
 
     private val tokenRandom = Random(System.nanoTime())
 
@@ -183,7 +186,8 @@ class TerminalSessionPool(
      *  3. 该槽位已有**存活**会话：身份一致 → **复用**（返回既有句柄）；身份冲突 → **显式报错**；
      *     已有**僵尸**会话 → 回收别名后按新建走。
      *
-     * @param identity 声明的身份（开辟时固化）
+     * @param identity **权限下限**（R-12）：候选后端须满足它，会话固化的是后端的实际身份。
+     *   传 `user` 时设备若有 uid 2000 通道，拿到的会话实际身份就是 uid 2000。
      * @param alias 别名；null = 按后端键取默认别名（[TerminalBackendFactory.defaultAliasFor]）
      * @param preferProot true = 优先 proot 容器，不可用回落本机 user
      * @return [OpenResult]
@@ -196,6 +200,10 @@ class TerminalSessionPool(
         // 1) 取候选（W-55：不再只取一个——首个 start 失败时按顺序回落）
         val candidates = source.obtainCandidates(identity, preferProot)
         if (candidates.isEmpty()) {
+            // R-12：这里不再按身份写特例分支，而是按「有没有能提供这么高权限的后端」说话。
+            // 修前是 `if (identity == User) 无后端 else 身份不支持`——于是 su / ssh 的失败
+            // 被归成「身份不存在」，而真相是「本机没有任何以 uid 0 / 远端身份执行的后端」。
+            // 两者的修复动作完全不同：前者是「换个值」，后者是「装一个东西」。
             return if (identity == TerminalIdentity.User) {
                 OpenResult.failure(
                     code = "no_backend",
@@ -205,7 +213,8 @@ class TerminalSessionPool(
             } else {
                 OpenResult.failure(
                     code = "identity_unsupported",
-                    message = "身份「${identity.wire}」没有对应的会话后端。",
+                    message = "没有以「${identity.describe()}」执行的后端，" +
+                        "请求的权限下限是 ${identity.describe()}（identity=${identity.wire}）。",
                     // W-58：原本文案说「当前仅支持 identity=user」——在 W-56 把 Shizuku 做成后端
                     // 之后这句话已经半错：uid 2000 是能拿到的，只是入口不是 identity，而是
                     // prefer_proot=false 走候选链。传 identity=shizuku 进来的实际情况是
@@ -215,8 +224,8 @@ class TerminalSessionPool(
                             "要 uid 2000 **并且** cwd 保持，改用 prefer_proot=false（会话池会依次试 " +
                             "Shizuku → 无线调试）；两者状态可到「设置 → 调试通道」查看。"
                     } else {
-                        "su / ssh 首期无后端。要容器用 prefer_proot=true（默认）；要 uid 2000 用 prefer_proot=false" +
-                            "（Shizuku / 无线调试）；普通文件操作用默认参数即可。"
+                        "su / ssh 首期无后端（本应用不提供这两条通道）。要容器用 prefer_proot=true（默认）；" +
+                            "要 uid 2000 用 prefer_proot=false（Shizuku / 无线调试）；普通文件操作用默认参数即可。"
                     }
                 )
             }
@@ -236,14 +245,20 @@ class TerminalSessionPool(
             val existing = synchronized(lock) { byAlias[poolKey] }
             if (existing != null) {
                 if (existing.alive) {
-                    if (existing.identity != identity) {
-                        // 身份冲突：绝不静默复用（用户以为提权了，命令仍以旧身份跑）
+                    // R-12：判据从「身份相等」改成「会话实际身份能否满足本次请求的下限」。
+                    // 相等太严：`identity=user` 撞上 uid 2000 的会话会报冲突，而那个会话
+                    // 完全够用（权限更高）——用户被迫关掉重开，cwd 也丢了。
+                    // 相等也太松（反向）：请求 su 撞上 user 会话时，相等判定会放行，
+                    // 于是「用户以为提权了，命令其实仍以旧身份跑」——正是注释里要防的那件事。
+                    if (!existing.identity.satisfies(identity)) {
+                        // 权限不足：绝不静默复用
                         runCatching { candidate.close() }
                         return OpenResult.failure(
                             code = "identity_conflict",
-                            message = "别名「$effectiveAlias」上已有身份为「${existing.identity.wire}」的存活会话，" +
-                                "与请求身份「${identity.wire}」冲突。",
-                            hint = "改用同一身份，或先 shell_close(handle=${existing.handle}) 关闭旧会话再以新身份开辟。"
+                            message = "别名「$effectiveAlias」上已有会话以「${existing.identity.describe()}」执行，" +
+                                "满足不了本次请求的下限「${identity.describe()}」（identity=${identity.wire}）。",
+                            hint = "改用不高于「${existing.identity.wire}」的身份，或先 " +
+                                "shell_close(handle=${existing.handle}) 关闭旧会话再以新身份开辟。"
                         )
                     }
                     // 复用：丢弃刚建的多余后端，返回既有句柄
@@ -280,16 +295,19 @@ class TerminalSessionPool(
             }
 
             val handle = allocateHandle()
-            val entry = Entry(handle, identity, backendKey, effectiveAlias, candidate)
+            // R-12：固化后端的**实际**身份，不是请求值。请求只是下限，
+            // 记请求值会让后续所有报告与冲突判定都建立在假话上。
+            val entry = Entry(handle, candidate.identity, backendKey, effectiveAlias, candidate)
             synchronized(lock) {
                 byHandle[handle] = entry
                 byAlias[poolKey] = entry
             }
             AgentLogger.i(
                 TAG,
-                "会话已开辟 handle=$handle identity=${identity.wire} pool=$backendKey alias=$effectiveAlias"
+                "会话已开辟 handle=$handle identity=${entry.identity.wire}（请求 ${identity.wire}）" +
+                    " pool=$backendKey alias=$effectiveAlias"
             )
-            return OpenResult.ok(handle, identity, backendKey, effectiveAlias, reused = false)
+            return OpenResult.ok(handle, entry.identity, backendKey, effectiveAlias, reused = false)
         }
 
         // 全部候选都起不来：列出试过哪些，不笼统说「失败」
@@ -306,7 +324,8 @@ class TerminalSessionPool(
      *
      * @param handle 会话句柄（[TERMINAL_HANDLE_REGEX]）
      * @param command 命令原文（会 trim 掉结尾换行后单行写入；含内部换行则整体一次下发）
-     * @param identity 可选的**声明身份**；非 null 时与会话固化身份不一致 → 显式报错
+     * @param identity 可选的**权限下限**；非 null 时会话实际身份满足不了它 → 显式报错
+     *   （R-12：判据是 [TerminalIdentity.satisfies]，不是相等——见下面的分支注释）
      * @return [ExecResult]（输出已截断）
      */
     suspend fun run(
@@ -321,11 +340,15 @@ class TerminalSessionPool(
                 hint = "用无 session 参数调用一次以开辟新会话，或先确认句柄是否为 4 位十六进制。"
             )
 
-        if (identity != null && identity != entry.identity) {
+        // R-12：语义从「声明身份必须与会话相同」改为「会话实际身份须满足本次下限」。
+        // 同样的道理在 open() 的复用分支里——两处判据必须是同一个谓词，否则
+        // 「能复用的会话」和「能执行的会话」会给出不一致的答案。
+        if (identity != null && !entry.identity.satisfies(identity)) {
             return ExecResult.failure(
                 code = "identity_conflict",
-                message = "会话「$handle」固化身份为「${entry.identity.wire}」，与请求身份「${identity.wire}」不符。",
-                hint = "去掉 identity 参数（沿用会话身份），或以匹配身份重新开辟会话。"
+                message = "会话「$handle」以「${entry.identity.describe()}」执行，" +
+                    "满足不了本次请求的下限「${identity.describe()}」。",
+                hint = "去掉 identity 参数（沿用会话身份），或以不低于「${identity.wire}」的身份重新开辟会话。"
             )
         }
         if (command.isBlank()) {
@@ -415,7 +438,7 @@ class TerminalSessionPool(
         all.forEach { it.closed = true }
         if (all.isNotEmpty()) {
             // 独立作用域：不与即将被 shutdown() 取消的 [scope] 竞争，保证关闭协程能跑完。
-            CoroutineScope(Dispatchers.IO).launch {
+            AppScope.app.launch {
                 all.forEach { runCatching { it.backend.close() } }
                 AgentLogger.i(TAG, "已异步释放全部会话（${all.size} 条）")
             }

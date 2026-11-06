@@ -1,7 +1,6 @@
 package com.example.agentkit.core.mcp
 
 import android.content.Context
-import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 
@@ -14,15 +13,9 @@ import kotlinx.serialization.json.Json
  *  - ChatViewModel 启动时按 enabled 列表批量连接并把工具注册进 ToolRegistry。
  *
  * 为什么不用 Room：条目数量级是个位数，JSON 足够；零新增依赖。
+ *
+ * 数据结构 [McpServerConfig] 在 `McpModels.kt`——它不依赖 Android，同步逻辑要拿它做纯函数断言。
  */
-@Serializable
-data class McpServerConfig(
-    val id: String,
-    val name: String,
-    val url: String,
-    val enabled: Boolean = true
-)
-
 class McpServerStore(context: Context) {
 
     private val sp = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)

@@ -41,6 +41,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.agentkit.core.PromptDeleteResult
 import com.example.agentkit.core.PromptItem
 import com.example.agentkit.core.PromptUpsertResult
+import com.example.agentkit.ui.contract.PromptLibraryContract
 import java.util.UUID
 
 /**
@@ -51,7 +52,7 @@ import java.util.UUID
  * → 自定义组（行尾编辑/删除）→ 编辑对话框 → 删除二次确认。
  */
 @Composable
-fun PromptLibraryScreen(vm: ChatViewModel) {
+fun PromptLibraryScreen(vm: PromptLibraryContract) {
     val prompts by vm.prompts.collectAsStateWithLifecycle()
     var editing by rememberSaveable { mutableStateOf<PromptItem?>(null) }
     var isNew by rememberSaveable { mutableStateOf(false) }

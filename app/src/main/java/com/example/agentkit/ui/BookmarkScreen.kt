@@ -42,6 +42,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.agentkit.core.Bookmark
 import com.example.agentkit.core.text.ChatTime
+import com.example.agentkit.ui.contract.BookmarksContract
 
 /**
  * 收藏页（W-30）。
@@ -52,7 +53,7 @@ import com.example.agentkit.core.text.ChatTime
  *  - 每条标明来源会话与原始时间，隔久了也知道它是哪来的。
  */
 @Composable
-fun BookmarkScreen(vm: ChatViewModel) {
+fun BookmarkScreen(vm: BookmarksContract) {
     val bookmarks by vm.bookmarks.collectAsStateWithLifecycle()
     var showClear by remember { mutableStateOf(false) }
     val ctx = LocalContext.current

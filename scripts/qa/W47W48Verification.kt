@@ -271,10 +271,17 @@ fun main() {
     val security = read("app/src/main/java/com/example/agentkit/skill/SkillSecurity.kt")
     val executor = read("app/src/main/java/com/example/agentkit/skill/SkillExecutor.kt")
 
-    check("S6 能力表 fail-closed：默认 DANGEROUS，且全仓工具 100% 登记") {
+    // R-13：能力分级表从 `CapabilityRegistry` 搬到了 `core/tool/ToolCatalog.kt`
+    // （组/能力/审批三张表合并成一张，见那边的 KDoc）。本用例的**判据不变**——
+    // 仍是「默认 fail-closed」+「每个工具都有分级」——只是真源换了文件。
+    // 读到的是数据文件而不是实现文件，这不是放宽：`capabilityOf` 的默认值就在
+    // 同一个文件里，扫描它比扫描一个已经只剩委托的 `cap()` 更接近事实。
+    val catalog = read("app/src/main/java/com/example/agentkit/core/tool/ToolCatalog.kt")
+
+    check("S6 能力分级 fail-closed：默认 DANGEROUS，且全仓工具 100% 登记") {
         // 旧实现是 `?: Capability.SAFE`，新工具忘登记就自动放行。
-        assertTrue("cap() 默认不是 DANGEROUS", "?: Capability.DANGEROUS" in security)
-        assertTrue("仍在默认 SAFE", "?: Capability.SAFE" !in security)
+        assertTrue("capabilityOf() 默认不是 DANGEROUS", "?: Capability.DANGEROUS" in catalog)
+        assertTrue("仍在默认 SAFE", "?: Capability.SAFE" !in catalog)
 
         val nameRe = Regex("override val name = \"([a-z0-9_]+)\"")
         val names = LinkedHashSet<String>()
@@ -284,7 +291,7 @@ fun main() {
                 nameRe.findAll(f.readText()).forEach { m -> names += m.groupValues[1] }
             }
         assertTrue("没有扫到任何工具名（扫描逻辑坏了）", names.size >= 50)
-        val missing = names.filter { "\"$it\" to Capability" !in security }
+        val missing = names.filter { "CatalogTool(\"$it\"" !in catalog }
         assertTrue("未登记能力级的工具：${missing.joinToString()}", missing.isEmpty())
     }
 

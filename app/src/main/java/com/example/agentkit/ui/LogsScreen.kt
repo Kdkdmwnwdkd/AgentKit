@@ -52,6 +52,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.agentkit.core.CrashLogger
 import com.example.agentkit.core.DiagnosticsExporter
 import com.example.agentkit.core.CrashRecord
+import com.example.agentkit.ui.contract.LogsContract
 import kotlinx.coroutines.delay
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -67,7 +68,7 @@ import java.util.Locale
  * 进入本页即由宿主标记已读，抽屉上的未读 ERROR 计数随之归零（§6.5.2）。
  */
 @Composable
-fun LogsScreen(vm: ChatViewModel) {
+fun LogsScreen(vm: LogsContract) {
     val logs by vm.logs.collectAsStateWithLifecycle()
     val ctx = LocalContext.current
 

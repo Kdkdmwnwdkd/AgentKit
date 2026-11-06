@@ -229,14 +229,14 @@ internal fun String.isErrorLogLine(): Boolean = split(' ').getOrNull(1) == "ERRO
  */
 @Composable
 fun AppScaffold(
+    // 组装根：全 App 唯一持有 ChatViewModel 具体类型并按窄接口分发；守卫只允许本文件出现该类型。
     vm: ChatViewModel,
     themeMode: ThemeMode,
     onThemeModeChange: (ThemeMode) -> Unit,
     dynamicColor: Boolean = false,
     onDynamicColorChange: (Boolean) -> Unit = {}
 ) {
-    // 路由态：15 个一级目的地的唯一真相源（抽屉只见 4+1，其余经设置页 / 控制台快捷入口到达）；
-    // 页面切换无转场动画（v3 无此 token，§6.5.2）
+    // 路由态：15 个一级目的地的唯一真相源（抽屉见 4+1，其余经设置页/控制台）；切换无转场动画（v3 无此 token，§6.5.2）。
     var route by rememberSaveable { mutableStateOf(AppDest.CHAT.route) }
     val dest = AppDest.fromRoute(route)
 
@@ -646,7 +646,7 @@ private fun ScreenHost(
             pageStates.SaveableStateProvider(dest.route) {
                 when (dest) {
                     AppDest.CHAT -> ChatScreen(
-                        vm = vm,
+                        vm = vm, permission = vm,
                         onOpenModel = { onNavigate(AppDest.MODEL) },
                         onOpenGuide = { onNavigate(AppDest.PERMISSION_GUIDE) },
                         onOpenContainer = { onNavigate(AppDest.CONTAINER) },
@@ -658,7 +658,7 @@ private fun ScreenHost(
                     AppDest.TERMINAL -> TerminalScreen()
                     AppDest.CONTAINER -> ContainerScreen()
                     AppDest.EDITOR -> EditorScreen()
-                    AppDest.MCP -> McpScreen()
+                    AppDest.MCP -> McpScreen(vm::refreshMcpTools) // R-07：停用即撤工具
                     AppDest.MEDIA -> MediaScreen()
                     AppDest.BUILD -> BuildScreen()
                     AppDest.PERMISSIONS -> PermissionsScreen(

@@ -168,6 +168,16 @@
 | 审批归组（同类操作同组 + 需审批工具都有中文说明） | `run-approval-grouping-verification.sh` | 9/0 |
 | CI 门禁本身（含「全 SKIP 不算绿」） | `run-gate-verification.sh` | 20/0 |
 | 启动顺序（首帧先于后台 WebView 创建） | `run-startup-order-verification.sh` | 5/0 |
+| 供应商身份接线（R-01，需 AGP 产物） | `run-provider-id-wiring-verification.sh` | 13/0 |
+| 输出上限按目录声明（R12） | `run-output-token-limit-verification.sh` | 8/0 |
+| HTTP 三预设收口（R13） | `run-http-client-single-source-verification.sh` | 10/0 |
+| 协程上下文收口（R14） | `run-app-scope-verification.sh` | 8/0 |
+| 启动十步顺序显式化（R15） | `run-boot-sequence-verification.sh` | 20/0 |
+| 标题归属发起会话（R-02） | `run-title-owner-verification.sh` | 7/0 |
+| 中断后工具卡收口（R-06） | `run-r06-verification.sh` | 24/0 |
+| 审批超时与取消语义（R-03） | `run-r03-verification.sh` | 14/0 |
+| 消息列表 key 身份（R-05） | `run-r05-verification.sh` | 12/0 |
+| run-all 判据（R-04） | `run-runall-verification.sh` | 32/0 |
 
 真机验的是**这些断言覆盖不到的那一层**：真实 proot 进程的生死、真实 Compose 生命周期、
 真实分享面板。断言通过不代表真机通过，反之亦然——两边都要，但不用重复。
@@ -773,3 +783,354 @@ LLM 响应 finish_reason=length
 > 顺带记一笔：`R13-1`（新建会话 200ms 内落盘）在满负载的 `run-all` 里偶发红了一次，
 > 单独连跑 3 次全绿。那是**时间窗断言在慢机器上的固有脆弱**，不是本轮改动引起，
 > 但它是下一个该收紧的地方（改成「等到落盘事件」而不是「等 200 毫秒」）。
+
+---
+
+## 2026-11-05 第六轮：运行层 / 框架层 / DeepSeek 五步收尾
+
+五步清单的最后一步（启动顺序）落地。前四步分别是 R-01（供应商身份接线）、
+R12（输出上限）、R13（HTTP 三预设）、R14（协程上下文）。
+
+### 第 5 步：启动顺序从「注释约束」变成「数据结构」
+
+原先十步初始化平铺在 `AgentKitApplication.onCreate`，顺序只存在于语句次序，
+唯一表达约束的是一行注释「日志目录就绪——必须早于运行层初始化」。这行注释是真的
+（`AgentLogger.init` 曾在 `ChatViewModel` 里，运行层更早跑，那段时间日志全是黑的），
+但**注释拦不住重排**：谁把 logger 挪到 runtime 之后，编译过、启动正常、harness 全绿，
+只有下次真机排障时才发现日志缺了一段。
+
+改成 `startup/BootSequence.kt`：
+
+| 项 | 设计 |
+|---|---|
+| 顺序 | `enum class Step` 的**声明序**（`entries` 保序），`describe()` 可打印 |
+| 穷尽性 | `when(step)` 无 `else`，新增步骤不实现就编译红 |
+| 失败语义 | 每步独立 `runCatching`，一步失败不阻断后续 |
+| 跨线程 | 设备画像在新线程里，**内层**另有 `runCatching`（外层抓不到别的线程） |
+
+`AgentKitApplication` 从 135 行降到 **53 行**，只剩 `BootSequence.run(this)` 与前台计数。
+
+### 顺手补掉的两处
+
+1. **租约节拍器的默认参数还在自建 scope**（`LeaseRegistry.start(scope = CoroutineScope(SupervisorJob() + Dispatchers.Default))`）。
+   R14 收口时漏了它——因为它是默认参数，不是字段，grep `private val scope` 找不到。
+   改成 `AppScope.app`。现在全仓无 `SupervisorJob + Dispatchers.Default` 残留。
+2. **`run-local-device-profile-verification.sh` 在 CI 里一直 SKIP**。它只查
+   `command -v kotlinc`，而 CI 的 shim 造在 `/tmp/kotlinc/bin` 且**没进 PATH**。
+   补上该分支后，这条从 SKIP 变真跑：**22 → 77 条通过**（多验了 55 条，全是行为断言）。
+
+### 跟着搬的断言（不改就会假红）
+
+初始化入口搬家，四处源码级断言必须跟着搬，否则第二天全绿变全红：
+
+| 断言 | 原指向 | 现指向 |
+|---|---|---|
+| `CrashLogVerification` E2 | Application 含 `CrashLogger.install(this)` | BootSequence 含 `install(app)` |
+| `run-local-device-profile` ×3 | Application 的线程/daemon/runCatching | BootSequence 同名片段，`profile(app)` |
+| `run-native-crash-memory` | Application 含 `handleStartup(this)` | BootSequence 含 `handleStartup(app)` |
+| `run-runtime-capability` ×2 | Application 的 `LocalLlmRuntime.init` / `LeaseRegistry.start()` | BootSequence 的 `init(app)` / `start(AppScope.app)` |
+
+另有一条**不是搬家导致、是 R13 导致**的过期断言：`W46Verification` T1 写死了
+`readTimeout(180, TimeUnit.SECONDS)`，而 R13 已把它参数化成 `build(connect, read, write, call)`。
+改成断言三个预设值（180 / 30 / 120）+ 参数化构造存在。
+
+### 验证
+
+| 项 | 结果 |
+|---|---|
+| 全量 harness（沙箱，无 AGP 产物） | `PASS=57 SKIP=42 XFAIL=0 FAIL=0` |
+| 架构守卫 | 5/5（`ChatViewModel` 3887，基线同步下调 3888→3887） |
+| 文本断言 | **1370 未增** |
+| 编译 | `BootSequence.kt` + `AgentKitApplication.kt` 用 kotlinc 1.9.25 + Android 桩编译通过（`BootSequence$WhenMappings` 生成 = when 穷尽） |
+| 反向变异 | ① LOGGER 挪到最后 → B1/B3 + 3 条 B4 红；② Application 插一行 `AgentLogger.init` → A2 红；③ 去掉画像线程内 runCatching → C4 红 |
+
+> C4 第一版**假绿**：范围用 `^            }` 收尾，一路吃到 `run()` 里的 `runCatching`，
+> 于是无论内层有没有兜都判 PASS。改成卡到 `.start()` 且只认真实调用（不认注释里的
+> 「runCatching」字样）之后，变异才红。**没做过变异的断言，不知道它在守什么**——
+> 这条已经是本项目第三次踩同一个坑。
+>
+> 同一轮还踩了它的镜像版本：`LeaseRegistry` 的注释里写了旧写法
+> `CoroutineScope(SupervisorJob() + Dispatchers.Default)` 作为「已修掉」的说明，
+> D2 的 grep 立刻假红。结论是双向的——**断言不认注释，所以注释里也不要写会被 grep 的字面量**。
+
+### 仍需构建机确认
+
+```bash
+./gradlew :app:compileDebugKotlin
+bash scripts/qa/run-all.sh
+```
+
+沙箱里 `run-provider-id-wiring-verification.sh` / `run-crashlog-verification.sh` 会 SKIP
+（缺 `app/build/tmp/kotlin-classes/debug`），这是正常路径；有 AGP 产物后 PASS 数会从 57 涨到 90+。
+
+---
+
+## 2026-11-05 第七轮：R-02（标题写错会话）与 R-04（10 失败判 PASS）
+
+### R-02
+
+`send()` 开头早就捕获了 `val owner = _activeConversationId.value`（hotfix30：在途写按发起会话落盘），
+但回合末尾的标题生成又读了一次 `_activeConversationId.value`。生成期间切会话，
+标题就 rename 到**新会话**：旧会话永远叫「新对话」，新会话被改成上一轮的问题摘要。
+两个会话同时错，且都不报错。
+
+改法一行：`maybeGenerateTitle(owner, text)`。`ChatViewModel` 仍 **3887 行**（注释压回原行数）。
+
+断言守的是「参数贯通」这一层：`maybeGenerateTitle` 函数体内**不出现**全局会话变量，
+就不可能写错会话。7 条，含变异验证（改回 `_activeConversationId.value` → A2/A3 精确红）。
+
+### R-04
+
+`run-all.sh` 原来一条正则：`0 failed|FAIL=0|FAIL: 0|0 失败|...`。
+`10 失败` 含子串 `0 失败`，直接判 PASS；而这类脚本末尾是 `echo`、没开 `set -e`，rc 也是 0——
+两条证据同时失效。
+
+改成两道独立防线：
+
+| 防线 | 作用 | 场景 |
+|---|---|---|
+| 计数加左边界 | `(^|[^0-9])0 失败` 不再命中 `10 失败` | 只有「10 失败」一行 |
+| 失败优先于通过 | 结果行写了非零失败，先判 FAIL | 「子步骤 FAIL=0 + 总结果 3 失败」两行都在 |
+
+第二道只读**最后一行非空输出**，不 grep 全文。
+
+> 第一版按「含汇上下文词的行」判，上线即把 `run-runall-verification` 自己的日志判红：
+> 那条自测会打印「场景 15：子步骤 FAIL=0 + 总结果 3 失败」——**描述失败的文字**被当成失败本身。
+> 和 `zero_assertions` 当初被「0 通过 / 0 失败（空跑）」骗过是同一种错。
+> 自测从 13 个场景扩到 16 个（新增 10 失败、失败优先、不误杀三个），32 条断言全绿。
+
+### 连带修的两条过期断言
+
+- `run-local-inference-perf-verification.sh` 用行号比较「标题生成在本轮之后」，写死了
+  `maybeGenerateTitle(_activeConversationId.value, text)`。改成匹配调用行（排除定义行），
+  断言的是位置不是参数——参数一改就红的断言，守不住它本来要守的东西。
+- `run-all` 自测被新判据误杀，见上面的引用块。
+
+### 验证
+
+| 项 | 结果 |
+|---|---|
+| 全量 harness | **PASS=58 SKIP=42 FAIL=0** |
+| 架构守卫 | 5/5（`ChatViewModel` 3887 未涨） |
+| R-02 断言 | 7/0，变异精确命中 |
+| R-04 自测 | 32/0，禁用「失败优先」后场景 15 精确红 |
+
+---
+
+## 2026-11-05 第八轮：R-06（中断后残留「执行中」工具卡）
+
+### 症状有两副面孔，登记册写错了一副
+
+| 时刻 | 看到的 | 实际 |
+|---|---|---|
+| 停止之后（未切换） | 那张卡一直转圈 | 显示态里 `running=true` 没人翻。`regenerate` 的取消路径 `rebuildMessages=false`，列表不重建，于是转到用户切走为止 |
+| 重新载入之后 | 「已完成」+ 空结果 | `running` 从来没落盘，`toUiItem` 一律给 `false`，`status()` 落到 `else -> DONE` |
+
+登记册原写「重载永久转圈」，与代码走查不符：重载后**不转圈**，而是对着一条没跑完的调用
+说「已完成」——比转圈更糟，转圈至少还在说「我在等」。已按事实改写条目。
+
+### 根因两处
+
+1. **落库被绑在「显示命中」上**（`ChatViewModel:2059`）：
+   `if (projection.finishTool(...)) appendToStore(done)`。用户切走后 `finishTool` 返回 false
+   （列表里没有这张卡），终态于是**既不换显示也不落库**，空占位永久留在 `conversations.json`。
+   上一行注释写的是「切走期间只落盘」——代码做的正好相反。
+2. **`running` 只活在内存里**：重载时无法区分「没跑完」和「跑完了没输出」
+   （静默命令、grep 无匹配都是空结果）。
+
+### 改法
+
+| 层 | 改动 |
+|---|---|
+| 存储 | `MsgRecord.pending`（tool 专用，默认 false，旧文件照读）；`settlePendingTools(convId)` 幂等收口 |
+| 投影 | `settleInterrupted(convId)` 双写（显示态翻转 + 存储补齐）；`loadOf` 只在 owner 就是该会话时保留转圈 |
+| 运行控制器 | 新增 `onSettling(owner)`，在 `owner` 清空**之前**调用；`runCatching` 包住（收口炸了不能连累复位，否则发送键永久灰） |
+| 事件 | `ToolFinished` 落库无条件，显示替换独立判断 |
+| UI | 第五态「已中断」+ 中性色；颜色与文案合并成一次 `when`（新增状态时不可能漏改一处） |
+
+**为什么不能用「结果为空」判中断**：B1/B2/B3 三条反向用例专门守这个——正常空输出会被
+改写成「已中断」，同一轮一真一假时还会多收一条。`pending` 字段的存在理由就是它。
+
+### 变异（5 次全部精确命中）
+
+| 变异 | 变红的用例 |
+|---|---|
+| `pending` 恒 false（回到改动前） | A1–A5、B2/B3、D1–D3 |
+| 按「结果为空」判中断 | B1、B2、B3 |
+| 收口只写存储、不翻显示态 | E1 |
+| `finish` 里不调 `onSettling` | F1、F3 |
+| `loadOf` 不翻「已中断」 | D1、D3 |
+
+### 这条为什么做成了行为 harness，而不是 grep
+
+前面几轮的断言大多是源码级 grep。这一条不行：缺陷的全部内容是「同一张卡在两个时间点被
+写成两种状态」，grep 只能证明函数存在，证明不了「切走再切回那张卡显示什么」。所以
+`run-r06-verification.sh` 直接编译真实的 `ConversationStore` / `ConversationProjection` /
+`GenerationRunController` 跑 18 个用例，**不需要 AGP 产物**，沙箱里也真跑。
+
+> 两次假红都出在用例自己身上，记下来免得下次误诊为产品 bug：
+> ① `ConversationStore.flush()` 是**异步**的（把任务插进单线程队列），`flush()` 完立刻
+> 读文件必然读不到——第一版 A5 就是这么红的；
+> ② 只等「计数变了一次」不够：`create()` 自己也排了一次紧急写，等到的是**别人**那次。
+> 改成等到计数静默（不再变化）才稳。
+
+### 数字
+
+| 项 | 结果 |
+|---|---|
+| R-06 行为用例 | 18/0 |
+| 接线断言（G1–G6） | 6/0 |
+| 全量 harness | **PASS=59 SKIP=42 FAIL=0** |
+| 架构守卫 | 5/0（`ChatScreen` 3159→**3158**，`ChatViewModel` 3887 未涨） |
+| 文本断言 | 1370 未增 |
+
+### 仍需构建机确认
+
+```bash
+./gradlew :app:compileDebugKotlin
+bash scripts/qa/run-all.sh
+```
+
+`ChatScreen` 的 Pair 解构与 `ChatViewModel` 的 `onSettling` 接线在沙箱里编不了（拖 Compose
+依赖），只有 G1–G6 的静态断言守着；构建机上跑一次编译即可确认。
+
+---
+
+## 2026-11-05 第九轮：R-03（审批超时写在 Composable 里）
+
+### 症状链
+
+```
+用户切到设置页
+  → ChatScreen 离开组合树 → ApprovalDialog 被卸载
+  → 它的 LaunchedEffect 被取消 → vm.denyApproval() 再没人调
+  → deferred.await() 永久挂起
+  → approvalMutex 被长期持有
+  → 后续每个危险工具都在等这把锁 → Agent 回合永不收尾
+  → 发送键一直是灰的；而用户**根本看不见**有个审批在等
+```
+
+关键点：这不是「超时写得不够长」，是**超时的执行者本身被卸载了**。倒计时挂在
+`ApprovalDialog` 的 `LaunchedEffect` 里，而这个 Composable 是 `ChatScreen` 的子组合——
+只要用户不在对话页，它就不存在。
+
+### 改法
+
+| 项 | 改动 |
+|---|---|
+| 语义 | 新增 `core/agent/ApprovalDeadline.kt`：`awaitApprovalDecision(deferred, timeoutMs)` = `withTimeoutOrNull(...) ?: false` |
+| 接线 | `requestApproval` 的 `deferred.await()` → `awaitApprovalDecision(deferred)` |
+| 单点 | `APPROVAL_TIMEOUT_MS = 30_000L` 定义一处；弹窗的 `APPROVAL_TIMEOUT_SEC` 由它派生 |
+| UI | 倒计时循环**只做展示**（进度条 + 无障碍播报），不再自己 `denyApproval()` |
+
+超时从「UI 的倒计时」变成「ViewModel 的等待边界」，与弹窗是否在组合树上无关。
+
+### 为什么取消必须往外抛
+
+`withTimeoutOrNull` 对**外部取消**抛 `CancellationException` 而不是返回 `null`。这个区分
+不能用 `runCatching` 抹掉：抹掉之后，用户点「停止」会被记成一次正常的「用户拒绝」，
+协程继续往下跑几步。C1/C2 两条用例专门守它——变异（套一层 `runCatching`）后两条精确红。
+
+### 验证
+
+| 项 | 结果 |
+|---|---|
+| 行为用例（A/B/C/E 四组） | 9/0 |
+| 接线断言（G1–G5） | 5/0 |
+| 全量 harness | **PASS=60 SKIP=42 FAIL=0** |
+| 架构守卫 | 5/0（`ChatViewModel` 3887→**3886**，`ChatScreen` 3159→**3157**，基线同步下调） |
+| 文本断言 | 1370 未增 |
+
+| 变异 | 变红的用例 |
+|---|---|
+| 超时兜底 `?: false` → `?: true`（最危险的方向） | B1、B3 |
+| 套 `runCatching` 吞掉取消 | C1、C2 |
+| ViewModel 退回裸 `deferred.await()` | G1 |
+| 弹窗倒计时里加回 `denyApproval()` | G2 |
+
+> `?: true` 那个变异值得单独说：把兜底方向写反，超时等于**自动放行危险操作**，
+> 而所有「函数存在」「有 withTimeoutOrNull」的 grep 断言都还是绿的。
+> 这类缺陷只能靠行为用例抓——这也是这一轮没做成纯静态断言的原因。
+
+### 仍需构建机确认
+
+```bash
+./gradlew :app:compileDebugKotlin
+bash scripts/qa/run-all.sh
+```
+
+`ChatViewModel` / `ChatScreen` 的改动在沙箱里编不了（拖 Compose）。类型链是
+`CompletableDeferred<Boolean>` → `Boolean`，`APPROVAL_TIMEOUT_MS / 1000` 是 `Long → Int`，
+已逐处核对，但仍需一次真编译确认。
+
+---
+
+## 2026-11-05 第十轮：R-05（消息列表无 key）
+
+### 这不是性能问题
+
+`itemsIndexed` 不传 `key` 时，Compose 拿**下标**当身份。工具卡一插入，其后每一项的身份
+都换了——整表按新身份重建。用户看到的是：滚动位置跳一下、正在展开的工具卡自己合上、
+图片闪一下。登记册写的「整表重排」其实是这些的总和。
+
+### key 从哪来
+
+不另造一套 id，用数据模型自己的主键：
+
+| item | key | 为什么它是稳定的 |
+|---|---|---|
+| 工具卡 | `t:<call.id>` | 与落盘同一个 id，从 ToolStarted 到终态再到重载都不变 |
+| 已归属轮次的气泡 | `u:<turnIndex>` / `a:<turnIndex>` | 每轮恰好一个用户气泡 + 一个选中变体 |
+| 未归属的（实时草稿、trace 中间消息） | `u@<index>` / `m@<index>` | 它们本来就没有稳定身份，硬编一个反而会在「草稿转正」时制造一次身份迁移 |
+
+放在 `core/UiItem.kt` 的 `UiItem.uiKey(index)`：key 只由数据字段决定，不含任何 Compose 类型，
+所以能被 harness 直接编译、直接跑。
+
+### 修 bug 修出来的白屏风险
+
+第一版直接写 `"t:" + call.id`。历史文件里若有 id 为空的工具卡（手工编辑过、早期版本落盘），
+多张卡会撞同一个 `"t:"` —— **Compose 遇到重复 key 直接抛 IllegalArgumentException，整个对话页白屏**。
+修一个抖动换来一个白屏，比原 bug 严重得多。
+
+现在空 id 退回下标兜底，C2 守着，变异（去掉兜底）后精确红。
+
+### B3 是 R-05 与 R-06 的交汇点
+
+R-06 让工具卡从「执行中」到终态时**原位替换**。如果 key 里掺了 `result` 或 `running`，
+这次替换就变成了「旧的消失、新的出现」——用户刚展开的详情会合上。B3 专门断言这一点。
+
+### 验证
+
+| 项 | 结果 |
+|---|---|
+| 行为用例（A/B/C 三组） | 10/0 |
+| 接线断言（G1–G2） | 2/0 |
+| 全量 harness | **PASS=61 SKIP=42 FAIL=0** |
+| 架构守卫 | 5/0（`ChatScreen` 3157，**正好卡在冻结线**） |
+| 文本断言 | 1370 未增 |
+
+| 变异 | 变红的用例 |
+|---|---|
+| `uiKey` 全部退回 `"$index"`（等于没修） | A1、A2、A4、B1、B2 |
+| 工具卡改用工具名当身份 | A2、C1（20 项塌成 13 个 key） |
+| ChatScreen 去掉 `key =` | G1 |
+| 空 id 不兜底 | C2 |
+
+> 「用工具名当身份」那个变异很说明问题：一次任务里 `ui_tap` 会用很多次，全部塌成同一个
+> `t:ui_tap`。C1 报的是「20 项只剩 13 个 key」——如果不做这个用例，这个改法在真机上
+> 的表现是「打着打着白屏」，而不是任何可归因的报错。
+
+### 注意：ChatScreen 的行数余量已经用尽
+
+3157 是冻结线，这一轮为了塞进 key 断言把三处注释压成了一行。**下一轮若还要改 ChatScreen，
+必须先还债**（拆组件或删死代码），不能再靠压注释凑。
+
+### 仍需构建机确认
+
+```bash
+./gradlew :app:compileDebugKotlin
+bash scripts/qa/run-all.sh
+```
+
+`itemsIndexed(..., key = ...)` 的 lambda 类型与 `uiKey` 的可见性（core 顶层 public 函数）在
+沙箱里编不了，靠 G1 的静态断言 + 类型链人工核对；构建机跑一次编译即可确认。

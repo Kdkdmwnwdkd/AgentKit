@@ -19,8 +19,8 @@ pass=0
 ok() { pass=$((pass + 1)); echo "  ✅ $1"; }
 bad() { fail=$((fail + 1)); echo "  ❌ $1"; }
 
-[ -f "$PY" ] || { echo "SKIP: 找不到 $PY" >&2; exit 3; }
-command -v python3 >/dev/null || { echo "SKIP: 没有 python3" >&2; exit 3; }
+[ -f "$PY" ] || { echo "KS_HARNESS_SKIP $(basename "$0") 找不到 Python 脚本：$PY" >&2; exit 3; }
+command -v python3 >/dev/null || { echo "KS_HARNESS_SKIP $(basename "$0") 没有 python3（PATH 里找不到可执行文件）" >&2; exit 3; }
 
 echo "[1/3] 内置样例"
 out=$(python3 "$PY" --selftest 2>&1); rc=$?

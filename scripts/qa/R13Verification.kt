@@ -124,8 +124,15 @@ fun main() {
         Thread.sleep(100)
         store.appendMessage(id, MsgRecord(id = "last", role = "user", content = "窗口内的最后一条"))
         store.flush()
-        val ok = waitUntil(300) { f.readText().contains("窗口内的最后一条") }
-        assertTrue("flush 后 300ms 内落盘", ok)
+        // R-10：落盘改为分片（主文件只存 id 清单），「主文件正文文本匹配」不再成立。
+        // 与 R13-4 同律：用新实例读回才是「用户能不能看到这条」的硬证据，
+        // 换一次落盘格式也不会假失败。
+        val ok = waitUntil(300) {
+            runCatching {
+                ConversationStore(f).load(id)?.messages?.lastOrNull()?.content == "窗口内的最后一条"
+            }.getOrDefault(false)
+        }
+        assertTrue("flush 后 300ms 内落盘（分片读回）", ok)
         dir.deleteRecursively()
     }
 

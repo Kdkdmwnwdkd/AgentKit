@@ -1,0 +1,82 @@
+# SKIP 登记册 —— gate.sh 门禁 6 的判据（R-17）
+#
+# 为什么需要这份文件：
+#   SKIP 是本项目唯一「什么都不验证也算过」的状态。门禁 5 卡 PASS 下限，能挡住
+#   「大面积 SKIP」，但挡不住**新增**——新加一个 runner，第一行就 `exit 3`，
+#   PASS 总数不变，门禁 5 照样绿。于是这个 harness 从诞生那天起就是零覆盖，
+#   而它比「断言失败」隐蔽得多：失败会红，消失只会让分母变小。
+#
+# 收录条件（三条都要满足）：
+#   ① runner 确实写了 `KS_HARNESS_SKIP`，且理由里的缺件路径**真的不存在**
+#      （run-all 会 stat 它，不成立当场判 FAIL —— 见 run-all.sh 的 skip_claim_is_true）；
+#   ② 缺的东西不是这个仓库能自己产出的（否则就该补上，不是登记）；
+#   ③ 写清「缺什么」与「哪个环境能满足」——没有后者的登记项，就是永久豁免。
+#
+# 移除条件：环境补齐后它会自己变 PASS，门禁 6 会提示「N 条本轮没有 SKIP」
+#   ——这是「只提示、不判 FAIL」（见 gate.sh 门禁 6 末段）。这类「登记了但本轮
+#   没 SKIP」的条目是跨环境白名单：换到缺依赖的机器上它们会重新 SKIP，删掉
+#   反而会触发「SKIP 未登记」FAIL。只有当所有目标环境都常备该依赖时才删行，
+#   并把下面的上限数字一起调小；单台机器偶尔补齐不构成删除理由。
+#
+# 条目上限：42
+#
+# 只减不增：新增 harness 必须能在本机真跑。实在只能 SKIP，就显式改这个数字——
+# 让「又多了一个零覆盖的 harness」成为一次需要人点头的决定，而不是一次
+# 顺手 `echo skip` 的事故。
+
+# ── 缺 AGP 编译产物（app/build/tmp/kotlin-classes/debug）
+# 这 37 个是集成型 harness：要拿真实 classpath 才能编。本机没跑过 gradle 时必然缺，
+# CI 在 :app:compileDebugKotlin 之后全都能跑。换句话说：它们的 SKIP 是环境问题，
+# 不是断言不存在——这一点和「永久 SKIP」有本质区别，所以必须写在这里而不是放着不管。
+
+run-adb-discovery-verification.sh	缺少 app/build/tmp/kotlin-classes/debug（先 ./gradlew :app:compileDebugKotlin）
+run-adb-shell-frame-verification.sh	缺少 app/build/tmp/kotlin-classes/debug（先 ./gradlew :app:compileDebugKotlin）
+run-appcontrol-verification.sh	缺少 app/build/tmp/kotlin-classes/debug（先 ./gradlew :app:compileDebugKotlin）
+run-branch-verification.sh	缺少 app/build/tmp/kotlin-classes/debug（先 ./gradlew :app:compileDebugKotlin）
+run-crashlog-verification.sh	缺少 app/build/tmp/kotlin-classes/debug（先 ./gradlew :app:compileDebugKotlin）
+run-fallback-verification.sh	缺少 app/build/tmp/kotlin-classes/debug（先 ./gradlew :app:compileDebugKotlin）
+run-finish-reason-verification.sh	缺少 app/build/tmp/kotlin-classes/debug（先 ./gradlew :app:compileDebugKotlin）
+run-hotfix-verification.sh	缺少 app/build/tmp/kotlin-classes/debug（先 ./gradlew :app:compileDebugKotlin）
+run-hotfix11-verification.sh	缺少 app/build/tmp/kotlin-classes/debug（先 ./gradlew :app:compileDebugKotlin）
+run-hotfix3-verification.sh	缺少 app/build/tmp/kotlin-classes/debug（先 ./gradlew :app:compileDebugKotlin）
+run-localmodel-verification.sh	缺少 app/build/tmp/kotlin-classes/debug（先 ./gradlew :app:compileDebugKotlin）
+run-markdown-verification.sh	缺少 app/build/tmp/kotlin-classes/debug（先 ./gradlew :app:compileDebugKotlin）
+run-prompt-cache-verification.sh	缺少 app/build/tmp/kotlin-classes/debug（先 ./gradlew :app:compileDebugKotlin）
+run-prompt-protocol-verification.sh	缺少 app/build/tmp/kotlin-classes/debug（先 ./gradlew :app:compileDebugKotlin）
+run-provider-id-wiring-verification.sh	缺少 app/build/tmp/kotlin-classes/debug（先 ./gradlew :app:compileDebugKotlin）
+run-r10-verification.sh	缺少 app/build/tmp/kotlin-classes/debug（先 ./gradlew :app:compileDebugKotlin）
+run-r11-verification.sh	缺少 app/build/tmp/kotlin-classes/debug（先 ./gradlew :app:compileDebugKotlin）
+run-r12-verification.sh	缺少 app/build/tmp/kotlin-classes/debug（先 ./gradlew :app:compileDebugKotlin）
+run-r13-verification.sh	缺少 app/build/tmp/kotlin-classes/debug（先 ./gradlew :app:compileDebugKotlin）
+run-r2r4-verification.sh	缺少 app/build/tmp/kotlin-classes/debug（先 ./gradlew :app:compileDebugKotlin）
+run-r3-verification.sh	缺少 app/build/tmp/kotlin-classes/debug（先 ./gradlew :app:compileDebugKotlin）
+run-r5-verification.sh	缺少 app/build/tmp/kotlin-classes/debug（先 ./gradlew :app:compileDebugKotlin）
+run-r6-verification.sh	缺少 app/build/tmp/kotlin-classes/debug（先 ./gradlew :app:compileDebugKotlin）
+run-r7-verification.sh	缺少 app/build/tmp/kotlin-classes/debug（先 ./gradlew :app:compileDebugKotlin）
+run-retry-verification.sh	缺少 app/build/tmp/kotlin-classes/debug（先 ./gradlew :app:compileDebugKotlin）
+run-round4-verification.sh	缺少 app/build/tmp/kotlin-classes/debug（先 ./gradlew :app:compileDebugKotlin）
+run-shell-route-verification.sh	缺少 app/build/tmp/kotlin-classes/debug（先 ./gradlew :app:compileDebugKotlin）
+run-shell-state-hint-verification.sh	缺少 app/build/tmp/kotlin-classes/debug（先 ./gradlew :app:compileDebugKotlin）
+run-spake2-verification.sh	缺少 app/build/tmp/kotlin-classes/debug（先 ./gradlew :app:compileDebugKotlin）
+run-t01-probe.sh	缺少 app/build/tmp/kotlin-classes/debug（先 ./gradlew :app:compileDebugKotlin）
+run-t01-probe2.sh	缺少 app/build/tmp/kotlin-classes/debug（先 ./gradlew :app:compileDebugKotlin）
+run-t01-verification.sh	缺少 app/build/tmp/kotlin-classes/debug（先 ./gradlew :app:compileDebugKotlin）
+run-t07t08-adversarial.sh	缺少 app/build/tmp/kotlin-classes/debug（先 ./gradlew :app:compileDebugKotlin）
+run-t07t08-verification.sh	缺少 app/build/tmp/kotlin-classes/debug（先 ./gradlew :app:compileDebugKotlin）
+run-truncation-ui-verification.sh	缺少 app/build/tmp/kotlin-classes/debug（先 ./gradlew :app:compileDebugKotlin）
+run-verification.sh	缺少 app/build/tmp/kotlin-classes/debug（先 ./gradlew :app:compileDebugKotlin）
+run-w9-screenshot-verification.sh	缺少 app/build/tmp/kotlin-classes/debug（先 ./gradlew :app:compileDebugKotlin）
+
+# ── 缺依赖 jar（Gradle 缓存未就绪）
+# 这三条连 kotlinx / 序列化的 jar 都解析不到，属于缓存没下全；CI 预热后即可跑。
+# 注意它们给不出可核验路径（解析结果为空），所以无法被 run-all 的 stat 检查覆盖，
+# 只能靠这份登记册兜住——这是登记册存在的第二个理由。
+run-capability-manifest-verification.sh	缺少依赖 jar：（未解析到路径，Gradle 缓存未就绪）
+run-generation-run-verification.sh	缺少 kotlinx-coroutines-core-jvm：（未解析到路径，Gradle 缓存未就绪）
+run-journal-verification.sh	找不到 kotlinx-coroutines-core-jvm（Gradle 缓存未就绪）
+run-kernel-exposure-verification.sh	缺少依赖 jar：（未解析到路径，Gradle 缓存未就绪）
+
+# ── 需要外部输入（APK）
+# run-all 不传 APK 路径时直接跳过它（静态反验要读 apk 的 dex/manifest）。
+# CI 里传了路径就会真跑。
+run-apk-verification.sh	未传 APK 路径，静态反验未执行

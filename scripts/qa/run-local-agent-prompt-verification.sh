@@ -135,16 +135,18 @@ expect "接口默认行为不变" "$CONTRACT" 'fun needsApprovalFor\(args: JsonO
 #
 # P3-5 之后 `ORDER` 已删（顺序归清单），所以这一类死条目的来源少了一半——
 # 剩下的一半（HINTS）仍然靠这段交叉比对盯着。
-MANIFEST="$ROOT/app/src/main/java/com/example/agentkit/core/capability/CapabilityManifest.kt"
+# R-13：工具名的真源从 CapabilityManifest（已变派生视图）搬到 ToolCatalog。
+# 判据不变——仍是「提示词里提到的工具必须真实存在」——只是不再去视图里找名单。
+MANIFEST="$ROOT/app/src/main/java/com/example/agentkit/core/tool/ToolCatalog.kt"
 missing=$(python3 - "$PROMPT" "$PARSER" "$MANIFEST" <<'PY'
 import re, sys
 
 prompt, parser, manifest = (open(p, encoding='utf-8').read() for p in sys.argv[1:4])
 
-# 清单：所有 `tools = listOf(...)` 里的名字（组名不在其中，天然排除）
-declared = set()
-for m in re.finditer(r'tools\s*=\s*listOf\(([^)]*)\)', manifest, re.S):
-    declared |= set(re.findall(r'"([a-z0-9_]+)"', m.group(1)))
+# 目录：`CatalogTool("name", "group", ...)` 的第一个参数即工具名。
+# 不按「文件里出现的所有小写字面量」算——那样组名、审批键都会混进来，
+# 判据就永远绿了（它们当然「存在」）。
+declared = set(re.findall(r'CatalogTool\(\s*"([a-z0-9_]+)"', manifest))
 
 # 提示词：HINTS 的键（值里的英文句子含空格，不会被名字正则吃进来）
 used = set()

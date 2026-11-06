@@ -116,4 +116,48 @@ object ShellCommandRules {
             first
         }
     }
+
+    /**
+     * R-08：这条命令是不是**不可逆**的那一类。
+     *
+     * 判定不参与「要不要弹窗」（那是 [needsApproval]），只决定「用户点『不再询问』之后
+     * 能不能记住」。修前的缺陷正是把两者混成一个：`sessionAllowed` 存的是 `shell` 组，
+     * 于是用户为了不再被 `npm install` 打断而勾选，顺带把 `rm -rf` 也放行了。
+     *
+     * 收敛尺度：只收「删了/改了/提权了就回不去」的命令。**不含**重定向与普通写文件——
+     * 那类操作用户勾选时是知情的，每次都问反而把人训练成闭眼点允许。
+     */
+    fun isDestructive(command: String): Boolean {
+        if (command.isBlank()) return false
+        return segments(command).any { seg -> segmentIsDestructive(seg) }
+    }
+
+    /** 不可逆命令的首词。刻意保守：只收真正回不去的，宁可漏也不把日常命令都圈进来。 */
+    private val DESTRUCTIVE_HEADS: Set<String> = setOf(
+        "rm", "rmdir", "shred", "dd", "mkfs", "mke2fs", "fdisk", "parted", "wipefs",
+        "mv", "chmod", "chown", "chgrp",
+        "su", "sudo", "sh", "bash", "zsh", "dash",
+        "reboot", "shutdown", "halt", "poweroff",
+        "kill", "pkill", "killall",
+        "mount", "umount", "insmod", "rmmod",
+        "fastboot",
+    )
+
+    private fun segmentIsDestructive(segment: String): Boolean {
+        val words = segment.split(Regex("\\s+")).filter { it.isNotEmpty() }
+        val head = words.firstOrNull()?.substringAfterLast('/') ?: return false
+        // mkfs 有多种后缀形态（mkfs.ext4 / mkfs.vfat），按前缀收
+        if (head in DESTRUCTIVE_HEADS || head.startsWith("mkfs.")) return true
+        // 同一段里的子命令判定：这些工具本身无害，但某个子命令不可逆
+        return when (head) {
+            // find -delete / -exec 前面已按写操作处理，这里同样算不可逆
+            "find" -> FIND_WRITES.containsMatchIn(segment)
+            "pm" -> words.any { it == "uninstall" || it == "clear" || it == "uninstall-system-updates" }
+            "am" -> words.any { it == "force-stop" }
+            "git" -> segment.contains("reset --hard") || words.any { it == "clean" } ||
+                segment.contains("push --force") || segment.contains("push -f")
+            "cmd" -> words.any { it == "wipe" || it == "delete" }
+            else -> false
+        }
+    }
 }

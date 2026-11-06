@@ -1,5 +1,6 @@
 package com.example.agentkit.ui
 
+import com.example.agentkit.core.llm.LlmHttp
 import android.app.Application
 import android.app.AppOpsManager
 import android.content.Context
@@ -8,6 +9,9 @@ import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.PowerManager
 import android.util.Base64
+// R-14：窄接口都定义在 ui.contract 包，实现类要认全 30 个契约；
+// 逐个显式 import 会占掉近 20 行（本项目对 >1500 行文件有行数冻结），故用通配符。
+import com.example.agentkit.ui.contract.*
 import java.io.ByteArrayOutputStream
 import java.util.zip.ZipInputStream
 import android.content.Intent
@@ -158,7 +162,10 @@ import com.example.agentkit.core.agent.AskUserBroker
 import com.example.agentkit.core.agent.AgentRunService
 import com.example.agentkit.core.agent.AgentRunState
 import com.example.agentkit.core.agent.AgentRunStateStore
+import com.example.agentkit.core.agent.ApprovalGrant
 import com.example.agentkit.core.agent.ApprovalGrouping
+import com.example.agentkit.core.agent.ApprovalScope
+import com.example.agentkit.core.agent.awaitApprovalDecision
 import com.example.agentkit.core.agent.PlanBroker
 import com.example.agentkit.tools.SubAgentTool
 import com.example.agentkit.core.agent.SubAgentRunner
@@ -172,9 +179,9 @@ import com.example.agentkit.core.workspace.FileBackupStoreFactory
 import com.example.agentkit.core.workspace.WorkspacePaths
 import com.example.agentkit.core.workspace.WorkspaceStore
 import com.example.agentkit.core.agent.TodoStore
-import com.example.agentkit.core.mcp.McpClient
+import com.example.agentkit.core.mcp.ClientMcpToolLoader
 import com.example.agentkit.core.mcp.McpServerStore
-import com.example.agentkit.core.mcp.McpToolAdapter
+import com.example.agentkit.core.mcp.McpToolBinder
 import com.example.agentkit.tools.AskUserTool
 import com.example.agentkit.tools.PlanTool
 import com.example.agentkit.tools.CalculatorTool
@@ -281,8 +288,10 @@ data class ApprovalRequest(
     val toolName: String,
     val argsPreview: String,
     val deferred: CompletableDeferred<Boolean>,
-    /** 同类操作的展示名（W-36）：弹窗据此说明「不再询问<哪一类>」，与放行粒度一致。 */
-    val groupLabel: String = ""
+    /**
+     * 本次授权的作用域（R-08）：键、展示名、能否记住。
+     */
+    val grant: ApprovalGrant = ApprovalGrant("", "", true)
 )
 
 /**
@@ -363,7 +372,12 @@ private const val MENTION_TOTAL_LIMIT = 24_000
 /** W-28：项目规则文件（AGENTS.md/README）注入上限。 */
 private const val PROJECT_RULES_LIMIT = 4_000
 
-class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
+class ChatViewModel(private val app: Application) : AndroidViewModel(app),
+    BookmarksContract, LogsContract, MemoryBankContract, PromptLibraryContract,
+    WorkflowContract, SkillLibraryContract, SkillMarketContract,
+    ChatAppearanceContract, PermissionStatusContract, ConversationListContract, ConsoleContract,
+    ChatScreenContract, ModelProfilesContract, LocalModelContract, ModelConfigContract,
+    AppSettingsContract, ToolGroupContract, BackupContract, SettingsScreenContract {
 
     private val startup = StartupMark() // 启动分段计时：把「初始化慢」变成可归因的数字
 
@@ -408,10 +422,10 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
      * B 批：上次任务被系统中断时的提示语（启动时对账得到，非 null 则展示一次）。
      */
     private val _interruptedNotice = MutableStateFlow<String?>(null)
-    val interruptedNotice: StateFlow<String?> = _interruptedNotice.asStateFlow()
+    override val interruptedNotice: StateFlow<String?> = _interruptedNotice.asStateFlow()
 
     /** 用户点「知道了」后关闭恢复提示。 */
-    fun dismissInterruptedNotice() {
+    override fun dismissInterruptedNotice() {
         _interruptedNotice.value = null
     }
 
@@ -445,18 +459,18 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
 
     /** 自动化状态流：供设置页实时反映开关与服务连接情况。 */
     private val _automationEnabled = MutableStateFlow(automationPrefs.enabled)
-    val automationEnabled: StateFlow<Boolean> = _automationEnabled.asStateFlow()
+    override val automationEnabled: StateFlow<Boolean> = _automationEnabled.asStateFlow()
 
     private val _serviceConnected = MutableStateFlow(AutomationBridge.service != null)
-    val serviceConnected: StateFlow<Boolean> = _serviceConnected.asStateFlow()
+    override val serviceConnected: StateFlow<Boolean> = _serviceConnected.asStateFlow()
 
     /** 通知访问权限是否已授予（供感知层卡片展示）。 */
     private val _notificationGranted = MutableStateFlow(false)
-    val notificationGranted: StateFlow<Boolean> = _notificationGranted.asStateFlow()
+    override val notificationGranted: StateFlow<Boolean> = _notificationGranted.asStateFlow()
 
     /** 使用情况访问权限是否已授予（供感知层卡片展示）。 */
     private val _usageGranted = MutableStateFlow(false)
-    val usageGranted: StateFlow<Boolean> = _usageGranted.asStateFlow()
+    override val usageGranted: StateFlow<Boolean> = _usageGranted.asStateFlow()
 
     /**
      * 是否已在电池优化白名单（P0 权限引导，2026-10-21）。
@@ -465,7 +479,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
      * [pendingGrantCount] 的计数里，只有引导页单独展示。
      */
     private val _batteryUnrestricted = MutableStateFlow(false)
-    val batteryUnrestricted: StateFlow<Boolean> = _batteryUnrestricted.asStateFlow()
+    override val batteryUnrestricted: StateFlow<Boolean> = _batteryUnrestricted.asStateFlow()
 
     /**
      * 调试通道（Shizuku）状态（W-13 B）。初值静态，真值由 [refreshGrants]（IO）填：
@@ -482,10 +496,10 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     private val _shizukuUiState = MutableStateFlow(
         ShizukuShell.uiState(_shizukuStatus.value, _shizukuInstalled.value)
     )
-    val shizukuUiState: StateFlow<ShizukuShell.UiState> = _shizukuUiState.asStateFlow()
+    override val shizukuUiState: StateFlow<ShizukuShell.UiState> = _shizukuUiState.asStateFlow()
 
     /** 重新探测调试通道状态（进入权限页 / 授权回调后调用）。 */
-    fun refreshShizukuStatus() {
+    override fun refreshShizukuStatus() {
         _shizukuStatus.value = ShizukuShell.status()
         _shizukuInstalled.value = ShizukuShell.isInstalled(app)
         _shizukuUiState.value = ShizukuShell.uiState(_shizukuStatus.value, _shizukuInstalled.value)
@@ -499,7 +513,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
      *  - 未授权 → 发起授权请求（弹窗由 Shizuku 提供，结果回调后刷新）；
      *  - 就绪 → 仅刷新状态。
      */
-    fun handleShizukuAction(context: Context) {
+    override fun handleShizukuAction(context: Context) {
         // 按「四态」动作：已装就拉起、未装才去商店——不再一律劝人装
         when (_shizukuUiState.value) {
             ShizukuShell.UiState.NOT_INSTALLED -> {
@@ -531,7 +545,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
 
     /** 当前设备上下文快照（L4 主动感知）：供自动化页展示 Agent 实时感知到的手机状态。初值为空（`isEmpty` 有明确语义），真值由 [refreshGrants] 填。 */
     private val _deviceContext = MutableStateFlow(DeviceContext("", "", emptyList(), 0L))
-    val deviceContext: StateFlow<DeviceContext> = _deviceContext.asStateFlow()
+    override val deviceContext: StateFlow<DeviceContext> = _deviceContext.asStateFlow()
 
     /** 导入技能仓库（L7）：从 URL / 本机 zip / 内置示例导入到 filesDir/skills/imported。 */
     private val importRepo = ImportedSkillRepository(app)
@@ -561,33 +575,33 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
 
     /** UI 用技能信息（含安全策略摘要）：让 L5 全局能力门「看得见」。 */
     private val _skillInfos = MutableStateFlow(computeSkillInfos())
-    val skillInfos: StateFlow<List<SkillUiInfo>> = _skillInfos.asStateFlow()
+    override val skillInfos: StateFlow<List<SkillUiInfo>> = _skillInfos.asStateFlow()
 
     /** 导入/卸载操作的状态提示（Toast 式文本）；reload 不改变它（保留上次提示）。 */
     private val _importStatus = MutableStateFlow<String?>(null)
-    val importStatus: StateFlow<String?> = _importStatus.asStateFlow()
+    override val importStatus: StateFlow<String?> = _importStatus.asStateFlow()
 
     /* ------------------------- W-48 插件市场状态 ------------------------- */
 
     /** 已配置的市场源（含顺序即用户添加顺序）。 */
     private val _marketSources = MutableStateFlow(marketStore.loadSources().also { startup.mark("marketSources") })
-    val marketSources: StateFlow<List<MarketSource>> = _marketSources.asStateFlow()
+    override val marketSources: StateFlow<List<MarketSource>> = _marketSources.asStateFlow()
 
     /** 合并去重后的插件列表（含本机安装态）。 */
     private val _marketItems = MutableStateFlow<List<MarketUiItem>>(emptyList())
-    val marketItems: StateFlow<List<MarketUiItem>> = _marketItems.asStateFlow()
+    override val marketItems: StateFlow<List<MarketUiItem>> = _marketItems.asStateFlow()
 
     /** 正在刷新索引（按钮置灰 + 顶部进度提示的唯一判据）。 */
     private val _marketLoading = MutableStateFlow(false)
-    val marketLoading: StateFlow<Boolean> = _marketLoading.asStateFlow()
+    override val marketLoading: StateFlow<Boolean> = _marketLoading.asStateFlow()
 
     /** 正在安装/卸载的插件 id（同一时刻只允许一个，避免并发写同一目录）。 */
     private val _marketBusyId = MutableStateFlow<String?>(null)
-    val marketBusyId: StateFlow<String?> = _marketBusyId.asStateFlow()
+    override val marketBusyId: StateFlow<String?> = _marketBusyId.asStateFlow()
 
     /** 面向用户的一行状态（成功/失败/源为空），UI 原样展示。 */
     private val _marketStatus = MutableStateFlow<String?>(null)
-    val marketStatus: StateFlow<String?> = _marketStatus.asStateFlow()
+    override val marketStatus: StateFlow<String?> = _marketStatus.asStateFlow()
 
     /**
      * 刷新期间又被要求刷新（例如「删源」触发的重刷）。
@@ -646,43 +660,43 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     internal val localSetting: LocalLlamaSetting get() = modelSettings.setting
     internal val modelStore: GgufModelStore get() = modelSettings.files
 
-    val localModels: StateFlow<List<DownloadedModel>> = modelSettings.models
-    val localActive: StateFlow<String> = modelSettings.active
-    val localLoaded: StateFlow<Boolean> = modelSettings.loaded
-    val localDownloading: StateFlow<Pair<String, Float?>?> = modelSettings.downloading
-    val localNCtx: StateFlow<Int> = modelSettings.nCtx
-    val localThreads: StateFlow<Int> = modelSettings.threads
-    val localMaxTokens: StateFlow<Int> = modelSettings.maxTokens
-    val localAgentMode: StateFlow<Boolean> = modelSettings.agentMode
-    val localGpuMode: StateFlow<GpuMode> = modelSettings.gpuMode
-    val localSafeMode: StateFlow<Boolean> = modelSettings.safeMode
-    val localGpuCrashNote: StateFlow<String> = modelSettings.gpuCrashNote
-    val localGpuSummary: StateFlow<String> = modelSettings.gpuSummary
+    override val localModels: StateFlow<List<DownloadedModel>> = modelSettings.models
+    override val localActive: StateFlow<String> = modelSettings.active
+    override val localLoaded: StateFlow<Boolean> = modelSettings.loaded
+    override val localDownloading: StateFlow<Pair<String, Float?>?> = modelSettings.downloading
+    override val localNCtx: StateFlow<Int> = modelSettings.nCtx
+    override val localThreads: StateFlow<Int> = modelSettings.threads
+    override val localMaxTokens: StateFlow<Int> = modelSettings.maxTokens
+    override val localAgentMode: StateFlow<Boolean> = modelSettings.agentMode
+    override val localGpuMode: StateFlow<GpuMode> = modelSettings.gpuMode
+    override val localSafeMode: StateFlow<Boolean> = modelSettings.safeMode
+    override val localGpuCrashNote: StateFlow<String> = modelSettings.gpuCrashNote
+    override val localGpuSummary: StateFlow<String> = modelSettings.gpuSummary
 
     /** 页签 onResume / 下载完成后调用。 */
-    fun refreshLocalModels() = modelSettings.refresh()
+    override fun refreshLocalModels() = modelSettings.refresh()
 
-    fun setActiveLocalModel(fileName: String) = modelSettings.setActive(fileName)
+    override fun setActiveLocalModel(fileName: String) = modelSettings.setActive(fileName)
 
-    fun deleteLocalModel(fileName: String) = modelSettings.delete(fileName)
+    override fun deleteLocalModel(fileName: String) = modelSettings.delete(fileName)
 
-    fun unloadLocalModel() = modelSettings.unload()
+    override fun unloadLocalModel() = modelSettings.unload()
 
-    fun downloadLocalModel(entry: GgufCatalogEntry) = modelSettings.download(entry)
+    override fun downloadLocalModel(entry: GgufCatalogEntry) = modelSettings.download(entry)
 
-    fun importLocalModel(uri: Uri) = modelSettings.import(uri)
+    override fun importLocalModel(uri: Uri) = modelSettings.import(uri)
 
-    fun setLocalNCtx(v: Int) = modelSettings.setCtx(v)
+    override fun setLocalNCtx(v: Int) = modelSettings.setCtx(v)
 
-    fun setLocalThreads(v: Int) = modelSettings.setThreads(v)
+    override fun setLocalThreads(v: Int) = modelSettings.setThreads(v)
 
-    fun setLocalMaxTokens(v: Int) = modelSettings.setMaxTokens(v)
+    override fun setLocalMaxTokens(v: Int) = modelSettings.setMaxTokens(v)
 
-    fun setLocalAgentMode(on: Boolean) = modelSettings.setAgentMode(on)
+    override fun setLocalAgentMode(on: Boolean) = modelSettings.setAgentMode(on)
 
-    fun setLocalSafeMode(on: Boolean) = modelSettings.setSafeMode(on)
+    override fun setLocalSafeMode(on: Boolean) = modelSettings.setSafeMode(on)
 
-    fun setLocalGpuMode(mode: GpuMode) = modelSettings.setGpuMode(mode)
+    override fun setLocalGpuMode(mode: GpuMode) = modelSettings.setGpuMode(mode)
 
     /**
      * W-70：选中本地模型即把当前档案切到本地供应商。
@@ -706,11 +720,11 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
 
     /** L8 最近日志（格式化后的文本，最新的在前），供自动化页「运行日志」卡片展示。 */
     private val _logs = MutableStateFlow<List<String>>(emptyList())
-    val logs: StateFlow<List<String>> = _logs.asStateFlow()
+    override val logs: StateFlow<List<String>> = _logs.asStateFlow()
 
     /** L9 记忆列表快照，随写入/检索/遗忘/清空刷新。 */
     private val _memories = MutableStateFlow<List<MemoryItem>>(emptyList())
-    val memories: StateFlow<List<MemoryItem>> = _memories.asStateFlow()
+    override val memories: StateFlow<List<MemoryItem>> = _memories.asStateFlow()
 
     /**
      * 终端后端工厂（T07）：proot 优先、不可用回落本机 user。
@@ -745,7 +759,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
      * 供权限中心页「一次走完」地告诉用户需要做什么，而不是让用户逐条工具试错。
      */
     private val _capabilityPlans = MutableStateFlow<List<CapabilityResolution>>(emptyList())
-    val capabilityPlans: StateFlow<List<CapabilityResolution>> = _capabilityPlans.asStateFlow()
+    override val capabilityPlans: StateFlow<List<CapabilityResolution>> = _capabilityPlans.asStateFlow()
 
     /**
      * 重算全部能力的就绪度（进入权限页 / 权限或自动化状态变化时调用）。
@@ -781,7 +795,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     /** 定时任务存储与列表状态（W-17）。 */
     private val workflowStore = WorkflowStore(File(app.filesDir, "workflow"))
     private val _workflows = MutableStateFlow<List<Workflow>>(emptyList())
-    val workflows: StateFlow<List<Workflow>> = _workflows.asStateFlow()
+    override val workflows: StateFlow<List<Workflow>> = _workflows.asStateFlow()
 
     /**
      * 会话存储（W-18：会话检索工具要用）。
@@ -806,15 +820,15 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         runCatching { JobNotifier.notify(app, job) }
     }
     private val _bookmarks = MutableStateFlow(bookmarkStore.list())
-    val bookmarks: StateFlow<List<Bookmark>> = _bookmarks.asStateFlow()
+    override val bookmarks: StateFlow<List<Bookmark>> = _bookmarks.asStateFlow()
 
     /** W-30：翻译结果缓存（按消息下标），会话切换时清空。 */
     private val _translations = MutableStateFlow<Map<Int, TranslationUi>>(emptyMap())
-    val translations: StateFlow<Map<Int, TranslationUi>> = _translations.asStateFlow()
+    override val translations: StateFlow<Map<Int, TranslationUi>> = _translations.asStateFlow()
 
     /** W-30：正在翻译的消息下标（null = 空闲）。同一时刻只翻一条，避免并发打满 Key。 */
     private val _translatingIndex = MutableStateFlow<Int?>(null)
-    val translatingIndex: StateFlow<Int?> = _translatingIndex.asStateFlow()
+    override val translatingIndex: StateFlow<Int?> = _translatingIndex.asStateFlow()
 
     private val registry = ToolRegistry(startup.toolProfiler).apply {
         startup.mark("preRegistry") // 口径：ToolRegistry() 构造极轻，重的是下面 45 个 register
@@ -933,6 +947,14 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         startup.mark("registry") // 工具注册表整段（40+ 工具实例化）：最可能随工具数线性增长的段
     }
 
+    /** R-07：MCP 工具同步器（可回卷）。必须声明在 [registry] 之后：属性按声明序初始化。 */
+    private val mcpBinder = McpToolBinder(
+        registry = registry,
+        loader = ClientMcpToolLoader(),
+        maxToolsPerServer = MCP_MAX_TOOLS_PER_SERVER,
+        maxToolsTotal = MCP_MAX_TOOLS_TOTAL
+    )
+
     /** JS 执行引擎（Rhino，纯 Java 无需 NDK）；初始化失败则降级为仅 prompt 形态。 */
     private val jsEngine: JsEngine? = runCatching { RhinoJsEngine() }.getOrNull()
 
@@ -988,8 +1010,8 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         // P3-1：能力清单自检——把注册表与 CapabilityManifest 对一遍（只在有偏差时打一条 warn）。
         // 放在 MCP 注册**之前**：MCP 工具是运行时动态来的，名字不受清单约束，参与审计只会制造噪声。
         CapabilityAuditReporter.report(registry.list())
-        // W-14：异步连 MCP 服务器并把工具注册进 registry（失败只记日志，不影响启动）
-        registerMcpTools()
+        // W-14/R-07：异步同步 MCP 工具（失败只记日志，不影响启动；停用的会在这里被撤销）
+        refreshMcpTools()
         refreshGrants() // 已异步（内部 launch(IO)）
         // L8/L9：首屏即有内容可看。200 条日志的 format() 实测占 600ms+（SimpleDateFormat 加锁），挪到 IO
         viewModelScope.launch(Dispatchers.IO) { refreshLogs(); refreshMemories() }
@@ -1071,7 +1093,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     }
 
     /** 设置页：切换自动化总开关（同时持久化并同步到桥）。 */
-    fun setAutomationEnabled(v: Boolean) {
+    override fun setAutomationEnabled(v: Boolean) {
         automationPrefs.enabled = v
         AutomationBridge.enabled = v
         _automationEnabled.value = v
@@ -1079,7 +1101,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     }
 
     /** 设置页：跳转系统无障碍设置页，引导用户开启本应用的服务。 */
-    fun openAccessibilitySettings(ctx: Context) {
+    override fun openAccessibilitySettings(ctx: Context) {
         val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         ctx.startActivity(intent)
     }
@@ -1091,7 +1113,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
      * 清单里已声明该权限）；部分 ROM 没有这个 Activity，退到电池优化列表页让用户自己找本 App。
      * 两条路都失败时静默返回——引导页的「回来自动复检」会把结果如实显示出来，不编造成功。
      */
-    fun openBatteryOptimizationSettings(ctx: Context) {
+    override fun openBatteryOptimizationSettings(ctx: Context) {
         val direct = Intent(
             Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
             Uri.parse("package:${app.packageName}")
@@ -1108,7 +1130,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     }
 
     /** 刷新权限授予状态。**异步**：5 处 IPC 实测 700~1000ms（启动最慢段、不吃类热缓存），压主线程=首帧白等一秒。 */
-    fun refreshGrants(): Job = viewModelScope.launch(Dispatchers.IO) {
+    override fun refreshGrants(): Job = viewModelScope.launch(Dispatchers.IO) {
         // 通知监听权限：检查 enabled_notification_listeners 设置里是否包含本服务组件（免依赖、全版本可用）
         val cn = ComponentName(app, AgentNotificationListener::class.java)
         val enabledListeners = Settings.Secure.getString(app.contentResolver, "enabled_notification_listeners")
@@ -1148,14 +1170,34 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
 
     /** 当前会话 id；_messages 的语义即「当前会话的消息」。 */
     private val _activeConversationId = MutableStateFlow(conversationStore.ensureNotEmpty())
-    val activeConversationId: StateFlow<String?> = _activeConversationId.asStateFlow()
+    override val activeConversationId: StateFlow<String?> = _activeConversationId.asStateFlow()
 
     /** 会话摘要列表（updatedAt 倒序；抽屉「最近对话」与对话页顶栏标题消费）。 */
     private val _conversations = MutableStateFlow(conversationStore.list())
-    val conversations: StateFlow<List<ConversationSummary>> = _conversations.asStateFlow()
+    override val conversations: StateFlow<List<ConversationSummary>> = _conversations.asStateFlow()
 
     /** Hotfix2：过程事件回调来自工具并行执行线程，与主线程的 send() 竞争同一列表——加锁防丢更新。 */
     private val msgLock = Any()
+
+    /** 一轮生成的运行态都在 [GenerationRunController]；这里只暴露流 + 收尾钩子（清横幅→落盘→重建→刷日志）。
+     *  必须排在 [projection] 之前：它的 init 会读 `ownerId()`，本属性晚于它构造就只能读到 null，
+     *  启动即崩「Cannot create an instance of ChatViewModel」——lambda 延迟求值，编译期毫无征兆；
+     *  by lazy 也救不了（delegate 字段同样按声明序赋值）。类型显式标注是因为三个 lambda 反向
+     *  引用本类成员，交给推断会撞上 K1 的 recursive problem，且报错指向无关调用。 */
+    private val generation: GenerationRunController = GenerationRunController(
+        scope = viewModelScope,
+        activeId = { _activeConversationId.value },
+        onStarted = { _truncationNotice.value = null },
+        onSettling = { owner -> projection.settleInterrupted(owner) },
+        onFinished = { rebuildMessages ->
+            // Phase 2 DoD③：兜底清「正在恢复」——重试收尾事件之外的最后一道保险
+            _retryState.value = null
+            // W-102：粘性激活的落盘点。send 的成功/失败/取消与 regenerate 全都汇聚到这里，漏一处就是「这次开的组没记住」。
+            persistToolGroups()
+            if (rebuildMessages) reloadActiveMessages()
+            refreshLogs()
+        },
+    )
 
     /**
      * 当前会话的消息；启动时从会话存储载入（功能三：重启 App 后对话还在）。
@@ -1172,7 +1214,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         onStoreChanged = { refreshConversations() },
         lock = msgLock,
     )
-    val messages: StateFlow<List<UiItem>> = projection.items
+    override val messages: StateFlow<List<UiItem>> = projection.items
 
     /** 模型配置持久化：进程重启也能还原，避免「明明填过却退回默认值」的不一致。 */
     private val configStore = ConfigStore(app)
@@ -1180,10 +1222,10 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     // —— 功能五（P1-10）：回答完成提醒开关（设置页消费；落盘，与主题偏好不同纪律：
     // 通知是用户显式 opt-in 的能力，跨启动应保持）——
     private val _completionNotifyEnabled = MutableStateFlow(configStore.isCompletionNotifyEnabled())
-    val completionNotifyEnabled: StateFlow<Boolean> = _completionNotifyEnabled.asStateFlow()
+    override val completionNotifyEnabled: StateFlow<Boolean> = _completionNotifyEnabled.asStateFlow()
 
     /** 设置页开关：写回 ConfigStore（即时生效 + 跨启动保持）。 */
-    fun setCompletionNotifyEnabled(enabled: Boolean) {
+    override fun setCompletionNotifyEnabled(enabled: Boolean) {
         configStore.setCompletionNotifyEnabled(enabled)
         _completionNotifyEnabled.value = enabled
     }
@@ -1192,19 +1234,19 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     // 真机反馈「我可以用我照片的壁纸当成壁纸」——动态取色只染控件色，
     // 这里给的是照片本体当对话页背景（位图不落 App 存储，只存 SAF URI）
     private val _chatBackgroundUri = MutableStateFlow(configStore.chatBackgroundUri())
-    val chatBackgroundUri: StateFlow<String?> = _chatBackgroundUri.asStateFlow()
+    override val chatBackgroundUri: StateFlow<String?> = _chatBackgroundUri.asStateFlow()
 
     private val _chatBackgroundAlpha = MutableStateFlow(configStore.chatBackgroundAlpha())
-    val chatBackgroundAlpha: StateFlow<Float> = _chatBackgroundAlpha.asStateFlow()
+    override val chatBackgroundAlpha: StateFlow<Float> = _chatBackgroundAlpha.asStateFlow()
 
     /** 设置/清除背景图（uri = SAF content:// 字符串；null = 清除）。 */
-    fun setChatBackground(uri: String?) {
+    override fun setChatBackground(uri: String?) {
         configStore.setChatBackgroundUri(uri)
         _chatBackgroundUri.value = configStore.chatBackgroundUri()
     }
 
     /** 调背景图浓度（clamp 在 ConfigStore 内，这里只透传）。 */
-    fun setChatBackgroundAlpha(alpha: Float) {
+    override fun setChatBackgroundAlpha(alpha: Float) {
         configStore.setChatBackgroundAlpha(alpha)
         _chatBackgroundAlpha.value = configStore.chatBackgroundAlpha()
     }
@@ -1238,7 +1280,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
 
     /** 当前模型配置（已落盘，UI 直接消费）；= 当前生效 profile 的 config。 */
     private val _config = MutableStateFlow(ensureActiveConfig())
-    val config: StateFlow<ModelConfig> = _config.asStateFlow()
+    override val config: StateFlow<ModelConfig> = _config.asStateFlow()
 
     /**
      * 「当前配置足以开始对话」——**唯一真源**。
@@ -1250,7 +1292,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
      * 云端看三要素，本地看有没有选模型文件。以后再加判断点请复用这里，不要再内联。
      * 初值同步算一次（不走默认 false），否则首帧会闪一下「模型未配置」。
      */
-    val modelReady: StateFlow<Boolean> =
+    override val modelReady: StateFlow<Boolean> =
         combine(_config, localActive) { cfg, local -> readyOf(cfg, local) }
             .stateIn(
                 viewModelScope,
@@ -1266,53 +1308,33 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         }
 
     /** 全部模型配置档案（配置页切换条消费）。 */
-    val profiles: StateFlow<List<ModelProfile>> = _profiles.asStateFlow()
+    override val profiles: StateFlow<List<ModelProfile>> = _profiles.asStateFlow()
 
     /** 当前生效档案 id（配置页高亮 + 编辑器语义锚点）。 */
-    val activeProfileId: StateFlow<String> = _activeProfileId.asStateFlow()
+    override val activeProfileId: StateFlow<String> = _activeProfileId.asStateFlow()
 
     /** 「测试连接」结果流：配置页卡片消费，null 表示尚未测试。 */
     private val _testResult = MutableStateFlow<TestResult?>(null)
-    val testResult: StateFlow<TestResult?> = _testResult.asStateFlow()
+    override val testResult: StateFlow<TestResult?> = _testResult.asStateFlow()
 
     /**
      * A 批：输入变化时清空上一次测试结果。
      * 否则「测通旧配置 → 改 Base URL → 卡片仍绿色 → 保存并回对话」会把没测过的配置落盘。
      */
-    fun clearTestResult() {
+    override fun clearTestResult() {
         _testResult.value = null
     }
 
     /** 是否正在测试连接：UI 用它给按钮显示加载态，避免重复点击。 */
     private val _testing = MutableStateFlow(false)
-    val testing: StateFlow<Boolean> = _testing.asStateFlow()
+    override val testing: StateFlow<Boolean> = _testing.asStateFlow()
 
-    val input = MutableStateFlow("")
+    override val input = MutableStateFlow("")
 
-    /**
-     * 一轮生成的全部运行态（在跑没跑 / 归属会话 / 流式草稿 / 收尾）都在 [GenerationRunController]
-     * 手里。这里只暴露流，外加一个「收尾时宿主该做什么」的钩子——顺序与原来一致：
-     * 清恢复横幅 → 落盘工具组 → 按需重建消息 → 刷日志。
-     */
-    private val generation = GenerationRunController(
-        scope = viewModelScope,
-        activeId = { _activeConversationId.value },
-        onStarted = { _truncationNotice.value = null },
-        onFinished = { rebuildMessages ->
-            // Phase 2 DoD③：兜底清「正在恢复」——重试收尾事件之外的最后一道保险
-            _retryState.value = null
-            // W-102：粘性激活的落盘点。send 的成功/失败/取消与 regenerate 全都汇聚到这里，
-            // 漏一处就是「这次开的组没记住」，下次进同一任务又要模型重新 __use_tools 一遍。
-            persistToolGroups()
-            if (rebuildMessages) reloadActiveMessages()
-            refreshLogs()
-        },
-    )
-
-    val isRunning: StateFlow<Boolean> = generation.running
-    val generatingConvId: StateFlow<String?> = generation.generating
-    val streamDraft: StateFlow<String?> = generation.draft
-    val reasoningDraft: StateFlow<String?> = generation.reasoning
+    override val isRunning: StateFlow<Boolean> = generation.running
+    override val generatingConvId: StateFlow<String?> = generation.generating
+    override val streamDraft: StateFlow<String?> = generation.draft
+    override val reasoningDraft: StateFlow<String?> = generation.reasoning
 
     /** owner 是否就是当前显示会话——在途 UI 更新（草稿/工具卡/气泡）的投影开关。 */
     private fun isOwnerActive(): Boolean = generation.isOwnerActive()
@@ -1322,16 +1344,16 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
 
     /* ------------------------------ W-17 定时任务 ------------------------------ */
 
-    fun refreshWorkflows() {
+    override fun refreshWorkflows() {
         _workflows.value = workflowStore.list()
     }
 
-    fun setWorkflowEnabled(id: String, enabled: Boolean) {
+    override fun setWorkflowEnabled(id: String, enabled: Boolean) {
         workflowStore.setEnabled(id, enabled)
         refreshWorkflows()
     }
 
-    fun deleteWorkflow(id: String) {
+    override fun deleteWorkflow(id: String) {
         workflowStore.delete(id)
         refreshWorkflows()
         AgentLogger.i("Workflow", "已删除定时任务 $id")
@@ -1343,7 +1365,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
      * 为什么走前台对话而不是后台执行：Agent 需要无障碍/截图/前台应用，后台跑不可信；
      * 前台执行用户还能看到每一步、随时停止（见 WorkflowNotifier 的说明）。
      */
-    fun runWorkflowNow(id: String) {
+    override fun runWorkflowNow(id: String) {
         val wf = workflowStore.get(id) ?: return
         if (isRunning.value) {
             AgentLogger.w("Workflow", "当前有任务在跑，忽略立即运行请求")
@@ -1367,46 +1389,46 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     }
 
     /** 待回答的用户提问（W-14）：非空时聊天页显示选择卡片。 */
-    val askUserPending: StateFlow<AskUserBroker.Question?> = AskUserBroker.pending
+    override val askUserPending: StateFlow<AskUserBroker.Question?> = AskUserBroker.pending
 
     // —— W-25：任务模式（PLAN / AUTO）与待批计划 ——
     private val _planMode = MutableStateFlow(configStore.isPlanModeEnabled())
-    val planMode: StateFlow<Boolean> = _planMode.asStateFlow()
+    override val planMode: StateFlow<Boolean> = _planMode.asStateFlow()
 
     /** UI 观察：有可批准的计划时显示计划卡片。 */
-    val planPending: StateFlow<PlanBroker.Plan?> = PlanBroker.pending
+    override val planPending: StateFlow<PlanBroker.Plan?> = PlanBroker.pending
 
-    fun setPlanMode(enabled: Boolean) {
+    override fun setPlanMode(enabled: Boolean) {
         _planMode.value = enabled
         configStore.setPlanModeEnabled(enabled)
         AgentLogger.i("Chat", "任务模式切换为 ${if (enabled) "先计划后执行" else "自动执行"}")
     }
 
     /** UI 回调：批准计划。 */
-    fun approvePlan(planId: String) {
+    override fun approvePlan(planId: String) {
         PlanBroker.approve(planId)
         AgentLogger.i("Chat", "用户批准了计划 $planId")
     }
 
     /** UI 回调：拒绝/要求修改计划。 */
-    fun rejectPlan(planId: String, reason: String) {
+    override fun rejectPlan(planId: String, reason: String) {
         PlanBroker.reject(planId, reason)
         AgentLogger.i("Chat", "用户拒绝了计划 $planId：${reason.take(80)}")
     }
 
     // —— W-26：任务模型（标题生成等轻量任务用便宜模型，省钱降延迟）——
     private val _taskProfileId = MutableStateFlow(configStore.taskProfileId())
-    val taskProfileId: StateFlow<String> = _taskProfileId.asStateFlow()
+    override val taskProfileId: StateFlow<String> = _taskProfileId.asStateFlow()
 
     /** 设置任务模型档案；传空串 = 跟随主配置。 */
-    fun setTaskProfile(id: String) {
+    override fun setTaskProfile(id: String) {
         _taskProfileId.value = id
         configStore.setTaskProfileId(id)
         AgentLogger.i("Chat", "任务模型切换为 ${id.ifBlank { "跟随主配置" }}")
     }
 
     /** UI 回调：用户点了某个选项 / 提交了自由输入。 */
-    fun answerAskUser(questionId: String, choice: String) {
+    override fun answerAskUser(questionId: String, choice: String) {
         AskUserBroker.answer(questionId, choice)
         AgentLogger.i("Chat", "用户回答了提问：${choice.take(80)}")
     }
@@ -1436,47 +1458,24 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * 连接所有启用的 MCP 服务器，把 tools/list 的结果包成 [McpToolAdapter] 注册进工具表（W-14）。
-     *
-     * 约束：
-     *  - 异步、失败不抛：MCP 服务器挂了不能让 App 启动失败；
-     *  - 每台最多 [MCP_MAX_TOOLS_PER_SERVER] 个、总量 [MCP_MAX_TOOLS_TOTAL] 个：
-     *    工具描述要进系统提示，几十上百个会直接把上下文预算吃光；
-     *  - 只连 enabled 的服务器（用户在 MCP 页关掉的就不连）。
+     * R-07：把 MCP 配置的现状同步进工具表——新增的装上，被停用/删除的撤掉，改地址的重连。
+     * 同步语义（该撤谁）在 `McpToolSync.kt`，那边是纯函数、有行为断言；这里只负责读配置 +
+     * 起协程 + 记一条日志。异步且失败不抛：服务器挂了不能让 App 启动失败。
+     * 每台最多 [MCP_MAX_TOOLS_PER_SERVER] 个、总量 [MCP_MAX_TOOLS_TOTAL] 个（工具描述要进
+     * 系统提示）；只连 enabled 的服务器。调用时机：启动一次 + MCP 页增删改后回调一次；
+     * binder 内有互斥锁，重复调用幂等。
      */
-    private fun registerMcpTools() {
+    fun refreshMcpTools() {
         viewModelScope.launch(Dispatchers.IO) {
             try {
-            val servers = runCatching { mcpServerStore.load() }
-                .getOrDefault(emptyList())
-                .filter { it.enabled && it.url.isNotBlank() }
-            if (servers.isEmpty()) return@launch
-            var total = 0
-            for (server in servers) {
-                if (total >= MCP_MAX_TOOLS_TOTAL) break
-                val client = McpClient(server.url)
-                val init = client.initialize()
-                if (init.isFailure) {
-                    AgentLogger.w("MCP", "服务器「${server.name}」握手失败：${init.exceptionOrNull()?.message}")
-                    continue
+                val servers = runCatching { mcpServerStore.load() }.getOrDefault(emptyList())
+                val r = mcpBinder.sync(servers)
+                if (r.installed > 0 || r.revoked > 0 || r.failed.isNotEmpty()) {
+                    AgentLogger.i(
+                        "MCP",
+                        "工具同步：+${r.installed} -${r.revoked}，在用 ${r.total}，失败 ${r.failed.size}"
+                    )
                 }
-                val tools = client.listTools().getOrNull().orEmpty()
-                if (tools.isEmpty()) {
-                    AgentLogger.i("MCP", "服务器「${server.name}」未暴露工具")
-                    continue
-                }
-                var registered = 0
-                for (tool in tools.take(MCP_MAX_TOOLS_PER_SERVER)) {
-                    if (total >= MCP_MAX_TOOLS_TOTAL) break
-                    registry.register(McpToolAdapter(server.name, tool.name, client, tool))
-                    total++
-                    registered++
-                }
-                AgentLogger.i(
-                    "MCP",
-                    "服务器「${server.name}」已接入 $registered/${tools.size} 个工具（累计 $total）"
-                )
-            }
             } finally {
                 // 无论成功/失败/没配置，都要放行首条消息的等待
                 if (!mcpReady.isCompleted) mcpReady.complete(Unit)
@@ -1489,7 +1488,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
      * 取消运行句柄 → AgentLoop 每轮边界 ensureActive 退出 + 树尾闭合补结果。
      * 未在运行时调用为 no-op。
      */
-    fun stop() {
+    override fun stop() {
         if (!generation.cancel()) return
         AgentLogger.i("Chat", "用户请求停止运行")
         // W-14：挂起中的 ask_user 一并唤醒（否则协程被取消后 deferred 悬着，卡片不消失）
@@ -1509,7 +1508,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
      *
      * 运行中忽略（UI 禁用只是双保险）。持久化经 [ConversationStore.appendVariant]，杀进程后仍在。
      */
-    fun regenerate() {
+    override fun regenerate() {
         if (isRunning.value) return
         val rec = conversationStore.load(_activeConversationId.value) ?: return
         val turns = rec.turns
@@ -1580,7 +1579,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
      * 委托 [ConversationStore.selectVariant]（边界 clamp：首个左移/末个右移原地不动）；
      * 切换后重建 [_messages]，保证 UI 与「下一次请求的历史」都用选中变体。运行中忽略。
      */
-    fun switchVariant(turnIndex: Int, delta: Int) {
+    override fun switchVariant(turnIndex: Int, delta: Int) {
         if (isRunning.value) return
         conversationStore.selectVariant(_activeConversationId.value, turnIndex, delta)
         reloadActiveMessages()
@@ -1592,7 +1591,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
      * 先截断该轮**之后**的所有轮次（[ConversationStore.truncateAfter]，保留该轮），再把新问题
      * 填入输入框走 [send]（与正常发问同一路径，新开一轮）——轮次下标天然连续。运行中忽略。
      */
-    fun reaskFromTurn(turnIndex: Int, text: String) {
+    override fun reaskFromTurn(turnIndex: Int, text: String) {
         if (isRunning.value) return
         val t = text.trim()
         if (t.isBlank()) return
@@ -1612,7 +1611,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
      *
      * [turnIndex] = 0 表示清空全部轮次（保留会话壳，标题不动）。
      */
-    fun deleteFromTurn(turnIndex: Int) {
+    override fun deleteFromTurn(turnIndex: Int) {
         if (isRunning.value) return
         conversationStore.truncateAfter(_activeConversationId.value, turnIndex - 1)
         reloadActiveMessages()
@@ -1624,7 +1623,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
 
     /** 当前待用户确认的危险工具调用；非 null 时 UI 弹出审批 Dialog。 */
     private val _pendingApproval = MutableStateFlow<ApprovalRequest?>(null)
-    val pendingApproval: StateFlow<ApprovalRequest?> = _pendingApproval.asStateFlow()
+    override val pendingApproval: StateFlow<ApprovalRequest?> = _pendingApproval.asStateFlow()
 
     /** 本次会话内「始终允许」的工具名集合：仅存进程内存，App 重启即失效，避免长期授权漂移。 */
     private val sessionAllowed = mutableSetOf<String>()
@@ -1644,43 +1643,41 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
      * 已在本次会话「始终允许」过的工具直接放行，不再打扰用户。
      */
     private suspend fun requestApproval(tool: AgentTool, args: JsonObject): Boolean = approvalMutex.withLock {
-        // W-36：按「同类操作」放行，而不是按工具名。原来 ui_key 允许过，ui_tap 还要再问一遍，
-        // 弹窗文案却写着「不再询问同类操作」——真机上一次任务被迫点十几次。
-        val group = ApprovalGrouping.groupOf(tool.name)
-        if (group in sessionAllowed) return@withLock true
-        // W-8 P1-C：ui_screenshot 按回合自动缓存批准——本回合已批准过一次截图，
-        // 后续截图不再重复弹窗。
-        // 修前每次截图都弹：真机日志里模型「看一眼点一下」被对话框反复打断，体感「更久」。
-        // 回合边界在 send() 入口重置（screenshotApprovedThisTurn = false）。
-        if (group == ApprovalGrouping.GROUP_UI_SCREENSHOT && screenshotApprovedThisTurn) return@withLock true
+        // W-36/R-08：按「同类操作」放行而非工具名；shell 再看命令内容——不可逆命令永不记忆。
+        val grant = ApprovalScope.of(tool.name, args)
+        if (ApprovalScope.allows(grant, sessionAllowed)) return@withLock true
+        // W-8 P1-C：截图按回合缓存批准（真机日志里「看一眼点一下」被对话框反复打断）；
+        // 回合边界在 send() 入口重置 screenshotApprovedThisTurn。
+        if (grant.key == ApprovalGrouping.GROUP_UI_SCREENSHOT && screenshotApprovedThisTurn) return@withLock true
         val deferred = CompletableDeferred<Boolean>()
         _pendingApproval.value = ApprovalRequest(
             toolName = tool.name,
             argsPreview = args.toString().take(500),
             deferred = deferred,
-            groupLabel = ApprovalGrouping.labelOf(group)
+            grant = grant
         )
-        // finally 保证无论用户怎么关掉弹窗，pending 都会清空，不会残留卡住下一个工具
-        val ok = try { deferred.await() } finally { _pendingApproval.value = null }
-        if (ok && group == ApprovalGrouping.GROUP_UI_SCREENSHOT) screenshotApprovedThisTurn = true
+        // R-03：超时归 ViewModel（切页卸载弹窗后照样生效），不在 Composable 的倒计时里。
+        // finally 保证无论用户怎么关掉弹窗，pending 都会清空，不会残留卡住下一个工具。
+        val ok = try { awaitApprovalDecision(deferred) } finally { _pendingApproval.value = null }
+        if (ok && grant.key == ApprovalGrouping.GROUP_UI_SCREENSHOT) screenshotApprovedThisTurn = true
         AgentLogger.w("Approval", "${tool.name} ${if (ok) "允许" else "拒绝"}")
         ok
     }
 
     /** 用户选择「允许一次」：仅放行当前这一次调用。 */
-    fun approveOnce() {
+    override fun approveOnce() {
         _pendingApproval.value?.deferred?.complete(true)
     }
 
-    /** 用户选择「本次会话始终允许」：记入会话白名单后放行，后续同类调用不再弹窗。 */
-    fun approveAlways() {
+    /** 用户选择「本次会话始终允许」：记入会话白名单后放行；不可逆命令（R-08）只放行本次。 */
+    override fun approveAlways() {
         val pending = _pendingApproval.value ?: return
-        sessionAllowed += ApprovalGrouping.groupOf(pending.toolName)
+        if (pending.grant.memorizable) sessionAllowed += pending.grant.key
         pending.deferred.complete(true)
     }
 
     /** 用户选择「拒绝」：AgentLoop 会把「用户拒绝了该危险操作」作为工具结果回填。 */
-    fun denyApproval() {
+    override fun denyApproval() {
         _pendingApproval.value?.deferred?.complete(false)
     }
 
@@ -1709,15 +1706,12 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     private val keyPoolStore = KeyPoolStore(app)
     private val keyPoolRuntime = KeyPoolRuntime()
 
-    /** 备用 Key 的 UI 视图：只带脱敏后的 Key，**明文绝不进 UI 状态**。 */
-    data class BackupKeyUi(val id: String, val label: String, val masked: String)
-
     private val _backupKeys = MutableStateFlow<List<BackupKeyUi>>(emptyList())
-    val backupKeys: StateFlow<List<BackupKeyUi>> = _backupKeys.asStateFlow()
+    override val backupKeys: StateFlow<List<BackupKeyUi>> = _backupKeys.asStateFlow()
 
     /** Key 池状态一行摘要（几把可用 / 几把冷却 / 最早多久恢复）。 */
     private val _keyPoolSummary = MutableStateFlow("")
-    val keyPoolSummary: StateFlow<String> = _keyPoolSummary.asStateFlow()
+    override val keyPoolSummary: StateFlow<String> = _keyPoolSummary.asStateFlow()
 
     /** 把当前档案的备用 Key 灌进 ProviderManager（限流时自动切换）。 */
     private fun refreshKeyPool() {
@@ -1728,7 +1722,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     }
 
     /** 重新读取备用 Key 并刷新 UI 状态（设置页增删后调用）。 */
-    fun reloadBackupKeys() {
+    override fun reloadBackupKeys() {
         val profileId = configStore.loadActiveId() ?: "default"
         val slots = keyPoolStore.list(profileId)
         _backupKeys.value = slots.map {
@@ -1743,7 +1737,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     }
 
     /** 新增一把备用 Key（空白/已存在则忽略）。 */
-    fun addBackupKey(rawKey: String, label: String = "") {
+    override fun addBackupKey(rawKey: String, label: String) {
         val key = rawKey.trim()
         if (key.isBlank()) return
         val profileId = configStore.loadActiveId() ?: "default"
@@ -1751,7 +1745,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         reloadBackupKeys()
     }
 
-    fun removeBackupKey(id: String) {
+    override fun removeBackupKey(id: String) {
         val profileId = configStore.loadActiveId() ?: "default"
         keyPoolStore.remove(profileId, id)
         keyPoolRuntime.resetAll()
@@ -1817,20 +1811,6 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         refreshToolGroups()
     }
 
-    /**
-     * 设置页「工具范围」的一行。
-     *
-     * @param count 该组在**当前注册表**里的工具数（MCP 工具算进 misc）
-     * @param pinned 常驻组：不参与淘汰，UI 上不给关闭入口
-     */
-    data class ToolGroupRow(
-        val name: String,
-        val note: String,
-        val count: Int,
-        val active: Boolean,
-        val pinned: Boolean
-    )
-
     private val _toolGroupsUi = MutableStateFlow<List<ToolGroupRow>>(emptyList())
 
     /**
@@ -1839,7 +1819,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
      * 为什么是 StateFlow 而不是「进页面时算一次」：关掉一个组之后同屏的其它行要立刻
      * 重新排序/置灰，靠 `remember` 算一次会停在旧快照上，用户点第二下才发现已经关了。
      */
-    val toolGroupsUi: StateFlow<List<ToolGroupRow>> = _toolGroupsUi.asStateFlow()
+    override val toolGroupsUi: StateFlow<List<ToolGroupRow>> = _toolGroupsUi.asStateFlow()
 
     /**
      * 重算 [toolGroupsUi]。
@@ -1848,7 +1828,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
      * 不做成「响应式监听注册表」：MCP 工具是异步注册的，真要做到实时得给 registry 加
      * 观察者，而这块 UI 的用途只是「看一眼、关掉一个」，下一次进页面刷新足够。
      */
-    fun refreshToolGroups() {
+    override fun refreshToolGroups() {
         val counts = KernelExposure.groupsOf(registry.list()).toMap()
         val snapshot = synchronized(activeToolGroups) { activeToolGroups.toSet() }
         _toolGroupsUi.value = counts.entries
@@ -1885,7 +1865,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
      *
      * **不需要通知 loop**：组集合是同一个实例，下一轮 `plan()` 直接用新状态。
      */
-    fun dropToolGroup(group: String) {
+    override fun dropToolGroup(group: String) {
         if (KernelExposure.isPinned(group)) return
         // 与 agent 线程共用同一把锁（集合本身）：关组时那一轮可能正在 plan 里遍历它。
         val removed = synchronized(activeToolGroups) { activeToolGroups.remove(group) }
@@ -1905,7 +1885,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
      * 让这组排到 LRU 末尾（刚用过）。超上限时 [KernelExposure.enforceCap] 会挤掉最久未用的，
      * UI 下一帧就会看到那一行变灰——不需要额外弹窗解释。
      */
-    fun enableToolGroup(group: String) {
+    override fun enableToolGroup(group: String) {
         // 判存在要用 `in`，不能用 `!remove(...)`：
         // remove 返回 true 表示「原本就在、已经被我拿掉了」——依据它分支会把
         // 「不存在」当成「已在」，然后**一个组也加不进去**（设置页勾选框点了没反应）。
@@ -2006,7 +1986,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
      * 功能五（P1-5）：当前会话累计 token 用量（对所有助手气泡的 usage 求和）。
      * 切会话时随 [_messages] 重载自动切换；UI 在对话页顶部常驻显示。
      */
-    val sessionUsage: StateFlow<TokenUsage> = messages
+    override val sessionUsage: StateFlow<TokenUsage> = messages
         .map { items ->
             TokenUsage.sum(items.filterIsInstance<UiItem.Assistant>().mapNotNull { it.usage })
         }
@@ -2018,14 +1998,14 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
      * 驱动置位/清除；[send] / [regenerate] / [stop] 收尾处再兜底清空，杜绝残留。
      */
     private val _retryState = MutableStateFlow<RetryState?>(null)
-    val retryState: StateFlow<RetryState?> = _retryState.asStateFlow()
+    override val retryState: StateFlow<RetryState?> = _retryState.asStateFlow()
 
     /** 本轮回答因输出上限被截断（非 null 时 UI 显示提示条）。不落盘；每次开始生成时清空。 */
     private val _truncationNotice = MutableStateFlow<String?>(null)
-    val truncationNotice: StateFlow<String?> = _truncationNotice.asStateFlow()
+    override val truncationNotice: StateFlow<String?> = _truncationNotice.asStateFlow()
 
     /** 「知道了」→ 收起截断提示（下一条消息发出前不再打扰）。 */
-    fun dismissTruncationNotice() { _truncationNotice.value = null }
+    override fun dismissTruncationNotice() { _truncationNotice.value = null }
 
     /** 过程事件 → UI 实时更新（Hotfix2）。工具并行执行时多线程回调，读写列表加锁防丢更新。
      * hotfix30：_messages 是 active 会话的显示态——owner!=active（用户切到别的会话）
@@ -2053,14 +2033,14 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
                     images = ev.message.images,
                     running = false
                 )
-                // 命中执行中卡才替换并落终态（store 按 call.id 覆盖执行中占位）；
-                // 未命中说明这张卡没上屏（切走期间只落盘），终态交给 send() 的 history 兜底
-                if (projection.finishTool(ev.message.id, done)) appendToStore(done)
+                // R-06：显示态命中才替换；落库**无条件**（store 按 call.id upsert）。
+                // 旧写法把两件事绑在一个 if 上：切走后终态既不替换也不落库，占位永久留在文件里。
+                projection.finishTool(ev.message.id, done)
+                appendToStore(done)
                 // C2：推进运行态——记下「进行到第几步 + 做过哪些工具」。
-                // B 批只把 stepIndex 初始化成 0 就再没动过，导致中断提示永远显示
-                // 「第 0 步」、doneTools 永远为空——恢复信息形同虚设。这里补上。
+                // B 批只把 stepIndex 初始化成 0 就再没动过 → 中断提示永远「第 0 步」、doneTools 永远空。
                 advanceRunState(ev.message.name)
-                // idx < 0（理论上不该发生）：终态由 send() 的 history 兜底补上
+                // finishTool 返回 false（用户切走了）= 只落库不上屏；切回时从 store 重建
             }
 
             // Phase 2 DoD③：准备重试 → 置位「正在恢复」横幅（U 显示 n/N + 原因）
@@ -2090,7 +2070,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
      * 先过 [ConfigSanitizer] 清洗（剔除不可见字符/规范化 URL），再落盘 + 更新内存状态流，
      * 保证「保存即生效、重启不丢失」。
      */
-    fun updateConfig(cfg: ModelConfig) {
+    override fun updateConfig(cfg: ModelConfig) {
         val clean = ConfigSanitizer.sanitized(cfg)
         val id = _activeProfileId.value
         val updated = _profiles.value.map { if (it.id == id) it.copy(config = clean) else it }
@@ -2111,7 +2091,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
      *   （用户清空输入框时也走这条——绝不创建空白名档案）。
      * @return 新档案 id。
      */
-    fun addProfile(name: String? = null): String {
+    override fun addProfile(name: String?): String {
         // hotfix36：新建档案**不再继承当前供应商**——真机反馈「我创建新模型的时候，
         // 他自动变成那个 deepseek 了」（当时正在用 DeepSeek，新建档案就沿用了它，
         // 用户以为被锁死在 DeepSeek）。新建的语义是「从零配一家」，
@@ -2142,7 +2122,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
      * 切换生效档案（配置页切换条点击）。
      * 运行中切换对下一轮请求生效——[loop] 的 llmProvider lambda 每轮读 _config.value，天然支持。
      */
-    fun switchProfile(id: String) {
+    override fun switchProfile(id: String) {
         val target = _profiles.value.firstOrNull { it.id == id } ?: return
         _activeProfileId.value = id
         _config.value = target.config
@@ -2150,7 +2130,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     }
 
     /** 重命名档案（空名忽略，防用户清空文本框后按确定）。 */
-    fun renameProfile(id: String, name: String) {
+    override fun renameProfile(id: String, name: String) {
         val trimmed = name.trim()
         if (trimmed.isBlank()) return
         val updated = _profiles.value.map { if (it.id == id) it.copy(name = trimmed) else it }
@@ -2162,7 +2142,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
      * 删除档案；只剩 1 个时拒绝（至少保留一个，否则当前生效配置无处安放）。
      * 删的是当前生效档案则切换到剩下第一个。
      */
-    fun deleteProfile(id: String) {
+    override fun deleteProfile(id: String) {
         if (_profiles.value.size <= 1) return
         val updated = _profiles.value.filter { it.id != id }
         var activeId = _activeProfileId.value
@@ -2210,10 +2190,6 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
      * @param apiKey 输入框当前的 API Key（原始值）。
      * @param model 输入框当前的模型名（原始值）。
      */
-    /** 三参重载：兼容旧调用点（默认 openai 供应商）。 */
-    fun testConnection(baseUrl: String, apiKey: String, model: String) =
-        testConnection(baseUrl, apiKey, model, "openai")
-
     /**
      * 「测试连接」：用配置页当前输入框的值（先实时清洗）发起一次最小请求，
      * 把连通性结果写入 [_testResult] 供卡片渲染。网络 IO 全部走 Dispatchers.IO，不阻塞主线程。
@@ -2226,7 +2202,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
      * @param model 输入框当前的模型名（原始值）。
      * @param providerId 当前选中的供应商（"openai" / "claude" / "gemini"）。
      */
-    fun testConnection(baseUrl: String, apiKey: String, model: String, providerId: String) {
+    override fun testConnection(baseUrl: String, apiKey: String, model: String, providerId: String) {
         if (_testing.value) return
         _testing.value = true
         _testResult.value = null
@@ -2310,7 +2286,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
 
     /** 「选择模型」弹窗的模型 id 列表；emptyList = 未拉取或拉到空。 */
     private val _modelList = MutableStateFlow<List<String>>(emptyList())
-    val modelList: StateFlow<List<String>> = _modelList.asStateFlow()
+    override val modelList: StateFlow<List<String>> = _modelList.asStateFlow()
 
     /**
      * 功能五（P1-6）：收藏的模型名（对标 RikkaHub `favoriteModels`）。
@@ -2319,10 +2295,10 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
      * 不用每次在几十个列表项里翻。
      */
     private val _favoriteModels = MutableStateFlow(configStore.loadFavoriteModels())
-    val favoriteModels: StateFlow<List<String>> = _favoriteModels.asStateFlow()
+    override val favoriteModels: StateFlow<List<String>> = _favoriteModels.asStateFlow()
 
     /** 功能五（P1-6）：收藏 / 取消收藏（即时落盘，重启不丢）。 */
-    fun toggleFavoriteModel(name: String) {
+    override fun toggleFavoriteModel(name: String) {
         val cur = _favoriteModels.value
         val next = if (name in cur) cur - name else cur + name
         _favoriteModels.value = next
@@ -2331,11 +2307,11 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
 
     /** 是否正在拉取模型列表：UI 显示 loading，并作并发守卫（拉取中忽略重复触发）。 */
     private val _modelListLoading = MutableStateFlow(false)
-    val modelListLoading: StateFlow<Boolean> = _modelListLoading.asStateFlow()
+    override val modelListLoading: StateFlow<Boolean> = _modelListLoading.asStateFlow()
 
     /** 拉取失败文案（已脱敏后截断）；null = 无错误。 */
     private val _modelListError = MutableStateFlow<String?>(null)
-    val modelListError: StateFlow<String?> = _modelListError.asStateFlow()
+    override val modelListError: StateFlow<String?> = _modelListError.asStateFlow()
 
     /** 拉取任务句柄：重试 / 关闭时先 cancel 旧 job，避免旧结果覆盖新结果。 */
     private var modelListJob: Job? = null
@@ -2348,7 +2324,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
      * @param apiKey 输入框当前的 API Key（原始值）。
      * @param providerId 当前选中的供应商（"openai" / "claude" / "gemini" / "local-llama"）。
      */
-    fun fetchModelList(baseUrl: String, apiKey: String, providerId: String) {
+    override fun fetchModelList(baseUrl: String, apiKey: String, providerId: String) {
         // 并发守卫：正在拉取时直接忽略重复点击（与 _testing 同一思路）
         if (_modelListLoading.value) return
         // 本地模型不做网络拉取：请在「本地模型」页签的状态卡中选择
@@ -2390,7 +2366,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     }
 
     /** 清空模型列表三状态（弹窗关闭时调用：cancel 在途任务 + 三态归零，下次打开重新拉）。 */
-    fun clearModelList() {
+    override fun clearModelList() {
         modelListJob?.cancel()
         modelListJob = null
         _modelList.value = emptyList()
@@ -2401,43 +2377,43 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     // —— L8 运行日志（日记）：出错可定位 ——
 
     /** 拉取最近 200 条日志文本（最新的在前）刷新 UI。 */
-    fun refreshLogs() {
+    override fun refreshLogs() {
         _logs.value = AgentLogger.recent(200).map { it.format() }
     }
 
     /** 清空日志（内存缓冲 + 当日文件），随后刷新列表。 */
-    fun clearLogs() {
+    override fun clearLogs() {
         AgentLogger.clear()
         refreshLogs()
     }
 
     /** 导出日志全文，供用户复制到剪贴板排查问题。 */
-    fun exportLogs(): String = AgentLogger.snapshotText(500)
+    override fun exportLogs(): String = AgentLogger.snapshotText(500)
 
     /** 当前日志文件绝对路径（卡片底部展示，方便 adb pull）。 */
-    fun logFilePath(): String = AgentLogger.currentLogFile()?.absolutePath ?: "（日志文件未就绪）"
+    override fun logFilePath(): String = AgentLogger.currentLogFile()?.absolutePath ?: "（日志文件未就绪）"
 
     // —— L9 记忆库：跨会话记忆 ——
 
     /** 刷新记忆列表（最近 50 条，按更新时间倒序）。 */
-    fun refreshMemories() {
+    override fun refreshMemories() {
         _memories.value = memoryStore.list(50)
     }
 
     /** 手动新增一条记忆（UI 直接录入，默认 note / 重要度 5）。 */
-    fun addMemory(content: String, kind: String, tags: List<String>) {
+    override fun addMemory(content: String, kind: String, tags: List<String>) {
         if (content.isBlank()) return
         memoryStore.add(content.trim(), kind, tags, 5)
         refreshMemories()
     }
 
     /** 关键词检索记忆；结果直接替换列表，便于查看命中情况。 */
-    fun searchMemory(query: String) {
+    override fun searchMemory(query: String) {
         _memories.value = if (query.isBlank()) memoryStore.list(50) else memoryStore.search(query.trim(), 20)
     }
 
     /** 遗忘指定记忆并重刷新列表。 */
-    fun forgetMemory(id: String) {
+    override fun forgetMemory(id: String) {
         memoryStore.forget(id)
         refreshMemories()
     }
@@ -2447,14 +2423,14 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
      * 空白内容 / 目标不存在时 store 返回 false——UI 据此保持对话框不关，
      * 并给一句提示；成功则刷新列表（updatedAt 刷新会把它顶到最前）。
      */
-    fun updateMemory(id: String, content: String, salience: Int, tags: List<String>): Boolean {
+    override fun updateMemory(id: String, content: String, salience: Int, tags: List<String>): Boolean {
         val ok = memoryStore.update(id, content, salience, tags)
         if (ok) refreshMemories()
         return ok
     }
 
     /** 清空全部记忆（UI 需二次确认）并重刷新列表。 */
-    fun clearMemory() {
+    override fun clearMemory() {
         memoryStore.clear()
         refreshMemories()
     }
@@ -2469,7 +2445,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
      * 完成后统一落到这里，发送时一次性带走。UI 只读这个流渲染缩略图，不碰编码细节。
      */
     private val _pendingImages = MutableStateFlow<List<String>>(emptyList())
-    val pendingImages: StateFlow<List<String>> = _pendingImages.asStateFlow()
+    override val pendingImages: StateFlow<List<String>> = _pendingImages.asStateFlow()
 
     /**
      * 功能四（P0-2）：把相册选中的图片读成 data URL 挂到待发列表。
@@ -2477,7 +2453,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
      * 压缩到长边 ≤ [MAX_EDGE]、JPEG 质量 80——1080×2214 原始截图 base64 约好几 MB，
      * 直接塞进请求会超上下文且慢。失败（权限撤销/文件被删）返回 false，由调用方提示。
      */
-    suspend fun attachImageFromUri(uri: Uri): Boolean = withContext(Dispatchers.IO) {
+    override suspend fun attachImageFromUri(uri: Uri): Boolean = withContext(Dispatchers.IO) {
         runCatching {
             val bitmap = app.contentResolver.openInputStream(uri)?.use { stream ->
                 BitmapFactory.decodeStream(stream)
@@ -2537,7 +2513,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     }
 
     /** 功能四（P0-2）：移除待发图片。 */
-    fun removePendingImage(url: String) {
+    override fun removePendingImage(url: String) {
         _pendingImages.value = _pendingImages.value.filter { it != url }
     }
 
@@ -2552,10 +2528,10 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
      * 用户点了「＋」却什么都没发生是最差的反馈。
      */
     private val _pendingFiles = MutableStateFlow<List<PendingFile>>(emptyList())
-    val pendingFiles: StateFlow<List<PendingFile>> = _pendingFiles.asStateFlow()
+    override val pendingFiles: StateFlow<List<PendingFile>> = _pendingFiles.asStateFlow()
 
     /** 功能五（P1-4）：读取文件并按其类型挂到待发清单；返回精确结果供 UI 反馈。 */
-    suspend fun attachFileFromUri(uri: Uri): FileAttachResult = withContext(Dispatchers.IO) {
+    override suspend fun attachFileFromUri(uri: Uri): FileAttachResult = withContext(Dispatchers.IO) {
         runCatching {
             val name = queryDisplayName(uri) ?: "未命名文件"
             val ext = name.substringAfterLast('.', "").lowercase()
@@ -2603,7 +2579,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     }
 
     /** 功能五（P1-4）：移除待发文件。 */
-    fun removePendingFile(name: String) {
+    override fun removePendingFile(name: String) {
         _pendingFiles.value = _pendingFiles.value.filterNot { it.name == name }
     }
 
@@ -2725,7 +2701,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun send() {
+    override fun send() {
         val text = input.value.trim()
         if (text.isBlank() || isRunning.value) return
         // W-8 P1-C：新回合重置截图批准缓存——上个回合批准过不算数，本回合首次截图仍询问
@@ -2949,6 +2925,13 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
                         return@onFailure
                     }
                     AgentLogger.e("Chat", "运行失败", it)
+                    // R-09：已生成的部分不能丢——重试被放弃时，它可能就是用户等的全部内容。
+                    // 修前只有「用户点停止」这条路会抢救草稿，网络失败这条路直接连残稿一起丢。
+                    partialDraft?.trim()?.takeIf { p -> p.isNotBlank() }?.let { p ->
+                        val kept = UiItem.Assistant(p, timeMs = System.currentTimeMillis())
+                        if (isOwnerActive()) appendUiItem(kept)
+                        appendToStore(kept)
+                    }
                     // 气泡面向用户：技术异常在此映射成可读文案（完整堆栈已在日志里落盘）
                     val errItem = UiItem.Assistant(friendlyMessage(it), timeMs = System.currentTimeMillis())
                     if (isOwnerActive()) appendUiItem(errItem)
@@ -2973,9 +2956,9 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
                     }
                     refreshMemories()
                 }
-                // W-93：标题生成挪到这里。此刻主回答已经落库、引擎空闲，
-                // 它会直接复用已加载的实例、只补算十几个 token，不到 1 秒。
-                maybeGenerateTitle(_activeConversationId.value, text)
+                // W-93：主回答已落库、引擎空闲，只补算十几 token。
+                // R-02：传 owner（发起会话）；读当前会话会在用户切走后把标题写错对象。
+                maybeGenerateTitle(owner, text)
             } finally {
                 // 本层 finally 只做「本轮专属」的收尾（前台服务、运行态落盘）；
                 // 运行态复位与消息重建由控制器的 finally 统一做（取消路径同样覆盖）
@@ -3096,7 +3079,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
      * 会话不存在或为空返回空串——调用方（UI）据此不弹分享面板。
      * 纯读不改状态：导出是只读动作，不碰 updatedAt、不触发落盘。
      */
-    fun conversationMarkdown(convId: String): String {
+    override fun conversationMarkdown(convId: String): String {
         val rec = conversationStore.load(convId) ?: return ""
         if (rec.messages.isEmpty()) return ""
         return conversationToMarkdown(rec)
@@ -3111,24 +3094,24 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     private val promptStore = PromptStore(File(app.filesDir, "prompts.json"))
 
     private val _prompts = MutableStateFlow(promptStore.list())
-    val prompts: StateFlow<List<PromptItem>> = _prompts.asStateFlow()
+    override val prompts: StateFlow<List<PromptItem>> = _prompts.asStateFlow()
 
     /** 新建/更新自定义提示词（内置会被拒收，UI 展示 [PromptUpsertResult.Rejected.reason]）。 */
-    fun savePrompt(draft: PromptItem): PromptUpsertResult {
+    override fun savePrompt(draft: PromptItem): PromptUpsertResult {
         val result = promptStore.save(draft)
         if (result is PromptUpsertResult.Ok) _prompts.value = result.items
         return result
     }
 
     /** 删除提示词（内置受保护）。 */
-    fun deletePrompt(id: String): PromptDeleteResult {
+    override fun deletePrompt(id: String): PromptDeleteResult {
         val result = promptStore.delete(id)
         if (result is PromptDeleteResult.Ok) _prompts.value = result.items
         return result
     }
 
     /** 「另存为自定义」：返回新 id（UI 随即切入该条编辑态）；源不存在返 null。 */
-    fun duplicatePromptAsCustom(id: String): String? {
+    override fun duplicatePromptAsCustom(id: String): String? {
         val newId = promptStore.duplicateAsCustom(id) ?: return null
         _prompts.value = promptStore.list()
         return newId
@@ -3140,7 +3123,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
      * 追加而非覆盖：输入框已有内容时换行续写——用户经常是「写了一半思路，
      * 选个提示词补个尾巴」；覆盖会静默毁掉他已打的字。空框则直接填入。
      */
-    fun insertPromptIntoInput(content: String) {
+    override fun insertPromptIntoInput(content: String) {
         val current = input.value
         input.value = if (current.isBlank()) content else "$current\n$content"
     }
@@ -3163,16 +3146,16 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         onRestored = ::onBackupRestored,
     )
 
-    val backupState: StateFlow<BackupUiState> = backup.state
+    override val backupState: StateFlow<BackupUiState> = backup.state
 
     /** 复位一次性状态（UI 消费完 Done/Failed 后调用）。 */
-    fun consumeBackupState() = backup.consume()
+    override fun consumeBackupState() = backup.consume()
 
     /** 导出全局备份到用户选定的 SAF 位置（见 [BackupUseCase.exportTo]）。 */
-    fun exportBackupTo(uri: Uri) = backup.exportTo(uri)
+    override fun exportBackupTo(uri: Uri) = backup.exportTo(uri)
 
     /** 从备份文件恢复（破坏性，调用方须先二次确认；见 [BackupUseCase.restoreFrom]）。 */
-    fun restoreBackupFrom(uri: Uri) = backup.restoreFrom(uri)
+    override fun restoreBackupFrom(uri: Uri) = backup.restoreFrom(uri)
 
     /** 恢复完成后的 UI 重载：会话列表 / 当前会话 / 记忆 / 档案流 / 提示词。 */
     private fun onBackupRestored(items: List<PromptItem>) {
@@ -3219,7 +3202,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
      * 发消息会被 send() 的 isRunning 守卫拒（无并行发送），「能进不能发」比
      * 「不能进」更割裂；并行发送（运行句柄变多）风险大，不在本 hotfix 范围。
      */
-    fun newConversation() {
+    override fun newConversation() {
         if (isRunning.value) return
         // W-102：新会话 = 新任务。上一个任务开过的组（ui / shell / memory…）如果继续
         // 挂着，就是「不需要它的时候它还在每轮付钱」——正是这轮改造要消掉的东西。
@@ -3252,7 +3235,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
      * 一律禁删——删了 store 记录，在途收尾的 appendToStore 会把消息写回已删 id
      * （ConversationStore 按需重建记录），「删掉的会话复活」成脏数据。UI 同步禁用并 Toast。
      */
-    fun deleteConversation(id: String) {
+    override fun deleteConversation(id: String) {
         if (id == generation.owner) return
         if (id == _activeConversationId.value && isRunning.value) return
         conversationStore.delete(id)
@@ -3270,7 +3253,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
      * 不需要 isRunning 守卫：只改标题、不切 activeConversationId、不动 _messages，
      * 在途事件仍按原 id 正常落盘（rename 同步更新该会话的 title 字段，无写串风险）。
      */
-    fun renameConversation(id: String, title: String) {
+    override fun renameConversation(id: String, title: String) {
         conversationStore.rename(id, title)
         refreshConversations()
     }
@@ -3281,7 +3264,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
      * 与 rename 一样不需要 isRunning 守卫：只改排序键，不切 activeConversationId、
      * 不动 _messages，在途事件仍按原 id 落盘。
      */
-    fun setConversationPinned(id: String, pinned: Boolean) {
+    override fun setConversationPinned(id: String, pinned: Boolean) {
         conversationStore.setPinned(id, pinned)
         refreshConversations()
     }
@@ -3296,7 +3279,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
      *
      * 合并规则：同 id 以**先出现的源**为准（源顺序 = 用户添加顺序），避免后加的源悄悄覆盖。
      */
-    fun refreshMarket() {
+    override fun refreshMarket() {
         if (_marketLoading.value) {
             marketRefreshPending = true
             return
@@ -3381,7 +3364,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
      * @return true = 已添加并开始刷新；false = 地址非法或重复（原因写进 [marketStatus]）。
      *   返回值用于 UI 决定「输入框要不要清空」——失败还清空，用户得重打一遍。
      */
-    fun addMarketSource(raw: String): Boolean {
+    override fun addMarketSource(raw: String): Boolean {
         if (MarketRules.validHttpUrl(raw) == null) {
             _marketStatus.value = "地址无效：只支持 http/https，且必须带主机名"
             return false
@@ -3396,7 +3379,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     }
 
     /** 删除市场源（同时把它的条目从当前列表里移除，不等下次刷新）。 */
-    fun removeMarketSource(url: String) {
+    override fun removeMarketSource(url: String) {
         if (!marketStore.removeSource(url)) return
         _marketSources.value = marketStore.loadSources()
         val remaining = _marketSources.value.map { it.url }.toSet()
@@ -3416,7 +3399,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
      * 复用 `SkillImportRepository.installZip`：解压、Zip Slip 防护、id 白名单、失败回滚、
      * **重新导入即撤销旧授权** 全部沿用既有实现——市场只负责「取包 + 校验 + 交给它」。
      */
-    fun installMarketPlugin(id: String) {
+    override fun installMarketPlugin(id: String) {
         if (_marketBusyId.value != null) return
         val item = _marketItems.value.firstOrNull { it.plugin.id == id } ?: return
         viewModelScope.launch {
@@ -3455,7 +3438,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     }
 
     /** 卸载一个已装插件（只删本地目录，市场列表保留该条目）。 */
-    fun uninstallMarketPlugin(id: String) {
+    override fun uninstallMarketPlugin(id: String) {
         if (_marketBusyId.value != null) return
         val item = _marketItems.value.firstOrNull { it.plugin.id == id } ?: return
         viewModelScope.launch {
@@ -3486,7 +3469,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     // —— L7 技能导入 / 卸载 / 授权 ——
 
     /** 从 URL 下载 zip 并导入；网络 IO 放 Dispatchers.IO。 */
-    fun importFromUrl(url: String) {
+    override fun importFromUrl(url: String) {
         viewModelScope.launch {
             val result = runCatching {
                 val bytes = withContext(Dispatchers.IO) {
@@ -3507,7 +3490,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     }
 
     /** 载入内置示例技能（无网络演示）。 */
-    fun importDemo() {
+    override fun importDemo() {
         viewModelScope.launch {
             val result = runCatching {
                 importRepo.installZip(ImportedSkillRepository.demoZipBytes()).getOrThrow()
@@ -3540,7 +3523,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
      * 从 SAF 选择的 Uri 导入 zip：文件读取放 Dispatchers.IO，绝不在主线程读字节。
      * @param uri 来自 ActivityResultContracts.GetContent() 的内容 Uri。
      */
-    fun importFromUri(uri: Uri) {
+    override fun importFromUri(uri: Uri) {
         viewModelScope.launch {
             val result = runCatching {
                 val bytes = withContext(Dispatchers.IO) {
@@ -3559,7 +3542,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     }
 
     /** 卸载指定技能（仅导入来源）；失败时给出明确提示，不谎报成功。 */
-    fun uninstallSkill(id: String) {
+    override fun uninstallSkill(id: String) {
         viewModelScope.launch {
             val ok = importRepo.uninstall(id)
             if (!ok) {
@@ -3575,7 +3558,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
      * 设置某技能的脚本授权（allow=true → 运行时 packaged，false → imported）。
      * 授权状态由仓库落 SharedPreferences，不再改写 skill.json。
      */
-    fun setScriptAuthorization(id: String, allow: Boolean) {
+    override fun setScriptAuthorization(id: String, allow: Boolean) {
         viewModelScope.launch {
             val ok = importRepo.setScriptAuthorization(id, allow)
             if (!ok) {
@@ -3646,14 +3629,14 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     // —— W-30：消息收藏 ——
 
     /** 当前会话里这条内容是否已收藏（长按菜单据此显示「收藏」或「取消收藏」）。 */
-    fun isBookmarked(role: String, text: String): Boolean =
+    override fun isBookmarked(role: String, text: String): Boolean =
         bookmarkStore.contains(_activeConversationId.value, role, text)
 
     /**
      * 收藏 / 取消收藏一条消息；返回操作后是否处于「已收藏」。
      * 会话标题一并快照，收藏页在会话被删后仍能看出它来自哪里。
      */
-    fun toggleBookmark(role: String, text: String, timeMs: Long): Boolean {
+    override fun toggleBookmark(role: String, text: String, timeMs: Long): Boolean {
         val convId = _activeConversationId.value
         val existed = bookmarkStore.contains(convId, role, text)
         if (existed) {
@@ -3667,12 +3650,12 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         return !existed
     }
 
-    fun removeBookmark(id: String) {
+    override fun removeBookmark(id: String) {
         bookmarkStore.remove(id)
         _bookmarks.value = bookmarkStore.list()
     }
 
-    fun clearBookmarks() {
+    override fun clearBookmarks() {
         bookmarkStore.clear()
         _bookmarks.value = emptyList()
         AgentLogger.i("Chat", "已清空收藏")
@@ -3688,7 +3671,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
      *  2. 走**任务模型**（便宜），失败把原因写进状态而不是静默——用户点了就该有反馈；
      *  3. 结果按消息下标缓存在内存，不落盘（译文是临时视图，不是会话内容）。
      */
-    fun translateMessage(index: Int, text: String, target: String = "中文") {
+    override fun translateMessage(index: Int, text: String, target: String) {
         if (text.isBlank()) return
         if (_translations.value.containsKey(index)) return
         if (_translatingIndex.value != null) return
@@ -3717,12 +3700,12 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     }
 
     /** 收起某条消息的翻译（UI 上的「收起」）。 */
-    fun clearTranslation(index: Int) {
+    override fun clearTranslation(index: Int) {
         _translations.value = _translations.value - index
     }
 
     /** W-28：工作区文件路径列表（供 @ 提及建议；只列文本类文件）。 */
-    fun workspacePaths(): List<String> =
+    override fun workspacePaths(): List<String> =
         runCatching {
             WorkspaceStore.listTree(app).asSequence()
                 .filter { !it.isDir }
@@ -3852,10 +3835,8 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
      */
     private suspend fun downloadSkillZip(url: String): Result<ByteArray> = withContext(Dispatchers.IO) {
         runCatching {
-            val client = OkHttpClient.Builder()
-                .connectTimeout(10, TimeUnit.SECONDS)
-                .readTimeout(20, TimeUnit.SECONDS)
-                .build()
+            // R-13：技能包下载并入共享预设（原 10/20s，short 为 10/30s，只放宽）
+            val client = LlmHttp.short
             val request = Request.Builder()
                 .url(url)
                 .header("User-Agent", "AgentKit")

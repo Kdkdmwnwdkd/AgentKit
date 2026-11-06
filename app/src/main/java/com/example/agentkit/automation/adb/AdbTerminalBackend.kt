@@ -1,5 +1,6 @@
 package com.example.agentkit.automation.adb
 
+import com.example.agentkit.core.AppScope
 import com.example.agentkit.core.AgentLogger
 import com.example.agentkit.core.terminal.backend.TerminalBackend
 import com.example.agentkit.core.terminal.backend.TerminalBackendProvider
@@ -47,7 +48,13 @@ import java.net.SocketTimeoutException
  */
 internal class AdbTerminalBackend : TerminalBackend {
 
-    override val identity: TerminalIdentity = TerminalIdentity.User
+    /**
+     * R-12：无线调试 shell 是 **uid 2000**（adbd 起的 shell），不是 App 身份。
+     *
+     * 修前这里写 `User`，于是 uid 2000 的会话在回执里报成「身份 user」，
+     * 权限不足的提示也就按 user 档出主意（劝模型去换通道，而它已经是 uid 2000 了）。
+     */
+    override val identity: TerminalIdentity = TerminalIdentity.Shizuku
 
     override val backendKey: String = TerminalBackend.KEY_ADB
 
@@ -55,7 +62,7 @@ internal class AdbTerminalBackend : TerminalBackend {
 
     override val output: Flow<String> = channel.receiveAsFlow()
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val scope = CoroutineScope(SupervisorJob() + AppScope.io)
     private val exit = CompletableDeferred<Int>()
 
     private var client: AdbClient? = null
@@ -177,7 +184,8 @@ internal class AdbTerminalBackend : TerminalBackend {
  */
 internal class AdbBackendProvider : TerminalBackendProvider {
 
-    override val identity: TerminalIdentity = TerminalIdentity.User
+    /** 与 [AdbTerminalBackend.identity] 必须同值：工厂用它筛候选，两边不一致会出现「能造但不该选」。 */
+    override val identity: TerminalIdentity = TerminalIdentity.Shizuku
 
     override val backendKey: String = TerminalBackend.KEY_ADB
 

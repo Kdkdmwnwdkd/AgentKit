@@ -30,10 +30,7 @@ object BalanceService {
         providerId: String,
         baseUrl: String,
         apiKey: String,
-        client: OkHttpClient = OkHttpClient.Builder()
-            .connectTimeout(8, TimeUnit.SECONDS)
-            .readTimeout(10, TimeUnit.SECONDS)
-            .build()
+        client: OkHttpClient = LlmHttp.short
     ): Result<String> {
         val spec = BalanceParsing.endpointOf(providerId) ?: return Result.failure(
             UnsupportedOperationException("该服务商未提供余额接口，请到官网控制台查看")

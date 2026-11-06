@@ -6,13 +6,15 @@
 # 一个新引入的失效 harness 只要往 known-broken.txt 里加一行，就能长期悄悄挂在 CI 上。
 # 本脚本把这类「沉淀」变成**当场报红**。
 #
-# 门禁五条（任一不满足即失败）：
+# 门禁六条（任一不满足即失败）：
 #   1. known-broken.txt 里不能有非注释条目 —— 清单必须归零
 #   2. QA 汇总里 FAIL 必须为 0
 #   3. 日志里不能出现 XPASS —— 出现说明清单该更新了（脚本已修好却仍被当失效项）
 #   4. harness 覆盖完整性 —— 每个 *Verification.kt 都必须被某个 run-*.sh 引用，
 #      且 run-*.sh 的数量必须与日志里实际跑过的数量一致（防止"写了 harness 但没人跑"）
 #   5. PASS 数不得低于基线 —— 防止「环境一变全 SKIP」被当成全绿（那是另一种假绿）
+#   6. 每个 SKIP 都必须登记在 skip-allowlist.txt，且条目数只减不增 —— 门禁 5 只看
+#      总数，挡不住「新增一个永远 SKIP 的 runner」（PASS 不变，谁也看不出来）
 #
 # 用法：
 #   bash scripts/qa/gate.sh [qa日志路径]
@@ -137,8 +139,16 @@ else
     fail "基线文件缺失（$BASELINE）——门禁 5 无法判定"
   else
     base=$(awk '!/^[[:space:]]*(#|$)/ {print $1; exit}' "$BASELINE")
+    sk=$(printf '%s' "$summary" | sed -n 's/.*SKIP=\([0-9]\+\).*/\1/p')
     if [ -z "$p" ]; then
       fail "无法从汇总行解析 PASS 数，门禁 5 判不了"
+    elif [ "${sk:-0}" -gt 0 ]; then
+      # R-17：门禁 5 的前提是「所有 runner 都真跑了」（SKIP=0）。有 SKIP 时这个前提
+      # 不成立——本机 PASS=64、CI 齐备时 106，两者谁高谁低只反映环境，不反映覆盖度。
+      # 在这里硬比基线只会让门禁长期红，而长期红等于没有门禁。
+      # 有 SKIP 时改由门禁 6 逐条核对：谁没跑、缺件是否真的缺（run-all 已 stat 过）、
+      # 登记册有没有变长。那三把尺子比一个总数精确得多。
+      say "GATE SKIP 5/6：本轮 SKIP=$sk（PASS=$p），PASS 下限不可比 —— 由门禁 6 逐条核对"
     elif [ "$p" -lt "${base:-0}" ]; then
       fail "PASS=$p 低于基线 $base —— 有 harness 没真跑（断言变少不等于变绿）："
       nskip=$(grep -cE '^SKIP ' "$LOG" || true)
@@ -151,6 +161,71 @@ else
     else
       say "GATE OK 5/5：PASS=$p 与基线一致"
     fi
+  fi
+
+  # ------------------------------------------------------------ 门禁 6
+  #
+  # R-17：SKIP 是本项目唯一「什么都不验证也算过」的状态。
+  #
+  # 门禁 5 用 PASS 下限挡「大面积 SKIP」，但挡不住**新增**：新加一个 runner，
+  # 第一行就 `exit 3`，PASS 总数不变、门禁 5 照样绿——而这个 harness 从诞生那天起
+  # 就是零覆盖。下限只比总数，看不出「谁在名单里」。
+  #
+  # 三种收口：
+  #   ① 日志里每个 SKIP 都必须在登记册里——把「悄悄零覆盖」变成「有人签字承认」，
+  #      并且必须写清缺什么、哪个环境能满足（run-all 已核验路径真实性，见其
+  #      skip_claim_is_true）；
+  #   ② 条目数只减不增——否则「加一行」就是新的沉淀路径，和 known-broken 一个下场；
+  #   ③ 登记的名字必须真实存在——删了 runner 忘删条目，登记册会慢慢变成谎言。
+  SKIP_FILE="scripts/qa/skip-allowlist.txt"
+  if [ ! -f "$SKIP_FILE" ]; then
+    fail "skip-allowlist.txt 不存在（$SKIP_FILE）——门禁 6 无法判定"
+  else
+    # 取名字要连中文括号一起切掉：run-all 对 apk 那条打印的是
+    # `SKIP  run-apk-verification.sh（未传 APK 路径…）`，直接取第二列会带上「（未传」。
+    logged_skip=$(grep -E '^SKIP[[:space:]]' "$LOG" | awk '{print $2}' \
+      | sed 's/[（(].*//' | sed 's#.*/##' | sort -u)
+    reg_skip=$(awk '!/^[[:space:]]*(#|$)/ {print $1}' "$SKIP_FILE" | sed 's#.*/##' | sort -u)
+    as_lines() { [ -n "$1" ] && printf '%s\n' "$1"; }
+
+    g6_ok=1
+    unreg=$(comm -23 <(as_lines "$logged_skip") <(as_lines "$reg_skip"))
+    if [ -n "$unreg" ]; then
+      g6_ok=0
+      fail "以下 runner 本轮 SKIP，但没有在 skip-allowlist.txt 登记（零覆盖不能默认合法）："
+      printf '%s\n' "$unreg" | sed 's/^/    - /' >&2
+      say "  要么让它真跑起来，要么在登记册里写清「缺什么、哪个环境能满足」。"
+      say "  注意条目的缺件路径必须真实存在缺失——run-all 会 stat 它，不成立就判 FAIL。"
+    fi
+
+    zombies=""
+    for r in $reg_skip; do
+      [ -f "scripts/qa/$r" ] || zombies="$zombies $r"
+    done
+    if [ -n "$zombies" ]; then
+      g6_ok=0
+      fail "登记册里有已不存在的 runner（删脚本时忘了删条目）："
+      for r in $zombies; do echo "    - $r" >&2; done
+    fi
+
+    nreg=$(printf '%s\n' "$reg_skip" | grep -c . || true)
+    cap=$(sed -n 's/^#[[:space:]]*条目上限[：:][[:space:]]*\([0-9][0-9]*\).*/\1/p' "$SKIP_FILE" | head -1)
+    if [ -z "$cap" ]; then
+      fail "skip-allowlist.txt 缺少「# 条目上限：N」行——门禁 6 判不了增减"
+    elif [ "${nreg:-0}" -gt "$cap" ]; then
+      g6_ok=0
+      fail "SKIP 登记册有 $nreg 条，超过上限 $cap —— 新增 harness 不该靠 SKIP 过门禁"
+      say "  先让它能在本机真跑（多为补上 kotlinc 或 AGP 产物路径）；"
+      say "  确实只能 SKIP，再改 $SKIP_FILE 里的上限数字并写清理由。"
+    fi
+    # 只在三条都过时才敢说「全部登记在册」——上一版把 say 放在 else 分支里，
+    # 结果是「GATE FAIL: 有 runner 未登记」下面紧跟「GATE OK 6/6」，自相矛盾。
+    [ "$g6_ok" -eq 1 ] && say "GATE OK 6/6：SKIP 全部登记在册（$nreg/$cap 条，只减不增）"
+
+    # 不失败，只提示：环境补齐后登记册该瘦回来，否则它会变成「永久豁免清单」。
+    revived=$((nreg - $(printf '%s\n' "$logged_skip" | grep -c . || true)))
+    [ "${revived:-0}" -gt 0 ] && \
+      say "  提示：$revived 条登记项本轮没有 SKIP（环境已满足？可考虑从登记册移除）。"
   fi
 fi
 

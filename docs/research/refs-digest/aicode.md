@@ -441,7 +441,7 @@ SkillParser.kt:11-12   SKILL_FILE = "SKILL.md"，CLAUDE_FILE = "CLAUDE.md"
       真正正文按需用 loadSkill 加载（省 token）
 ```
 
-> **AgentKit 照搬度极高**：已有 `skill/`（SkillExecutor / SkillProtocol / SkillSecurity / SkillImportRepository）+ `assets/skills/{weather,wordcount}`。缺的就是：① 双来源（全局/项目）② **清单-正文分离**（我们现在大概是把正文全塞进 system）③ `required_tools` 声明。
+> **AgentKit 已有对应结构**：已有 `skill/`（SkillExecutor / SkillProtocol / SkillSecurity / SkillImportRepository）+ `assets/skills/{weather,wordcount}`。缺的就是：① 双来源（全局/项目）② **清单-正文分离**（我们现在大概是把正文全塞进 system）③ `required_tools` 声明。
 
 #### 3.2.4 工具如何暴露给模型
 
@@ -641,7 +641,7 @@ GIT_CONFIG_GLOBAL    = /root/.aicode/.gitconfig
 | `extractProvisionScript` | `:172` | `~/.aicode/provision.sh` | 每次覆盖 + 可执行位 |
 | `extractEnvTool` | `:195` | `~/.aicode/{bin,lib}` | 每次覆盖 |
 
-> **覆盖策略的差异是有意的**：提示词/文档要跟随版本更新（覆盖），用户可编辑的（agents/scripts）保护一次（不覆盖）。这个「三层策略」值得直接照抄。
+> **覆盖策略的差异是有意的**：提示词/文档要跟随版本更新（覆盖），用户可编辑的（agents/scripts）保护一次（不覆盖）。这个「三层策略」值得直接采纳。
 
 #### 3.4.5 `git-credential-aicode`：文件 IPC 回源 App
 
@@ -755,21 +755,21 @@ GIT_CONFIG_GLOBAL    = /root/.aicode/.gitconfig
 | A5 | **双层并发保护**：`WorkspaceFileLock`（路径互斥）+ `FileVersionRegistry`（写前内容指纹比对，不一致返 `STALE_FILE`）。**校验在锁内、以锁内重读为准**（`EditFileTool.kt:60-70`） | 无 | 净室写 `core/workspace/FileVersionRegistry.kt`（`ConcurrentHashMap<path, sha256>`）+ `WorkspaceFileLock.kt`（`ConcurrentHashMap<path, Mutex>`）。**关键**：`read_file` 必须登记指纹，这是拿到保护的前提；错误码 `STALE_FILE`，错误消息明确告诉模型「先重新 read_file」 | 零依赖 | **P0** |
 | A6 | **Checkpoint 懒快照**：只快照将被修改的文件、只留最原始一次、按 sessionId 隔离；回滚返回 `skipped` 清单（`CheckpointManager.kt:42-96`） | `CheckpointStore.kt` 整目录 `copyRecursively` | 改造为：**在 `write_file`/`edit_file` 执行前调 `CheckpointStore.snapshotFile(path)`**（同一轮次同文件只快照一次）；回滚时逐个比对 `lastModified + size`，变更则跳过并收集清单返给 UI | 零依赖 | **P1** |
 | A7 | **LineDiff LCS** 行级 diff，统一格式「首列标记位」避免代码以 +/- 开头时歧义（`LineDiff.kt:11-58`） | 无 diff 展示 | 净室写 `core/workspace/LineDiff.kt`（~70 行 LCS）。**必须加保护**：行数 > 4000 时退化为「按首尾各 50 行」，避免 `(n+1)×(m+1)` IntArray OOM。聊天里把 `edit_file` 的结果渲染成 +/- 行（`ToolMessageComponents` 式卡片） | 零依赖 | **P1** |
-| A8 | 聊天 Markdown 用 `markdown-renderer-m3`；编辑器预览用 WebView + marked.js + highlight.js + DOMPurify（`MarkdownPreviewWebView.kt:47-56`，`allowFileAccess=false`） | ChatScreen 的 Markdown 渲染情况待验证（**待验证**） | **不引外部库**。两条路：① 聊天维持现状/自绘增强（代码块用 A1 的同一套 Highlighter 复用）② 预览页用已有 `WebView` + assets 里放 marked/highlight（MIT/BSD 许可，安全）。**必须照抄三条安全配置：`allowFileAccess=false` + DOMPurify + 外部链接不跳转** | marked/highlight 是 assets 非 Gradle 依赖 ✅ | **P2** |
+| A8 | 聊天 Markdown 用 `markdown-renderer-m3`；编辑器预览用 WebView + marked.js + highlight.js + DOMPurify（`MarkdownPreviewWebView.kt:47-56`，`allowFileAccess=false`） | ChatScreen 的 Markdown 渲染情况待验证（**待验证**） | **不引外部库**。两条路：① 聊天维持现状/自绘增强（代码块用 A1 的同一套 Highlighter 复用）② 预览页用已有 `WebView` + assets 里放 marked/highlight（MIT/BSD 许可，安全）。**必须落实三条安全配置：`allowFileAccess=false` + DOMPurify + 外部链接不跳转** | marked/highlight 是 assets 非 Gradle 依赖 ✅ | **P2** |
 
 ### B. 提示词 / 场景体系
 
 | # | AiCode 做法（含位置） | AgentKit 现状 | 我们怎么适配 | 依赖 | 优先级 |
 |---|---|---|---|---|---|
 | B1 | **编号片段 + 四层优先级**：`assets/prompts/<NN>-<名>.md`（编号=身份=顺序），PROJECT > GLOBAL > LOCAL > BUILTIN（`PromptFragmentCatalog.kt:12-13, 247-254`） | 提示词硬编码在 `AgentLoop.kt` | **这是最值得抄的一件事**。新增 `assets/prompts/` + `core/prompt/{PromptCatalog,PromptResolver,SystemPromptBuilder}.kt`：① 启动时把 assets/prompts 释放到 `filesDir/prompts`（每次覆盖）② 目录扫描用两位数字前缀 Regex ③ 用户覆盖写在 `filesDir/prompts.custom/`（**不删**）④ 先做「项目/全局」两层即可，LOCAL/BUILTIN 可合并 | 零依赖（自己写 ~150 行）✅ | **P0** |
-| B2 | **`{{VAR}}` 变量注入**：10 个 `{{AICODE_*}}` 占位符，动态内容全部走到末尾的 `99-runtime-context.md`；注释明说这是为了 **KV Cache**（`SystemPromptProvider.kt:22-31, 379-405`） | 无 | 照搬思路：**稳定内容在前、易变内容在最后**。至少实现 4 个变量：`{{SKILLS}}` `{{MEMORY}}` `{{WORKSPACE}}` `{{DATE}}`。技能/记忆清单的注入顺序放在 prompt 最后 | 零依赖 | **P0** |
-| B3 | **会话级 Source 缓存** `(sessionId, projectRoot)`，空内容用 `""` 占位区分「未缓存」（`SystemPromptProvider.kt:53-78`） | 无 | 照搬：每次构造 system prompt 时若重扫磁盘会导致 prompt 抖动、打断云端 KV Cache。缓存 key 用 `(sessionId, projectRoot)`，`SOURCE_CACHE_LIMIT=32` 超了整体清 | 零依赖 | **P1** |
+| B2 | **`{{VAR}}` 变量注入**：10 个 `{{AICODE_*}}` 占位符，动态内容全部走到末尾的 `99-runtime-context.md`；注释明说这是为了 **KV Cache**（`SystemPromptProvider.kt:22-31, 379-405`） | 无 | 采纳思路：**稳定内容在前、易变内容在最后**。至少实现 4 个变量：`{{SKILLS}}` `{{MEMORY}}` `{{WORKSPACE}}` `{{DATE}}`。技能/记忆清单的注入顺序放在 prompt 最后 | 零依赖 | **P0** |
+| B3 | **会话级 Source 缓存** `(sessionId, projectRoot)`，空内容用 `""` 占位区分「未缓存」（`SystemPromptProvider.kt:53-78`） | 无 | 采纳：每次构造 system prompt 时若重扫磁盘会导致 prompt 抖动、打断云端 KV Cache。缓存 key 用 `(sessionId, projectRoot)`，`SOURCE_CACHE_LIMIT=32` 超了整体清 | 零依赖 | **P1** |
 | B4 | **场景库**：`lib/scenarios/<id>.sh` 只暴露 `scenario_name_<id>` / `install_scenario_<id>`，由 `SCENARIO_IDS` 列表驱动菜单 + 函数前缀分发（`env-common.sh:613, 622-634`） | `assets/containers/alpine.tar`，容器内有什么全靠手动 | **这是「能写代码/写游戏/做安装包」的前提**。新增 `assets/env/scenarios/{base,node,python,java,go,rust,php}.sh` + `env-common.sh`（包管理器探测 apk/apt/dnf/pacman、国内镜像源替换、运行时版本探测）。每个场景只写两个 shell 函数。**同步新增 ContainerScreen 里的「环境安装」UI**，1 键装 node/python/java | 零依赖（纯 shell asset）✅ | **P0** |
-| B5 | **`aicode` 命令 = `provision.sh --env`**：同一份脚本，两个入口（首次进终端自动弹 / AI 或用户随时手动调）（`provision.sh:1-13`, `bin/aicode`） | 无 | 照搬：**一个 `provision.sh` + 一个 `bin/agentkit` 入口**。脚本每改动一次就要 `PROVISION_VERSION += 1` 才能触发存量设备重跑 —— 这个「版本号常量 + marker 文件比对」机制务必照做（`LinuxContainerEngine.kt:162-170`） | 零依赖 | **P1** |
+| B5 | **`aicode` 命令 = `provision.sh --env`**：同一份脚本，两个入口（首次进终端自动弹 / AI 或用户随时手动调）（`provision.sh:1-13`, `bin/aicode`） | 无 | 采纳：**一个 `provision.sh` + 一个 `bin/agentkit` 入口**。脚本每改动一次就要 `PROVISION_VERSION += 1` 才能触发存量设备重跑 —— 这个「版本号常量 + marker 文件比对」机制务必对齐（`LinuxContainerEngine.kt:162-170`） | 零依赖 | **P1** |
 | B6 | **脚本版本与镜像版本解耦**：`PROVISION_VERSION` 独立于 rootfs `INSTALL_VERSION`（`LinuxContainerEngine.kt:162-170`） | `RootfsManager.kt` 单一版本号 | 拆成两个常量：镜像版本改了才重解压 rootfs，脚本改了只重跑 provision。避免「改一行 shell 就要重解压 40MB rootfs」 | 零依赖 | **P2** |
 | B7 | **内置子代理 `agents/explore.md`**：YAML frontmatter（name/description/tools/inject）+ 正文；`inject` 控制基线注入、**工具白/黑名单（含 `mcp__x__*` 通配）**、可覆写 provider/model/mode（`AgentDefinition.kt:56-115`） | 无子代理 | **P1 阶段先做只读版**：新增 `assets/agents/explore.md`，只用 `tools/inject/description` 三个字段；解析器容错（YAML 失败降级 emptyMap、非法值回退默认）。**工具的 capability/黑白名单裁剪留到 P2** | YAML 解析要注意：AgentKit 无 snakeyaml。用 json 或自己手写一个「只支持 `key: value` 与 `key: [a, b]`」的极简 frontmatter 解析器（~80 行） | **P1** |
 | B8 | **技能三层来源**（全局/项目）+ **清单与正文分离**（system 只注入 `name: description`，正文靠 `loadSkill` 按需加载）+ `required_tools` | `skill/` 四件套 + `assets/skills/{weather,wordcount}` | ① 拆分：system 注入只放清单 ② 新增 `load_skill` 工具 ③ 支持项目级 `.agentkit/skills/`（可 git 追踪）④ frontmatter 里的 `tools` 字段用于跨技能的工具可用性校验 | 已有 skill 体系，改造量小 | **P1** |
-| B9 | **项目规则自动读取**：`AGENTS.md` 优先、`CLAUDE.md` 兜底，全局+工作区两级，按 (path+mtime) 签名缓存，**32K 字符截断**（`SystemPromptProvider.kt:127-172`） | 无 | 照搬，但改成 `AGENTS.md` 优先、`.cursorrules` 兜底（更贴近我们的用户群）。**截断上限建议 16K**（手机上下文宝贵） | 零依赖 | **P1** |
+| B9 | **项目规则自动读取**：`AGENTS.md` 优先、`CLAUDE.md` 兜底，全局+工作区两级，按 (path+mtime) 签名缓存，**32K 字符截断**（`SystemPromptProvider.kt:127-172`） | 无 | 采纳，但改成 `AGENTS.md` 优先、`.cursorrules` 兜底（更贴近我们的用户群）。**截断上限建议 16K**（手机上下文宝贵） | 零依赖 | **P1** |
 | B10 | **模式提醒不进 system**：`plan-mode.md` / `auto-mode.md` **随用户消息注入**（文件头注释明写「随用户消息注入，不进 system」） | 无模式概念 | 这个技巧很省 token 且**避免切模式时 system prompt 变更打断 KV Cache**。若后续加「审批模式」，务必沿用此方式 | 零依赖 | **P2** |
 
 ### C. 终端联动
@@ -781,9 +781,9 @@ GIT_CONFIG_GLOBAL    = /root/.aicode/.gitconfig
 | C3 | **`BoundedOutput` 限幅**：超大输出只保留开头+结尾，喂回模型与展示给用户的保持一致 | 待验证 | 写 `core/util/BoundedOutput.kt`（~60 行）：环形缓冲 + head/tail 双窗口。同时对「工具输出落盘 + 只回填 preview + `output_path` 供分段读」做配套（AiCode 用 `~/.aicode/tool-output/`） | 零依赖 | **P1** |
 | C4 | **`argv[0]` 必须是 proot 二进制本身**，否则选项错位一位（`LinuxContainerEngine.kt:46-52`） | `ProotRunner.buildArgs()` 返回「不含 proot 自身的参数列表」（`:64-73`） | **提前对齐**：改造 `buildArgs()` → `buildInvocation()` 返回 `{ executable, argv（含 argv[0]）, env }`。现在改成本几乎为零；等接了 PTY 再改会连带一堆调用点 | 零依赖 | **P0**（低成本高价值） |
 | C5 | **PTY 环境必须合并 `System.getenv()`**，否则 proot exec 失败且日志无报错（`LinuxContainerEngine.kt:60-71`） | 尚未接 PTY | 落到 C4 的同一个 `buildInvocation()` 里，提供两个出口：`envMap`（ProcessBuilder）与 `envArray`（PTY，含父进程环境）。**这个坑如果不预知，排查要花几天** | 零依赖 | **P1** |
-| C6 | `terminal` 工具用**一个工具 + action 参数**取代三个（`BackgroundTerminalTools.kt:38-44`） | — | 照搬：少两个工具 = 少两份 schema = 少 token 占用 | — | **P1** |
+| C6 | `terminal` 工具用**一个工具 + action 参数**取代三个（`BackgroundTerminalTools.kt:38-44`） | — | 采纳：少两个工具 = 少两份 schema = 少 token 占用 | — | **P1** |
 | C7 | `effectiveCapabilities(args)`：按参数**动态降级** capability（`read` → READ_WORKSPACE，PLAN 下放行） | 无 capability 概念 | 给 `AgentTool` 加 `capabilities: Set<ToolCapability>` + `effectiveCapabilities(args)`。这是「计划模式下只拦写、放行读」的干净实现 | 零依赖 | **P2** |
-| C8 | **PLAN 模式下仍返回全部工具 schema**，写操作在**运行时拦截**（`ToolRegistry.kt:28-36`） | — | 照搬：比「动态删 tool schema」更好，因为切换模式时 system prompt 不变，不打断 KV Cache | — | **P2** |
+| C8 | **PLAN 模式下仍返回全部工具 schema**，写操作在**运行时拦截**（`ToolRegistry.kt:28-36`） | — | 采纳：比「动态删 tool schema」更好，因为切换模式时 system prompt 不变，不打断 KV Cache | — | **P2** |
 
 ### D. 容器 / 安全
 
@@ -792,8 +792,8 @@ GIT_CONFIG_GLOBAL    = /root/.aicode/.gitconfig
 | D1 | **proot 走 jniLibs → nativeLibraryDir**（唯一允许 execve 的 SELinux 位置），`.so` 必须 `useLegacyPackaging=true` 才会解压（`app/build.gradle.kts:145-150, 226`） | `assets/bin/arm64-v8a/proot` → 提取到 `filesDir/bin/proot` + `chmod 0700`（`ProotRunner.kt:27,30,52`） | **最高优先级的待验证项**。必须有真机验证：Android 10+ 上 `filesDir` 执行 proot 是否被 W^X/SELinux 拦。若拦，改造 proot 为 `libproot.so` 放 `jniLibs/`，运行时从 `applicationInfo.nativeLibraryDir` 取。**改之前先在 targetSdk 与 minSdk 上确认我们的取值**（AiCode 为绕过这问题把 targetSdk 锁 28，代价是上不了 Google Play） | 需真机验证 | **P0** |
 | D2 | proot 环境变量：`PROOT_TMP_DIR` / `PROOT_LOADER(_32)` / `LD_LIBRARY_PATH` / `PATH` 含 `/root/.aicode/bin` / `TMPDIR=/tmp` / `GIT_CONFIG_GLOBAL`（`LinuxContainerEngine.kt:767-800`） | `ProotRunner.guestEnv()`（91 行文件） | 逐项比对是否有缺漏，特别是 **① `PROOT_TMP_DIR`（Android 无 /tmp）② `TMPDIR` 覆盖宿主值（宿主 TMPDIR 指向 App cache，容器内 /data 未挂载 → mktemp/dpkg 失败）③ PATH 要显式列出 `/usr/local/bin`**（非登录 shell 不加载 /etc/profile） | 零依赖 | **P0** |
 | D3 | **刻意不设 `PROOT_NO_SECCOMP`**，因 Termux proot 5.1.107.x 的 seccomp 表已含 statx；旧版会导致 Node ENOENT / 强制 ptrace 会 `PEEKDATA I/O error`（`LinuxContainerEngine.kt:776-781`） | 未处理 | 确认 AgentKit 打包的 proot 版本。若 < 5.1.107（或不知道版本），**在 Node 相关场景验证 `#include <asm/unistd>`/`statx` 的行为**。这是「AI 写的 node 游戏跑不起来」的潜在根因 | 待验证 proot 版本 | **P1** |
-| D4 | **`git-credential-aicode` 文件 IPC**：容器内写 `cred-req-<id>` → 宿主 FileObserver 监听 → 弹窗 → 轮询 `cred-resp-<id>`；依赖 `-b` 绑定让两端同 inode | 无 | **强烈推荐照搬思路**（自己写 shell）。这是「AI 推 GitHub / 拉私有仓库」闭环的最短路径，且零依赖。同时学它的**凭据混淆**：明文 → base64 → 整体反转，注释坦白「是混淆而非加密」，目的是**挡住 AI 把凭据读进上下文** —— 这个安全意识值得强调 | 零依赖 | **P1** |
-| D5 | **资产提取三策略**：提示词/文档/脚本每次覆盖；agents/scripts **已存在则不覆盖**（保护用户修改）；文档**先整目录删后建**（防旧版残留被 AI 读到）（`ContainerInstaller.kt:44,63,95,117`） | `RootfsManager` 单一策略 | 照搬三层策略。特别是「agent/skill/script 用户可能已改」与「提示词必须跟随版本更新」的区分 | 零依赖 | **P1** |
+| D4 | **`git-credential-aicode` 文件 IPC**：容器内写 `cred-req-<id>` → 宿主 FileObserver 监听 → 弹窗 → 轮询 `cred-resp-<id>`；依赖 `-b` 绑定让两端同 inode | 无 | **强烈推荐采纳思路**（自行实现 shell）。这是「AI 推 GitHub / 拉私有仓库」闭环的最短路径，且零依赖。同时学它的**凭据混淆**：明文 → base64 → 整体反转，注释坦白「是混淆而非加密」，目的是**挡住 AI 把凭据读进上下文** —— 这个安全意识值得强调 | 零依赖 | **P1** |
+| D5 | **资产提取三策略**：提示词/文档/脚本每次覆盖；agents/scripts **已存在则不覆盖**（保护用户修改）；文档**先整目录删后建**（防旧版残留被 AI 读到）（`ContainerInstaller.kt:44,63,95,117`） | `RootfsManager` 单一策略 | 采纳三层策略。特别是「agent/skill/script 用户可能已改」与「提示词必须跟随版本更新」的区分 | 零依赖 | **P1** |
 | D6 | **Git 走 sandbox 内核 careful**: 所有 git 命令带 `-c core.quotepath=false`（否则中文路径八进制转义）；**写子命令据退出码判成败**并如实显示 git 原文（`GitRepository.kt:29-31, 60-70`） | `core/build/GitHubBuildService` | 每一行 git 调用都加上 `-c core.quotepath=false`；写命令失败时**把 git 原始 stderr 返给用户和模型**，不要吞掉 | 零依赖 | **P1** |
 | D7 | **`ToolPermissionPolicyEngine` 五步评估**；记忆粒度是「**程序名+子命令**」（`git pull` 而非 `git`）；命令不可静态判定则 ASK 且禁「始终允许」（`:15-24`） | 有 `SkillSecurity` + 审批（`L10/L11`） | 借鉴**记忆粒度**设计：现在是整工具粒度还是命令粒度？建议升级到「git 命令按子命令记忆」 + 「含命令替换/子 shell 的一律不可记忆」 | 零依赖 | **P2** |
 | D8 | **`ApkInstaller`**：`canRequestPackageInstalls` → 引导授权 → FileProvider URI → `FLAG_ACTIVITY_NEW_TASK` 拉起安装器（`core/util/ApkInstaller.kt:14-60`） | `core/build/BuildEngine` 已闭环 | 确认是否已有 `canRequestPackageInstalls` 预检。**这行没有会导致「点了安装没反应」** | — | **P2** |

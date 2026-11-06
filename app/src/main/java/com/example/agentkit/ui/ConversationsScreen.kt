@@ -49,6 +49,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.agentkit.core.ConversationSummary
 import com.example.agentkit.core.text.ConversationFilter
 import com.example.agentkit.core.text.ChatTime
+import com.example.agentkit.ui.contract.ConversationListContract
 
 /**
  * 全部对话页（W-69）。
@@ -69,7 +70,7 @@ import com.example.agentkit.core.text.ChatTime
  */
 @Composable
 fun ConversationsScreen(
-    vm: ChatViewModel,
+    vm: ConversationListContract,
     onOpen: (String) -> Unit,
     onNew: () -> Unit
 ) {
@@ -221,7 +222,7 @@ fun ConversationsScreen(
  */
 private fun exportConv(
     ctx: android.content.Context,
-    vm: ChatViewModel,
+    vm: ConversationListContract,
     conversations: List<ConversationSummary>,
     id: String
 ) {

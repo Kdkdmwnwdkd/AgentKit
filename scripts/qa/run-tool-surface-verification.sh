@@ -18,7 +18,7 @@ cd "$(dirname "$0")/../.."
 
 AUDIT="scripts/tool-surface-audit.py"
 [ -f "$AUDIT" ] || { echo "FAIL: 找不到 $AUDIT"; exit 1; }
-command -v python3 >/dev/null 2>&1 || { echo "SKIP: 没有 python3"; exit 3; }
+command -v python3 >/dev/null 2>&1 || { echo "KS_HARNESS_SKIP $(basename "$0") 没有 python3（PATH 里找不到可执行文件）"; exit 3; }
 
 pass=0; fail=0
 ok()   { pass=$((pass+1)); echo "  ✅ $1"; }

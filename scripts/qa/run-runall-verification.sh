@@ -194,6 +194,68 @@ else
   ok "不打 ENV STALE"
 fi
 
+# ---------------------------------------------------------------- 场景 14
+# R-04：`10 失败` 里含子串 `0 失败`，旧正则会把它判成 PASS。
+# 这类脚本的 rc 还是 0（末尾是 echo，没有 set -e），所以两条证据同时失效——
+# 只能靠「失败优先于通过」这条顺序来堵。
+echo "== 场景 14：10 失败 不得被当成 0 失败（子串陷阱） =="
+reset
+mk r-ten.sh 'echo "=== 结果：11 通过 / 10 失败 ==="; exit 0'
+out=$(run_all); rc=$?
+[ "$(num "$out" FAIL)" = "1" ] && ok "FAIL=1" || bad "FAIL=1" "$(printf '%s' "$out" | tail -3)"
+[ "$(num "$out" PASS)" = "0" ] && ok "PASS=0" || bad "PASS=0" "$(printf '%s' "$out" | tail -3)"
+
+# ---------------------------------------------------------------- 场景 15
+# 更难的一种：子步骤打了 FAIL=0，总结果却是失败。两行都在，谁先匹配到全看顺序。
+echo "== 场景 15：子步骤 FAIL=0 + 总结果 3 失败 → FAIL（失败优先） =="
+reset
+mk r-mixed.sh 'echo "步骤 1：FAIL=0"; echo "步骤 2：FAIL=0"; echo "=== 汇总：7 通过 / 3 失败 ==="; exit 0'
+out=$(run_all); rc=$?
+[ "$(num "$out" FAIL)" = "1" ] && ok "FAIL=1" || bad "FAIL=1" "$(printf '%s' "$out" | tail -3)"
+
+# ---------------------------------------------------------------- 场景 16
+# 负向对照：没有 14/15 的对照，把「永远判 FAIL」写进 run-all 也能全过。
+echo "== 场景 16：正常汇总 + 含数字的说明文字 → 仍应 PASS（不误杀） =="
+reset
+mk r-ok.sh 'echo "=== 结果：22 通过 / 0 失败 ==="; echo "1 个用例重试后成功"; exit 0'
+out=$(run_all); rc=$?
+[ "$(num "$out" PASS)" = "1" ] && ok "PASS=1" || bad "PASS=1" "$(printf '%s' "$out" | tail -3)"
+[ "$rc" -eq 0 ] && ok "退出码 0" || bad "退出码 0" "实际 $rc"
+
+# ---------------------------------------------------------------- 场景 17
+# R-17：SKIP 的判据一直由 runner 自述——说一句「缺东西」就能整段消失。
+# 这里把理由变成可核验的事实：声称缺的路径要真的不存在，否则就不是环境问题，
+# 是 runner 的判据坏了（或者它在撒谎）。这是「零覆盖能不能过门禁」的源头。
+echo "== 场景 17：SKIP 声称缺的东西其实在 → FAIL（理由不成立） =="
+reset
+mkdir -p "$REPO/present-dir"          # 声称缺的目录，实际好好地在这儿
+mk r-liar.sh "echo \"KS_HARNESS_SKIP r-liar.sh 缺 AGP 产物：$REPO/present-dir\" >&2; exit 3"
+out=$(run_all); rc=$?
+[ "$(num "$out" FAIL)" = "1" ] && ok "FAIL=1" || bad "FAIL=1" "$(printf '%s' "$out" | tail -3)"
+[ "$(num "$out" SKIP)" = "0" ] && ok "SKIP=0（没被当成环境跳过）" || bad "SKIP=0" "$(printf '%s' "$out" | tail -3)"
+printf '%s' "$out" | grep -q "理由不成立" && ok "失败原因写明「理由不成立」" \
+  || bad "失败原因写明「理由不成立」" "$(printf '%s' "$out" | grep FAIL | head -2)"
+
+# ---------------------------------------------------------------- 场景 18
+# 裸的 skip 字样不算数：真实错误信息里带 skip 太常见（`skipping optimization`、
+# 段内提示行）。协议不统一时，「是不是 SKIP」全凭运气。
+echo "== 场景 18：exit 3 + 裸 skip 字样，但没有 KS_HARNESS_SKIP → FAIL =="
+reset
+mk r-vague.sh 'echo "skipping: no compiler available"; exit 3'
+out=$(run_all); rc=$?
+[ "$(num "$out" FAIL)" = "1" ] && ok "FAIL=1" || bad "FAIL=1" "$(printf '%s' "$out" | tail -3)"
+[ "$(num "$out" SKIP)" = "0" ] && ok "SKIP=0" || bad "SKIP=0" "$(printf '%s' "$out" | tail -3)"
+
+# ---------------------------------------------------------------- 场景 19
+# 负向对照：不给这条，把「SKIP 一律判 FAIL」写进 run-all 也能过 17/18。
+echo "== 场景 19：理由诚实（路径确实不存在）→ 仍判 SKIP =="
+reset
+mk r-honest.sh "echo \"KS_HARNESS_SKIP r-honest.sh 缺 AGP 产物：$REPO/nowhere/debug\" >&2; exit 3"
+out=$(run_all); rc=$?
+[ "$(num "$out" SKIP)" = "1" ] && ok "SKIP=1" || bad "SKIP=1" "$(printf '%s' "$out" | tail -3)"
+[ "$(num "$out" FAIL)" = "0" ] && ok "FAIL=0" || bad "FAIL=0" "$(printf '%s' "$out" | tail -3)"
+[ "$rc" -eq 0 ] && ok "退出码 0" || bad "退出码 0" "实际 $rc"
+
 echo
 echo "=== 汇总: $pass passed, $fail failed ==="
 [ "$fail" -eq 0 ] || exit 1

@@ -12,10 +12,20 @@ import com.example.agentkit.core.ToolRegistry
  * 最小契约抽出来：
  *
  *  - [send]：跑一轮，返回完整历史（语义 = 旧 `AgentLoop.run()`）。
- *  - [stop]：优雅收尾通道（置 shouldContinue=false 语义），**不杀协程**——
- *    协程取消仍由调用方的 Job.cancel 负责，两条通道互不依赖（T05 现状保留）。
  *  - [update]：运行时更新配置（null = 保持现值），供 UI 在不重建 loop 的前提下
  *    换系统提示 / 记忆提供者 / 工具表 / 步数上限。
+ *
+ * ## 关于 `stop()`（R-19）
+ *
+ * 本接口曾经还有第三个方法 `stop()`：置 shouldContinue=false 的**优雅收尾**通道，
+ * 不杀协程。实现完整（`stopRequested` + 每轮结束复查），T01 也按契约测过——
+ * 但**生产代码一次都没调用过**：`ChatViewModel.stop()` 走的是 `Job.cancel()`，
+ * 立即中断、不可等待，用户点「停止」的诉求就是「现在停」。
+ *
+ * 两条通道里只有一条是活的，另一条就成了「读代码的人以为它有用」的负担：
+ * 你无法从接口看出哪条在生产上真的会发生。R-19 把它删掉了，而不是留着当文档。
+ * 需要「跑完当前步再收尾」的场景（后台任务/定时任务）若真出现，应重新设计成
+ * 带超时的两段式停止，而不是把一个零调用的方法留在接口上等人来猜。
  *
  * UI 只认事件流（AgentEvent）与状态流，不认本接口的具体实现类；
  * 默认实现见 [RealAgentLoop]——生产链路（`ui/ChatViewModel`）直接构造它，
@@ -42,13 +52,6 @@ interface AgentLoop {
         images: List<String> = emptyList(),
         priorMessages: List<ChatMessage> = emptyList()
     ): List<ChatMessage>
-
-    /**
-     * 请求停止（优雅收尾通道）：本轮工具批次结束、下一轮 LLM 调用前生效，
-     * 补一条停止说明后返回历史。不取消协程、不抛异常。
-     * 未在运行时调用为 no-op。
-     */
-    fun stop()
 
     /**
      * 运行时更新配置：命名可选参数，null = 保持现值（缺省即不变）。

@@ -1,6 +1,7 @@
 package com.example.agentkit.core.capability
 
 import com.example.agentkit.core.AgentTool
+import com.example.agentkit.core.tool.ToolCatalog
 
 /**
  * 一个能力组：模型能「一次开一组」的最小单位。
@@ -55,98 +56,39 @@ data class CapabilityAudit(val problems: List<String>) {
  */
 object CapabilityManifest {
 
-    /** 未归类兜底组。常驻：模型不认识的东西必须保持可见。 */
-    const val MISC: String = "misc"
+    /** 未归类兜底组。常驻：模型不认识的东西必须保持可见（名字的真源在 [ToolCatalog.MISC]）。 */
+    const val MISC: String = ToolCatalog.MISC
 
     /**
-     * 全部能力组与它们的工具。**加工具必须改这里**——这正是本清单存在的意义：
-     * 组索引、激活粒度、工具表顺序都从这一处派生，不再有第二份需要同步的名单。
+     * 组与成员：**从 [ToolCatalog] 派生**，本对象不再持有第二份名单。
+     *
+     * R-13 之前这里手写 56 个工具名。它和工具类、能力分级表、审批归组表三处互不知道，
+     * 加一个工具要改四遍、且漏改不报错。现在「一个工具一条记录」只有
+     * `core/tool/ToolCatalog.kt` 一处，这里把记录切成视图：组成员、组序、工具表顺序
+     * 全部随之而来。
      *
      * note 写「能干什么」而不是「内部叫什么」：模型看到的就是这句话。
      */
-    val capabilities: List<CapabilityGroup> = listOf(
+    val capabilities: List<CapabilityGroup> = ToolCatalog.groups.map { g ->
         CapabilityGroup(
-            "file", "读写改本地文件",
-            tools = listOf("read_file", "write_file", "edit_file"),
-            pinned = true,
-        ),
-        CapabilityGroup(
-            "ui", "看屏幕、点按、输入、问用户",
-            tools = listOf(
-                "ui_tree", "ui_tap", "ui_long_press", "ui_swipe", "ui_input",
-                "ui_key", "ui_click", "ui_screenshot", "ask_user",
-            ),
-        ),
-        CapabilityGroup("net", "HTTP 请求与网页抓取", tools = listOf("http_request")),
-        CapabilityGroup(
-            "web", "浏览器前进后退、点击、填表",
-            tools = listOf("web_open", "web_snapshot", "web_click", "web_type", "web_eval", "web_search"),
-        ),
-        CapabilityGroup(
-            "app", "安装卸载启停应用",
-            tools = listOf("app_install", "app_uninstall", "app_launch", "app_list", "app_stop"),
-        ),
-        CapabilityGroup(
-            "shell", "命令行执行与会话管理",
-            tools = listOf("shell_run", "shell_close", "shell_background", "shell_jobs"),
-        ),
-        CapabilityGroup(
-            "memory", "跨会话记忆的读写与检索",
-            tools = listOf(
-                "memory_write", "memory_search", "memory_list", "memory_forget", "conversation_search",
-            ),
-        ),
-        CapabilityGroup("skill", "加载与使用技能", tools = listOf("load_skill", "use_skill")),
-        CapabilityGroup(
-            "workflow", "工作流的增删改查与开关",
-            tools = listOf("workflow_create", "workflow_list", "workflow_delete", "workflow_toggle"),
-        ),
-        CapabilityGroup(
-            "device", "设备状态与通知",
-            tools = listOf("device_notifications", "device_foreground_app"),
-        ),
-        CapabilityGroup("media", "图片识别与语音播报", tools = listOf("ocr_image", "speak")),
-        CapabilityGroup(
-            "agent", "计划、待办、子代理",
-            tools = listOf("plan_propose", "spawn_agents", "todo_write", "todo_read"),
-        ),
-        CapabilityGroup(
-            "github", "GitHub 仓库操作（克隆、提交、日志）",
-            tools = listOf("github_status", "github_commit", "github_log", "github_diff", "github_clone"),
-        ),
-        CapabilityGroup(
-            "sys", "剪贴板、容器、通知等系统能力",
-            tools = listOf("clipboard", "send_notification", "calculator", "container_toolchain"),
-        ),
-        // 外部 MCP 服务器：工具名是 `mcp_<server>_<tool>`，连上之后才知道有哪些。
-        //
-        // 为什么必须独立成组、且**不常驻**（架构方案 P3-3 的第二条）：
-        // 修前 `mcp_` 前缀推不出组 → 落进 `misc` → 常驻。后果是每次连上 MCP 服务器，
-        // 它的全部工具（可能十几个）都会塞进**每一轮**的工具表，占的是用户没要求过的 token，
-        // 而组索引里又看不到「mcp」这个组——模型只知道有一堆陌生工具，不知道从哪管。
-        // 现在它们成为一个可关闭的组：默认不激活，模型要 `__use_tools("mcp")` 才看得到。
-        CapabilityGroup(
-            "mcp", "外部 MCP 服务器提供的工具（每次调用都需确认）",
-            tools = emptyList(),
-            dynamic = true,
-        ),
-        // 兜底桶：成员恒为空（有成员说明有工具没登记），见 audit 的 ②③
-        CapabilityGroup(MISC, "未归类的其他工具", tools = emptyList(), pinned = true),
-    )
-
-    /** 工具名 → 组（精确成员表；`misc` 不在表内，它是兜底而非成员）。 */
-    private val groupOfTool: Map<String, String> = buildMap {
-        capabilities.forEach { cap -> cap.tools.forEach { put(it, cap.group) } }
+            group = g.name,
+            note = g.note,
+            tools = ToolCatalog.membersOf(g.name),
+            pinned = g.pinned,
+            dynamic = g.dynamic,
+        )
     }
 
     private val byGroup: Map<String, CapabilityGroup> = capabilities.associateBy { it.group }
 
-    /** 按名字推组：先清单，再前缀，最后 [MISC]。 */
-    fun groupOf(name: String): String {
-        groupOfTool[name]?.let { return it }
-        val prefix = name.substringBefore('_', missingDelimiterValue = name)
-        return if (byGroup.containsKey(prefix)) prefix else MISC
-    }
+    /**
+     * 按名字推组：先目录，再前缀，最后 [MISC]。
+     *
+     * 判定逻辑本身只有 [ToolCatalog.groupOf] 一份——R-13 之前这里还抄了一遍
+     * （buildMap + 前缀回落），两处规则一旦分叉，「工具属于哪个组」就会有两个答案。
+     * 本方法只是暴露面这一侧的入口名。
+     */
+    fun groupOf(name: String): String = ToolCatalog.groupOf(name)
 
     /** 组是否常驻（`file` / `misc`）。 */
     fun isPinned(group: String): Boolean = byGroup[group]?.pinned == true

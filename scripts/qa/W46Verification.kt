@@ -103,8 +103,15 @@ fun main() {
     }
 
     check("T1 LLM 通道不再用 OkHttp 默认 10s 读超时") {
-        assertTrue("LlmHttp 缺 readTimeout", "readTimeout(180, TimeUnit.SECONDS)" in llmHttp)
-        assertTrue("LlmHttp 缺 callTimeout=0", "callTimeout(0, TimeUnit.SECONDS)" in llmHttp)
+        // R-13 起超时是参数化的（build(connect, read, write, call)），不能再断言某个字面量调用；
+        // 断言的是「预设值」与「调用点走了 build」，两者任一丢失都说明收口被绕开。
+        assertTrue("LlmHttp 缺 readTimeout", ".readTimeout(read, TimeUnit.SECONDS)" in llmHttp)
+        assertTrue("LlmHttp 缺参数化构造", "private fun build(connect: Long, read: Long" in llmHttp)
+        assertTrue("llm 预设 read 不是 180s", "read = 180" in llmHttp)
+        assertTrue("short 预设 read 不是 30s", "read = 30" in llmHttp)
+        assertTrue("download 预设 read 不是 120s", "read = 120" in llmHttp)
+        assertTrue("LlmHttp 缺 callTimeout=0", ".callTimeout(call, TimeUnit.SECONDS)" in llmHttp)
+        assertTrue("llm 预设不再不限整通时长", "call = 0" in llmHttp)
         assertTrue("OpenAI 兼容通道未切换", "private val http: OkHttpClient = LlmHttp.shared" in oa)
         assertTrue("Claude 通道未切换", "private val http: OkHttpClient = LlmHttp.shared" in claude)
         assertTrue("Gemini 通道未切换", "private val http: OkHttpClient = LlmHttp.shared" in gemini)

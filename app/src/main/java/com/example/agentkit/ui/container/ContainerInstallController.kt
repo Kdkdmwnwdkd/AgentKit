@@ -1,5 +1,6 @@
 package com.example.agentkit.ui.container
 
+import com.example.agentkit.core.AppScope
 import android.content.Context
 import com.example.agentkit.core.AgentLogger
 import com.example.agentkit.core.container.ContainerCommandRunner
@@ -108,7 +109,7 @@ object ContainerInstallController {
      * `SupervisorJob`：一次安装失败不影响后续安装。`Dispatchers.IO`：内部全是阻塞
      * 进程调用（`ProcessBuilder` + `waitFor`），放在默认调度器会占满 CPU 池。
      */
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val scope = CoroutineScope(SupervisorJob() + AppScope.io)
 
     private val _running = MutableStateFlow<Running?>(null)
     val running: StateFlow<Running?> = _running.asStateFlow()

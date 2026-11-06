@@ -3,107 +3,26 @@ package com.example.agentkit
 import android.app.Activity
 import android.app.Application
 import android.os.Bundle
-import com.example.agentkit.automation.adb.AdbSession
-import com.example.agentkit.automation.shizuku.ShizukuShell
-import com.example.agentkit.core.AgentLogger
-import com.example.agentkit.core.telemetry.TraceSink
-import com.example.agentkit.core.CrashLogger
-import com.example.agentkit.core.llm.local.AndroidDeviceProbe
-import com.example.agentkit.core.llm.local.LlamaJni
-import com.example.agentkit.core.llm.local.NativeCrashMemory
-import com.example.agentkit.runtime.LocalLlmRuntime
-import com.example.agentkit.runtime.lease.LeaseRegistry
-import java.io.File
+import com.example.agentkit.core.lifecycle.AppBackgroundHooks
+import com.example.agentkit.startup.BootSequence
 
 /**
  * 应用入口（Application 子类，Manifest 已通过 `android:name` 声明）。
  *
- * **存在意义只有一个**：在**尽可能早**的时机装上崩溃捕获 [CrashLogger]。
- * 真机第四轮的核心矛盾是——「开启屏幕捕捉 → 立刻闪退」，而进程被杀时内存里的日志
- * 来不及落盘，日志页一条异常都抓不到，只能靠猜。崩溃捕获必须早于任何业务初始化，
- * 否则连初始化阶段的崩溃都会丢证据。
+ * **这里只做两件事**：跑启动顺序 [BootSequence]，装前台 Activity 计数。
+ * 十步初始化的顺序与失败语义都在 `startup/BootSequence.kt` 里，不再平铺在
+ * `onCreate`——平铺时顺序只存在于语句次序，重排一次不会有任何东西报错。
  *
- * 这里**不**做别的初始化（日志目录、配置、Store 等仍由 ChatViewModel 按需初始化），
- * 以保证 Application.onCreate 越轻越好——它自己出错就没有第二道防线了。
+ * 历史教训（保留，因为它解释了这个文件为什么这么薄）：真机第四轮的核心矛盾是
+ * 「开启屏幕捕捉 → 立刻闪退」，进程被杀时内存日志来不及落盘，日志页一条异常都
+ * 抓不到。所以崩溃捕获必须是启动的第一步，且 `onCreate` 自身越轻越好——
+ * 它自己出错就没有第二道防线了。
  */
 class AgentKitApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
-        // 必须是方法体第一条业务语句：之后任何未捕获异常都会被同步落盘到 filesDir/crash/
-        CrashLogger.install(this)
-        runCatching {
-            AgentLogger.i(
-                "CrashLogger",
-                "崩溃捕获已安装（filesDir/crash/，保留最近 ${CrashLogger.MAX_KEEP} 份）"
-            )
-        }
-        // 原生崩溃记忆（W-84）：把上一次「进程被信号打死」的现场读出来。
-        //
-        // 与上面 CrashLogger 的分工：CrashLogger 只管 Java 异常；GPU / Vulkan / ggml
-        // 崩起来走的是信号，进程当场消失，Java 那层一句日志都留不下——真机上表现就是
-        // 「发消息 → 转一会儿 → 直接回桌面，日志里什么都没有」。
-        // 这里做两件事：① 判断上次是不是开 GPU 崩的；② 是的话**自动关掉 GPU**，
-        // 保证这次至少能用起来，并把原因写进设置页。
-        runCatching {
-            val crashDir = File(filesDir, CrashLogger.DIR_NAME)
-            crashDir.mkdirs()   // 信号处理器要往里写文件，目录必须先存在
-            LlamaJni.crashDir = crashDir.absolutePath
-            NativeCrashMemory.handleStartup(this)
-        }
-
-        // 崩溃可见性增强（真机第四轮 B）：启动时检测**未查看**的崩溃文件并留痕。
-        // 用户看不到「最近崩溃」等于白做——这里至少让日志/横幅两条路都能发现它。
-        // 读取失败一律静默降级（CrashLogger 内部全程 runCatching），**绝不影响启动**。
-        runCatching {
-            val unseen = CrashLogger.unseenCrashRecords(this)
-            if (unseen.isNotEmpty()) {
-                AgentLogger.w(
-                    "CrashLogger",
-                    "检测到 ${unseen.size} 次未查看崩溃：${unseen.first().fileName}" +
-                        "（可在日志页「最近崩溃」查看）"
-                )
-            }
-        }
-        // W-37：Shizuku UserService 需要 Context 构造 UserServiceArgs，且 binder 死亡监听
-        // 要尽早挂上（否则服务重启后代理悬空，第一次调用必挂）。内部全程 runCatching，
-        // 失败不影响启动，只是提权通道回落 newProcess。
-        runCatching { ShizukuShell.init(this) }
-        // W-51：无线调试通道的凭据存储（adb 密钥对 + 端点）。只读 SharedPreferences，
-        // 不发网络包也不生成密钥——首次配对时才生成 RSA（见 AdbCredentials.keyPair）。
-        // 失败（存储不可用）不影响启动，只是该通道会如实返回「密钥不可用」。
-        runCatching { AdbSession.init(this) }
-        // 运行层（Runtime）：能力注册与空闲释放策略。只建 SharedPreferences、
-        // 注册能力、起一个 30 秒一轮的节拍协程——全是轻操作，不影响冷启动。
-        // 失败不影响启动：本地模型的空闲释放退化为「常驻不卸载」，其余照常。
-        // 日志目录就绪——**必须早于运行层初始化**。
-        //
-        // 原先 `AgentLogger.init` 在 ChatViewModel 的 init 块里，而运行层
-        // （LocalLlmRuntime / LeaseRegistry）在 Application.onCreate 更早跑——
-        // 那段时间的日志全部落不了盘：租约登记、空闲回收、崩溃捕获器的安装
-        // 记录都查不到，排障时等于那段时间是黑的。
-        //
-        // 挪到这里之前先确认目录可用（runCatching 兜住：日志坏了不该阻止启动）。
-        runCatching { AgentLogger.init(File(filesDir, "logs")) }
-        // P5-1：机器可读流水的落盘目录（与日记同目录，文件名前缀区分）。
-        // 未初始化即 no-op，所以这里失败不影响任何功能——只是度量又回到「未知」。
-        runCatching { TraceSink.init(File(filesDir, "logs")) }
-        runCatching { LocalLlmRuntime.init(this) }
-        // R3：租约回收节拍器（统一管理本地模型 / 终端 / 容器三类重资源的空闲释放）。
-        // 启动失败不影响任何功能：各资源自己的释放路径仍可用，只是少了统一回收。
-        runCatching { LeaseRegistry.start() }
-        // W-82：设备画像（芯片 / GPU / 内存 → 这台机器该走 NPU / GPU / CPU 哪条路）。
-        //
-        // 为什么放后台线程：画像要起一个 1x1 的 EGL 上下文问 GL_RENDERER（几毫秒到几十毫秒），
-        // 而 onCreate 是启动最敏感的路径——这里等它等于给冷启动加一截。
-        // 为什么失败可以接受：画像只用于「把判断写进日志 + 后续在设置页展示」，
-        // 探测失败就退到 CPU 路线，不影响任何功能。内部全程 runCatching。
-        //
-        // 这一行让真机日志直接带上设备判定，省掉「你这台是什么芯片」的往返：
-        //   DeviceProbe: 设备画像：高通骁龙 · Adreno 660 · 中高端（8GB 级） → 首选 GPU，建议 1.5B~3B
-        Thread {
-            runCatching { AndroidDeviceProbe.profile(this) }
-        }.apply { isDaemon = true; name = "device-probe" }.start()
+        BootSequence.run(this)
         // 功能五（P1-10）：前台 Activity 计数——「回答完成提醒」只在 App 退到后台时
         // 发通知（用户正盯着聊天界面时提醒是噪音）。用 ActivityLifecycleCallbacks
         // 而不是 ProcessLifecycleOwner：不引 lifecycle-process 新依赖，计数语义也够用。
@@ -113,7 +32,13 @@ class AgentKitApplication : Application() {
             }
 
             override fun onActivityStopped(activity: Activity) {
-                foregroundActivities = (foregroundActivities - 1).coerceAtLeast(0)
+                val now = (foregroundActivities - 1).coerceAtLeast(0)
+                foregroundActivities = now
+                // R-19：前台计数归零 = 进程进后台，这是**最可能被系统回收**的时刻。
+                // 会话落盘是 400ms 去抖的，不在这里补一次，窗口内的最后一次变更就随
+                // 进程一起消失（丢的是用户刚打的字，不是流式增量，代价不同）。
+                // 旋转屏幕/Activity 重建也会走这里，多触发一次无害：flush 自己有脏检查。
+                if (now == 0) runCatching { AppBackgroundHooks.fireAll("app_background") }
             }
 
             override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) = Unit

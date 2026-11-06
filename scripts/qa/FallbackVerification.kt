@@ -69,9 +69,17 @@ private fun assertNotContains(name: String, haystack: String?, needle: String) {
 
 /* ------------------------------ 假后端 / 假 provider ------------------------------ */
 
-/** 极简假后端：仅用于让工厂 `create()` 返回非 null（验证 getHighestAvailable 的选中）。 */
-private class FakeBackend(override val backendKey: String) : TerminalBackend {
+/**
+ * 极简假后端：仅用于让工厂 `create()` 返回非 null（验证 getHighestAvailable 的选中）。
+ *
+ * [identity] 现在必须跟着通道给（R-12）：工厂按「后端实际身份能否满足请求下限」筛候选，
+ * 假后端一律自称 User 会让 uid 2000 的两条通道在 `obtain(shizuku)` 里消失——
+ * 那不是产品行为，是假数据在骗自己。
+ */
+private class FakeBackend(
+    override val backendKey: String,
     override val identity: TerminalIdentity = TerminalIdentity.User
+) : TerminalBackend {
     override val isAlive: Boolean get() = true
     override val output: Flow<String> = flowOf()
     override suspend fun start(): Boolean = true
@@ -91,7 +99,7 @@ private class FakeProvider(
         probeCount++
         return available
     }
-    override fun create(): TerminalBackend? = if (available) FakeBackend(backendKey) else null
+    override fun create(): TerminalBackend? = if (available) FakeBackend(backendKey, identity) else null
 }
 
 /** 构造只含 proot + user 两条候选的假工厂。 */
@@ -106,9 +114,10 @@ private fun fakeFactory(
     TerminalBackendFactory(
         listOf(
             FakeProvider(TerminalIdentity.User, TerminalBackend.KEY_PROOT, prootAvailable),
-            FakeProvider(TerminalIdentity.User, TerminalBackend.KEY_ADB, adbAvailable),
+            // R-12：无线调试与 Shizuku 都以 uid 2000 执行，声明的档位是 Shizuku 而不是 User
+            FakeProvider(TerminalIdentity.Shizuku, TerminalBackend.KEY_ADB, adbAvailable),
             FakeProvider(TerminalIdentity.User, TerminalBackend.KEY_USER, userAvailable),
-            FakeProvider(TerminalIdentity.User, TerminalBackend.KEY_SHIZUKU, shizukuAvailable)
+            FakeProvider(TerminalIdentity.Shizuku, TerminalBackend.KEY_SHIZUKU, shizukuAvailable)
         )
     )
 

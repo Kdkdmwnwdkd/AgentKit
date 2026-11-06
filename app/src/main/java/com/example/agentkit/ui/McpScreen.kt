@@ -68,9 +68,13 @@ import kotlinx.serialization.json.JsonElement
  *
  * 传输复用应用内 OkHttp + kotlinx.serialization（[McpClient]），零新增依赖。
  * 所有网络调用在 Dispatchers.IO，失败以 [McpStatus.Error] 友好呈现，不崩溃。
+ *
+ * @param onServersChanged 保存的服务器**被增/删/启停**后回调。R-07：本页只改
+ *   SharedPreferences，工具表在 ChatViewModel 里；不回调就等于「页面关了、对话里还在调
+ *   一台已经停用的服务器」。默认空实现是为了本页能单独预览/测试。
  */
 @Composable
-fun McpScreen() {
+fun McpScreen(onServersChanged: () -> Unit = {}) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
@@ -96,6 +100,8 @@ fun McpScreen() {
             enabled = true
         )
         savedServers = serverStore.upsert(cfg)
+        // R-07：新服务器立刻接入对话（否则要等下次冷启动才生效）
+        onServersChanged()
         Toast.makeText(context, "已保存，对话中可自动接入其工具", Toast.LENGTH_SHORT).show()
     }
 
@@ -224,10 +230,13 @@ fun McpScreen() {
                                 checked = cfg.enabled,
                                 onCheckedChange = { on ->
                                     savedServers = serverStore.setEnabled(cfg.id, on)
+                                    // R-07：关掉即撤销它名下的工具，不能等下次启动
+                                    onServersChanged()
                                 }
                             )
                             IconButton(onClick = {
                                 savedServers = serverStore.remove(cfg.id)
+                                onServersChanged()
                             }) {
                                 Icon(
                                     Icons.Outlined.Delete,

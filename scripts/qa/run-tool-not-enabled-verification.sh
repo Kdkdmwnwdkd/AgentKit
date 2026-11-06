@@ -119,7 +119,9 @@ trap restore EXIT
 echo "[2/4] 当前代码下断言应为绿"
 out=$(run_harness); rc=$?
 if [ $rc -eq 3 ]; then
-  echo "SKIP: 环境不具备（缺 AGP 编译产物），无法做反向验证"
+  # R-17：走统一协议并带上绝对路径——run-all 会去 stat 这个目录，
+  # 若它其实存在，本轮就不是「环境不具备」，而是判定坏了。
+  echo "KS_HARNESS_SKIP $(basename "$0") 缺 AGP 编译产物：$(pwd)/${AGENTKIT_CLASSES:-app/build/tmp/kotlin-classes/debug}" >&2
   exit 3
 fi
 if [ $rc -eq 0 ]; then

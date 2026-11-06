@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AgentKit 架构总览 · 2026-11-05</title>
+<style>
+  :root{
+    --paper:#f7f4ef;
+    --paper-2:#fffdfa;
+    --ink:#1c1917;
+    --ink-2:#57534e;
+    --ink-3:#8a827a;
+    --line:#ddd5ca;
+    --accent:#b23a2f;
+    --accent-soft:#f3e2de;
+    --teal:#2f6b62;
+    --teal-soft:#e2ecea;
+    --amber:#96702a;
+    --amber-soft:#f4ecdb;
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,"Roboto Mono",monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{
+    background:var(--paper);
+    color:var(--ink);
+    font-family:var(--sans);
+    line-height:1.6;
+    -webkit-font-smoothing:antialiased;
+    padding:48px 28px 72px;
+  }
+  .wrap{max-width:1080px;margin:0 auto}
+
+  /* ── header ── */
+  .kicker{
+    font-family:var(--mono);font-size:11px;letter-spacing:.18em;
+    text-transform:uppercase;color:var(--ink-3);margin-bottom:14px;
+  }
+  h1{font-size:34px;line-height:1.25;letter-spacing:-.02em;font-weight:700}
+  h1 em{font-style:normal;color:var(--accent)}
+  .meta{
+    display:flex;flex-wrap:wrap;gap:8px 20px;margin-top:16px;
+    font-family:var(--mono);font-size:12px;color:var(--ink-2);
+  }
+  .meta span{white-space:nowrap}
+  .rule{height:1px;background:var(--line);margin:32px 0}
+
+  /* ── section ── */
+  section{margin-bottom:46px}
+  h2{
+    font-size:13px;font-family:var(--mono);letter-spacing:.14em;
+    text-transform:uppercase;color:var(--ink-3);font-weight:600;
+    margin-bottom:18px;display:flex;align-items:center;gap:12px;
+  }
+  h2::after{content:"";flex:1;height:1px;background:var(--line)}
+
+  /* ── layer stack ── */
+  .stack{display:flex;flex-direction:column;gap:10px}
+  .layer{
+    background:var(--paper-2);border:1px solid var(--line);
+    border-left:3px solid var(--ink);
+    padding:16px 18px;display:grid;
+    grid-template-columns:96px 1fr auto;gap:18px;align-items:start;
+  }
+  .layer .lv{
+    font-family:var(--mono);font-size:11px;color:var(--ink-3);
+    letter-spacing:.1em;padding-top:3px;
+  }
+  .layer .name{font-size:15px;font-weight:650;margin-bottom:6px}
+  .layer .desc{font-size:12.5px;color:var(--ink-2);line-height:1.7}
+  .layer .desc code{
+    font-family:var(--mono);font-size:11.5px;background:#efe9e0;
+    padding:1px 5px;border-radius:3px;color:var(--ink);
+  }
+  .layer .stat{
+    font-family:var(--mono);font-size:11px;color:var(--ink-3);
+    text-align:right;white-space:nowrap;padding-top:2px;
+  }
+  .layer.l1{border-left-color:var(--accent)}
+  .layer.l2{border-left-color:var(--amber)}
+  .layer.l3{border-left-color:var(--teal)}
+  .layer.l4{border-left-color:#6b6b8a}
+  .layer.l0{border-left-color:var(--ink-3)}
+  .arrow{
+    font-family:var(--mono);font-size:11px;color:var(--ink-3);
+    padding-left:99px;letter-spacing:.05em;
+  }
+
+  /* ── gate chain ── */
+  .gates{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
+  @media (max-width:820px){.gates{grid-template-columns:repeat(2,1fr)}}
+  .gate{
+    background:var(--paper-2);border:1px solid var(--line);
+    padding:12px 13px;
+  }
+  .gate .n{
+    font-family:var(--mono);font-size:10px;color:var(--ink-3);
+    letter-spacing:.1em;display:block;margin-bottom:6px;
+  }
+  .gate .t{font-size:12.5px;font-weight:600;margin-bottom:4px}
+  .gate .d{font-size:11.5px;color:var(--ink-2);line-height:1.55}
+  .gate.warn{background:var(--amber-soft);border-color:#e3d3b4}
+
+  /* ── p0 table ── */
+  .p0{width:100%;border-collapse:collapse;font-size:13px}
+  .p0 th{
+    text-align:left;font-family:var(--mono);font-size:10.5px;
+    letter-spacing:.1em;text-transform:uppercase;color:var(--ink-3);
+    font-weight:500;padding:0 10px 8px;border-bottom:1px solid var(--line);
+  }
+  .p0 td{padding:11px 10px;border-bottom:1px solid #eae3d9;vertical-align:top}
+  .p0 tr:last-child td{border-bottom:none}
+  .p0 .id{font-family:var(--mono);font-size:11.5px;color:var(--accent);white-space:nowrap}
+  .p0 .ev{font-family:var(--mono);font-size:11px;color:var(--ink-3);white-space:nowrap}
+  .tag{
+    display:inline-block;font-family:var(--mono);font-size:10px;
+    padding:1px 6px;border-radius:3px;letter-spacing:.04em;
+  }
+  .tag.ok{background:var(--teal-soft);color:var(--teal)}
+  .tag.rev{background:#eee9e2;color:var(--ink-3)}
+
+  /* ── roadmap ── */
+  .road{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px}
+  .phase{background:var(--paper-2);border:1px solid var(--line);padding:18px}
+  .phase .ph{
+    font-family:var(--mono);font-size:10.5px;letter-spacing:.12em;
+    color:var(--ink-3);margin-bottom:8px;
+  }
+  .phase .h{font-size:15px;font-weight:650;margin-bottom:4px}
+  .phase .when{font-size:11.5px;color:var(--ink-3);margin-bottom:12px;font-family:var(--mono)}
+  .phase ul{list-style:none;font-size:12.5px;color:var(--ink-2);line-height:1.75}
+  .phase li{padding-left:14px;position:relative}
+  .phase li::before{
+    content:"";position:absolute;left:0;top:.62em;
+    width:5px;height:1px;background:var(--ink-3);
+  }
+  .phase.hot{border-color:#e0c4bd;background:#fdf6f4}
+
+  /* ── callout ── */
+  .note{
+    background:var(--accent-soft);border-left:3px solid var(--accent);
+    padding:16px 18px;font-size:13px;line-height:1.75;color:#5c241d;
+  }
+  .note strong{color:var(--accent)}
+
+  footer{
+    margin-top:52px;padding-top:18px;border-top:1px solid var(--line);
+    font-size:11.5px;color:var(--ink-3);font-family:var(--mono);
+    display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;
+  }
+  @media (max-width:640px){
+    body{padding:32px 18px 48px}
+    h1{font-size:26px}
+    .layer{grid-template-columns:1fr;gap:6px}
+    .layer .stat{text-align:left}
+    .arrow{padding-left:0}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="kicker">Architecture Review · v1.0</div>
+  <h1>AgentKit 架构总览<br><em>五条独立评审线</em>的汇总结论</h1>
+  <div class="meta">
+    <span>基线 main@19ee5d8</span>
+    <span>284 .kt / 73,006 行</span>
+    <span>2026-11-05</span>
+    <span>证据等级：✔ 已复核 · ○ 待复核</span>
+  </div>
+
+  <div class="rule"></div>
+
+  <!-- 分层 -->
+  <section>
+    <h2>01 · 分层骨架</h2>
+    <div class="stack">
+      <div class="layer l1">
+        <div class="lv">L1 表现</div>
+        <div>
+          <div class="name">ui/</div>
+          <div class="desc"><code>ChatScreen</code> <code>ChatViewModel</code> <code>AppScaffold</code> <code>ModelConfigScreen</code> · 72 条公开 StateFlow，无统一 UiState 边界</div>
+        </div>
+        <div class="stat">46 文件<br>26,011 行</div>
+      </div>
+      <div class="arrow">↓ 单向依赖（守卫只检查这一条）</div>
+
+      <div class="layer l2">
+        <div class="lv">L2 编排</div>
+        <div>
+          <div class="name">core/agent/ · 回合制 Agent 循环</div>
+          <div class="desc"><code>RealAgentLoop</code> <code>ToolExecutor</code> <code>ContextBudget</code> <code>KernelExposure</code> <code>TurnJournal</code> · 7 种职责 / 34 个构造参数挤在 1,553 行</div>
+        </div>
+        <div class="stat">余量 0 行</div>
+      </div>
+      <div class="arrow">↓ 只认 descriptor，不认识具体工具</div>
+
+      <div class="layer l3">
+        <div class="lv">L3 能力</div>
+        <div>
+          <div class="name">核心能力接入</div>
+          <div class="desc"><code>core/llm/</code> 三家协议 + 目录 · <code>tools/</code> 24 文件 · <code>skill/</code> 7 · <code>memory/</code> 4 · <code>runtime/lease</code> 资源租约</div>
+        </div>
+        <div class="stat">56 工具 / 15 组</div>
+      </div>
+
+      <div class="layer l4">
+        <div class="lv">L4 系统</div>
+        <div>
+          <div class="name">执行后端</div>
+          <div class="desc">无障碍 · Shizuku · 无线 ADB · proot 容器 · 本机 sh —— 唯一降级链 <code>proot→shizuku→adb→user</code></div>
+        </div>
+        <div class="stat">30 文件 / 5,364 行</div>
+      </div>
+
+      <div class="layer l0">
+        <div class="lv">L0 基础</div>
+        <div>
+          <div class="name">持久化与横切</div>
+          <div class="desc"><code>AtomicJsonFile</code> 原子写 · 分片只写脏会话 · 备份无哈希 · 日志 500 环</div>
+        </div>
+        <div class="stat">index 带 schemaVersion=2 · R-10 已修</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 七道闸 -->
+  <section>
+    <h2>02 · 工具调用七道闸</h2>
+    <div class="gates">
+      <div class="gate"><span class="n">进入</span><div class="t">descriptor 校验</div><div class="d">只认本回合可见工具</div></div>
+      <div class="gate"><span class="n">①</span><div class="t">未启用</div><div class="d"><code>tool_not_enabled</code>，并指出该开哪组</div></div>
+      <div class="gate"><span class="n">②</span><div class="t">失败熔断</div><div class="d">同一工具连续踩坑即短路</div></div>
+      <div class="gate warn"><span class="n">③</span><div class="t">参数级审批</div><div class="d">超时写在 UI，离开页面即挂起</div></div>
+      <div class="gate"><span class="n">④</span><div class="t">副作用登记</div><div class="d">DISP 落盘失败则拒写</div></div>
+      <div class="gate"><span class="n">⑤</span><div class="t">执行</div><div class="d">90s 只读 / 600s 写</div></div>
+      <div class="gate"><span class="n">⑥</span><div class="t">结果截断</div><div class="d">预算 1.2×，下限 1000 字符</div></div>
+      <div class="gate"><span class="n">⑦</span><div class="t">回灌</div><div class="d">ToolMessage + 图片单独回灌</div></div>
+    </div>
+  </section>
+
+  <!-- P0 -->
+  <section>
+    <h2>03 · P0 止血清单</h2>
+    <table class="p0">
+      <thead>
+        <tr><th style="width:64px">ID</th><th>缺陷</th><th style="width:110px">改动量</th><th style="width:78px">证据</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="id">R-01</td>
+          <td>上下文窗口收敛全程失效 — <span style="color:var(--ink-3)">LLMClient.id 返回协议名 "openai"，被当供应商 id 查目录，恒为 0</span></td>
+          <td>小 · 加字段 + 3 处</td>
+          <td class="ev"><span class="tag ok">已复核</span></td>
+        </tr>
+        <tr>
+          <td class="id">R-02</td>
+          <td>生成中切会话，标题写到新会话 — <span style="color:var(--ink-3)">用了 activeConversationId 而非 owner</span></td>
+          <td>极小 · 1 行</td>
+          <td class="ev"><span class="tag rev">待复核</span></td>
+        </tr>
+        <tr>
+          <td class="id">R-03</td>
+          <td>审批 30s 超时写在 Composable 里，离开对话页后 await() 永久挂起</td>
+          <td>小 · 加 withTimeout</td>
+          <td class="ev"><span class="tag rev">待复核</span></td>
+        </tr>
+        <tr>
+          <td class="id">R-04</td>
+          <td>「10 失败」被判 PASS — <span style="color:var(--ink-3)">run-all.sh:132 子串匹配无左边界</span></td>
+          <td>1 行</td>
+          <td class="ev"><span class="tag rev">待复核</span></td>
+        </tr>
+        <tr>
+          <td class="id">R-05</td>
+          <td>消息列表无 key，工具卡原位替换触发整表重排</td>
+          <td>小</td>
+          <td class="ev"><span class="tag rev">待复核</span></td>
+        </tr>
+        <tr>
+          <td class="id">R-06</td>
+          <td>取消后残留 running=true 占位卡，重载永久转圈</td>
+          <td>小</td>
+          <td class="ev"><span class="tag rev">待复核</span></td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- 路线 -->
+  <section>
+    <h2>04 · 演进路线</h2>
+    <div class="road">
+      <div class="phase hot">
+        <div class="ph">P0 · 止血</div>
+        <div class="h">先补余量</div>
+        <div class="when">1 周 · &lt;300 行改动</div>
+        <ul>
+          <li>providerId 传递链</li>
+          <li>owner 收尾 / 审批超时</li>
+          <li>列表 key / 取消兜底</li>
+          <li>run-all 判定改整数解析</li>
+        </ul>
+      </div>
+      <div class="phase">
+        <div class="ph">P1 · 结构</div>
+        <div class="h">再拆骨架</div>
+        <div class="when">3–4 周</div>
+        <ul>
+          <li>抽 TurnRequestAssembler</li>
+          <li>ChatViewModel 五步拆分</li>
+          <li>18 处签名换窄接口（✔ 已修，R-14）</li>
+          <li>会话分片 + 删双写（✔ 已修，R-10）</li>
+        </ul>
+      </div>
+      <div class="phase">
+        <div class="ph">P2 · 能力</div>
+        <div class="h">最后做通道</div>
+        <div class="when">Phase 2</div>
+        <ul>
+          <li>TerminalIdentity 加 Shell</li>
+          <li>SelfAdbBackend 复用 2000 行</li>
+          <li>后台任务续跑</li>
+          <li>提示词资产化</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- 结论 -->
+  <section>
+    <h2>05 · 一句话结论</h2>
+    <div class="note">
+      骨架是对的，问题不在设计在<strong>余量</strong>：五个主文件零余量、守卫只管 1.8% 的代码、
+      1,370 条文本断言把「代码长什么样」当成契约。所以顺序必须是
+      <strong>先补余量与守卫，再做结构，最后做能力</strong>——反过来，Phase 2 的两三千行
+      会直接压到已经没有余量的 <code>RealAgentLoop</code> 上，最后只能抬基线，守卫等于废掉。
+    </div>
+  </section>
+
+  <footer>
+    <span>AgentKit · docs/AgentKit-架构方案-2026-11-05.md</span>
+    <span>沙箱内无法编译验证 · 真机数据需复测</span>
+  </footer>
+
+</div>
+</body>
+</html>

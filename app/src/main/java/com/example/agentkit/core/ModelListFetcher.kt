@@ -1,5 +1,6 @@
 package com.example.agentkit.core
 
+import com.example.agentkit.core.llm.LlmHttp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
@@ -34,10 +35,7 @@ import com.example.agentkit.core.llm.primOrNull
  * 响应体只进日志（且先过 AgentLogger.sanitize），不回灌给调用方。
  */
 class ModelListFetcher(
-    private val http: OkHttpClient = OkHttpClient.Builder()
-        .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(20, TimeUnit.SECONDS)
-        .build()
+    private val http: OkHttpClient = LlmHttp.short
 ) {
 
     /**

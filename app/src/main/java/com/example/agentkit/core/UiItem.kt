@@ -67,12 +67,39 @@ sealed interface UiItem {
      * @param result 工具输出（已截断的展示文本，不是回喂给模型的原始载荷）。
      * @param images 工具返回的图片（data URL 列表），如 ui_screenshot 截图，直接渲染在对话中。
      * @param running 执行中态（`AgentEvent.ToolStarted` 已上报、`ToolFinished` 未到）。
+     * @param interrupted 被中断（R-06）：这一轮在工具执行期间被停止 / 进程被杀，终态永远
+     *   不会到达。与 [isError] 分开，是因为「用户点了停止」不是工具失败，文案与配色都不同；
+     *   但它**不转圈**——转圈意味着「还在等」，而这里已经没有人在等了。
      */
     data class Tool(
         val call: ToolCall,
         val result: String,
         val isError: Boolean,
         val images: List<String> = emptyList(),
-        val running: Boolean = false
+        val running: Boolean = false,
+        val interrupted: Boolean = false
     ) : UiItem
+}
+
+/**
+ * LazyColumn 的稳定身份（R-05）。
+ *
+ * 不给 key 时 Compose 拿**下标**当身份：工具卡一插入，其后每一项的身份都换了，
+ * 整表按新身份重建——滚动位置跳一下、图片闪一下、正展开的工具卡自己合上。
+ * 这不是「性能损耗」，是看得见的交互抖动。
+ *
+ * 用数据模型自己的主键，不另造一套：
+ * - 工具卡 → [ToolCall.id]（与落盘同一个 id，全生命周期不变）
+ * - 已归属轮次的气泡 → 轮次下标（每轮恰好一个用户气泡 + 一个选中变体）
+ * - 未归属的（实时草稿、trace 里的中间消息）→ 下标兜底：它们本来就没有稳定身份，
+ *   硬编一个反而会在「草稿转正」那一刻制造一次身份迁移
+ *
+ * @param index 在列表里的位置，**仅用于兜底**；有稳定主键时忽略。
+ */
+fun UiItem.uiKey(index: Int): String = when (this) {
+    // 空 id 的老数据（手工编辑、早期版本）退回下标，否则多张卡会撞同一个 key —— 
+    // Compose 遇到重复 key 直接抛异常，整个对话页白屏。
+    is UiItem.Tool -> "t:" + call.id.ifEmpty { "@$index" }
+    is UiItem.User -> if (turnIndex >= 0) "u:$turnIndex" else "u@$index"
+    is UiItem.Assistant -> if (turnIndex >= 0) "a:$turnIndex" else "m@$index"
 }

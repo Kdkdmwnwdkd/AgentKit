@@ -34,7 +34,23 @@ data class LLMConfig(
     val model: String,
     val customHeaders: Map<String, String> = emptyMap(),
     val customBody: Map<String, JsonElement> = emptyMap(),
-    val reasoningLevel: String? = null
+    val reasoningLevel: String? = null,
+    /**
+     * 厂商 id（[com.example.agentkit.core.llm.ProviderCatalog] 条目 id）。
+     *
+     * **由 [ProviderManager.create] 统一盖章，调用方不需要传**——`create` 的第一个参数
+     * `name` 本来就是权威来源，从这里再传一遍等于给同一个事实两个入口。
+     *
+     * 默认空串的语义是「未经 create」：客户端此时只能退回协议名，属于兜底而非正常路径。
+     */
+    val providerId: String = "",
+    /**
+     * 单次输出上限。**0 = 不发送**（见 [com.example.agentkit.core.llm.ProviderCatalog.LlmProvider.maxOutputTokens]）。
+     *
+     * 与 [providerId] 同一套来源：由 [ProviderManager.create] 从目录盖章。调用方显式
+     * 给值则优先（留给将来「设置页自定义上限」，现在没有入口）。
+     */
+    val maxOutputTokens: Int = 0
 )
 
 /**
@@ -80,8 +96,29 @@ data class ModelInfo(
  * 对外统一成同一套 ChatMessage / AssistantMessage / ToolCall。
  */
 interface LLMClient {
-    /** 供应商标识（"openai" / "claude" / "gemini" / "local-llama"），ProviderManager 的键。 */
+    /**
+     * **协议名**（"openai" / "claude" / "gemini" / "local-llama"）。
+     *
+     * ⚠️ 这不是厂商 id。原先这里写的是「供应商标识，ProviderManager 的键」，那句话
+     * 直接把 R10 的窗口收敛带进了沟里：35 家里 28 家走 OpenAI 兼容，它们的 `id`
+     * 全是 `"openai"`；而目录里那条 `id = "openai"` 是「OpenAI 兼容」**通用兜底条目**
+     * （窗口 0，代表不了任何厂商），于是 `contextWindowOf(id)` 恒返回 0，
+     * 收敛分支从未进入，且不会报「未知 id」——查不出异常。
+     *
+     * 按**厂商**分档的逻辑（上下文窗口 / 工具结果长度 / 工具暴露档位）一律用 [providerId]；
+     * 这个字段只用于「判断走哪套协议」（如 `startsWith("local-")`）。
+     */
     val id: String
+
+    /**
+     * 厂商 id（目录条目 id，如 `"deepseek"` / `"moonshot"` / 用户自填的 `"my-endpoint"`）。
+     *
+     * 默认取 [id]：原生协议的目录 id 恰好等于协议名（claude / gemini / local-llama），
+     * 这条默认值对它们是对的。**OpenAI 兼容客户端必须覆盖**，否则 28 家共用一副面孔。
+     *
+     * 由 [ProviderManager.create] 从配置盖章传入，不接受调用方另行指定。
+     */
+    val providerId: String get() = id
 
     suspend fun chat(messages: List<ChatMessage>, tools: List<AgentTool>): AssistantMessage
 
@@ -192,6 +229,15 @@ class OpenAIClient(
     override val id: String = "openai"
 
     /**
+     * 厂商 id：由 [ProviderManager.create] 从配置盖章带进来。
+     *
+     * `ifBlank` 兜底成协议名，是为了「有人直接 `OpenAIClient(config)` 绕过工厂」这种情况
+     * 不至于退化成空串去查目录（空串会让 `contextWindowOf` 返回 0，与本 bug 同形）。
+     * 正常路径上它永远是真实厂商 id。
+     */
+    override val providerId: String = config.providerId.ifBlank { id }
+
+    /**
      * 全部可用 Key 槽位：主 Key + 备用池。
      *
      * W-22 修：主 Key 为空（用户只配了备用 Key）时必须**剔除主槽位**——
@@ -298,6 +344,10 @@ class OpenAIClient(
                 putJsonArray("tools") { tools.forEach { add(toApiTool(it)) } }
             }
             config.reasoningLevel?.let { put("reasoning_effort", it) }
+            // 【R12】输出上限：目录声明了才发（0 = 交给服务端默认）。
+            // 位置同下条 temperature——必须写在 customBody 之前，否则用户在
+            // 「自定义参数」里填的 max_tokens 会被静默覆盖。
+            if (config.maxOutputTokens > 0) put("max_tokens", config.maxOutputTokens)
             // 【W-38 修复】默认温度必须写在 customBody **之前**。
             // 原顺序是先应用用户自定义体、再硬写 0.7，导致用户在「自定义参数」里填的
             // temperature 被静默覆盖——功能在、但不生效，属于最伤信任的那类 bug。
@@ -501,6 +551,8 @@ class OpenAIClient(
             // vLLM / Ollama / DeepSeek / one-api 系均支持）。放在 customBody 之前——
             // 用户在自定义体里显式配置 stream_options 时以用户为准。
             putJsonObject("stream_options") { put("include_usage", true) }
+            // 【R12】输出上限，位置要求同非流式（见 callOnce 处的说明）
+            if (config.maxOutputTokens > 0) put("max_tokens", config.maxOutputTokens)
             config.customBody.forEach { (k, v) -> put(k, v) }
         }
         val request = buildRequest(requestJson)
@@ -846,12 +898,28 @@ class ProviderManager {
      * 这样 deepseek/ollama/openrouter 等目录内厂商、以及任何自定义 id 都能拿到客户端。
      */
     fun create(name: String, config: LLMConfig): LLMClient {
+        // 盖章：把「这次到底找的是哪家」写进配置，由客户端自己带着走。
+        //
+        // 为什么不要求调用方传：`name` 已经是权威来源（它决定走哪个 style），
+        // 让调用方在 LLMConfig 里再传一遍，就是给同一个事实开第二个入口——
+        // 而历史恰恰是这么丢的：配置层有 providerId，`buildMainClient` 也拿它去查了
+        // style，偏偏构造 LLMConfig 时没写进来，于是客户端只知道自己"是 OpenAI 兼容"。
+        val entry = com.example.agentkit.core.llm.ProviderCatalog.byId(name)
+        val stamped = config.copy(
+            providerId = name,
+            // 用户显式给值优先；否则取目录声明；目录没声明就是 0（不发送）。
+            maxOutputTokens = if (config.maxOutputTokens > 0) {
+                config.maxOutputTokens
+            } else {
+                entry?.maxOutputTokens ?: 0
+            }
+        )
         val direct = providers[name]
-        if (direct != null) return direct.invoke(config)
+        if (direct != null) return direct.invoke(stamped)
         val style = com.example.agentkit.core.llm.ProviderCatalog.styleOf(name)
         val byStyle = providers[style]
             ?: providers[com.example.agentkit.core.llm.ProviderCatalog.STYLE_OPENAI]
-        return byStyle?.invoke(config)
+        return byStyle?.invoke(stamped)
             ?: throw IllegalArgumentException("未知供应商：$name（已注册：${providers.keys}）")
     }
 

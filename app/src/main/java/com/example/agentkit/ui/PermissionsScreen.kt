@@ -22,6 +22,7 @@ import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Shield
 import androidx.compose.material.icons.outlined.Terminal
 import com.example.agentkit.automation.shizuku.ShizukuShell
+import com.example.agentkit.ui.contract.PermissionStatusContract
 import rikka.shizuku.Shizuku
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -56,7 +57,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
  * @param onStartGuide 进入权限引导页
  */
 @Composable
-fun PermissionsScreen(vm: ChatViewModel, onStartGuide: () -> Unit = {}) {
+fun PermissionsScreen(vm: PermissionStatusContract, onStartGuide: () -> Unit = {}) {
     val connected by vm.serviceConnected.collectAsStateWithLifecycle()
     val notificationGranted by vm.notificationGranted.collectAsStateWithLifecycle()
     val usageGranted by vm.usageGranted.collectAsStateWithLifecycle()

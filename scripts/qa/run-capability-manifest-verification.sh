@@ -29,9 +29,17 @@ if [ -z "${KOTLINC_JAR:-}" ] || [ -z "${STDLIB:-}" ]; then
     STDLIB=${STDLIB:-$KC_HOME/lib/kotlin-stdlib.jar}
   fi
 fi
-[ -z "${KOTLINC_BIN:-}" ] && [ -z "${KOTLINC_JAR:-}" ] && { echo "SKIP: 找不到 kotlinc" >&2; exit 3; }
+# R-17：SKIP 必须走 KS_HARNESS_SKIP 协议，并给出可核验的缺件路径——
+# 裸的 `SKIP:` 前缀无法被 run-all 校验，等于允许 runner 自己给自己发免死金牌。
+[ -z "${KOTLINC_BIN:-}" ] && [ -z "${KOTLINC_JAR:-}" ] && {
+  echo "KS_HARNESS_SKIP $(basename "$0") 找不到 Kotlin 编译器（${KOTLINC_JAR:-$KC_HOME/lib/kotlin-compiler.jar}）" >&2
+  exit 3
+}
 for j in "$COROUTINES" "$SER_JSON" "$SER_CORE"; do
-  [ -f "${j:-}" ] || { echo "SKIP: 缺少依赖 ${j:-<空>}" >&2; exit 3; }
+  [ -f "${j:-}" ] || {
+    echo "KS_HARNESS_SKIP $(basename "$0") 缺少依赖 jar：${j:-（未解析到路径，Gradle 缓存未就绪）}" >&2
+    exit 3
+  }
 done
 
 DEPS=$STDLIB:$COROUTINES:$SER_JSON:$SER_CORE

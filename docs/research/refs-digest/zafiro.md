@@ -120,7 +120,7 @@ zafiro 是我看过的几个参照仓库里**工程成熟度最高、抽象最�
   - `:30` `uiStateFlow: StateFlow<State>`（持久）
   - `:41-47` `_uiEffect: MutableSharedFlow<Effect>`（一次性，无 replay，`extraBufferCapacity = 1`）
   - `:50` `intentChannel = Channel<Intent>(Channel.UNLIMITED)`，`:57-67` init 启动消费
-- **State vs Effect 判据**（AGENTS.md:41，值得原样抄进 AgentKit 规范）：*"换个时间再读还成立吗"*——列表数据、弹窗开关是 State；Toast、聚焦、退出页面是 Effect。弹窗最容易误判：*"触发弹窗是一次动作，但「弹窗开着」是界面当前的样子…所以它是 State"*（AGENTS.md:43）。
+- **State vs Effect 判据**（AGENTS.md:41，这条判据值得写进 AgentKit 规范）：*"换个时间再读还成立吗"*——列表数据、弹窗开关是 State；Toast、聚焦、退出页面是 Effect。弹窗最容易误判：*"触发弹窗是一次动作，但「弹窗开着」是界面当前的样子…所以它是 State"*（AGENTS.md:43）。
 
 ---
 

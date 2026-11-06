@@ -64,6 +64,7 @@ import android.widget.Toast
 import com.example.agentkit.core.agent.SurvivalCheckService
 import com.example.agentkit.runtime.lease.LeaseRegistry
 import com.example.agentkit.runtime.lease.LeaseSnapshot
+import com.example.agentkit.ui.contract.SettingsScreenContract
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -89,7 +90,7 @@ import kotlinx.coroutines.withContext
  */
 @Composable
 fun SettingsScreen(
-    vm: ChatViewModel,
+    vm: SettingsScreenContract,
     themeMode: ThemeMode,
     dynamicColor: Boolean = false,
     onNavigate: (AppDest) -> Unit
@@ -547,7 +548,7 @@ fun SettingsScreen(
  * 视觉锚点——下面那些卡片才有「次要信息」的层次。
  */
 @Composable
-private fun ModelHeroCard(vm: ChatViewModel, onNavigate: (AppDest) -> Unit) {
+private fun ModelHeroCard(vm: SettingsScreenContract, onNavigate: (AppDest) -> Unit) {
     val profiles by vm.profiles.collectAsStateWithLifecycle()
     val activeId by vm.activeProfileId.collectAsStateWithLifecycle()
     val active = profiles.firstOrNull { it.id == activeId }
@@ -609,7 +610,7 @@ private fun ModelHeroCard(vm: ChatViewModel, onNavigate: (AppDest) -> Unit) {
  * 「重置冷却」用于误判或用户已充值后立刻恢复全部 Key。
  */
 @Composable
-private fun BackupKeySection(vm: ChatViewModel) {
+private fun BackupKeySection(vm: SettingsScreenContract) {
     val slots by vm.backupKeys.collectAsStateWithLifecycle()
     val summary by vm.keyPoolSummary.collectAsStateWithLifecycle()
     var input by remember { mutableStateOf("") }

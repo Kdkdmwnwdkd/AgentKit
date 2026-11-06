@@ -3,6 +3,7 @@ package com.example.agentkit.ui
 import com.example.agentkit.core.AssistantMessage
 import com.example.agentkit.core.ChatMessage
 import com.example.agentkit.core.ConversationStore
+import com.example.agentkit.core.TOOL_INTERRUPTED_NOTE
 import com.example.agentkit.core.TokenUsage
 import com.example.agentkit.core.ToolCall
 import com.example.agentkit.core.ToolMessage
@@ -17,7 +18,7 @@ import kotlinx.coroutines.flow.asStateFlow
 /**
  * 「消息怎么上屏、怎么落库」的单一真源。
  *
- * ## 它守的三条纪律
+ * ## 它守的四条纪律
  *
  * ① **显示态与持久态同源**：上屏的每一条都要落库，落库的每一条都能重新投影回来
  *   （[reloadActive] 用轮次变体结构整体重建）。改动前这两件事分散在 send / 事件回调 /
@@ -30,6 +31,10 @@ import kotlinx.coroutines.flow.asStateFlow
  *
  * ③ **在途写按 owner 落库**：生成中用户切到别的会话时，旧会话的后台出字必须写回旧会话。
  *   落库目标 = owner ?: 当前会话（见 [appendToStore]）；上屏与否另由 [ownerActive] 决定。
+ *
+ * ④ **工具卡必有终态**：一轮结束时不允许还有 `running=true` 的卡（[settleInterrupted]）；
+ *   落盘里残留的「执行中」只可能是进程被杀，重新载入时按「已中断」呈现（[loadOf]）——
+ *   既不能一直转圈，也不能伪装成「已完成」。
  */
 internal class ConversationProjection(
     private val store: ConversationStore,
@@ -124,7 +129,58 @@ internal class ConversationProjection(
         replace(loadOf(activeId()))
     }
 
-    /** 读某个会话的投影（切会话时用；不存在返回空表）。 */
-    fun loadOf(convId: String): List<UiItem> =
-        store.load(convId)?.toUiItems() ?: emptyList()
+    /**
+     * 回合收尾：把仍是「执行中」的工具卡补成终态（R-06）。
+     *
+     * 两份数据都要动，因为它们不是同一份：
+     *  - **显示态**：`_items` 里 `running=true` 的卡直接翻。regenerate 的取消路径
+     *    `rebuildMessages=false`（不重建列表），不翻就会一直转圈到用户切走；
+     *  - **持久态**：`store.settlePendingTools` 按 [convId] 扫全量记录。用户在**别的
+     *    会话**里点停止时，owner 会话的工具卡从没上过屏（`ownerActive` 为 false），
+     *    显示态里根本没有它——只翻 `_items` 会漏掉这一类，而它恰恰是最常见的：
+     *    「发出去、切走、在别处点停止」。
+     *
+     * @param convId 本轮归属会话；由运行控制器在清空 owner **之前**传入。
+     * @return 持久态补了几条。显示态的翻转不单独计数——重载后能看见的是存储里那一份，
+     *   它才是「这张卡到底什么状态」的真源。
+     */
+    fun settleInterrupted(convId: String): Int = synchronized(lock) {
+        if (activeId() == convId) {
+            val cur = _items.value
+            var flipped = 0
+            val next = cur.map { item ->
+                if (item !is UiItem.Tool || !item.running) item
+                else {
+                    flipped++
+                    item.asInterrupted()
+                }
+            }
+            if (flipped > 0) _items.value = next
+        }
+        val stored = store.settlePendingTools(convId)
+        if (stored > 0) onStoreChanged()
+        stored
+    }
+
+    /**
+     * 读某个会话的投影（切会话时用；不存在返回空表）。
+     *
+     * R-06：落盘里 `pending` 的记录 = 上一轮没走完（进程被杀 / 收尾没跑到）。
+     * 只有当**这条会话确实正在跑**（owner 就是它）时才保留转圈——用户切走再切回在途
+     * 会话，进度理应继续显示。其余情况一律按「已中断」呈现：重新载入还转圈等于永远
+     * 转圈，而按空结果渲染成「已完成」更糟——那是在撒谎。
+     */
+    fun loadOf(convId: String): List<UiItem> {
+        val items = store.load(convId)?.toUiItems() ?: emptyList()
+        if (ownerId() == convId) return items
+        return items.map { if (it is UiItem.Tool && it.running) it.asInterrupted() else it }
+    }
 }
+
+/** 执行中的卡 → 「已中断」态：停转圈、补可见文案、状态单列（不混进「已失败」）。 */
+private fun UiItem.Tool.asInterrupted(): UiItem.Tool = copy(
+    running = false,
+    isError = true,
+    interrupted = true,
+    result = result.ifBlank { TOOL_INTERRUPTED_NOTE }
+)

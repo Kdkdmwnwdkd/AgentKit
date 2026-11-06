@@ -44,6 +44,7 @@ import com.example.agentkit.core.capability.buildGuideItems
 import com.example.agentkit.core.capability.capabilitySummary
 import com.example.agentkit.core.capability.hasBlockingGap
 import com.example.agentkit.core.capability.readyCount
+import com.example.agentkit.ui.contract.PermissionStatusContract
 import rikka.shizuku.Shizuku
 
 /**
@@ -66,7 +67,7 @@ import rikka.shizuku.Shizuku
  * @param onDone 完成 / 跳过后的去向（回对话页）
  */
 @Composable
-fun PermissionGuideScreen(vm: ChatViewModel, onDone: () -> Unit) {
+fun PermissionGuideScreen(vm: PermissionStatusContract, onDone: () -> Unit) {
     val ctx = LocalContext.current
     val connected by vm.serviceConnected.collectAsStateWithLifecycle()
     val notificationGranted by vm.notificationGranted.collectAsStateWithLifecycle()

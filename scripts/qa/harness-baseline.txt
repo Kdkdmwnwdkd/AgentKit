@@ -40,6 +40,17 @@
 #   exit 3 退回无条件 SKIP → 2 条红（全在场景 4）；空跑检测去掉左边界 → 5 条红
 #   （`20 通过` / `100 通过` 被误杀，证明那条边界真的在挡误报）。
 #
+# 2026-11-05：106 → 107（R-20 新增 run-r20-verification.sh，沙箱里真跑，不 SKIP）。
+#
+# 2026-11-05：93 → 106（口径修正，不是加了 13 个 harness）。
+#   93 这个数字是「当轮本机 PASS 数」留下的，它同时混进了两种东西：真跑过的，
+#   和环境不具备被 SKIP 的。于是它既不等于本机的 64，也不等于环境齐备时的 106，
+#   门禁 5 长期红——而长期红等于没有门禁。
+#   现在这行代表的是「SKIP=0 时应达到的 PASS」，也就是 runner 总数（106）。
+#   有 SKIP 的轮次不跟它比（前提不成立），改由 gate.sh 门禁 6 逐条核对：
+#   谁没跑、缺件是否真缺、skip-allowlist.txt 有没有变长。
+#   校验方式：`ls scripts/qa/run-*.sh | grep -v run-all.sh | wc -l` 应等于本数字。
+#
 # 2026-11-05：92 → 93（补上「输出为什么结束」这一层）。
 #   run-finish-reason-verification.sh——FinishReason 归一化，24 条断言。
 #   背景：`finish_reason` / `stop_reason` / `finishReason` 此前**全仓库没有一处读取**，
@@ -50,4 +61,65 @@
 #   空数组 / 大小写混排一律不崩且不误判）。
 #   反向变异三次全部靶向精确：漏掉 max_tokens 映射 → 3 条红（F-10/F-14/F-18）；
 #   空串不做过滤 → 只有 F-09 红；把 tool_calls 也并进 stop → 只有 F-03 红。
-93
+#
+# 2026-11-05：107 → 108（R-19 新增 run-r19-verification.sh）。
+#   它是**契约台账的判据**，不是新功能：DELETED 条目必须真的没有定义、
+#   WIRED 条目必须存在登记的那段调用、RESERVED 条目必须仍然零调用。
+#   台账本身在 scripts/qa/contract-inventory.txt（14 条，含删掉的 stop / unregister，
+#   以及 10 条「实现完整但没接入口」的保留项）。
+#   另有 [F] 段真跑 AppBackgroundHooks（8 条行为断言，零 Android 依赖）。
+#   变异验证 6 组全部靶向精确；其中 N1（去掉异常隔离）逼出一个真问题：
+#   harness 崩掉时没有结果行，runner 曾把它当作「没失败」——已修成「无结果行即失败」。
+#
+#
+# 2026-11-05：108 → 109（R-13 新增 run-r13-catalog-verification.sh）。
+#   它验的是「一个工具的元数据只有一处」：旧的三张手写表（能力分级 56 行 /
+#   审批归组 20 行 / 组成员 56 个名字）逐条清零，改成 ToolCatalog 的派生视图。
+#   38 条断言：4 条「旧表拆净」+ 4 条「工具类↔目录双向」+ 30 条真跑行为（零第三方依赖）。
+#   9 组变异全部靶向精确；其中 M5（把名单写回 listOf(...)）逼出了第一版 A3 判据的盲区：
+#   原来按「一行一个名字」的排版匹配，整行 listOf 不命中——已改为按名字命中算。
+#   顺带修了三处「盯着旧真源看」的既有 harness：tool-surface-audit 的解析器、
+#   local-agent-prompt 的工具名集合、r08 的编译源列表。
+#
+#
+# 2026-11-05：109 → 110（R-12 新增 run-r12-identity-verification.sh）。
+#   验「终端身份维度」：42 条断言（A 档位语义 9 / B 工厂候选 8 / C 真取后端 5 /
+#   D 真跑会话池 10 / E 源码守卫 6 + 结构 2，另有 [C] 一致性 2）。
+#   10 组变异全部靶向精确，其中两组抓到真问题：
+#     · M9 暴露工厂只遍历写死的四个 key——任何新后端（su/ssh）永远选不到，静默失效；
+#       而 KDoc 里写着「本类一行不用改」，是假话。已改成 order + providers 里未知 key。
+#     · B5 反过来抓到修正过头的版本：追加时把 proot 也从后门塞回来了，
+#       prefer_proot=false 语义失效。
+#   顺带：deps.sh 加 qa_find_jar_or_local（缓存「部分就绪」时不再以
+#   ClassNotFoundException: gnu.trove.THashMap 崩掉）；R06 的 A5 改成轮询判据
+#   （原来用「persistCount 稳定 100ms」表达「写完成」，并行跑全量时假红）。
+#
+#
+# 2026-11-06：110 → 111（R-14 新增 run-r14-contract-verification.sh）。
+#   验「屏幕只拿窄接口」：18 个屏幕原本一律 `vm: ChatViewModel`（173 个 public 成员），
+#   现切成 30 个 @Stable 窄接口，AppScaffold 是唯一保留整个 ViewModel 的组装根。
+#   12 条**结构化**判据（lib/r14_guard.py 做集合对账，不是 grep 数行数）：
+#     A 组装根 2 / B 契约本体 5（Stable、死成员、越界使用、继承图、参数类型）/
+#     C 实现类对账 4（祖先闭包、override 双向、幽灵接口）/ D 依赖方向 1。
+#   12 组变异全部靶向精确且恢复全绿；其中 M6 抓到一个真问题：契约写了未定义
+#   parent 时 r14_coverage.py 的 closure[sub] 直接 KeyError，整条守卫链崩成「一条
+#   判据都没输出」——已改成 closure.get，让 B4 报出可读诊断。
+#   顺带收干净 3 处真实过度暴露（会话列表 4 个动作、提示词库 insertPromptIntoInput、
+#   设置页 chatBackgroundAlpha），云端 :app:compileDebugKotlin 真编译通过。
+#
+# 2026-11-06：111 → 112（R-10 新增 run-r10-shard-verification.sh，本机真跑，不 SKIP）。
+#   验「会话落盘从 O(全库) 降为 O(单会话)」：整库 conversations.json 改成
+#   conversations/<id>.json 分片 + index.json 轻量索引，messages 双写删掉（读时
+#   由 ConversationBranch.flatten(turns) 现算），旧整库文件走一次性 migrate。
+#   27 条判据 = A 段 13 条结构化集合对账（lib/r10_shard_guard.py：分片无 messages、
+#   index 只含 ids/schemaVersion、@EncodeDefault(ALWAYS)、flatten、不序列化整库、
+#   只遍历脏集、分片 DTO 编码、load 四路径、11 个写方法脏追踪、不走 writeText、
+#   安全 id 编码、清除旧 bakFile/tmpFile、R-19 后台接线）
+#   + B 段 14 条真跑行为（R10ShardVerification.kt：kotlinc 自编译 + 临时目录，
+#   验 20 会话改 1 个只写 1 个分片、跨实例读回、旧库迁移、删除清理、主/分片
+#   .bak 回退、全坏扫描重建、去抖、flush 幂等、非法 id 无路径穿越等）。
+#   19 组变异全部靶向精确且恢复全绿；配套把 R13Verification.kt 的「主文件正文
+#   文本匹配」升级为分片读回行为断言。校验：
+#   `ls scripts/qa/run-*.sh | grep -v run-all.sh | wc -l` 应等于本数字。
+#
+112

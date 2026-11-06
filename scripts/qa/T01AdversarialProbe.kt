@@ -28,6 +28,7 @@ import com.example.agentkit.core.SystemMessage
 import com.example.agentkit.core.ToolCall
 import com.example.agentkit.core.ToolMessage
 import com.example.agentkit.core.ToolRegistry
+import java.util.concurrent.atomic.AtomicBoolean
 import com.example.agentkit.core.ToolResult
 import com.example.agentkit.core.UserMessage
 import com.example.agentkit.core.agent.Hooks
@@ -341,16 +342,18 @@ private suspend fun testP3MixedCompleteAndCancel() = runBlocking {
     }
 }
 
-/* ------------------------------ P4：stop() 路径的 Hooks 计数 ------------------------------ */
+/* ------------------------------ P4：收尾路径的 Hooks 计数 ------------------------------ */
 
 private suspend fun testP4StopHooks() {
-    println("\n== P4 stop() 优雅通道：beforeStop 恰好 1 次，四时机计数符合预期 ==")
+    println("\n== P4 收尾通道：beforeStop 恰好 1 次，四时机计数符合预期 ==")
 
-    check("工具执行中 loop.stop()：优雅收尾 + beforeStop=1 + 工具钩子配对") {
-        var loopRef: com.example.agentkit.core.agent.AgentLoop? = null
+    check("工具执行中要求收尾：优雅停止 + beforeStop=1 + 工具钩子配对") {
+        // R-19：原为 loop.stop()（生产零调用，已删）。改用 shouldContinue 触发同一段
+        // 收尾代码；钩子计数本来就不关心「谁要求的」，所以断言不变。
+        val keepGoing = AtomicBoolean(true)
         val hooks = RecordingHooks()
         val reg = ToolRegistry()
-        reg.register(FakeTool("stopper", readOnly = true, onExecute = { loopRef?.stop() }))
+        reg.register(FakeTool("stopper", readOnly = true, onExecute = { keepGoing.set(false) }))
         val calls = listOf(ToolCall("c0", "stopper", argsOf()))
         val fake = ScriptLlm(listOf(AssistantMessage("", calls), AssistantMessage("next")))
         val loop = RealAgentLoop(
@@ -358,9 +361,9 @@ private suspend fun testP4StopHooks() {
             registry = reg,
             maxParallelTools = 5,
             providerRetry = 0,
-            hooks = hooks
+            hooks = hooks,
+            shouldContinue = { keepGoing.get() }
         )
-        loopRef = loop
         val history = loop.send("x")
         assertContains("stop note", (history.last() as AssistantMessage).content, "已根据请求停止")
         assertEquals("second round never happens", 1, fake.rounds.get())

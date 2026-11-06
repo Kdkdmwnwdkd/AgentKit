@@ -1,5 +1,6 @@
 package com.example.agentkit.tools
 
+import com.example.agentkit.core.llm.LlmHttp
 import com.example.agentkit.core.llm.primOrNull
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -37,7 +38,8 @@ import java.io.File
 /* 1. http_request                                                     */
 /* ------------------------------------------------------------------ */
 class HttpRequestTool(
-    private val client: OkHttpClient = OkHttpClient()
+    // R-13：原来裸构造（OkHttp 默认 10s 读超时），并入 short（10/30s，只放宽）
+    private val client: OkHttpClient = LlmHttp.short
 ) : AgentTool {
     override val name = "http_request"
     override val description =

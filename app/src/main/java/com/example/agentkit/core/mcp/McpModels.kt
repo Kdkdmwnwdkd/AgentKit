@@ -46,6 +46,20 @@ data class McpTool(
 /** MCP 服务器信息（来自 initialize）。 */
 data class McpServerInfo(val name: String, val version: String)
 
+/**
+ * 一台已保存的 MCP 服务器。
+ *
+ * 放在这里而不是 [McpServerStore]：它只是数据，`McpServerStore` 才需要 Android 的
+ * `SharedPreferences`。分开之后同步逻辑（[planMcpSync]）能在纯 JVM 里跑断言。
+ */
+@Serializable
+data class McpServerConfig(
+    val id: String,
+    val name: String,
+    val url: String,
+    val enabled: Boolean = true
+)
+
 /** MCP 客户端异常：带 JSON-RPC 错误码。 */
 class McpException(val code: Int, message: String) : Exception(message)
 

@@ -1,5 +1,6 @@
 package com.example.agentkit.tools
 
+import com.example.agentkit.core.llm.LlmHttp
 import com.example.agentkit.core.llm.primOrNull
 import com.example.agentkit.core.AgentTool
 import com.example.agentkit.core.JsonSchema
@@ -30,10 +31,7 @@ import java.util.concurrent.TimeUnit
  * 只读：搜索查询无副作用，可与其他只读工具并行。
  */
 class WebSearchTool(
-    private val client: OkHttpClient = OkHttpClient.Builder()
-        .connectTimeout(8, TimeUnit.SECONDS)
-        .readTimeout(12, TimeUnit.SECONDS)
-        .build()
+    private val client: OkHttpClient = LlmHttp.short
 ) : AgentTool {
 
     override val name = "web_search"

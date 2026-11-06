@@ -9,6 +9,7 @@ import com.example.agentkit.core.terminal.TERMINAL_HANDLE_REGEX
 import com.example.agentkit.core.terminal.TerminalSessionPool
 import com.example.agentkit.core.terminal.backend.TerminalBackend
 import com.example.agentkit.core.terminal.backend.TerminalIdentity
+import com.example.agentkit.core.terminal.backend.shouldUsePrivilegedShell
 import com.example.agentkit.runtime.lease.TerminalLeases
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
@@ -49,34 +50,6 @@ data class PrivilegedShellOut(
     val elapsedMs: Long = 0
 )
 
-/**
- * 纯函数：这条 shell_run 是否应走**一次性提权通道**（W-13 的 `sh -c` 路径）。
- *
- * ## W-57 起默认不再走它
- *
- * 原规则是「identity 未给 → 通道就绪时自动优先」，理由是「uid 2000 能干的活最多」。
- * 但那条通道一条命令一个进程，`cd` / `export` 不跨调用保持（W-54 只是把它说清楚了）。
- * W-56 把 Shizuku 做成了**会话池后端**之后，「uid 2000」和「持久 shell」不再二选一——
- * 所以默认应当进池，由候选链 proot → shizuku → adb → user 自己挑，且 cwd 保有。
- *
- * 现在的规则：
- *  - 带了 session 句柄 → **不走**（会话已绑定某个后端，中途换通道会让 cwd/环境变量语义断裂）；
- *  - identity 显式给了 shizuku → 走（调用方明确表示「就要一条命令、不要开会话」；
- *    池的 `TerminalIdentity.Shizuku` 首期无后端，只能靠这条通道拿到 uid 2000）；
- *  - 其余（含 identity 未给）→ 不走，交给会话池。
- *
- * 注意：**「要 uid 2000」不必非走这里**——传 `prefer_proot=false` 进池，候选链会跳过容器、
- * 优先 shizuku / adb，同样是 uid 2000 但**持久**。这条通道只在「不想留会话」时才划算。
- */
-fun shouldUsePrivilegedShell(
-    identity: String?,
-    hasSession: Boolean,
-    privilegedAvailable: Boolean
-): Boolean {
-    if (hasSession || !privilegedAvailable) return false
-    return identity == "shizuku"
-}
-
 /** 会话池化 shell 的执行器：`am force-stop` 等系统命令经此走真实本机 shell。 */
 private const val SHELL_BRIDGE_ALIAS = "app_control"
 
@@ -85,7 +58,7 @@ private const val SHELL_BRIDGE_ALIAS = "app_control"
  *
  * 参数：
  *   - command（必填）：要执行的命令原文（一行或整体一次下发）；
- *   - identity（可选）：执行身份，取值 user/su/shizuku/ssh，默认 user（首期仅 user 有后端）；
+ *   - identity（可选）：执行身份，取值见 [TerminalIdentity.schemaValues]（首期 user / shizuku）；
  *   - session（可选）：复用既有会话的 4 位十六进制句柄；缺省则自动开辟一条并返回其句柄；
  *   - prefer_proot（可选）：是否优先 proot 容器，默认 true（不可用自动回落本机 shell）。
  *
@@ -117,10 +90,14 @@ class ShellRunTool(
     override val description =
         "在终端会话里执行一条 shell 命令并返回输出与退出码。无 session 时自动开辟一条会话并返回其句柄；" +
             "复用同一 session 句柄可保持工作目录与环境变量（多轮 cd/export 生效）。" +
-            "**默认就进会话池**：按 proot 容器 → Shizuku（uid 2000）→ 无线调试（uid 2000）→ 本机 shell " +
-            "的顺序试，起不来的自动跳到下一档。" +
-            "要系统权限（pm/settings/appops 等）请传 prefer_proot=false：跳过容器、优先 Shizuku/无线调试，" +
-            "同样是 uid 2000 但 cwd 会保持。" +
+            // R-20：这里原来逐个点名「proot → Shizuku → 无线调试 → 本机 shell」。那份顺序的
+            // 真源在 TerminalBackendFactory.providersFor，插一个新后端描述就过期——而模型读到
+            // 过时顺序会做出错误预期（以为某档一定先试）。改成按**层级**说，层级是设计意图，
+            // 不会因为实现里多一个后端就变。
+            "**默认就进会话池**：按「容器 → 提权后端（uid 2000）→ 本机身份」自动降级，" +
+            "起不来的跳到下一档。" +
+            "要系统权限（pm/settings/appops 等）请传 prefer_proot=false：跳过容器、优先提权后端，" +
+            "且 cwd 与环境变量照常保持。" +
             "identity=shizuku 是**例外**：走一次性提权通道，不返回句柄、cd/export 不跨调用保持——" +
             "只在「跑一条命令、不想留会话」时用。" +
             "无 PTY/交互支持：不要用需要交互输入的命令（如不带 -y 的 apt、分页器 less），必要时改用非交互参数。" +
@@ -131,7 +108,7 @@ class ShellRunTool(
             "session 传入即可在同一 shell 里继续操作（cwd 与 export 的环境变量会保持）。不再需要的会话用 " +
             "shell_close 关闭。命令输出过长会被截断（只保留头尾），必要时拆小命令分批查看。" +
             "要执行 pm / settings / appops 这类需要系统权限的命令，传 prefer_proot=false：" +
-            "会话池会跳过容器、优先 Shizuku 或无线调试（uid 2000），且 cwd 与环境变量照常保持。" +
+            "会话池会跳过容器、优先提权后端（uid 2000），且 cwd 与环境变量照常保持。" +
             "identity=shizuku 走的是一次性通道（一条命令一个进程），cd/export 不跨调用保持，" +
             "只适合跑完就走的单条命令。" +
             "shell_run 只用于文件读写、命令执行、查看本机信息，**不能操控界面**" +
@@ -140,9 +117,15 @@ class ShellRunTool(
     override val parameters = JsonSchema.objectSchema(
         JsonSchema.prop("command", "string", "要执行的 shell 命令原文（不要预先转义，不要包含命令结尾换行）"),
         JsonSchema.prop(
-            "identity", "string", "执行身份：user/su/shizuku/ssh，默认走会话池（user 身份）。" +
-                "仅有 shizuku 是特殊值：走一次性提权通道（无句柄、cd 不保持）",
-            enum = listOf("user", "su", "shizuku", "ssh")
+            "identity", "string",
+            // R-20：取值清单与 enum 都由枚举生成。修前这里手写「user/su/shizuku/ssh」，
+            // 而 su / ssh 首期根本没有执行路径——模型照着选，必然失败一次。
+            // R-12：identity 的语义是**权限下限**，不是「指定走哪条通道」。
+            // 说清这一点，模型才不会因为「我传 user 却被告知 uid 2000」而反复调参。
+            "所需的最低权限：${TerminalIdentity.schemaValuesText()}，默认 user。" +
+                "这是下限——设备上若有 uid 2000 通道，即使传 user 也可能以 uid 2000 执行（只会更高，不会更低）。" +
+                "shizuku 是特殊值：走一次性提权通道（无句柄、cd 不保持）",
+            enum = TerminalIdentity.schemaValues()
         ),
         JsonSchema.prop("session", "string", "复用的会话句柄（4 位十六进制），缺省则自动开辟新会话"),
         JsonSchema.prop(
@@ -201,7 +184,20 @@ class ShellRunTool(
             else -> TerminalIdentity.fromWire(rawIdentity) ?: return ToolResult.fail(
                 code = "bad_identity",
                 message = "无效身份「$rawIdentity」。",
-                hint = "identity 取值必须是 user、su、shizuku、ssh 之一（首期仅 user 可用）。"
+                hint = "identity 只能取 ${TerminalIdentity.schemaValuesText("、")}（不传则默认 user）。"
+            )
+        }
+
+        // R-20：合法但**未实现**的取值要当场说清楚，不能丢进候选链再失败——
+        // 那样模型收到的只是「没有可用后端」，读不出是自己选错了值，通常会原样重试。
+        if (declaredIdentity != null && !declaredIdentity.usable) {
+            return ToolResult.fail(
+                code = "identity_not_implemented",
+                message = "身份「${declaredIdentity.wire}」尚未实现（首期只支持 " +
+                    "${TerminalIdentity.schemaValuesText("、")}）。",
+                hint = "需要 uid 2000（pm / settings / appops）请传 identity=shizuku，" +
+                    "或 prefer_proot=false 让会话池优先选 Shizuku / 无线调试；" +
+                    "本应用不提供 su / ssh 通道，不要用这两个值重试。"
             )
         }
 
@@ -355,7 +351,17 @@ class ShellRunTool(
         val info = pool.lookup(handle)
         val header = buildString {
             append("会话 ").append(handle)
-            info?.let { append("（身份 ").append(it.identity.wire).append("，池 ").append(it.backendKey).append("）") }
+            info?.let {
+                // R-12：这里报**实际**身份。修前报的是 entry.identity，而 Entry 记的是请求值，
+                // 且所有后端都自称 User——于是 uid 2000 的会话在回执里写「身份 user」，
+                // 模型据此判断「我没有权限」，转头去试 ui_* 或反复换参数。
+                append("（身份 ").append(it.identity.describe())
+                if (it.identity != TerminalIdentity.User && it.identity != declaredIdentity) {
+                    // 请求是下限，实际档可能更高。不说清楚，模型会以为参数没生效、再传一次。
+                    append("，已满足请求下限「").append(declaredIdentity?.wire ?: "默认 user").append("」")
+                }
+                append("，池 ").append(it.backendKey).append("）")
+            }
             append(" 退出码 ").append(result.exitCode)
             if (openedNew) append("，已开辟新会话")
             staleHandle?.let {

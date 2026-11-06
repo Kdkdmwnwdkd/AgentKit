@@ -28,8 +28,8 @@ if [ -z "${KOTLINC_JAR:-}" ] || [ -z "${STDLIB:-}" ]; then
   fi
 fi
 # 环境不具备 → exit 3（SKIP），不当作失败——「没验证」和「验证不通过」是两件事。
-[ -z "${KOTLINC_BIN:-}" ] && [ -z "${KOTLINC_JAR:-}" ] && { echo "SKIP: 找不到 kotlinc" >&2; exit 3; }
-[ -f "$STDLIB" ] || { echo "SKIP: 缺少 kotlin-stdlib" >&2; exit 3; }
+[ -z "${KOTLINC_BIN:-}" ] && [ -z "${KOTLINC_JAR:-}" ] && { echo "KS_HARNESS_SKIP $(basename "$0") 找不到 Kotlin 编译器（${KOTLINC_JAR:-$KC_HOME/lib/kotlin-compiler.jar}）" >&2; exit 3; }
+[ -f "$STDLIB" ] || { echo "KS_HARNESS_SKIP $(basename "$0") 缺少 kotlin-stdlib：${STDLIB:-未解析到路径}" >&2; exit 3; }
 [ -f "$SRC" ] || { echo "FAIL: 找不到 $SRC" >&2; exit 1; }
 
 DEPS=$STDLIB

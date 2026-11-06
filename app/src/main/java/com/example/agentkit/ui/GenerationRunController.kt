@@ -44,6 +44,14 @@ internal class GenerationRunController(
      */
     private val onStarted: () -> Unit = {},
     /**
+     * 收尾时**在 owner 清空之前**调用，入参是此刻仍然有效的归属会话 id（R-06）。
+     *
+     * 为什么不能并进 [onFinished]：那里 owner 已经是 null，宿主只能定位「当前显示会话」。
+     * 而工具卡最常见的残留场景恰恰是「发出去 → 切到别的会话 → 在别处点停止」，
+     * 此时当前显示会话根本不是本轮归属的会话，一条残留也收不到。
+     */
+    private val onSettling: (owner: String) -> Unit = {},
+    /**
      * 生命周期观测点。生产传 [GenerationRunHooks.None]（零开销），harness 传记录实现。
      *
      * 为什么这不是「为了测试而加的钩子」：这套状态机原本是 `private inner class`，
@@ -163,6 +171,10 @@ internal class GenerationRunController(
 
     /** 收尾：清归属/生成中/缓冲、关运行态，再交给宿主做落盘与重建。 */
     private fun finish(rebuildMessages: Boolean) {
+        // R-06：先把「还在执行中」的工具卡收口——这是 owner 仍然可读的最后时刻。
+        // runCatching 是必须的：这里抛异常会跳过下面的复位，isRunning 永真 =
+        // 发送键永久灰（W-102 那类「一次异常永久卡死」的老毛病）。
+        owner?.let { who -> runCatching { onSettling(who) } }
         owner = null
         _generating.value = null
         draftBuffer = null

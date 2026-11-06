@@ -8,7 +8,7 @@
 |---|---|---|---|
 | termux/termux-app | **GPLv3** | 终端仿真器（VT100 解析 + pty 会话 + 渲染）的行业标准架构 | ❌ 代码不可抄，架构可学 |
 | ReTerminal | **MIT** | 现代终端组件，VT100 解析 + Compose/View 渲染 | ✅ 可深度参考/直接用 |
-| AnLinux | Apache-2.0（脚本集合） | 「下载 rootfs + proot 启动」的分发脚本思路 | ✅ 思路照搬 |
+| AnLinux | Apache-2.0（脚本集合） | 「下载 rootfs + proot 启动」的分发脚本思路 | ✅ 采纳思路 |
 | AAswordman/Operit | LGPL-3.0 | 配套 App 装 Ubuntu、主 App 检测包名引导下载的模式 | ❌ 架构参考 |
 | jieapi/AiCode | GPL-3.0 | 内置 Alpine rootfs + proot 管理的实现路径 | ❌ 架构参考 |
 | Coomi | Apache-2.0 | Termux 兼容环境的用户引导设计 | ⚠️ 交互思路可鉴 |

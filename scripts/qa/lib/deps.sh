@@ -45,6 +45,26 @@ qa_find_jar() {
     find "$dir" -type f -name "$pattern" 2>/dev/null | grep -v -- '-sources' | sort -V | tail -1
 }
 
+# qa_find_jar_or_local <组织路径目录> <构件通配> <KC_HOME/lib 下的文件名>
+#
+# 与 qa_find_jar 的区别：**保证给出一条存在的路径**（或空串）。很多工件（trove4j、
+# annotations）在本机 kotlinc 发行版里就有同份拷贝，缓存没命中时没必要 SKIP。
+#
+# 为什么需要这个函数：`qa_find_jar` 的约定是「找不到返回空，由调用方决定」，
+# 而调用方常常**忘了判断**。2026-11-05 就踩了一次——沙箱里刚建了 Gradle 缓存目录
+# （只为放一个 coroutines jar），于是 journal harness 从「回落 kotlinc」变成「拿到空串」，
+# 编译器以 `ClassNotFoundException: gnu.trove.THashMap` 崩掉，看起来像代码坏了。
+# 这种「缓存部分就绪」比「缓存完全为空」更常见，必须有统一出口。
+qa_find_jar_or_local() {
+    local dir="$1" pattern="$2" local_name="$3" hit
+    hit=$(qa_find_jar "$dir" "$pattern")
+    if [ -n "$hit" ]; then
+        printf '%s\n' "$hit"
+    elif [ -f "$KC_HOME/lib/$local_name" ]; then
+        printf '%s\n' "$KC_HOME/lib/$local_name"
+    fi
+}
+
 # qa_require_project <仓库根>：确认关键源目录存在（脚本从任意 cwd 调用都不会跑错地方）
 qa_require_project() {
     local root="$1"

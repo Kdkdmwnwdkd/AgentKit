@@ -42,6 +42,7 @@ import com.example.agentkit.core.ToolResult
 import com.example.agentkit.core.UserMessage
 import com.example.agentkit.core.agent.RealAgentLoop
 import com.example.agentkit.core.llm.ChatStreamEvent
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
@@ -552,12 +553,12 @@ private suspend fun testR8LoopCancelMidSse() = runBlocking {
     }
 }
 
-/* ------------------------------ R9：stop()/send() 入口重置竞态 ------------------------------ */
+/* ------------------------------ R9：收尾请求/回合入口竞态 ------------------------------ */
 
 private suspend fun testR9StopSendRace() = runBlocking {
-    println("\n== R9 stop()/send() 竞态：在飞停止不吞、标志不残留 ==")
+    println("\n== R9 收尾请求/回合入口竞态：在飞收尾不吞、决定不残留 ==")
 
-    check("确定性守卫：工具执行中（已过 send 入口重置）stop() → 必优雅收尾（在飞停止永不被吞）") {
+    check("确定性守卫：工具执行中（已过回合入口）请求收尾 → 必优雅停止（在飞收尾永不被吞）") {
         val entered = CompletableDeferred<Unit>()
         // W-56：让工具**挂住**，直到测试线程发出 stop 再放行。
         // 原来 onExecute 只 complete(entered) 就返回：工具立刻结束、回合可能已推进到下一轮，
@@ -575,18 +576,24 @@ private suspend fun testR9StopSendRace() = runBlocking {
         val reg = ToolRegistry().register(stopper)
         val calls = listOf(ToolCall("c0", "stopper", argsOf()))
         val fake = ScriptLlm(listOf(AssistantMessage("", calls), AssistantMessage("final")))
-        val loop = RealAgentLoop(llmProvider = { fake }, registry = reg, providerRetry = 0)
+        // R-19：loop.stop() 已删（生产从未调用）。用 shouldContinue 表达「回合中途要求收尾」，
+        // 断言仍是「必收尾、不被吞」——被测的是行为，不是触发方式。
+        val keepGoing = AtomicBoolean(true)
+        val loop = RealAgentLoop(
+            llmProvider = { fake }, registry = reg, providerRetry = 0,
+            shouldContinue = { keepGoing.get() }
+        )
         var history: List<ChatMessage>? = null
         val job = launch(Dispatchers.Default) { history = loop.send("x") }
-        withTimeout(5_000) { entered.await(); true } // 确保 stop 落在在飞回合内（入口重置早已完成）
-        loop.stop()
+        withTimeout(5_000) { entered.await(); true } // 确保请求落在在飞回合内
+        keepGoing.set(false)
         release.complete(Unit) // 放行工具，让它走到取消检查点
         withTimeout(10_000) { job.join(); true }
         if (job.isActive) job.cancel() // 防御：join 超时也不让 runBlocking 尾部干等
         assertContains("graceful stop", (history!!.last() as AssistantMessage).content, "已根据请求停止")
     }
 
-    check("随机竞态 30 轮：stop() 与 send() 入口重置并发——结局必合法且竞态后干净回合完整（无残留误伤）") {
+    check("随机竞态 30 轮：收尾请求与回合入口并发——结局必合法且竞态后干净回合完整（无残留误伤）") {
         repeat(30) { i ->
             val reg = ToolRegistry().register(FakeTool("slow", readOnly = true, delayMs = 200))
             val calls = listOf(ToolCall("c0", "slow", argsOf()))
@@ -598,7 +605,11 @@ private suspend fun testR9StopSendRace() = runBlocking {
                     AssistantMessage("final")
                 )
             )
-            val loop = RealAgentLoop(llmProvider = { fake }, registry = reg, providerRetry = 0)
+            val keepGoing = AtomicBoolean(true)
+            val loop = RealAgentLoop(
+                llmProvider = { fake }, registry = reg, providerRetry = 0,
+                shouldContinue = { keepGoing.get() }
+            )
             var outcome: String? = null
             var thrown: Throwable? = null
             val job = launch(Dispatchers.Default) {
@@ -609,8 +620,8 @@ private suspend fun testR9StopSendRace() = runBlocking {
                     thrown = t
                 }
             }
-            // 竞态窗口：0~150ms 随机停顿后 stop——覆盖「入口重置前 / 重置后 / 在飞中」三种落点
-            Thread { Thread.sleep(Random.nextLong(0, 150)); loop.stop() }.start()
+            // 竞态窗口：0~150ms 随机停顿后要求收尾——覆盖「回合开始前 / 进入回合后 / 在飞中」三种落点
+            Thread { Thread.sleep(Random.nextLong(0, 150)); keepGoing.set(false) }.start()
             withTimeout(15_000) { job.join(); true }
             if (job.isActive) job.cancel() // 防御：join 超时也不让 runBlocking 尾部干等
             assertTrue("iter $i: no exception (was ${thrown?.javaClass?.simpleName})", thrown == null)

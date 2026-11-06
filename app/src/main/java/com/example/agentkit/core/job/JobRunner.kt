@@ -1,5 +1,6 @@
 package com.example.agentkit.core.job
 
+import com.example.agentkit.core.AppScope
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CoroutineScope
@@ -28,7 +29,7 @@ class JobRunner(
     private val onFinished: (JobInfo) -> Unit = {}
 ) {
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val scope = CoroutineScope(SupervisorJob() + AppScope.io)
 
     /** id → 进程（取消用）。 */
     private val processes = ConcurrentHashMap<String, Process>()

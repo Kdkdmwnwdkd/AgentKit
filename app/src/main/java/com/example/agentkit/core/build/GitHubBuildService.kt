@@ -1,5 +1,6 @@
 package com.example.agentkit.core.build
 
+import com.example.agentkit.core.llm.LlmHttp
 import com.example.agentkit.core.llm.primOrNull
 import com.example.agentkit.core.llm.arrOrNull
 import com.example.agentkit.core.llm.objOrNull
@@ -319,10 +320,7 @@ class GitHubBuildService(
         private const val TAG = "GitHubBuildService"
         private const val API = "https://api.github.com"
 
-        fun defaultHttp(): OkHttpClient = OkHttpClient.Builder()
-            .connectTimeout(15, TimeUnit.SECONDS)
-            .readTimeout(120, TimeUnit.SECONDS)
-            .build()
+        fun defaultHttp(): OkHttpClient = LlmHttp.llm
     }
 }
 

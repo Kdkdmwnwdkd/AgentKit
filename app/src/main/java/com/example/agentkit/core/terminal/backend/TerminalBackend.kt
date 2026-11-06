@@ -14,12 +14,25 @@ import kotlinx.coroutines.flow.Flow
  */
 interface TerminalBackend {
 
-    /** 后端以何种身份执行命令（首期实现均为 [TerminalIdentity.User]）。 */
+    /**
+     * 后端**实际**以何种身份执行命令（R-12：这是事实，不是请求）。
+     *
+     * 修前这里写的是「首期实现均为 [TerminalIdentity.User]」，于是七处实现照抄 `User`——
+     * 包括以 uid 2000 跑的 Shizuku 后端与无线调试后端。它们不是「填错了」，
+     * 而是当时枚举里没有可填的档：`Shizuku` 被理解成通道名，只在 schema 里出现。
+     *
+     * 现在 [TerminalIdentity.uid] 让 uid 2000 成为一个可声明的档，实现必须如实填写：
+     * 上层（会话池、工具回执、能力快照）据此报告「这条命令以什么权限跑了」，
+     * 权限不足时也才能正确分档，而不是对着一个假的 `user` 出主意。
+     */
     val identity: TerminalIdentity
 
     /**
-     * 后端种类键，用于会话池**分池不串味**（同一身份下的本机/proot 各占独立别名）。
+     * 后端**通道**键，用于会话池分池不串味（同一档身份下的不同通道各占独立别名）。
      * 取值用 [KEY_USER] / [KEY_PROOT] 等常量，不要硬编码字符串。
+     *
+     * 与 [identity] 是两个维度，别混：`shizuku` 与 `adb-wireless` 两条通道的
+     * [identity] 都是 uid 2000，但它们是不同的池、不同的启动方式、不同的失效原因。
      */
     val backendKey: String
 
@@ -84,7 +97,8 @@ fun interface TerminalBackendSource {
     /**
      * 取一条后端。
      *
-     * @param identity 声明的身份；未实现的身份返回 null（调用方报「不可用」）
+     * @param identity **权限下限**（R-12）：后端实际身份须 [TerminalIdentity.satisfies] 它。
+     *   没有满足该下限的后端时返回 null（调用方报「不可用」）。
      * @param preferProot true = 优先 proot（最高可用），不可用时回落本机 user
      * @return 后端实例；不可用返回 null
      */
@@ -108,7 +122,7 @@ fun interface TerminalBackendSource {
  */
 interface TerminalBackendProvider {
 
-    /** 该提供者实现的身份。 */
+    /** 该提供者实现的**实际**身份（见 [TerminalBackend.identity]）。 */
     val identity: TerminalIdentity
 
     /** 后端键（见 [TerminalBackend] 常量）。 */

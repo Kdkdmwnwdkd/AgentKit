@@ -40,7 +40,8 @@ import com.example.agentkit.core.terminal.backend.TerminalIdentity
  * （无线调试 / 本机 shell）。所以即使 Shizuku 的进程代理在某些 ROM 上不配合，
  * 用户看到的也只是「权限低一点」，不是「shell 用不了」。
  */
-internal class ShizukuTerminalBackend : ProcessBackendBase() {
+internal class ShizukuTerminalBackend :
+    ProcessBackendBase(identity = TerminalIdentity.Shizuku) {
 
     override val backendKey: String = TerminalBackend.KEY_SHIZUKU
 
@@ -71,7 +72,8 @@ internal class ShizukuTerminalBackend : ProcessBackendBase() {
  */
 internal class ShizukuBackendProvider : TerminalBackendProvider {
 
-    override val identity: TerminalIdentity = TerminalIdentity.User
+    /** R-12：Shizuku 通道跑的是 shell uid 2000，不是 App 身份（见 [TerminalBackend.identity]）。 */
+    override val identity: TerminalIdentity = TerminalIdentity.Shizuku
 
     override val backendKey: String = TerminalBackend.KEY_SHIZUKU
 

@@ -29,6 +29,7 @@ HDR=app/src/main/cpp/native-crash.h
 JNI=app/src/main/cpp/llama-jni.cpp
 CMAKE=app/src/main/cpp/CMakeLists.txt
 APP=app/src/main/java/com/example/agentkit/AgentKitApplication.kt
+BOOT=app/src/main/java/com/example/agentkit/startup/BootSequence.kt
 JNIKT=app/src/main/java/com/example/agentkit/core/llm/local/LlamaJni.kt
 PARSER=app/src/main/java/com/example/agentkit/core/llm/local/NativeCrashRecord.kt
 MEMORY=app/src/main/java/com/example/agentkit/core/llm/local/NativeCrashMemory.kt
@@ -49,7 +50,7 @@ fail() { FAIL=$((FAIL + 1)); printf '  FAIL  %s\n' "$1"; }
 has() { grep -qF -- "$2" "$1" && pass "$3" || fail "$3（$1 里缺：$2）"; }
 hasnt() { grep -qF -- "$2" "$1" && fail "$3（$1 里不该有：$2）" || pass "$3"; }
 
-for f in "$CPP" "$HDR" "$JNI" "$CMAKE" "$APP" "$JNIKT" "$PARSER" "$MEMORY" "$PROFILE" "$CLIENT" "$LOGGER" "$EXPORTER"; do
+for f in "$CPP" "$HDR" "$JNI" "$CMAKE" "$APP" "$BOOT" "$JNIKT" "$PARSER" "$MEMORY" "$PROFILE" "$CLIENT" "$LOGGER" "$EXPORTER"; do
     [ -f "$f" ] || { echo "  FAIL  缺文件 $f"; exit 1; }
 done
 
@@ -71,7 +72,7 @@ has "$JNI" "ak_crash_context(" '装载前登记模型/ctx/GPU 层数'
 # Kotlin 侧
 has "$JNIKT" "nativeInstallCrashHandler" 'Kotlin 声明了安装入口'
 has "$JNIKT" "crashDir" '崩溃目录由上层注入'
-has "$APP" "NativeCrashMemory.handleStartup(this)" '启动时消费崩溃现场'
+has "$BOOT" "NativeCrashMemory.handleStartup(app)" '启动时消费崩溃现场'
 has "$MEMORY" "setting.gpuMode = GpuMode.OFF" '崩过就把 GPU 关掉'
 has "$MEMORY" "lastGpuCrashNote = note" '把原因留在设置页'
 

@@ -400,14 +400,18 @@ private fun testWiring() {
 
     val manifest = MANIFEST.readText()
     val app = read("AgentKitApplication.kt")
+    val boot = read("startup/BootSequence.kt")
     val crashLogger = read("core/CrashLogger.kt")
     val logs = read("ui/LogsScreen.kt")
 
     check("E1 Manifest 声明了 AgentKitApplication") {
         assertContains("E1", manifest, "android:name=\".AgentKitApplication\"")
     }
-    check("E2 AgentKitApplication.onCreate 调用 CrashLogger.install(this)") {
-        assertContains("E2", app, "CrashLogger.install(this)")
+    // R-15：安装动作搬进 BootSequence（顺序显式化），断言跟着搬。
+    // 「Application 不得再有第二处入口」由 run-boot-sequence-verification.sh 的 A2 守，
+    // 不在这里重复——文本断言有总量基线，重复计数会挤掉真正需要的断言。
+    check("E2 启动第一步安装 CrashLogger（install(app)）") {
+        assertContains("E2", boot, "CrashLogger.install(app)")
         assertContains("E2 是 Application 子类", app, ": Application()")
     }
     check("E3 CrashLogger 同步落盘：flush + fd.sync()") {

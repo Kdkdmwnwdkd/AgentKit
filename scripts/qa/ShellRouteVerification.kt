@@ -1,6 +1,6 @@
 #!/usr/bin/env kotlin
 /**
- * W-57 QA 行为验证：[com.example.agentkit.tools.shouldUsePrivilegedShell] 的真值表。
+ * W-57 QA 行为验证：[com.example.agentkit.core.terminal.backend.shouldUsePrivilegedShell] 的真值表。
  *
  * 背景：`shell_run` 原先在 identity 未给时**自动走一次性提权通道**，理由是「uid 2000 能干的活最多」。
  * 但那条通道一条命令一个进程，`cd` / `export` 不跨调用保持——W-54 只是把它写进文案告知模型，
@@ -18,7 +18,7 @@
 
 import com.example.agentkit.core.terminal.backend.TerminalBackend
 import com.example.agentkit.tools.permissionDeniedHint
-import com.example.agentkit.tools.shouldUsePrivilegedShell
+import com.example.agentkit.core.terminal.backend.shouldUsePrivilegedShell
 
 private var passed = 0
 private val failures = mutableListOf<String>()
@@ -65,7 +65,7 @@ fun main() {
         assertEquals("user", false, shouldUsePrivilegedShell("user", false, true))
     }
 
-    check("identity=su / ssh → 不走一次性通道（首期无后端，由池如实报身份不支持）") {
+    check("identity=su / ssh → 不走一次性通道（R-20 起由 execute 直接报「尚未实现」）") {
         assertEquals("su", false, shouldUsePrivilegedShell("su", false, true))
         assertEquals("ssh", false, shouldUsePrivilegedShell("ssh", false, true))
     }
@@ -74,8 +74,13 @@ fun main() {
         assertEquals("blank", false, shouldUsePrivilegedShell("", false, true))
     }
 
-    check("大小写敏感：Shizuku != shizuku（线格式恒为小写，不做模糊匹配）") {
-        assertEquals("Shizuku", false, shouldUsePrivilegedShell("Shizuku", false, true))
+    // R-20：这条断言原来期望 false，记录的是「shouldUsePrivilegedShell 严格比较、
+    // 而 execute 里的 fromWire 大小写不敏感」这个**不一致**。两者不一致的后果是
+    // `identity=Shizuku` 通过校验却不走通道，掉进池里被 providersFor 拒掉。
+    // 现在两处都走 fromWire，断言随之改为 true —— 改的是语义，不是为了变绿而放宽。
+    check("大小写不敏感：Shizuku 与 shizuku 等价（与 fromWire 一致）") {
+        assertEquals("Shizuku", true, shouldUsePrivilegedShell("Shizuku", false, true))
+        assertEquals("SHIZUKU", true, shouldUsePrivilegedShell("SHIZUKU", false, true))
     }
 
     println("\n=== W-58：permission_denied 的分档指引 ===")

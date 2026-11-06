@@ -1,5 +1,6 @@
 package com.example.agentkit.core.media
 
+import com.example.agentkit.core.llm.LlmHttp
 import android.content.Context
 import com.example.agentkit.core.AgentLogger
 import kotlinx.coroutines.Dispatchers
@@ -105,10 +106,7 @@ object MediaTaskStore {
  */
 object MediaDownloader {
 
-    private val http = OkHttpClient.Builder()
-        .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(120, TimeUnit.SECONDS)
-        .build()
+    private val http = LlmHttp.download
 
     /**
      * 下载全部 URL，返回成功落盘的本地路径列表（部分失败不阻断，

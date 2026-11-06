@@ -40,7 +40,6 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
-import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * R2 第一层超时：单次 LLM 调用（一次 `streamChat` 收集）在预算内没有完成。
@@ -112,7 +111,7 @@ class LlmCallTimeoutException(val timeoutMs: Long) : RuntimeException(
  *   判定「越没越过执行边界」，据此决定补「可安全重试」还是「可能已生效，先核对」。
  * @param memoryProvider 记忆摘要提供者（null = 关闭）。
  * @param onEvent 过程事件回调（null = 关闭，保持旧行为）。
- * @param shouldContinue 每轮结束复查的续跑钩子（null = 关闭；stop() 与之并列）。
+ * @param shouldContinue 每轮结束复查的续跑钩子（null = 关闭）。返回 false 则本轮收尾。
  * @param onTextDelta 流式文本增量回调（null = 关闭）。
  * @param onReasoningDelta 功能五（P1-9）：推理过程增量回调（null = 关闭）。
  * @param hooks 执行过程钩子（默认 [NoopHooks]）。
@@ -195,6 +194,7 @@ class RealAgentLoop(
     private val onTextDelta: ((String) -> Unit)? = null,
     /** 功能五（P1-9）：推理过程增量回调（null = 关闭）。与 [onTextDelta] 分流。 */
     private val onReasoningDelta: ((String) -> Unit)? = null,
+    private val attemptOut: AttemptOutputTracker = AttemptOutputTracker(), // R-09：已上屏字符数
     private val hooks: Hooks = NoopHooks,
     /**
      * R5：回合结构化事件观察者（null = 关闭）。
@@ -274,29 +274,12 @@ class RealAgentLoop(
     private val failureGuard = FailureGuard()
 
     /**
-     * T05：stop() 优雅停止通道（[AgentLoop.stop] 的实现）——与 shouldContinue
-     * 并列的编程式触发，不杀协程；取消（Job.cancel）仍是另一条独立通道。
-     *
-     * **回合作用域（Round1 QA Minor 修复）**：标志只在 [send] 执行期间有效——
-     * [send] 入口无条件重置，上一回合的停止请求绝不被下一回合继承；[stop] 在
-     * 无在飞回合时的置位是无害空转（下一轮 [send] 入口即被清掉）。
-     */
-    private val stopRequested = AtomicBoolean(false)
-
-    /**
-     * 是否有回合在飞（[send] 入口置 true、退出必置 false，含异常路径）。
-     * 仅供 [stop] 区分日志语义（在飞收尾 vs 空转 no-op），不参与停止判据——
-     * 判据永远是 [stopRequested] 本身，避免竞态吞掉真实的停止请求。
-     */
-    private val turnActive = AtomicBoolean(false)
-
-    /**
      * 本步已尝试的请求次数（P5-1）。
      *
      * 只给 `llm.end` 事件用：确定性错误（401 / 400 / 额度不足）本该一次就失败，
      * 若 attempt > 1 说明重试策略把不该重试的东西重试了——「确定性错误平均白等
      * 38 秒」那项指标就是从这里算的。用 @Volatile 而不是局部变量：发射点在
-     * `callWithRetry` 之外，而一次只有一个回合在跑（`turnActive` 守卫）。
+     * `callWithRetry` 之外，而一次只有一个回合在跑（UI 侧串行保证）。
      */
     @Volatile
     private var lastAttempts: Int = 1
@@ -317,14 +300,11 @@ class RealAgentLoop(
     /**
      * 执行一轮对话，返回完整消息历史（语义 = 旧 AgentLoop.run()）。
      *
-     * 结束路径：① LLM 不再请求工具（正常结束）② shouldContinue/stop() 优雅收尾
+     * 结束路径：① LLM 不再请求工具（正常结束）② shouldContinue 返回 false 优雅收尾
      * ③ 达到 maxSteps；取消路径抛 CancellationException（树尾闭合后重抛）；
      * executor 违约路径抛 [ToolExecutionFailedException]（回合作废，不回喂）。
      *
-     * **stop 标志回合作用域（Round1 QA Minor 修复）**：入口无条件重置
-     * [stopRequested]——第 1 回合 stop 后，第 2 回合不被残留标志优雅停止。
-     *
-     * **熔断状态回合作用域（W-8）**：入口同样无条件 [FailureGuard.resetForTurn]——
+     * **熔断状态回合作用域（W-8）**：入口无条件 [FailureGuard.resetForTurn]——
      * 上一回合的失败指纹（尤其 service_not_ready 类瞬时故障的累加）不污染本轮；
      * 回合内跨批次保留，同参打转防护不受影响。
      */
@@ -334,18 +314,10 @@ class RealAgentLoop(
         priorMessages: List<ChatMessage>
     ): List<ChatMessage> {
         AgentLogger.i("AgentLoop", "开始运行，输入：${userInput.take(120)}（历史 ${priorMessages.size} 条）")
-        // Round1 QA Minor 修复：stop 标志回合作用域化——入口先重置（上一回合的
-        // 停止请求绝不被本轮继承），再标记在飞；finally 保证异常路径也清零。
-        stopRequested.set(false)
-        // W-8：熔断状态同样回合作用域化——上一回合的失败指纹（含 service_not_ready
+        // W-8：熔断状态回合作用域化——上一回合的失败指纹（含 service_not_ready
         // 瞬时故障累加）绝不被本轮继承；回合内跨批次保留，防同参打转的本意不变。
         failureGuard.resetForTurn()
-        turnActive.set(true)
-        try {
-            return runTurn(userInput, images, priorMessages)
-        } finally {
-            turnActive.set(false)
-        }
+        return runTurn(userInput, images, priorMessages)
     }
 
     /**
@@ -360,7 +332,7 @@ class RealAgentLoop(
     suspend fun send(userInput: String, images: List<String>): List<ChatMessage> =
         send(userInput, images, emptyList())
 
-    /** [send] 的回合体（抽出的目的是让 stop 标志的重置/在飞标记包住整个回合，含异常路径）。 */
+    /** [send] 的回合体（抽出后 [send] 只负责回合作用域的状态重置，异常路径也走得到 finally）。 */
     private suspend fun runTurn(
         userInput: String,
         images: List<String> = emptyList(),
@@ -726,9 +698,9 @@ class RealAgentLoop(
 
             // T05：每轮结束再复查一次（工具批可能执行很久，结束时 UI 可能已点停止）
             currentCoroutineContext().ensureActive()
-            // shouldContinue 显式返回 false 或收到 stop() 请求才停止；null（未配置）不影响流程
+            // 只有 shouldContinue 显式返回 false 才停；null（未配置）不影响流程
             if (!shouldContinueNow()) {
-                AgentLogger.i("AgentLoop", "shouldContinue 返回 false 或收到 stop() 请求，中途停止")
+                AgentLogger.i("AgentLoop", "shouldContinue 返回 false，本轮中途收尾")
                 hooks.beforeStop()
                 status.set("stopped")
                 messages.add(AssistantMessage("⏹ 已根据请求停止。"))
@@ -750,26 +722,6 @@ class RealAgentLoop(
             "运行结束：${System.currentTimeMillis() - loopStart}ms，消息数=${messages.size}"
         )
         return turnResult()
-    }
-
-    /**
-     * [AgentLoop.stop]：置优雅停止标志（shouldContinue=false 语义），不杀协程。重复调用幂等。
-     *
-     * **回合作用域（Round1 QA Minor 修复，最小惊讶裁决）**：只对当前在飞的回合生效——
-     *  - 有回合在飞：本回合剩余步骤结束后优雅收尾（[shouldContinueNow] 判 false）；
-     *  - 无回合在飞（两回合之间 / 首轮之前）：**明确 no-op**——标志虽置位，但下一轮
-     *    [send] 入口即重置，绝不影响新一轮。理由：用户停止的是旧回合，随后的新输入
-     *    理应完整运行；若记「待停止」意图，新一轮会被莫名秒杀，反直觉。
-     * 取消（Job.cancel）通道独立，互不依赖。
-     */
-    override fun stop() {
-        if (stopRequested.compareAndSet(false, true)) {
-            if (turnActive.get()) {
-                AgentLogger.i("AgentLoop", "收到 stop() 请求：当前回合结束后优雅收尾（协程取消通道独立，互不依赖）")
-            } else {
-                AgentLogger.i("AgentLoop", "收到 stop() 请求但无在飞回合：按 no-op 处理（下一轮 send() 入口重置，不影响新一轮）")
-            }
-        }
     }
 
     /** [AgentLoop.update]：按非 null 项更新配置，null = 保持现值。 */
@@ -1046,12 +998,12 @@ class RealAgentLoop(
      * commit（进历史的唯一形态）。未覆盖流式的客户端走默认实现（chat() +
      * 单条 Completed），行为与旧裸 chat() 调用等价。
      *
-     * 已知取舍：重试（[callWithRetry]）以「整次收集」为粒度——流式中途遇可重试
-     * 错误时重新收集，已发出的 TextDelta 会重复下发（UI 侧按追加渲染可接受）；
-     * 换来的是供应商瞬时故障不丢轮次。默认（非流式）实现无此问题。
+     * R-09：重试以「整次收集」为粒度，已发出的增量无法回滚。所以 [callWithRetry]
+     * 在可见输出超过 [RETRY_VISIBLE_CHARS] 后放弃重试（详见 RetryVisibility.kt）。
      */
     private suspend fun chatOnce(messages: List<ChatMessage>, exposure: KernelExposure.Plan): AssistantMessage {
         var completed: AssistantMessage? = null
+        attemptOut.reset()
         // R2 第一层：整次「收集一条完整回答」的预算。端侧放宽到 3 倍，见构造参数注释。
         val budget = if (llmProvider().id.startsWith("local-")) llmCallTimeoutMs * 3 else llmCallTimeoutMs
         val streamFinished = withTimeoutOrNull(budget) {
@@ -1060,7 +1012,7 @@ class RealAgentLoop(
             // 新组的用法由工具 description 自解释，系统提示不再重拼（保 KV 前缀稳定）。
             llmProvider().streamChat(messages, exposure.visible).collect { event ->
                 when (event) {
-                    is ChatStreamEvent.TextDelta -> onTextDelta?.invoke(event.text)
+                    is ChatStreamEvent.TextDelta -> { onTextDelta?.invoke(event.text); attemptOut.add(event.text) }
                     // 功能五（P1-9）：推理过程增量与正文分流上抛（UI 折叠块实时渲染），
                     // 同样不进历史——进历史的只有 Completed 整条（message.reasoning）
                     is ChatStreamEvent.ReasoningDelta -> onReasoningDelta?.invoke(event.text)
@@ -1103,8 +1055,7 @@ class RealAgentLoop(
     /**
      * 供应商瞬时失败重试（429/5xx 与网络异常才重试）。
      *
-     * 401/403/400 这类鉴权与参数错误重试多少次都不会变，必须一次性快速失败，
-     * 否则用户填错 Key 时会白等 providerRetry 次请求才看到报错。
+     * 401/403/400 重试多少次都不会变，必须一次快败，否则填错 Key 要白等 providerRetry 次。
      *
      * **Phase 2 DoD③：重试过程对 UI 可见**。每次「准备重试」抛
      * [AgentEvent.RetryStarted]（attempt/max/reason）；本轮最终成功 / 最终失败 /
@@ -1119,20 +1070,16 @@ class RealAgentLoop(
      *  - 取消（CancellationException）原样上抛、绝不重试；`finally` 立即清状态——
      *    T05 不变量：用户点停止后不得残留「正在恢复」。
      *
-     * **退避**：宣布「准备重试」后、真正重发之前先走 [retryBackoff]（默认 3s → 10s →
-     * 25s 封顶）。理由有二：① `UnknownHostException`（飞行模式）是**瞬时返回**的，
-     * 无退避时 3 次尝试几十毫秒打完，「正在恢复」刚置位就被清掉，用户只看得到最终
-     * 报错；② 退避给了网络真正的恢复时间，这才是「重试」的意义。
-     * 不可重试错误（401/403/400）**不等待**、一次即失败（快败路径零新增延迟）。
+     * **退避**：宣布「准备重试」后、重发之前先走 [retryBackoff]（3s → 10s → 25s 封顶）。
+     * `UnknownHostException`（飞行模式）是瞬时返回的，无退避时三次尝试几十毫秒打完，
+     * 「正在恢复」刚置位就被清掉；退避也给了网络真正的恢复时间。
+     * 不可重试错误（401/403/400）不等待、一次即失败。
      *
-     * **网络恢复即刻重试**：默认退避钩子是「网络感知」的——等待期间由
-     * [NetworkRecoveryWaiter] 监听默认网络，一恢复就提前结束等待、立刻重试（关掉飞行
-     * 模式后「秒续」）。监听在等待结束（含取消）时注销；注册失败降级为纯定时等待。
+     * **网络恢复即刻重试**：默认退避钩子由 [NetworkRecoveryWaiter] 监听默认网络，
+     * 一恢复就提前结束等待（关掉飞行模式后「秒续」）；监听在等待结束时注销。
      *
-     * **取消优先**：退避期间若协程被取消，必须立刻退出（[delay] 自带取消语义）；
-     * 退避钩子本身是否可取消是注入方的自由，故钩子返回后再补一次
-     * `ensureActive()`——即使是 `{ Thread.sleep(n) }` 这种不可取消钩子，取消也不会
-     * 让它多跑一次无用请求（T05：点停止不得残留「正在恢复」，也不得多等）。
+     * **取消优先**：退避期间被取消必须立刻退出（[delay] 自带取消）；钩子返回后再补一次
+     * `ensureActive()`——即使是 `Thread.sleep` 这种不可取消钩子，也不会多跑一次无用请求。
      */
     private suspend fun <T> callWithRetry(block: suspend () -> T): T {
         val profile = retryProfileProvider()
@@ -1155,10 +1102,13 @@ class RealAgentLoop(
                     throw cancel
                 } catch (e: Throwable) {
                     last = e
-                    if (!isRetryable(e, profile)) {
+                    // R-09：不可重试，或已上屏一大段（整次重来只会让同一段再长一遍）
+                    val retryable = isRetryable(e, profile)
+                    if (!retryAllowed(retryable, attemptOut)) {
                         AgentLogger.w(
                             "LLM",
-                            "不可重试错误，快速失败（第 ${attempt + 1} 次尝试）：${e.message?.take(160)}"
+                            "放弃重试（可重试=$retryable，已输出 ${attemptOut.chars} 字符，第 ${attempt + 1} 次）：" +
+                                e.message?.take(160)
                         )
                         throw e
                     }
@@ -1274,7 +1224,7 @@ class RealAgentLoop(
             approval,
             hooks,
             // W-11：结果上限与上下文预算对齐——本地 2k 预算下 24k 字符的一条结果就撑爆 n_ctx
-            maxResultChars = ContextBudget.toolResultLimitChars(llmProvider().id, contextBudgetTokens),
+            maxResultChars = ContextBudget.toolResultLimitChars(llmProvider().providerId, contextBudgetTokens),
             // R1：把「越过执行边界」的记账点交给执行器——放在审批之后，见 beforeEffect 注释
             beforeEffect = { call -> turn?.toolDispatched(step, call.id) ?: true },
             // fullRegistry：让执行器区分「工具不存在」与「存在但分组未启用」
@@ -1292,7 +1242,7 @@ class RealAgentLoop(
      *   下一轮就消失，只会在撞上限时被滞回淘汰。
      */
     private fun currentExposure(active: MutableSet<String>): KernelExposure.Plan =
-        KernelExposure.plan(registry.list(), llmProvider().id, forceFullTools, active)
+        KernelExposure.plan(registry.list(), llmProvider().providerId, forceFullTools, active)
 
     /**
      * 由暴露面构造「回合级工具视图 registry」：
@@ -1323,13 +1273,14 @@ class RealAgentLoop(
     }
 
     /**
-     * 续跑判定（T05）：显式 shouldContinue 优先；stop() 的优雅停止通道与之并列
-     * （任一要求停即停）。null（未配置）且未收到 stop() → 继续。
+     * 续跑判定（T05）：只有显式 shouldContinue 能要求「本轮跑完就收尾」。
+     * null（未配置）→ 继续。
+     *
+     * 曾经这里还与 `stopRequested` 并列（接口上那个已删的 stop() 实现）。R-19 删掉那条
+     * 通道：生产从未调用，留着只会让人误以为「有个优雅停止在用」。真正的停止是
+     * `Job.cancel()`，见 [AgentLoop] 的注释。
      */
-    private fun shouldContinueNow(): Boolean {
-        if (stopRequested.get()) return false
-        return shouldContinue?.invoke() ?: true
-    }
+    private fun shouldContinueNow(): Boolean = shouldContinue?.invoke() ?: true
 
     /**
      * 系统提示分段拼装（[PromptAssembler]）：按「变化频率」排三段，而不是拼成一整块。
@@ -1410,8 +1361,8 @@ class RealAgentLoop(
         turnInputIndex: Int? = null
     ): List<ChatMessage> {
         // 本地 llama.cpp 默认 n_ctx=4096，不能用云端预算——按通道自适应（见 ContextBudget）
-        // R10：云端再按模型窗口收敛（窗口未知时 contextWindowOf 返回 0，行为不变）
-        val pid = llmProvider().id
+        // R10：云端按窗口收敛。R11：用 providerId——id 是协议名，28 家都叫 "openai"，查窗口恒得 0
+        val pid = llmProvider().providerId
         val budget = ContextBudget.budgetForProvider(
             pid, contextBudgetTokens, com.example.agentkit.core.llm.ProviderCatalog.contextWindowOf(pid)
         )
