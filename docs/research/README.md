@@ -59,6 +59,19 @@
 | [08-competitor-architecture.md](08-competitor-architecture.md) | 五个同类应用的架构总剖析 |
 | [09-licenses.md](09-licenses.md) | 许可证决策记录（开源路线保障） |
 
+## 本目录与产品代码的关系
+
+这些文档记录的是「对方怎么做的」与「我们要怎么做」，**不是移植清单**。可核对的事实（2026-11-06 实测）：
+
+| 指标 | 实测 | 核对命令 |
+|---|---|---|
+| 构建链路引用参照项目 | **0** | `grep -cE "Operit\|RikkaHub\|AiCode\|Coomi\|zafiro\|IRIDIS" app/build.gradle.kts settings.gradle.kts` |
+| 源码中出现参照项目名 | **0** | `grep -rcE "IRIDIS\|rikkahub\|Operit\|AiCode\|Coomi\|zafiro" app/src/main --include=*.kt` |
+| 带编号的移植清单写法 | **0** | 无 `来源：xxx #9` 一类标注 |
+
+本目录中出现的源码片段，只用于说明接口形态（均标 `路径:行号`）；产品实现按本项目自己的结构重写。
+术语用「独立实现」而非「净室」，原因见 [`THIRD_PARTY_NOTICES.md`](../../THIRD_PARTY_NOTICES.md) §1.1。
+
 ## 硬性原则
 
 1. **许可证**：只用 MIT/Apache-2.0/LGPL（库方式）代码；RikkaHub/Operit/AiCode/Termux 只吸收架构思想，实现全部重写

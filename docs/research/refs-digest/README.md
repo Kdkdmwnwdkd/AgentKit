@@ -18,8 +18,8 @@
 因此：
 
 1. **只提炼设计原理**（架构分层、协议形状、状态机、参数语义、踩坑经验），**不搬运代码**。
-2. **`rikkahub.md`（AGPL-3.0）、`operit.md`（LGPL-3.0）、`aicode.md`（GPL-3.0）三份为「只读思路」**，任何落地一律**净室重写**：理解了原理的工程师从零实现，不看其源码。
-3. **`coomi.md`（Apache-2.0）与 `zafiro.md`（MIT）** 许可更宽松，但同样按净室重写保持 AgentKit 代码库一致性（Kotlin + Compose + Material3 + 单模块）。
+2. **`rikkahub.md`（AGPL-3.0）、`operit.md`（LGPL-3.0）、`aicode.md`（GPL-3.0）三份为「只读思路」**，任何落地一律**独立实现**：理解了原理的工程师从零实现，不看其源码。
+3. **`coomi.md`（Apache-2.0）与 `zafiro.md`（MIT）** 许可更宽松，但同样按独立实现保持 AgentKit 代码库一致性（Kotlin + Compose + Material3 + 单模块）。
 
 ### 硬红线
 
@@ -47,7 +47,7 @@
 | `rikkahub.md`<br>754 行 | RikkaHub<br>纯聊天客户端（14 个 Gradle 模块） | **AGPL-3.0**<br>只读思路 | 「一切皆可序列化 + Provider 无状态 + 会话即文档树」的成熟体验层 | ① **消息分支 = 节点 + 游标**（`MessageNode(messages, selectIndex)`，`Conversation.kt:113-135`）——扁平 List 表达树，序列化零成本<br>② **模型能力靠 ID 分词推断，不维护模型表**（`ModelRegistry` + `ModelDsl.kt:161-229`）<br>③ **上下文滞回截断**（阶梯式截断点 + `alignContextStart` 保 tool 配对，`Message.kt:161-249`）<br>④ Provider 无状态化 / 会话级配置快照 / KeyRoulette | Room / Koin / Navigation3 / Ktor / QuickJS / reorderable / haze 等全部依赖；自研 `:highlight` 引擎（51 kt）；`:mediagen` 任务模型；升级 Kotlin 2.4.20 与 Compose BOM 2026.09 |
 | `operit.md`<br>944 行 | Operit<br>Kotlin 单 App + 9 个原生模块（1159 kt） | **LGPL-3.0**<br>只读思路 | 与 AgentKit 技术栈**最同构**的重型单体；39 家 Provider + 2 个本地引擎 | ① **本地模型工具暴露降级**（CLI 模式只给 2 个工具 + 隐藏目录检索，`CliToolModeSupport.kt:21-31`）<br>② **有界 UI 子代理循环** PhoneAgent（`maxSteps=20`，每步只留最新一张截图）<br>③ **结果「一份真源、两处复用」+ 只发布已完成前缀**（`OrderedToolResults.kt:15-45`）<br>④ **Shell 五级权限工厂 + 严格模式**（不可用时失败并说明，不静默降级）<br>⑤ 工具 Hook 生命周期 7 回调 / 三级权限模型 / 可纠正的「工具不存在」错误 | 内部 XML 工具协议（我们 Provider 少且都支持原生 tool_calls）；**无界互相递归主循环**；39 家 Provider 铺量 / ToolPkg 包生态 / 蓝牙 16 工具 / 浏览器 18 工具；Shower 独立进程虚拟屏（`app_process` + 隐藏 API）；ObjectBox / FFmpeg / MMD·FBX / 1159 文件单体 |
 | `aicode.md`<br>983 行 | AiCode<br>Kotlin App + 2 个 Termux 模块（440 kt） | **GPL-3.0**<br>只读思路 | 唯一「AI + 完整 Linux 容器 + 真实编辑器 + 提示词/场景工程体系」四件套齐全 | ① **提示词是分层配置资产**：`assets/prompts/<NN>-<名>.md` 编号即顺序，四层优先级 PROJECT>GLOBAL>LOCAL>BUILTIN（`PromptFragmentCatalog.kt:13`）<br>② **场景库把「装开发环境」产品化**（`scenarios/{node,python,java,go...}.sh`，只暴露两个函数）<br>③ **`editFile` 精确字符串匹配而非行号 + 整批原子**（`EditFileTool.kt:37-56`）<br>④ **双层写保护**：路径锁 + 写前指纹校验返 `STALE_FILE`<br>⑤ **`notify=true` 反转轮询**（后台命令跑完系统推事件唤醒 AI） | sora-editor / TextMate / oniguruma / Hilt / Room / Retrofit / markdown-renderer / commons-compress / snakeyaml 等全部依赖；容器内跑 Gradle 编译 APK（慢且耗电，我们走 GitHub CI）；`targetSdk` 锁 28；JitPack 依赖的 Termux 模块；git 凭据只是混淆非加密 |
-| `zafiro.md`<br>719 行 | zafiro<br>Android 原生 Agent（BYOK）+ Xposed | **MIT**<br>可深参但净室重写 | 工程成熟度最高、抽象最干净：**按契约分层、每层有明确不变量** | ① **Agent 运行时抽成独立库层 okia**（依赖仅 okhttp + serialization + coroutines，运行时不认识 Android）<br>② **终端 = 身份 × 后端二维矩阵**（`TerminalIdentity{User,Su,Shizuku,Ssh}` × 4 后端，会话开辟时固化身份）<br>③ **权限 = 权限×API → 授予机制 → 通道链 三张正交表**，`PermissionSpec` 是全仓唯一 SDK_INT 分叉点<br>④ **工具结果契约 `{ok,code,message,hint,data}`，失败带 `hint` 教模型怎么修**<br>⑤ 未知工具回喂 vs executor bug 终止的二分；双层重试；流式 idle 超时 | Xposed / LSPosed 接管系统语音助手；Chaquopy Python（体积大，我们已有 rhino 走 JS）；**MCP Server / Ktor**（违反零依赖红线）；本地模型与媒体生成（AgentKit 已反超）；虚拟屏（AgentKit 已反超） |
+| `zafiro.md`<br>719 行 | zafiro<br>Android 原生 Agent（BYOK）+ Xposed | **MIT**<br>可深参但独立实现 | 工程成熟度最高、抽象最干净：**按契约分层、每层有明确不变量** | ① **Agent 运行时抽成独立库层 okia**（依赖仅 okhttp + serialization + coroutines，运行时不认识 Android）<br>② **终端 = 身份 × 后端二维矩阵**（`TerminalIdentity{User,Su,Shizuku,Ssh}` × 4 后端，会话开辟时固化身份）<br>③ **权限 = 权限×API → 授予机制 → 通道链 三张正交表**，`PermissionSpec` 是全仓唯一 SDK_INT 分叉点<br>④ **工具结果契约 `{ok,code,message,hint,data}`，失败带 `hint` 教模型怎么修**<br>⑤ 未知工具回喂 vs executor bug 终止的二分；双层重试；流式 idle 超时 | Xposed / LSPosed 接管系统语音助手；Chaquopy Python（体积大，我们已有 rhino 走 JS）；**MCP Server / Ktor**（违反零依赖红线）；本地模型与媒体生成（AgentKit 已反超）；虚拟屏（AgentKit 已反超） |
 
 ---
 
@@ -57,7 +57,7 @@
 
 | 主题 | 有论述的 digest | 一句话结论（合并后方向） |
 |---|---|---|
-| **Agent 运行时内核抽象** | `zafiro.md` §3.2 + A1／`operit.md` §3.1 + #1,6,8／`coomi.md` §3.2 + A1,A2,A3／`aicode.md` §3.2.4 AgentTool | 净室重写为 `core/agent/` 子包（不拆模块）：`AgentLoop` 接口 + `RealAgentLoop` + `ToolRegistry`/`ToolExecutor` 契约 + `Hooks`。运行时不认识 Android |
+| **Agent 运行时内核抽象** | `zafiro.md` §3.2 + A1／`operit.md` §3.1 + #1,6,8／`coomi.md` §3.2 + A1,A2,A3／`aicode.md` §3.2.4 AgentTool | 独立实现为 `core/agent/` 子包（不拆模块）：`AgentLoop` 接口 + `RealAgentLoop` + `ToolRegistry`/`ToolExecutor` 契约 + `Hooks`。运行时不认识 Android |
 | **终端后端 / 身份抽象** | `zafiro.md` §3.3 + B1,B2,B3,B4／`operit.md` §3.4 + #4,#5／`rikkahub.md` §3.10 + A13／`aicode.md` §3.3 + C1,C4,C5 | `TerminalBackend` 接口 + `TerminalIdentity` 枚举 + `ProotBackend`/`ShizukuBackend`；会话开辟固化身份，冲突显式报错 |
 | **Agent 主循环（有界 vs 无界）** | `operit.md` §2.3 + #17／`coomi.md` §3.2.1／`zafiro.md` §3.2.2 | **保留 AgentKit 现有 `repeat(maxSteps=16)` 有界**，补 `shouldContinue()` 钩子支持中途取消 |
 | **工具表达协议（XML/JSON/文本）** | `operit.md` §3.1.1 + #16／`zafiro.md` §3.2.4／`operit.md` §3.3.2（PhoneAgent） | **采纳原生 `tool_calls` JSON**。XML 仅作 local-llama 提示词兜底；类函数调用文本仅用于可选 UI 子代理 |
@@ -81,7 +81,7 @@
 | **设备自动化 / UI 子代理** | `operit.md` §3.3.2 + #2／`zafiro.md` §3.3.4 + G2／`coomi.md` §3.5.4 | 有界 UI 子代理循环（`maxSteps=12`）+ 每轮只留最近 1 张截图 + `take_over` 优雅退出；**虚拟屏 AgentKit 已反超** |
 | **构建 / 打包 / 推 GitHub** | `aicode.md` §3.6.3 + D8, C1-C6／`coomi.md` §3.5.3（CoomiDev，反向）／`zafiro.md` §1 表 | **保留 AgentKit「推 GitHub→CI→拉回→安装」路线**；只借鉴 `apk` 安装预检 `canRequestPackageInstalls` 与构建链就绪检测 |
 | **备份 / 原子写** | `rikkahub.md` §3.9 + A15／`coomi.md` A21／`aicode.md` D5 | 配置与会话「写 `.tmp` → `rename`」；备份 ZIP 走「暂存 → 校验 → 发布」两阶段（`java.util.zip`，JDK 自带） |
-| **记忆系统** | `rikkahub.md` §3.3 + A9／`operit.md` §3.7.1 + #14／`zafiro.md` D3 | Markdown 文件树 + frontmatter + version 乐观锁；**只抄「结构化决策 + 去重 + 有序写回」，不引向量检索** |
+| **记忆系统** | `rikkahub.md` §3.3 + A9／`operit.md` §3.7.1 + #14／`zafiro.md` D3 | Markdown 文件树 + frontmatter + version 乐观锁；**只借「结构化决策 + 去重 + 有序写回」，不引向量检索** |
 | **UI 架构 / MVI / 导航** | `zafiro.md` §2.4,§2.5 + E1,E2,E3／`aicode.md` §2.4 双栏 | MVI 基类 + **State/Effect 判据（"换个时间再读还成立吗"）**；导航每 entry 独立 ViewModelStore + 300ms 防抖；Ak* 组件必须配 `@Preview` |
 | **日志与可观测** | `zafiro.md` F1／`coomi.md` A20,A3 | `AgentLogger` 补落盘轮转（8MB × 10）；配置 `toString` 强制脱敏 apiKey；重试事件对 UI 透明（「正在恢复 n/N」） |
 
@@ -91,11 +91,11 @@
 
 | digest | 许可 | 允许的阅读深度 | 落地要求 |
 |---|---|---|---|
-| `rikkahub.md` | AGPL-3.0 | 架构、数据模型形状、交互取舍 | 净室重写；不复刻其 `ProviderSetting`/`MessageNode` 结构命名 |
-| `operit.md` | LGPL-3.0 | 协议形状、状态机、参数语义；**虚拟屏（Shower）与终端（OperitTerminalCore）两块为红线，只读思路、不触碰实现** | 净室重写 |
-| `aicode.md` | GPL-3.0 | 提示词工程思路、文件编辑安全性工程、proot 踩坑经验 | 净室重写；其 shell 脚本（场景库）为思路借鉴，自写 |
-| `coomi.md` | Apache-2.0 | 可深参 | 仍按净室重写保持一致性 |
-| `zafiro.md` | MIT | 可深参 | 仍按净室重写保持一致性 |
+| `rikkahub.md` | AGPL-3.0 | 架构、数据模型形状、交互取舍 | 独立实现；不复刻其 `ProviderSetting`/`MessageNode` 结构命名 |
+| `operit.md` | LGPL-3.0 | 协议形状、状态机、参数语义；**虚拟屏（Shower）与终端（OperitTerminalCore）两块为红线，只读思路、不触碰实现** | 独立实现 |
+| `aicode.md` | GPL-3.0 | 提示词工程思路、文件编辑安全性工程、proot 踩坑经验 | 独立实现；其 shell 脚本（场景库）为思路借鉴，自写 |
+| `coomi.md` | Apache-2.0 | 可深参 | 仍按独立实现保持一致性 |
+| `zafiro.md` | MIT | 可深参 | 仍按独立实现保持一致性 |
 
 > **引用规范**：本文件夹内所有引用均标注 `digest 文件名 + 原仓库路径:行号`，便于回查；落地文档引用本库时请标注 `来源：xxx.md`。
 

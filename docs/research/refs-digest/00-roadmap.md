@@ -1,7 +1,7 @@
 # 00 · 总对标地图与分阶段路线图
 
 > 本文件是 5 份 digest（`coomi.md` / `rikkahub.md` / `operit.md` / `aicode.md` / `zafiro.md`）的**横向合并产物**。
-> 第一原则：**只输出改造方案与路线图，不做代码搬运**。AGPL/LGPL/GPL 三库只提炼设计原理，落地一律净室重写。
+> 第一原则：**只输出改造方案与路线图，不做代码搬运**。AGPL/LGPL/GPL 三库只提炼设计原理，落地一律独立实现。
 > 制定人：产品经理 许清楚（Xu）｜基线：AgentKit 单模块 `:app`，Kotlin 1.9.25 + Compose BOM 2024.09.00 + Material3，minSdk 26，仅 arm64-v8a，约 80 kt。
 
 ---
@@ -47,7 +47,7 @@
 > 5 份里重复出现的建议，此处合并成**一条唯一方案**。格式为：唯一方案 / 来源 / 合并掉了哪些重复表述。
 
 ### M-01 · Agent 运行时内核抽象
-- **唯一方案**：净室重写为 **`core/agent/` 子包（不拆 Gradle 模块）**——`AgentLoop` 接口 + `RealAgentLoop`（回合主循环：流式收集 → 整条 commit → 工具执行 → 保序回喂）+ `ToolRegistry` / `ToolExecutor` 契约（`execute` 永不抛异常，`onInterrupt` 自判状态）+ `ToolDescriptor{name, wireName, inputSchemaJson}` + `Hooks` 接口（首期落 `beforeToolCall` / `afterToolCall` / `beforeStop` / `beforeSerialization` 四时机）。运行时层不认识 Android。现有 `core/AgentLoop.kt` 改为调用它，`ui/ChatViewModel.kt` 只认事件流与状态流。
+- **唯一方案**：独立实现为 **`core/agent/` 子包（不拆 Gradle 模块）**——`AgentLoop` 接口 + `RealAgentLoop`（回合主循环：流式收集 → 整条 commit → 工具执行 → 保序回喂）+ `ToolRegistry` / `ToolExecutor` 契约（`execute` 永不抛异常，`onInterrupt` 自判状态）+ `ToolDescriptor{name, wireName, inputSchemaJson}` + `Hooks` 接口（首期落 `beforeToolCall` / `afterToolCall` / `beforeStop` / `beforeSerialization` 四时机）。运行时层不认识 Android。现有 `core/AgentLoop.kt` 改为调用它，`ui/ChatViewModel.kt` 只认事件流与状态流。
 - **来源**：`zafiro.md` A1（okia，P0-1 3-4d）／`operit.md` #1,#6,#8／`coomi.md` A1,A2,A3（trait 分层 `ModelProvider/ToolRuntime/ApprovalHandler/AgentObserver`）／`aicode.md` §3.2.4（AgentTool 抽象基类）
 - **合并掉了**：zafiro「抽独立库」、operit「EnhancedAIService 内聚」、coomi「trait 分层可测试」、aicode「AgentTool 基类」四种表述 → 统一为**单模块内的 `core/agent/` 包 + 接口契约**（拆模块与红线/工期冲突，不拆）。
 
@@ -122,7 +122,7 @@
 - **合并掉了**：「编辑工具」「写保护」「懒快照」「diff」四条 → 拆成 T20/T21/T29/T30 四个可独立验收的改造项。
 
 ### M-16 · 模型能力与选择器
-- **唯一方案**：净室写 `core/ModelAbilityInfer.kt`（约 150 行，纯 Kotlin）：`tokenize(modelId)` 切成字母块/数字块/符号块 → 规则表 `Rule(tokens, notTokens, abilities, inputModalities)` → 取 score 最高者。**不维护模型表**，新模型发布当天即可推断「工具 / 推理 / 视觉」。消费方：模型卡片打能力 Tag + 决策是否下发 temperature + 是否启用视觉。
+- **唯一方案**：独立实现 `core/ModelAbilityInfer.kt`（约 150 行，纯 Kotlin）：`tokenize(modelId)` 切成字母块/数字块/符号块 → 规则表 `Rule(tokens, notTokens, abilities, inputModalities)` → 取 score 最高者。**不维护模型表**，新模型发布当天即可推断「工具 / 推理 / 视觉」。消费方：模型卡片打能力 Tag + 决策是否下发 temperature + 是否启用视觉。
 - **来源**：`rikkahub.md` A3,A4,A5（`ModelRegistry` + `ModelDsl.kt:161-229` / ModelListSheet UX / modelSnapshot）／`coomi.md` §3.1.7（`capabilities.rs` 能力画像 + `inferred` 三态）／`aicode.md` E3（models.dev 单价表）
 - **合并掉了**：「能力推断」「选择器 UX」「模型快照」→ 首期做推断 + 能力 Tag（0.5d）；收藏/拖拽、单价表留 P2。
 
@@ -643,7 +643,7 @@
 
 | 不做什么 | 来源 | 理由 |
 |---|---|---|
-| 引入 **Room / Koin / Navigation3 / Ktor / QuickJS / reorderable / haze / ucrop** | `rikkahub.md` 不做清单 | 违反零新增依赖红线；只学思路，净室重写 |
+| 引入 **Room / Koin / Navigation3 / Ktor / QuickJS / reorderable / haze / ucrop** | `rikkahub.md` 不做清单 | 违反零新增依赖红线；只学思路，独立实现 |
 | 引入 **sora-editor / TextMate / oniguruma / Hilt / Retrofit / markdown-renderer-m3 / commons-compress / snakeyaml / Vico** | `aicode.md` §2.2 | 同上；高亮与 Markdown 走自研极简版 |
 | 引入 **Chaquopy / Python 3.11** | `zafiro.md` §1 | 体积大；AgentKit 已有 `rhino 1.7.14`，走 JS 路线 |
 | **MCP Server（Ktor CIO 内嵌）** | `zafiro.md` D7 | 需新增 ktor 依赖，**明确违反红线，不做**（思路记录备查） |
@@ -731,9 +731,9 @@
 
 | digest | 许可 | 落地要求 | 状态 |
 |---|---|---|---|
-| `coomi.md` | Apache-2.0 | 可深参，仍净室重写 | ✅ 无 GPL 传染 |
-| `zafiro.md` | MIT | 可深参，仍净室重写 | ✅ 无 GPL 传染 |
-| `rikkahub.md` | **AGPL-3.0** | **只读思路，净室重写；不复刻其 `ProviderSetting`/`MessageNode` 结构命名** | ⚠️ 需遵守 |
+| `coomi.md` | Apache-2.0 | 可深参，仍独立实现 | ✅ 无 GPL 传染 |
+| `zafiro.md` | MIT | 可深参，仍独立实现 | ✅ 无 GPL 传染 |
+| `rikkahub.md` | **AGPL-3.0** | **只读思路，独立实现；不复刻其 `ProviderSetting`/`MessageNode` 结构命名** | ⚠️ 需遵守 |
 | `operit.md` | **LGPL-3.0** | **只读思路；虚拟屏（Shower）与终端（OperitTerminalCore）两块为红线，不触碰实现** | ⚠️ 需遵守 |
 | `aicode.md` | **GPL-3.0** | **只读思路；其 shell 脚本（场景库）为思路借鉴，自写** | ⚠️ 需遵守 |
 

@@ -4,7 +4,7 @@
 > 研究人：产品经理 许清楚（Xu） · 用途：为 AgentKit 改造提供「设计原理 → 我们怎么适配」
 > 所有结论均来自实际读码，标注 `路径:行号`；推测或未验证项标注「待验证」。
 >
-> ⚖️ **合规声明**：Operit 为 **LGPL-3.0**。本报告只提炼**设计原理与实现思路**（架构分层、协议形状、状态机、参数语义），**不搬运任何源码片段**。凡涉及落地，一律**净室重写**；尤以虚拟屏（Shower）与终端（OperitTerminalCore）两块为红线，只读思路、不触碰实现。
+> ⚖️ **合规声明**：Operit 为 **LGPL-3.0**。本报告只提炼**设计原理与实现思路**（架构分层、协议形状、状态机、参数语义），**不搬运任何源码片段**。凡涉及落地，一律**独立实现**；尤以虚拟屏（Shower）与终端（OperitTerminalCore）两块为红线，只读思路、不触碰实现。
 
 ---
 
@@ -17,7 +17,7 @@
 5. **截断/畸形 XML 有专门的修复器**：`detectAndRepairTruncatedToolRound`（`EnhancedAIService.kt:1443`）+ `enhanceToolDetection`（`:1335`）+ `buildTruncatedToolRepairSuffix`（`:1502`）—— 模型输出半个 `<tool>` 时，先补齐标签，然后把**本轮所有工具作废并回灌一条警告**让模型重来。这是「**错误恢复**」的实操答案。
 6. **设备自动化是「双通道」**：① Shower 虚拟屏（`showerclient/` 模块 + `app/.../core/tools/agent/`）—— 用 `app_process` 起一个独立 Java 进程当 server，通过 **Binder 广播**把 `IShowerService` 交回 App，再建虚拟 Display、发触控/按键、取截图；② 无障碍 / Shizuku / root 通道（`core/tools/defaultTool/{accessbility,admin,root,debugger}/`）。**AgentKit 已有 ②，缺 ① 的「独立进程虚拟屏」与「UI 子代理循环」**。
 7. **`PhoneAgent` 是一个「有界步数 + 视觉模型 + 极简动作协议」的 UI 子代理**（`core/tools/agent/PhoneAgent.kt`）：`maxSteps=20`（`:43`），每步「截图 → 喂视觉模型 → 解析 `do(action="Tap", element="[x,y]")` 或 `finish(message="…")` → 执行」（`:602`、`:691`、`:960`）。**它不用 JSON 工具协议，而是「类函数调用文本」**——理由是视觉小模型生成结构化 JSON 能力弱。这是「**按模型能力选协议**」的绝佳范例。
-8. **本地模型走「工具暴露降级」**：`ToolExposureMode.resolve()` 对 `LMSTUDIO/OLLAMA/OPENAI_LOCAL/MNN/LLAMA_CPP` 返回 `CLI`，此时**只暴露 2 个工具**（`search` + `proxy`）而非 180 个（`climode/CliToolModeSupport.kt:21-31`、`:68-69`）。进一步，llama.cpp 侧还接了 **GBNF 语法约束**（`llama_sampler_init_grammar_lazy_patterns`，`llm/llama/src/main/cpp/llama_jni_stub.cpp:94`）在采样层把输出锁成 `tool_calls` 结构。**这是我们 local-llama 路径最该抄的一课：小模型不能喂 100+ 工具 schema。**
+8. **本地模型走「工具暴露降级」**：`ToolExposureMode.resolve()` 对 `LMSTUDIO/OLLAMA/OPENAI_LOCAL/MNN/LLAMA_CPP` 返回 `CLI`，此时**只暴露 2 个工具**（`search` + `proxy`）而非 180 个（`climode/CliToolModeSupport.kt:21-31`、`:68-69`）。进一步，llama.cpp 侧还接了 **GBNF 语法约束**（`llama_sampler_init_grammar_lazy_patterns`，`llm/llama/src/main/cpp/llama_jni_stub.cpp:94`）在采样层把输出锁成 `tool_calls` 结构。**这是我们 local-llama 路径最该吸收的一课：小模型不能喂 100+ 工具 schema。**
 9. **JS 脚本引擎已切到 QuickJS**（`quickjs/` 模块，`JsEngine.kt:189` 用 `OperitQuickJsEngine()`，跑在专属单线程；`JsToolManager.kt:25` 建 **4 个引擎的池**）。Agent 写的脚本通过一个全局 `Tools.*` 对象回调宿主工具（`JsTools.kt:4`），并注入 `Java`/`Kotlin` 反射桥、CryptoJS/Jimp/OkHttp 等库（`JsLibraries.kt:12-60`）。**AgentKit 已有 rhino 1.7.14（零新增依赖红线内），但「工具暴露给 JS」这一层还没做。**
 10. **一句话结论**：向 Operit 学 **① XML 内部协议 + 结果有序性；② 有界 UI 子代理循环 + 极简动作协议；③ 本地模型工具暴露降级；④ Shell 权限分级工厂；⑤ 工具 Hook 生命周期 + 三级权限模型**。不学：它的「无界递归主循环」（我们已有更安全的 maxSteps）、单体 1159 文件的组织方式、39 家 Provider 的铺量。
 
@@ -160,7 +160,7 @@ EnhancedAIService.sendMessage(options)                          :903
 
 **为什么这样设计**（推断，非文档明说）：39 家云端 Provider + 2 个本地引擎，每家 tool_calls 格式不同（OpenAI / Responses / Anthropic / Gemini / Codex）。把「执行语义」锚定在一份与 Provider 无关的 XML 上，**新增 Provider 只需写一次双向转换器**，执行器零改动。
 
-**对 AgentKit 的启示**：我们只有 3 家云端 + 1 家本地，且都支持原生 `tool_calls`，**不必上 XML**。但「**结果只格式化一次、UI 与模型共用同一份文本**」这条必须抄（见 3.1.3）。
+**对 AgentKit 的启示**：我们只有 3 家云端 + 1 家本地，且都支持原生 `tool_calls`，**不必上 XML**。但「**结果只格式化一次、UI 与模型共用同一份文本**」这条必须做（见 3.1.3）。
 
 #### 3.1.2 工具批量执行：`ToolExecutionManager.executeInvocations`
 
@@ -443,7 +443,7 @@ else                 → 结束并报 "Unknown action format"
 
 ### 3.4 Shell / 终端执行 ★★★★☆
 
-#### 3.4.1 五级 Shell 执行器（**最值得抄的抽象**）
+#### 3.4.1 五级 Shell 执行器（**最值得吸收的抽象**）
 
 **它怎么做**（`core/tools/system/shell/ShellExecutor.kt:7-97`）
 
@@ -674,7 +674,7 @@ var Tools = {
 - 工厂三件套：`AvatarControllerFactory` / `AvatarModelFactory` / `AvatarRendererFactory`（`common/factory/`）；模型抽象 `AvatarModel` / `ISkeletalAvatarModel` / `IFrameSequenceAvatarModel`（`common/model/`）
 - 原生模块：`:mmd`（含 Bullet3）、`:fbx`（ufbx）、`:dragonbones`（自研 C++/OpenGL/JNI）；GLTF 用 Filament
 
-> **对 AgentKit 的借鉴价值**：如果我们做 Agent 形象，**抄的是「情绪枚举 → 控制器接口 → 工厂」这层抽象**，而不是 MMD/FBX 引擎。`playTrigger(name)` 尤其值得学——它让模型用 `<mood>` 标签里的任意字符串驱动动画，不需要模型知道有哪些动画名。
+> **对 AgentKit 的借鉴价值**：如果我们做 Agent 形象，**借的是「情绪枚举 → 控制器接口 → 工厂」这层抽象**，而不是 MMD/FBX 引擎。`playTrigger(name)` 尤其值得学——它让模型用 `<mood>` 标签里的任意字符串驱动动画，不需要模型知道有哪些动画名。
 
 #### 3.7.3 工作流 / 外部集成
 
@@ -689,7 +689,7 @@ var Tools = {
 
 > 图例：🔴 P0 必做 · 🟡 P1 应做 · 🟢 P2 可选 · ⚪ 不借鉴
 
-| # | 借鉴点 | Operit 怎么做（证据） | AgentKit 现状 | 我们的落地方案（净室重写） | 工作量 |
+| # | 借鉴点 | Operit 怎么做（证据） | AgentKit 现状 | 我们的落地方案（独立实现） | 工作量 |
 |---|---|---|---|---|---|
 | 1 | **工具结果「一份真源、两处复用」** | `OrderedToolResults` 只格式化一次 XML，同时供给响应流与模型历史（`OrderedToolResults.kt:29-45`）；`processToolResults` 注释明令「不能再次输出」（`EnhancedAIService.kt:2265-2266`） | `AgentLoop.kt:160` 只写 `ToolMessage(content)`，UI 与模型同源（因为都是同一对象），**风险较低** | **保持现状但加断言**：把「工具结果字符串」抽成 `formatToolResult(result)` 单一函数，UI 与历史都调它；补一条单元测试：同一 result 两次调用结果相等 | 0.5d |
 | 2 | **有界 UI 子代理循环（PhoneAgent 范式）** 🔴 | `maxSteps=20`；每步「截图→视觉模型→解析 `do(...)`/`finish(...)`→执行」；`Take_over` 优雅退出；每步摘掉上一张截图（`PhoneAgent.kt:43,507,602,642,1142`） | 有 `automation/`（Shizuku/虚拟屏）+ `UiAutomationTools` + `ui_screenshot`，**但没有「循环」**——只能单步人工驱动 | **`core/automation/UiAgentLoop.kt`**：`maxSteps=12`；`StepResult(success, finished, action, thought)`；动作协议用 **JSON**（我们用的都是支持 tool_calls 的模型，不需要类函数调用文本）；`screenshot → chat(messages+image) → toolCalls → execute`；结束条件 `finish` 工具或达上限；每轮只保留最近 1 张截图；`take_over` 工具用于登录/验证码 | 3d |
@@ -718,7 +718,7 @@ var Tools = {
 
 ### P0 —— 直接决定「设备自动化可用」与「本地模型可用」（合计约 **8 人日**）
 
-| # | 动作 | 产出文件（净室重写） | 人日 | 验收标准 |
+| # | 动作 | 产出文件（独立实现） | 人日 | 验收标准 |
 |---|---|---|---|---|
 | **P0-1** | **UI 子代理循环**（PhoneAgent 范式） | 新增 `core/automation/UiAgentLoop.kt`（≈180 行）、`tools/UiAgentTools.kt`（≈120 行） | **3d** | 下「打开设置→找到版本号→截图回来」这类 3 步任务，能自动跑完并返回结果；过程中可取消；达 12 步自动停并说明「未能在 12 步内完成」 |
 | **P0-2** | **本地模型工具暴露降级** | 新增 `core/llm/local/ExposureMode.kt` + `tools/ToolSearchTools.kt`（≈200 行） | **2.5d** | 用 local-llama 时，模型只见 2 个工具；`tool_search("读文件")` 返回 ≥1 条带参数提示的候选；`tool_proxy` 能真正执行并回传结果 |
@@ -742,7 +742,7 @@ var Tools = {
 | **P2-2** | 未知工具模糊匹配错误提示 | 0.5d | 提升模型自纠率 |
 | **P2-3** | 分功能模型（CHAT / AUX） | 1.5d | 摘要、标题、视觉可用便宜模型，省 token |
 | **P2-4** | 三级权限策略（ALLOW/ASK/FORBID） | 1d | 把 `needsApproval: Boolean` 升级为策略枚举 |
-| **P2-5** | 记忆写入「结构化决策 + 去重」 | 2d | 只抄「合并优先、顺序写回」，不引向量库 |
+| **P2-5** | 记忆写入「结构化决策 + 去重」 | 2d | 只借「合并优先、顺序写回」，不引向量库 |
 
 > **合计**：P0 ≈ **8 人日**；P1 ≈ **6.5 人日**；P2 ≈ **5.5 人日**（总计 ≈ 20 人日，P0+P1 = 14.5 人日为建议投入）。
 > **零新增外部依赖红线**：以上全部只用 Kotlin 标准库 + 协程 + 已有 okhttp 4.12.0 / kotlinx-serialization-json 1.6.3 / rhino 1.7.14。**P0/P1 全部通过**。
@@ -941,4 +941,4 @@ var Tools = {
 
 ---
 
-*报告完 · 研究人：产品经理 许清楚（Xu） · 研究对象：Operit（LGPL-3.0，只读思路，净室重写）*
+*报告完 · 研究人：产品经理 许清楚（Xu） · 研究对象：Operit（LGPL-3.0，只读思路，独立实现）*

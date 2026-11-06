@@ -4,7 +4,7 @@
 > （`/root/.codebuddy/artifact/repos/`，main 分支，2026-10-15），以「用户每天打开 App 会用的
 > 最基础操作」为纲做全功能面扫描，再逐项对照 AgentKit 源码现状（读码核实，非凭记忆）。
 >
-> 许可证纪律不变：**AGPL/LGPL/GPL 三家只读思路、禁止抄码；Apache-2.0（Coomi）深参仍净室重写**。
+> 许可证纪律不变：**AGPL/LGPL/GPL 三家只读思路、禁止抄码；Apache-2.0（Coomi）深参仍独立实现**。
 > 所有四家事实均带 `路径:行号`；AgentKit 现状均带文件路径。
 
 ## 〇、四家仓库与扫描面
@@ -153,7 +153,7 @@ MCP/创作工坊/构建推送全链路。
 ## 四、诚实声明
 
 1. 本矩阵基于四家 **main 分支 2026-10-15 快照**；RikkaHub/Operit/AiCode 为 AGPL/LGPL/GPL，
-   **只提取设计原理，落地必须净室重写**；Coomi 为 Apache-2.0，深参但仍重写。
+   **只提取设计原理，落地必须独立实现**；Coomi 为 Apache-2.0，深参但仍重写。
 2. 「AgentKit 现状」列均经本轮读码核实（ui/ChatScreen.kt、ui/ChatViewModel.kt、
    ui/ModelConfigScreen.kt、core/LLMClient.kt、ui/SettingsScreen.kt 等）；标 ◐ 处为
    「有组件但形态/入口不全」，标 ❌ 处为读码未发现（不排除极深路径存在，已按主要路径核）。

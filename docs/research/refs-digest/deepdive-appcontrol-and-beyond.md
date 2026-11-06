@@ -20,7 +20,7 @@
 7. AiCode 是第二优先级金矿：三模式（BUILD/PLAN/AUTO，`ChatSession.kt:6-10`）、权限引擎（Shizuku 高危不可记忆，`ToolPermissionPolicyEngine.kt:24-40,147,357`）、按会话隔离的 Checkpoint（`CheckpointManager.kt:47`）、子代理系统、提示词资产化——前三项路线图有对应条目且本轮验证属实，**三模式与子代理是路线图缺口（🆕）**。
 8. Coomi 的跨应用操控 = 无障碍文件队列主路径 + adb 兜底，纪律是「**仅当输出含『无响应』才回退 adb，其它错误如实返回**」（`lib.rs:1400-1401`）——这是「不静默盲试」的工程美德，AgentKit 的 app_stop 已具备同款品德（`AppControlTools.kt:446-469`）。
 9. RikkaHub 贡献两个可复用范本：AskUserTool（回合内向用户提问）与 ScreenTimeTool（UsageEvents 配对 + 自动跳设置页 + launcher 排除），后者正是 `device_foreground_app` 的升级模板。
-10. 合规红线不变：LGPL/AGPL/GPL 三家只读思路净室重写（字典类事实数据除外，仍需自行整理），Apache-2.0 可深参仍净室；本报告所有建议**零新增外部依赖**。
+10. 合规红线不变：LGPL/AGPL/GPL 三家只读思路独立实现（字典类事实数据除外，仍需自行整理），Apache-2.0 可深参仍独立实现；本报告所有建议**零新增外部依赖**。
 
 ---
 
@@ -246,7 +246,7 @@
 - 破坏性 rm 多层防护（⚠️据笔记）：根目录删除/相对通配（`*` `.*` `..` `../*`）/根级通配（`^/[^/*?]*[*?]`）/工作区根/系统关键目录（/bin /boot /dev /etc /home /lib* /proc /root /run /sbin /sys /usr /var…）/不可判定构造+疑似破坏性程序（rm|dd|shred|truncate|mkfs|wipefs|fdisk|parted|mkswap|blkdiscard）；
 - `NON_REMEMBERABLE_CAPABILITIES`：MODIFY_AGENT_CONFIG / MODIFY_CONTAINER_ENV 不可记忆（`:48`）；
 - 用户选择 REJECT/ONCE/ALWAYS，ALWAYS 按 PermissionScope.PROJECT 记忆（StatefulAgentWorkflow.kt:1380-1400 ⚠️）。
-**对 AgentKit 的意义**：M-12 已裁决「身份严格/获取降级」双轨 + ExecutionRules 四模式（ALLOW/LOCKED_ONLY/CONFIRM/DISABLED）。AiCode 的三条可净室吸收：① 「程序名+子命令」级记忆（比整命令精确、比程序名粒度细）；② **高危能力不可记忆清单**（Shizuku/MODIFY_CONFIG 类——AgentKit 的 ShizukuBackend 与 ConfigStore 正对应）；③ rm 的多层静态判据可直接进 T31 DangerousOpHook。
+**对 AgentKit 的意义**：M-12 已裁决「身份严格/获取降级」双轨 + ExecutionRules 四模式（ALLOW/LOCKED_ONLY/CONFIRM/DISABLED）。AiCode 的三条可独立实现吸收：① 「程序名+子命令」级记忆（比整命令精确、比程序名粒度细）；② **高危能力不可记忆清单**（Shizuku/MODIFY_CONFIG 类——AgentKit 的 ShizukuBackend 与 ConfigStore 正对应）；③ rm 的多层静态判据可直接进 T31 DangerousOpHook。
 
 #### 3.1.3 Checkpoint（✅ 验证，T29 路线图条目坐实）
 
@@ -263,10 +263,10 @@
 `feature/agent/domain/subagent/`（⚠️据笔记）：定义文件 `agents/<name>.md`（frontmatter + 正文）：name / description（何时派它）/ providerId / model / reasoningEffort / mode / allowedTools（空=继承全量）/ disallowedTools（先于白名单生效）/ inject / prompt；null = 继承父会话。作用域 GLOBAL / PROJECT（项目级可 git 追踪）。`InjectPart` 五种注入片段：BASE（agent/subagent-base.md 子代理精简基线）/ MAIN_RULES（00~70 全量规则）/ SKILLS / MEMORY / PROJECT_RULES。主代理通过 `task(agent="<name>")` 派发。
 **对 AgentKit 的意义**：T28（UI 子代理）目前设计为单一专用循环；AiCode 给出的是**通用子代理框架**（markdown 定义 + 工具黑白名单 + 提示词注入片段组合）。对 AgentKit 的落地建议：T28 先按专用循环做（不变），但把「子代理 = 独立会话 + 工具子集 + 注入片段」的定义方式记录下来，作为 T36 元工具之后的备选架构；「allowedTools 空=继承全量 / disallowedTools 先于白名单」的语义可直接借给 T28 的工具裁剪。
 
-#### 3.1.5 提示词资产化（✅ 验证，T18 路线图条目坐实 + 新增可抄文本）
+#### 3.1.5 提示词资产化（✅ 验证，T18 路线图条目坐实 + 新增可借鉴文本）
 
 `app/src/main/assets/prompts/`（⚠️据笔记，目录结构经主理人核实）：`00-identity.md` / `10-communication.md` / `15-project-rules.md` / `20-coding-discipline.md` / `30-comments.md` / `40-approach.md` / `50-safety.md` / `60-tools-and-paths.md` / `70-skills-and-mcp.md` / `99-runtime-context.md`（**编号即注入顺序**）+ `agent/` 专用提示词（auto-mode / commit-generator / compact-summary / init / plan-mode / subagent-base / subagent-context / title-generator）。
-**对照路线图**：T18（M-08）✅ 架构论断属实（编号片段 = 路线图原设计）。新增增量：`20-coding-discipline` 的六条核心原则（只做任务要求的事不夹带 / 以核实过的代码为准 / 遵循既有约定 / 完整实现不写半成品 / 只在系统边界做校验不为不可能场景加兜底 / 不留向后兼容临时手段）——**这是可直接净室吸收进 T18 的 `20-coding-discipline.md` 的现成文本资产**（原则性表述，非代码）。
+**对照路线图**：T18（M-08）✅ 架构论断属实（编号片段 = 路线图原设计）。新增增量：`20-coding-discipline` 的六条核心原则（只做任务要求的事不夹带 / 以核实过的代码为准 / 遵循既有约定 / 完整实现不写半成品 / 只在系统边界做校验不为不可能场景加兜底 / 不留向后兼容临时手段）——**这是可直接独立实现吸收进 T18 的 `20-coding-discipline.md` 的现成文本资产**（原则性表述，非代码）。
 
 #### 3.1.6 editFile 精确字符串匹配 + 双层写保护（✅ digest 已述，本轮无新发现）
 
@@ -288,7 +288,7 @@ EditFileTool.kt:37-56 精确匹配 + WorkspaceFileLock + 写前指纹校验返 S
 
 ## 合规声明
 
-1. **许可证纪律（不变）**：Operit（LGPL-3.0）/ RikkaHub（AGPL-3.0）/ AiCode（GPL-3.0）三家**只读思路、净室重写**——本报告及其派生的所有改造项（含字典表、沉降确认、权限判据、Checkpoint 语义）均为设计原理吸收，不复制其代码结构、命名与注释原文（引用注释原话仅作论据，属合理使用）；Coomi（Apache-2.0）可深参，仍净室重写。`00-roadmap.md` §6.4 的落地引用规范继续有效：**代码注释里禁止粘贴参照仓库源码片段**。
+1. **许可证纪律（不变）**：Operit（LGPL-3.0）/ RikkaHub（AGPL-3.0）/ AiCode（GPL-3.0）三家**只读思路、独立实现**——本报告及其派生的所有改造项（含字典表、沉降确认、权限判据、Checkpoint 语义）均为设计原理吸收，不复制其代码结构、命名与注释原文（引用注释原话仅作论据，属合理使用）；Coomi（Apache-2.0）可深参，仍独立实现。`00-roadmap.md` §6.4 的落地引用规范继续有效：**代码注释里禁止粘贴参照仓库源码片段**。
 2. **字典表特别说明**：本报告 P0-1 的「名称→包名」表是**互操作性事实数据**（应用包名是客观标识符，如同电话簿），据 Operit 公开字典整理并标注来源；「建议自补」4 条未经核实，入表前必须真机核对。
 3. **零新增外部依赖红线（不变）**：本报告全部建议只用 Kotlin 标准库 + 协程 + Android SDK（PackageManager / UsageStatsManager / AccessibilityService / ActivityManager）+ 已有依赖（okhttp / kotlinx-serialization / rhino），无任何新增 Gradle 依赖、无 JNI、无 assets 二进制。
 4. **推测标注**：文中「待验证」处（AiCode 权限引擎五步顺序细节、Checkpoint countSnapshot、子代理 frontmatter 七字段、Operit Shower 回退分支外的边角）来自主理人笔记的核心结论，行号级细节建议下一轮按需抽验；W-7 断点排序为基于代码的推断，需 P1-3 实测矩阵最终确认。

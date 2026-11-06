@@ -1,7 +1,7 @@
 # AiCode 参照仓库吃透报告（第 4 路）
 
 > 研究对象：`/root/.codebuddy/artifact/repos/aicode`（main 分支，922 文件，app 模块 440 个 `.kt`，assets 3.7 MB）
-> 许可证：**GPL-3.0** —— 本报告只提取**设计原理与工程思路**，不含任何移植/摘录代码；所有落地必须**净室重写**
+> 许可证：**GPL-3.0** —— 本报告以**设计原理与工程思路**为主；为说明接口形态，含少量源码片段（均标注 `路径:行号`），**产品实现未复制代码**；所有落地必须**独立实现**
 > 撰写：产品经理 许清楚 ｜ 目的：为 AgentKit 提供「理解其设计 → 我们怎么适配」的改造依据
 
 ---
@@ -10,7 +10,7 @@
 
 AiCode 是**目前四个参照 App 里，唯一一个「AI + 完整 Linux 容器 + 真实代码编辑器 + 内置提示词/场景工程体系」四件套齐全的产物**。它不是聊天 App 外挂终端，而是**把「一台能跑 node/python/java/Android-SDK 的 Linux 开发机」塞进手机，再让 AI 在这台机器上干活**。
 
-**八条最值得抄的思路（不是代码）：**
+**八条最值得吸收的思路（不是代码）：**
 
 1. **提示词是「分层配置资产」，不是代码里的字符串**
    `assets/prompts/` 用 `<两位数字>-<名称>.md` 做**编号身份**决定注入顺序，`prompts.custom/` 按编号覆盖；动态内容全部走 `{{AICODE_*}}` 变量注入。**四层优先级：项目 > 全局 > 本地 > 内置**（`PromptFragmentCatalog.kt:13`）。
@@ -57,7 +57,7 @@ AiCode 是**目前四个参照 App 里，唯一一个「AI + 完整 Linux 容器
 | `:terminal-emulator` | **Java**（15 文件） | `com.termux.terminal.*` | VT100/ANSI 解析 + PTY + 屏幕缓冲区 |
 | `:terminal-view` | **Java**（7 文件） | `com.termux.view.*` | Android View 渲染 + 手势 + 文本选择 |
 
-> ⚠️ 两个终端模块是 **Java** 不是 Kotlin，且经 **JitPack** 分发（`settings.gradle.kts:12`，注释说明腾讯镜像没有）。AgentKit 若想引入，受**「零新增外部依赖」红线**约束，只能净室重写 —— 好在 AgentKit 已有 `terminal/TerminalEmulator.kt`（自己实现的 VT100 状态机），这条不用动。
+> ⚠️ 两个终端模块是 **Java** 不是 Kotlin，且经 **JitPack** 分发（`settings.gradle.kts:12`，注释说明腾讯镜像没有）。AgentKit 若想引入，受**「零新增外部依赖」红线**约束，只能独立实现 —— 好在 AgentKit 已有 `terminal/TerminalEmulator.kt`（自己实现的 VT100 状态机），这条不用动。
 
 ### 2.2 技术栈
 
@@ -246,7 +246,7 @@ LineDiff.kt:51-58   toUnified()：渲染为 `+xxx` / `-xxx` / ` xxx` 文本
 - 着色用 `dev.snipme:highlights-jvm`（`Highlights` / `SyntaxLanguage` / `SyntaxThemes`）
 - 防护：`MAX_DIFF_FILE_BYTES = 2 MB`（`GitRepository.kt:44`），超过降级为「文件过大」
 
-> **移植价值极高**：LCS 是纯算法，不受 GPL/依赖约束，AgentKit 可在 `core/workspace/` 下净室实现一个 `LineDiff.kt`（约 60 行）。**唯一要注意**：`(n+1)×(m+1)` 的 `IntArray` 表在大文件上会 OOM，净室版应加「文件超过 N 行则退化为按段落 diff」的保护。
+> **移植价值极高**：LCS 是纯算法，不受 GPL/依赖约束，AgentKit 可在 `core/workspace/` 下独立实现一个 `LineDiff.kt`（约 60 行）。**唯一要注意**：`(n+1)×(m+1)` 的 `IntArray` 表在大文件上会 OOM，独立实现版应加「文件超过 N 行则退化为按段落 diff」的保护。
 
 #### 3.1.4 Markdown 渲染：**双路径**
 
@@ -741,27 +741,27 @@ GIT_CONFIG_GLOBAL    = /root/.aicode/.gitconfig
 
 ## ④ 「它怎么做 → 我们怎么适配」对照表
 
-> 通则：**只读思路，净室重写**。AiCode 是 GPL-3.0；下列所有落地方案都必须在不看其源码的情况下，
+> 通则：**只读思路，独立实现**。AiCode 是 GPL-3.0；下列所有落地方案都必须在不看其源码的情况下，
 > 由**理解了原理的工程师**从零实现。本表的价值是「指出坑在哪、为什么要这样做」，不是提供代码。
 
 ### A. 代码能力
 
 | # | AiCode 做法（含位置） | AgentKit 现状 | 我们怎么适配 | 依赖 | 优先级 |
 |---|---|---|---|---|---|
-| A1 | **TextMate 定向高亮**：`assets/textmate/languages.json` + 各语言 grammar + `dark_plus/light_plus` 主题；`ensureInitialized` 必须在 IO 线程，**每分析 1000 行就推一次着色**（`TextMateSetup.kt:15,33`） | `ui/EditorScreen.kt`（369 行）用 `BasicTextField` 自绘，**无语法高亮** | 净室写一个 **`core/editor/SimpleHighlighter.kt`**：不做完整 TextMate（需要 oniguruma），改做**正则 + 状态机的极简着色器**（~400 行）。覆盖 10 种高频语言（kt/java/py/js/ts/json/yaml/sh/md/html），词法用「关键词表 + 字符串/注释转义状态」。**必须异步分块**：在 `Dispatchers.Default` 按 500 行分块产出 `AnnotatedString`，用 `LaunchedEffect` 增量更新 UI | **零依赖** ✅ | **P0** |
+| A1 | **TextMate 定向高亮**：`assets/textmate/languages.json` + 各语言 grammar + `dark_plus/light_plus` 主题；`ensureInitialized` 必须在 IO 线程，**每分析 1000 行就推一次着色**（`TextMateSetup.kt:15,33`） | `ui/EditorScreen.kt`（369 行）用 `BasicTextField` 自绘，**无语法高亮** | 独立实现一个 **`core/editor/SimpleHighlighter.kt`**：不做完整 TextMate（需要 oniguruma），改做**正则 + 状态机的极简着色器**（~400 行）。覆盖 10 种高频语言（kt/java/py/js/ts/json/yaml/sh/md/html），词法用「关键词表 + 字符串/注释转义状态」。**必须异步分块**：在 `Dispatchers.Default` 按 500 行分块产出 `AnnotatedString`，用 `LaunchedEffect` 增量更新 UI | **零依赖** ✅ | **P0** |
 | A2 | 编辑器用 sora-editor（`app/build.gradle.kts:382-386`） | `BasicTextField` + 自己写的行号 | **保留 Compose 自绘**，只补：① 行号 gutter ② undo/redo（自己维护 `undoStack: ArrayDeque<TextSnapshot>`）③ dirty 判定用 baseline 比对（`CodeEditorScreen.kt:114` 的思路）④ 保存前用下面 D2 的 STALE_FILE 校验 | 零依赖 | **P0** |
 | A3 | **不在 APK 里做 UI 文件树**；靠 `list` 工具 ls 输出 + `@` 提及（`rg --files`，遵守 .gitignore）+ `search`（rg） | 几乎没有文件探索能力（`tools/BuiltInTools.kt` 只有 http_request/read_file/write_file/clipboard/send_notification） | ① 新增 `list_dir` 工具（宿主 `File.walk` 有限深度 + `.gitignore` 简易匹配，`MAX_ENTRIES=500` 保护）② 新增 `search_code` 工具（容器内 rg；rg 缺失时降级为 Kotlin 实现的子串搜索）③ **新增 `@` 文件提及**：`rg --files` 拉清单 + 内存模糊匹配，清单每次打开刷新 | 零依赖（rg 走已有容器） | **P0** |
 | A4 | **`editFile` 精确字符串匹配**（而非行号）——注释写死理由：行号连续编辑会漂移（`EditFileTool.kt:37-56`） | `write_file` 整文件覆盖（197 行 BuiltInTools） | 新增 `edit_file` 工具：`old_string`/`new_string`/`replace_all` + `edits` 数组**整批原子**（先在内存里全算完，任一不匹配则整体不写盘）。一只语义覆盖替换/删除/插入 | 零依赖 | **P0** |
-| A5 | **双层并发保护**：`WorkspaceFileLock`（路径互斥）+ `FileVersionRegistry`（写前内容指纹比对，不一致返 `STALE_FILE`）。**校验在锁内、以锁内重读为准**（`EditFileTool.kt:60-70`） | 无 | 净室写 `core/workspace/FileVersionRegistry.kt`（`ConcurrentHashMap<path, sha256>`）+ `WorkspaceFileLock.kt`（`ConcurrentHashMap<path, Mutex>`）。**关键**：`read_file` 必须登记指纹，这是拿到保护的前提；错误码 `STALE_FILE`，错误消息明确告诉模型「先重新 read_file」 | 零依赖 | **P0** |
+| A5 | **双层并发保护**：`WorkspaceFileLock`（路径互斥）+ `FileVersionRegistry`（写前内容指纹比对，不一致返 `STALE_FILE`）。**校验在锁内、以锁内重读为准**（`EditFileTool.kt:60-70`） | 无 | 独立实现 `core/workspace/FileVersionRegistry.kt`（`ConcurrentHashMap<path, sha256>`）+ `WorkspaceFileLock.kt`（`ConcurrentHashMap<path, Mutex>`）。**关键**：`read_file` 必须登记指纹，这是拿到保护的前提；错误码 `STALE_FILE`，错误消息明确告诉模型「先重新 read_file」 | 零依赖 | **P0** |
 | A6 | **Checkpoint 懒快照**：只快照将被修改的文件、只留最原始一次、按 sessionId 隔离；回滚返回 `skipped` 清单（`CheckpointManager.kt:42-96`） | `CheckpointStore.kt` 整目录 `copyRecursively` | 改造为：**在 `write_file`/`edit_file` 执行前调 `CheckpointStore.snapshotFile(path)`**（同一轮次同文件只快照一次）；回滚时逐个比对 `lastModified + size`，变更则跳过并收集清单返给 UI | 零依赖 | **P1** |
-| A7 | **LineDiff LCS** 行级 diff，统一格式「首列标记位」避免代码以 +/- 开头时歧义（`LineDiff.kt:11-58`） | 无 diff 展示 | 净室写 `core/workspace/LineDiff.kt`（~70 行 LCS）。**必须加保护**：行数 > 4000 时退化为「按首尾各 50 行」，避免 `(n+1)×(m+1)` IntArray OOM。聊天里把 `edit_file` 的结果渲染成 +/- 行（`ToolMessageComponents` 式卡片） | 零依赖 | **P1** |
+| A7 | **LineDiff LCS** 行级 diff，统一格式「首列标记位」避免代码以 +/- 开头时歧义（`LineDiff.kt:11-58`） | 无 diff 展示 | 独立实现 `core/workspace/LineDiff.kt`（~70 行 LCS）。**必须加保护**：行数 > 4000 时退化为「按首尾各 50 行」，避免 `(n+1)×(m+1)` IntArray OOM。聊天里把 `edit_file` 的结果渲染成 +/- 行（`ToolMessageComponents` 式卡片） | 零依赖 | **P1** |
 | A8 | 聊天 Markdown 用 `markdown-renderer-m3`；编辑器预览用 WebView + marked.js + highlight.js + DOMPurify（`MarkdownPreviewWebView.kt:47-56`，`allowFileAccess=false`） | ChatScreen 的 Markdown 渲染情况待验证（**待验证**） | **不引外部库**。两条路：① 聊天维持现状/自绘增强（代码块用 A1 的同一套 Highlighter 复用）② 预览页用已有 `WebView` + assets 里放 marked/highlight（MIT/BSD 许可，安全）。**必须落实三条安全配置：`allowFileAccess=false` + DOMPurify + 外部链接不跳转** | marked/highlight 是 assets 非 Gradle 依赖 ✅ | **P2** |
 
 ### B. 提示词 / 场景体系
 
 | # | AiCode 做法（含位置） | AgentKit 现状 | 我们怎么适配 | 依赖 | 优先级 |
 |---|---|---|---|---|---|
-| B1 | **编号片段 + 四层优先级**：`assets/prompts/<NN>-<名>.md`（编号=身份=顺序），PROJECT > GLOBAL > LOCAL > BUILTIN（`PromptFragmentCatalog.kt:12-13, 247-254`） | 提示词硬编码在 `AgentLoop.kt` | **这是最值得抄的一件事**。新增 `assets/prompts/` + `core/prompt/{PromptCatalog,PromptResolver,SystemPromptBuilder}.kt`：① 启动时把 assets/prompts 释放到 `filesDir/prompts`（每次覆盖）② 目录扫描用两位数字前缀 Regex ③ 用户覆盖写在 `filesDir/prompts.custom/`（**不删**）④ 先做「项目/全局」两层即可，LOCAL/BUILTIN 可合并 | 零依赖（自己写 ~150 行）✅ | **P0** |
+| B1 | **编号片段 + 四层优先级**：`assets/prompts/<NN>-<名>.md`（编号=身份=顺序），PROJECT > GLOBAL > LOCAL > BUILTIN（`PromptFragmentCatalog.kt:12-13, 247-254`） | 提示词硬编码在 `AgentLoop.kt` | **这是最该做的一件事**。新增 `assets/prompts/` + `core/prompt/{PromptCatalog,PromptResolver,SystemPromptBuilder}.kt`：① 启动时把 assets/prompts 释放到 `filesDir/prompts`（每次覆盖）② 目录扫描用两位数字前缀 Regex ③ 用户覆盖写在 `filesDir/prompts.custom/`（**不删**）④ 先做「项目/全局」两层即可，LOCAL/BUILTIN 可合并 | 零依赖（自己写 ~150 行）✅ | **P0** |
 | B2 | **`{{VAR}}` 变量注入**：10 个 `{{AICODE_*}}` 占位符，动态内容全部走到末尾的 `99-runtime-context.md`；注释明说这是为了 **KV Cache**（`SystemPromptProvider.kt:22-31, 379-405`） | 无 | 采纳思路：**稳定内容在前、易变内容在最后**。至少实现 4 个变量：`{{SKILLS}}` `{{MEMORY}}` `{{WORKSPACE}}` `{{DATE}}`。技能/记忆清单的注入顺序放在 prompt 最后 | 零依赖 | **P0** |
 | B3 | **会话级 Source 缓存** `(sessionId, projectRoot)`，空内容用 `""` 占位区分「未缓存」（`SystemPromptProvider.kt:53-78`） | 无 | 采纳：每次构造 system prompt 时若重扫磁盘会导致 prompt 抖动、打断云端 KV Cache。缓存 key 用 `(sessionId, projectRoot)`，`SOURCE_CACHE_LIMIT=32` 超了整体清 | 零依赖 | **P1** |
 | B4 | **场景库**：`lib/scenarios/<id>.sh` 只暴露 `scenario_name_<id>` / `install_scenario_<id>`，由 `SCENARIO_IDS` 列表驱动菜单 + 函数前缀分发（`env-common.sh:613, 622-634`） | `assets/containers/alpine.tar`，容器内有什么全靠手动 | **这是「能写代码/写游戏/做安装包」的前提**。新增 `assets/env/scenarios/{base,node,python,java,go,rust,php}.sh` + `env-common.sh`（包管理器探测 apk/apt/dnf/pacman、国内镜像源替换、运行时版本探测）。每个场景只写两个 shell 函数。**同步新增 ContainerScreen 里的「环境安装」UI**，1 键装 node/python/java | 零依赖（纯 shell asset）✅ | **P0** |

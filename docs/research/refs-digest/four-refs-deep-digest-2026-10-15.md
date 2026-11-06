@@ -126,7 +126,7 @@ provider 差异（RikkaHub 的 sealed ProviderSetting 协议开关 vs AiCode 的
 
 1. **AiCode 式提示词资产化**（P1，改动集中）：提示词从代码常量搬到 assets/prompts/<NN>-<名>.md，「编号即身份 + 四级覆盖」，用户可覆盖不丢、可分享。直接解决我们提示词散落代码、无法被用户定制的问题。
 2. **AiCode 式权限策略引擎**（P1）：ALLOW/DENY/ASK + 可记忆规则（全局 + 项目两级 JSON）+ shell 静态分段分析 + 高危不可记忆。我们当前审批弱于四家任何一家。
-3. **RikkaHub 式阶梯滞回截断**（P2，纯函数直接抄）：limitMessageCount 保 prompt 缓存前缀稳定 + alignContextStart 对齐 tool call 边界。我们 maxHistoryMessages 是硬截断，可升级。
+3. **RikkaHub 式阶梯滞回截断**（P2，纯函数直接重写）：limitMessageCount 保 prompt 缓存前缀稳定 + alignContextStart 对齐 tool call 边界。我们 maxHistoryMessages 是硬截断，可升级。
 4. **AiCode 式检查点判据**（P2）：FileVersionRegistry「本会话最后看到的版本」判据 + 同路径 Mutex + 公共文件锁。做「撤销 Agent 改动」时的标准答案。
 5. **Operit 式工具调用双协议桥接**（P1，若接本地模型）：原生 tool call ↔ XML 文本互转，主循环零差异。我们接本地弱模型时必然遇到。
 6. **Coomi 式事件序号 + ack**（P2，若做后台任务）：ConcurrentLinkedQueue + seq + ack 游标，断线补发。

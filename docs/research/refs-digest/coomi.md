@@ -10,7 +10,7 @@
 
 1. **Coomi 不是「一个 Android App」，是「Termux 壳 + Rust 引擎 + Vue 前端」三件套**：Android 层几乎不写业务逻辑，只负责跑引擎进程、宿主 WebView、提供无障碍/Shizuku 能力；**所有 Agent 逻辑在 Rust**（`apps/coomi-rs`，约 5.2 万行 Rust），**所有 UI 在 Vue**（`apps/web`，约 2.4 万行 TS/Vue）。
 2. 这套架构对 AgentKit **不可直接搬**（我们是 Kotlin 单模块 + Compose 原生 UI，且红线是零新增依赖），但它的**协议设计、容错策略、能力建模**极具参考价值——这些是与语言无关的「设计知识」。
-3. **最值得抄的三件事**：① Provider 的**多协议归一化 + 400 错误自降级重试**（`provider.rs:1089-1178`）；② Agent 循环的**工具调用指纹去重 + 失败熔断**（`agent.rs:641-708`）；③ **Markdown 白名单消毒 + 分块渲染 + 60ms 节流**（`utils/markdown.ts:14-105`、`MessageBubble.vue:1-11`）。
+3. **最值得吸收的三件事**：① Provider 的**多协议归一化 + 400 错误自降级重试**（`provider.rs:1089-1178`）；② Agent 循环的**工具调用指纹去重 + 失败熔断**（`agent.rs:641-708`）；③ **Markdown 白名单消毒 + 分块渲染 + 60ms 节流**（`utils/markdown.ts:14-105`、`MessageBubble.vue:1-11`）。
 4. **Coomi 的短板恰好是 AgentKit 已做的**：Coomi **没有真正的 AI 生图/视频**——`capabilities.rs:101` 只有 `image_generation` 一个**能力标记**（按模型名 `dall-e/gpt-image/imagen` 推断，`:132`），全仓无生图/视频调用实现。AgentKit 已有 `core/media/providers/` 四家（OpenAI/DashScope/MiniMax/Volc），这块**不用向它学，反而要守住领先**。
 5. Coomi 的「写游戏/做安装包」靠 **CoomiDev 自定义迭代**：内置 Skill + 隔离工作区 + 版本化 Build Kit（`catalogs/src/lib.rs:194`、`catalogs/coomi-custom-iteration.md`），思路是「给 Agent 一套构建链脚本 + 隔离目录」，而非 App 内建构建器——与 AgentKit 的 `core/build/`（推 GitHub→CI→拉回）是**两条不同路线**，AgentKit 的云端 CI 路线更轻，**建议保留现状**。
 6. **设备自动化**：Coomi 用**文件队列**做无障碍指令桥（无障碍服务读 `*.cmd.json`、写回结果，`CoomiAccessibilityService.java:134/154/237`），并用 `environment="shizuku"` 让 `shell` 工具跑 Android 本机 shell（`tools/src/shizuku.rs:35`、RELEASE_NOTES_v1.5.1o3.md）。AgentKit 已有 `AutomationBridge` + `AgentAccessibilityService`，**Coomi 的「文件队列」模式对我们价值有限**（我们是同进程直接调用），但 **`shell`/`local_shell` 的 Shizuku 通道**值得补。
@@ -63,7 +63,7 @@ Gradle 侧只暴露 4 个模块：`settings.gradle:26-38`。注意 **`apps/coomi
 | 引擎质量闸门 | `unsafe_code = "forbid"`、`unwrap_used = "deny"`、`todo = "deny"` | `Cargo.toml:46-51` |
 | 前端 | Vue 3.4 + Pinia 2 + vue-router 4 + **marked 12** + gsap + **vue-virtual-scroller** | `apps/web/package.json:14-24` |
 
-> ⚠️ **架构红线提醒**：Coomi 的 `targetSdk ≤ 28` 是被 Termux bootstrap 逼出来的历史包袱。AgentKit 的 `minSdk 26` + 正常 targetSdk 是**更健康的状态**，不要为抄 Coomi 而降级。
+> ⚠️ **架构红线提醒**：Coomi 的 `targetSdk ≤ 28` 是被 Termux bootstrap 逼出来的历史包袱。AgentKit 的 `minSdk 26` + 正常 targetSdk 是**更健康的状态**，不要为对齐 Coomi 而降级。
 
 ### 2.3 导航结构（前端为主）
 
@@ -129,7 +129,7 @@ pub enum ProviderKind {
 
 `ProviderConfig` 的 `Debug` 实现**手工把 `api_key` 打成 `[redacted]`**（`config.rs:78-96`）——防止日志泄漏。另支持 `extra_headers`（`:308-317`，如 ZCode 验证码头）。
 
-#### 3.1.5 请求侧的「400 自降级」——最值得抄的一段
+#### 3.1.5 请求侧的「400 自降级」——最值得吸收的一段
 
 `services/src/provider.rs` 有一整套**针对上游 400 错误的字段降级重试**：
 
@@ -199,7 +199,7 @@ Err + is_transient_provider_error(&error)  → 指数退避重试（最多 provi
 
 每次重试都会先 `StreamReset` 再 `ConnectionRetry` 事件（`:527-533`），**UI 能看到「网络或上游服务暂时不可用，正在自动恢复」**——这是把失败透明化，而不是静默重试。重试判定见 `is_transient_provider_error`（`:937`）、`is_context_window_error`（`:1073`）、`is_image_compatibility_error`（`:1002`）、`retry_delay_ms`（`:966`）。
 
-#### 3.2.3 工具并发与失败熔断（**AgentKit 最该抄的一段**，`:630-672`）
+#### 3.2.3 工具并发与失败熔断（**AgentKit 最该吸收的一段**，`:630-672`）
 
 ```rust
 let has_mutation = calls.iter().any(|call|
@@ -414,7 +414,7 @@ Git 能力分两块：
 
 ## ④ 「它怎么做 → 我们怎么适配」对照表
 
-> 约束：**零新增外部依赖**（已有 okhttp 4.12.0 / kotlinx-serialization-json 1.6.3 / rhino 1.7.14），净室重写，保持 AgentKit 代码库一致性（Kotlin + Compose + Material3）。
+> 约束：**零新增外部依赖**（已有 okhttp 4.12.0 / kotlinx-serialization-json 1.6.3 / rhino 1.7.14），独立实现，保持 AgentKit 代码库一致性（Kotlin + Compose + Material3）。
 
 | # | 借鉴点 | Coomi 做法（代码位置） | AgentKit 落地方案 | 优先级 |
 |---|---|---|---|---|

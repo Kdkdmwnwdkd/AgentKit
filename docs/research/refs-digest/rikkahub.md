@@ -62,7 +62,7 @@ RikkaHub 是一个**纯聊天客户端**（无设备自动化），但它的**�
 | 脚本引擎 | **QuickJS 1.0.15** | **Rhino 1.7.14（红线）** | — |
 | 其他 | coil 3.6.3 / retrofit 3.0 / workmanager / firebase / jlatexmath / jmdns / snakeyaml / termux 0.118.0 | — | — |
 
-> **红线提示**：AgentKit「零新增外部依赖」，所以上表 Room/Koin/Nav3/Ktor/QuickJS/reorderable/haze/ucrop 等**一律只能学思路、净室重写**。
+> **红线提示**：AgentKit「零新增外部依赖」，所以上表 Room/Koin/Nav3/Ktor/QuickJS/reorderable/haze/ucrop 等**一律只能学思路、独立实现**。
 
 ### 2.3 分层与依赖方向
 
@@ -562,13 +562,13 @@ ConversationConfig(                 // :21-29
 ## ④「它怎么做 → 我们怎么适配」对照表
 
 > 约束：AgentKit 单模块 `:app`，Kotlin 1.9.25 + Compose BOM 2024.09.00 + Material3，minSdk 26，**零新增外部依赖**（存量：okhttp 4.12.0 / kotlinx-serialization-json 1.6.3 / rhino 1.7.14）。
-> **全部为净室重写方案**，不搬运任何 AGPL 代码。
+> **全部为独立实现方案**，不搬运任何 AGPL 代码。
 
 | # | 借鉴点 | RikkaHub 怎么做（位置） | AgentKit 怎么适配（落地方案） | 依赖 | 优先级 |
 |---|---|---|---|---|---|
 | A1 | **Provider 无状态化** | `Provider` 接口每方法都传 `ProviderSetting`（`ai/.../Provider.kt:17-56`）；`ProviderManager` 只注册 3 个单例（:16-21） | 把 `LLMClient` 的「构造时持有 config」改为「调用时传 config」。保留 `LLMClient` 接口名不变，新增 `fun clientFor(providerId: String): LLMClient` 工厂 + 注册表 `Map<String, LLMClient>`。三套云端 + local-llama 各注册一个无状态实例。**收益**：支持「同一供应商多套 Key 并存」，为 Key 轮询铺路 | 0 | P1 |
 | A2 | **消息分支（节点+游标）** | `MessageNode(messages, selectIndex)`（`Conversation.kt:113-135`）；重新生成/编辑都是**追加兄弟 + 移动游标**（`ChatService.kt:1357-1366`） | `ConversationStore` 的 `MsgRecord` 外包一层 `MsgNode { id, records: List<MsgRecord>, selectIndex }`。线性渲染取 `nodes.map{ it.records[it.selectIndex] }`。UI 加「◀ 2/3 ▶」切换器。**这是本次最高性价比改造**：持久化格式只是多一层，JSON 直接可存；重新生成不再丢历史 | 0 | **P0** |
-| A3 | **模型能力注册表** | `ModelRegistry` + token 匹配 DSL（`registry/ModelRegistry.kt:10`、`ModelDsl.kt:161-229`） | 净室写一个 ~150 行 `ModelAbilityInfer`：① `tokenize(id)` 切成字母块/数字块/符号块；② 规则表 `listOf(Rule(tokens=listOf("gpt","5"), notTokens=listOf("gpt","5","chat"), abilities=setOf(TOOL,REASONING), input=setOf(TEXT,IMAGE)))`；③ 取 score 最高者。用于**模型卡片打标签**（工具/推理/视觉）+ 决策是否启用 temperature。**纯 Kotlin，零依赖，约 0.5 天** | 0 | **P0** |
+| A3 | **模型能力注册表** | `ModelRegistry` + token 匹配 DSL（`registry/ModelRegistry.kt:10`、`ModelDsl.kt:161-229`） | 独立实现一个 ~150 行 `ModelAbilityInfer`：① `tokenize(id)` 切成字母块/数字块/符号块；② 规则表 `listOf(Rule(tokens=listOf("gpt","5"), notTokens=listOf("gpt","5","chat"), abilities=setOf(TOOL,REASONING), input=setOf(TEXT,IMAGE)))`；③ 取 score 最高者。用于**模型卡片打标签**（工具/推理/视觉）+ 决策是否启用 temperature。**纯 Kotlin，零依赖，约 0.5 天** | 0 | **P0** |
 | A4 | **ModelListSheet UX** | 收藏区+拖拽排序、搜索框、Provider 折叠持久化、打开即定位当前项、能力标签（`ModelList.kt:367-657, 849-935`） | 分两步：① **P0 先做无拖拽版**——搜索框（`OutlinedTextField` + `RoundedCornerShape(50)`）+ Provider 折叠（SharedPrefs 存逗号分隔 id）+ `LazyListState(initialFirstVisibleItemIndex=定位)` + 收藏区（`favoriteModels` 存 SharedPrefs）+ 三个能力 Tag。② 拖拽排序 P2 降级为「长按→上移/下移」菜单项。**注意**：RikkaHub 用 `sh.calvin.reorderable`，我们不能引入 | 0 | **P0**（①）／P2（②） |
 | A5 | **模型快照 modelSnapshot** | `ModelSnapshot(modelId, displayName)` 存进消息（`Message.kt:110-114`），落库时补齐（`Conversation.kt:150-163`） | AgentKit 消息只存模型名字符串。改造：消息增 `modelDisplayName` 字段（**已经等于快照，不用改结构**），只需确保「模型被删/改名后气泡仍显示当时名字」。**存量已满足，仅需确认 UI 读的是消息上的名字而非当前配置**——零成本 | 0 | P1 |
 | A6 | **上下文滞回截断** | `limitMessageCount` 阶梯式截断点 + `alignContextStart` 保 tool 配对（`Message.kt:161-249`） | AgentKit 的 `AgentExecutor` 目前上下文管理策略待确认（**待验证**）。若为「滑动窗口」，改为阶梯式：越过阈值才截断、一次前进 N 条，把前缀稳定下来（对云端 prompt cache 省钱，对本地 llama.cpp 省 prefill 时间——**本地模型收益更大**）。tool 配对保护逻辑采纳思路（纯函数，可单测） | 0 | **P0** |
@@ -577,7 +577,7 @@ ConversationConfig(                 // :21-29
 | A9 | **记忆改为 Markdown 文件树** | `MemoryFile`（`MemoryFile.kt:11-76`）+ 6 个 memory 工具（`MemoryTools.kt:24-32`）+ 定时 Consolidation（`Scheduler.kt:95` idle 2min） | AgentKit `MemoryStore` 是扁平 JSON。分两步：① **P1**：把 `MemoryItem` 落盘从一条条 JSON 改为「按 topic 分组的 .md 文件 + frontmatter(title/description/aliases)」，并用 `SHA-256(content).take(12)` 做 version 乐观锁；② **P2**：加空闲 2 分钟自动整理（WorkManager 或 AppScope 协程 + `delay`），用 fast model 把新对话轮次归并进记忆文件。**注意 AgentKit 无 WorkManager，用 `AppScope` + `ProcessLifecycleOwner` 即可** | 0 | P1（①）／P2（②） |
 | A10 | **助手预设（Assistant）** | 37 字段（`Assistant.kt:16-53`），含 `messageTemplate`、`presetMessages`、`regexes`、`enableTimeReminder` | AgentKit 有 `skill` 包但无「助手/角色预设」。新增 `AgentPreset(id, name, systemPrompt, modelId, temperature, enabledTools, presetMessages)`，存 `ConfigStore`；聊天页顶部可切换 Preset。**优先做 4 个字段最小集**：name/systemPrompt/modelId/temperature。`messageTemplate` 与 `regexes` 留 P2 | 0 | P1 |
 | A11 | **Provider 类型转换（convertTo）** | `ProviderSetting.convertTo(KClass)` + BaseUrl 路径段智能改写（`ProviderConfigure.kt:90, 109, 175-201`） | AgentKit 模型配置页已有供应商 tab（任务 #54）。增量：切换供应商时**保留 name/model，改写 baseUrl 的路径段**（用 `HttpUrl.parse()` 的 okhttp，已有依赖）。例如 OpenAI `https://x.com/v1` → Claude 时改写为 `https://x.com/v1`（Claude 默认带 /v1，`ClaudeClient` 已有兜底逻辑，需对齐） | 0 | P2 |
-| A12 | **余额查询（BalanceOption）** | `BalanceOption(enabled, apiPath, resultPath="data.total_usage")`（`ProviderSetting.kt:10-14`） | 净室写一个极小的 JSON 路径取值器（`resultPath.split('.')` 逐级下钻，~20 行）。模型配置页显示余额。**纯附加体验点，可延后** | 0 | P2 |
+| A12 | **余额查询（BalanceOption）** | `BalanceOption(enabled, apiPath, resultPath="data.total_usage")`（`ProviderSetting.kt:10-14`） | 独立实现一个极小的 JSON 路径取值器（`resultPath.split('.')` 逐级下钻，~20 行）。模型配置页显示余额。**纯附加体验点，可延后** | 0 | P2 |
 | A13 | **非交互 shell env + 位置参数传命令** | `CI=true NO_COLOR=1 PAGER=cat`；`sh -l -c 'cd -- "$1" && eval "$2"' name "$cwd" "$cmd"`（`ProotShellRunner.kt:94-114`） | **直接采纳，零依赖零风险**。AgentKit 的 proot 命令执行处加这三条 env + 改用位置参数传命令。收益：避免 `apt install` / `git` 等卡在确认提示或分页器——这是「做安装包/推 GitHub」场景下最常见的卡死原因 | 0 | **P0** |
 | A14 | **自定义 Header / Body** | `CustomHeader(name,value)` + `CustomBody(key, value: JsonElement)`（`Provider.kt:119-128`） | AgentKit 三家 Client 目前（待验证）无自定义头支持。增量：ModelConfig 加 `customHeaders: List<Pair<String,String>>`（`Map<String,String>` 序列化更简单），请求构造时 `addHeader`。**对国内中转站/自建网关是刚需** | 0 | P1 |
 | A15 | **备份 ZIP + 暂存发布两阶段** | `BackupManager`（`sync/BackupManager.kt:36-147`）+ DataStore 损坏留档（`PreferencesStore.kt:60-70`） | AgentKit 有 `ConversationStore`/`MemoryStore` 的 tmp+rename 原子写（已在做）。增量：设置页加「导出/导入 ZIP」，内容 = `settings.json` + `conversations.json` + `memory.json`。**解压先到 staging，校验通过再整体替换**（避免半套数据）。用 `java.util.zip`（JDK 自带，不新增依赖） | 0 | P2 |

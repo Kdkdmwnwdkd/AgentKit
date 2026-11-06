@@ -2,7 +2,7 @@
 
 > 研究者：许清楚（Xu，产品经理） · 第 5 路
 > 研究对象：`/root/.codebuddy/artifact/repos/zafiro`（main 分支，934 文件）
-> 许可证：MIT — 可深度参考实现，但 AgentKit 侧按**净室重写**保持代码库一致性
+> 许可证：MIT — 可深度参考实现，但 AgentKit 侧按**独立实现**保持代码库一致性
 > 一句话定位：**Android 原生 AI Agent（BYOK），能看屏、操控设备、跑 Shell / Python、接 MCP，并通过 LSPosed 接管系统语音助手**
 
 ---
@@ -11,7 +11,7 @@
 
 zafiro 是我看过的几个参照仓库里**工程成熟度最高、抽象最干净**的一个——它不是"能用"的 Demo，而是一套**按契约分层、每层都有明确不变量**的产品级 Agent 系统。
 
-**三个最值得 AgentKit 抄的"设计原理"（不是代码）：**
+**三个最值得 AgentKit 吸收的"设计原理"（不是代码）：**
 
 1. **Agent 运行时被抽成了一个独立库层（okia）**，与 App 业务完全解耦。okia 只做一件事：**「模型 ↔ 工具」的回合循环**，它不认识 Android、不认识 Shell、不认识 Python。工具以 `ToolRegistry + ToolExecutor` 契约注入，扩展面统一收敛到 `Hooks`（10 个时机，Xposed 风格命名）。okia 的依赖只有 okhttp + kotlinx-serialization + coroutines。
    → AgentKit 现在 `AgentExecutor` 与 UI/业务混在一起，这是最大的结构性差距。
@@ -33,7 +33,7 @@ zafiro 是我看过的几个参照仓库里**工程成熟度最高、抽象最�
 | 做安装包 | 有（README 演示：Py 下载 APK + Root 安装） | 可直接对齐 |
 | 推 GitHub 拉回 | 部分（Git 走 shell） | AgentKit 已有 CI 构建按钮反超 |
 
-**结论**：zafiro 的价值在**Agent 运行时的工程抽象与终端/权限模型**，不在产品功能面。AgentKit 应"抄架构、补差距、不抄功能"。
+**结论**：zafiro 的价值在**Agent 运行时的工程抽象与终端/权限模型**，不在产品功能面。AgentKit 应"借架构、补差距、不搬功能"。
 
 ---
 
@@ -80,7 +80,7 @@ zafiro 是我看过的几个参照仓库里**工程成熟度最高、抽象最�
 ```
 
 - `agent-runtime` 依赖（`agent-runtime/build.gradle.kts:52-58`）：`xposed-api`、`libs:logging`、`libs:okia`、`libs:libterm-runtime`、`business:api`、`business:permission`、`business:notification`。
-- **okia 不反向依赖任何上层**——这是它能被净室借鉴的根本原因。
+- **okia 不反向依赖任何上层**——这是它能被独立实现借鉴的根本原因。
 
 ### 2.3 技术栈（实测）
 
@@ -498,12 +498,12 @@ private val pendingNotifications = mutableListOf<String>()       // 待排空通
 
 ## ④ 「它怎么做 → 我们怎么适配」对照表
 
-> 原则：**学原理、抄契约、重写实现**。以下每条都写清 zafiro 做法（含 file:line）+ AgentKit 落地方案 + 工作量。
+> 原则：**学原理、借契约、重写实现**。以下每条都写清 zafiro 做法（含 file:line）+ AgentKit 落地方案 + 工作量。
 > AgentKit 现状基线：单模块 `:app`，约 80 个 kt，`core/`（build / container / llm / mcp / media / workspace）、automation、memory、skill、terminal、tools、ui（Ak* 自绘组件）。
 
 | # | 维度 | zafiro 怎么做（含 file:line） | AgentKit 怎么适配 | 工作量 |
 |---|---|---|---|---|
-| **A1** | **Agent 运行时抽象** | 抽出独立库层 okia（86 kt，依赖仅 okhttp+serialization+coroutines）：`Okia` 门面（`Okia.kt:33-140`）+ `AgentLoop`（`AgentLoop.kt:24-31`）+ 协议三实现 + `ToolRegistry`/`ToolExecutor` 契约（`ToolRegistry.kt:12-25` / `ToolExecutor.kt:11-18`）。**运行时不认识 Android**。 | **净室重写为 `core/agent/` 子包**（不拆模块，保持单模块一致性）：① `AgentLoop` 接口 + `RealAgentLoop`（回合循环，先做「流式 → 工具 → 回喂」主循环，不做树/rewind）；② `ToolRegistry` + `ToolExecutor`（`execute` 永不抛异常，`onInterrupt` 自判状态）；③ `ToolDescriptor{name, wireName, inputSchemaJson}`；④ `Hooks` 10 时机接口（先落地 `beforeToolCall`/`afterToolCall`/`beforeStop`/`beforeSerialization` 四个）。现有 `AgentExecutor` 改为调用 `AgentLoop`。 | **L（3-4 天）** |
+| **A1** | **Agent 运行时抽象** | 抽出独立库层 okia（86 kt，依赖仅 okhttp+serialization+coroutines）：`Okia` 门面（`Okia.kt:33-140`）+ `AgentLoop`（`AgentLoop.kt:24-31`）+ 协议三实现 + `ToolRegistry`/`ToolExecutor` 契约（`ToolRegistry.kt:12-25` / `ToolExecutor.kt:11-18`）。**运行时不认识 Android**。 | **独立实现为 `core/agent/` 子包**（不拆模块，保持单模块一致性）：① `AgentLoop` 接口 + `RealAgentLoop`（回合循环，先做「流式 → 工具 → 回喂」主循环，不做树/rewind）；② `ToolRegistry` + `ToolExecutor`（`execute` 永不抛异常，`onInterrupt` 自判状态）；③ `ToolDescriptor{name, wireName, inputSchemaJson}`；④ `Hooks` 10 时机接口（先落地 `beforeToolCall`/`afterToolCall`/`beforeStop`/`beforeSerialization` 四个）。现有 `AgentExecutor` 改为调用 `AgentLoop`。 | **L（3-4 天）** |
 | **A2** | **工具线缆名消歧** | `ToolWireName.kt:29-95`：64 长度上限、`mcp__<server>__<tool>`、FNV-1a 哈希消歧；`name`(原始，供 MCP) 与 `wireName`(供 Provider) 分离。 | 新增 `core/agent/ToolWireName.kt`（纯函数，~60 行）。**立刻解决**：AgentKit 接 MCP 后工具名含 `.`/空格会被 OpenAI/Claude 拒。先只做本地 `sanitize + truncate` + MCP 前缀，哈希消歧放 P1。 | **S（0.5 天）** |
 | **A3** | **工具结果契约** | `BuiltinToolResult{ok, code, message, hint, field_errors, data}`（`BuiltinTool.kt:30-86`）；**失败带 `hint` 教模型怎么修**（`LocalToolExecutor.kt:125-129`）。两种编码：JSON + `#!tool-result` 文本头。 | 统一 AgentKit `tools/` 的返回结构为 `{ok, code, message, hint, data}`（现有各工具返回格式不一）。`hint` 字段对本地小模型尤其重要——**模型越弱越需要可修复的错误提示**。 | **M（1 天）** |
 | **A4** | **未知工具 vs executor bug 的区分** | 未知工具 → Failure 回喂、**回合继续**（模型可自纠，`RealAgentLoop.kt:624-641`）；executor 抛异常 → 回合 `Failed`（`RealAgentLoop.kt:674,705-715`）。注释：*"模型能修的回喂，模型不能修的终止"*。 | 在 `RealAgentLoop` 实现中原样落地这个二分。AgentKit 目前遇到未知工具大概率直接报错中断——**改成回喂让本地小模型自纠，命中率会明显提升**。 | **S（含在 A1）** |
@@ -534,7 +534,7 @@ private val pendingNotifications = mutableListOf<String>()       // 待排空通
 | **E4** | **悬浮球后台可见** | `remote-view/floatingball/*`(2.1k) + `FloatingBallOverlayManager`(579)。README_CN.md:53 *"便于实时跟进 Agent"*。 | AgentKit 任务 #69 已做"执行过程实时可见"，再补**悬浮球**（后台/锁屏跟进度）。对"推 GitHub→CI→拉回"这种分钟级任务价值高。 | **M（1.5 天）** |
 | **F1** | **日志落盘** | AGENTS.md:107-113：调试构建额外落沙箱 `filesDir/logs/`，文件名 `<进程>-<MMdd-HHmmss>.log`，单文件 8MB 换下一个、最多 10 个。 | AgentKit 已有 `AgentLogger`，补**落盘 + 轮转**（8MB/10 个）。logcat 被冲掉时能 `adb pull` 出来。 | **S（0.5 天）** |
 | **F2** | **会话树与回退** | `rewind(entryId)` + `export()`/`open(restore)`（`Okia.kt:55-63`）；会话是树不是列表。 | **P2**：AgentKit 已有聊天持久化（任务 #71）。若要"回退到某一轮重新生成"，需把存储从消息列表改成树。 | **L（P2，2-3 天）** |
-| **F3** | **坏味道 githooks** | AGENTS.md:140：`.githooks/` 提交前拦（监视器锁、变化叙述注释、内联全限定名、绕过 Logger 的日志、日志 TAG 前缀），支持按模块清理与放行标记。 | **可抄思路**：AgentKit 加一个 pre-commit 检查（至少拦"绕过 AgentLogger 的 println/Log.d"）。 | **S（0.5 天，可选）** |
+| **F3** | **坏味道 githooks** | AGENTS.md:140：`.githooks/` 提交前拦（监视器锁、变化叙述注释、内联全限定名、绕过 Logger 的日志、日志 TAG 前缀），支持按模块清理与放行标记。 | **可借鉴思路**：AgentKit 加一个 pre-commit 检查（至少拦"绕过 AgentLogger 的 println/Log.d"）。 | **S（0.5 天，可选）** |
 | **F4** | **ServiceRegistry 依赖注入** | AGENTS.md:134：*"在开辟大型业务时，优先考虑用 ServiceRegistry 来做依赖注入，避免在构造函数、方法签名里面堆砌太多字段"*；`requireService<>()` 应直接在函数体或成员变量处调用，**避免出现在构造函数/方法签名**（AGENTS.md:149-151）。 | AgentKit 单模块，可用一个轻量 `ServiceRegistry` object 替代手工传 Context/Application。**先只在新增代码用，不做存量重构**。 | **S（0.5 天，可选）** |
 | **G1** | **Xposed 接管** | LSPosed 接管系统语音助手（`mod/feat/oppo`、`mod/feat/hyper`），Binder + AgentRuntimeService，IPC 只传纯语义数据（AGENTS.md:45-47）。 | **不抄**（需 Root + LSPosed，与 AgentKit 目标不符）。**只借鉴一条架构原则**（AGENTS.md:49）：*"边缘业务不应让主干妥协"* —— 写入开发规范。另外"**IPC 只传纯语义数据、复杂结构不穿 Binder**"（AGENTS.md:47）可直接用于 AgentKit 的 Service 通信。 | **原则借鉴** |
 | **G2** | **虚拟屏** | zafiro 用 AccessibilityService + shell `input`，**未发现 VirtualDisplay 实现**（remote-view 是悬浮窗 RemoteView）。 | **AgentKit 已有虚拟屏 + Shizuku 自动化，此项反超，无需借鉴**。但 AccessibilityController 的**树剪枝/格式化**（`TreeFormatter.kt` 253 + `PruningRules.kt` 140）值得看——把节点树压成给模型的文本是省 token 关键。 | **L 可选（P2）** |
@@ -550,7 +550,7 @@ private val pendingNotifications = mutableListOf<String>()       // 待排空通
 
 | 序 | 行动 | 对应 | 工作量 | 验收标准 |
 |---|---|---|---|---|
-| **P0-1** | **净室重写 Agent 运行时内核**：`core/agent/` 新增 `AgentLoop` 接口 + `RealAgentLoop`（回合主循环：流式收集 → 整条 commit → 工具并发执行 → 保序回喂）+ `ToolRegistry`/`ToolExecutor` 契约 + `ToolDescriptor{name,wireName,inputSchemaJson}` + `Hooks`（先落 4 个时机）。`AgentExecutor` 改为调用它。 | A1 | **3-4 天** | 现有 weather/wordcount 两个 skill 走新 loop 跑通；并发工具调用结果保序；停止后树尾闭合 |
+| **P0-1** | **独立实现 Agent 运行时内核**：`core/agent/` 新增 `AgentLoop` 接口 + `RealAgentLoop`（回合主循环：流式收集 → 整条 commit → 工具并发执行 → 保序回喂）+ `ToolRegistry`/`ToolExecutor` 契约 + `ToolDescriptor{name,wireName,inputSchemaJson}` + `Hooks`（先落 4 个时机）。`AgentExecutor` 改为调用它。 | A1 | **3-4 天** | 现有 weather/wordcount 两个 skill 走新 loop 跑通；并发工具调用结果保序；停止后树尾闭合 |
 | **P0-2** | **工具线缆名消歧**：`core/agent/ToolWireName.kt`（64 上限、sanitize+truncate、MCP `mcp__<server>__<tool>`）。 | A2 | **0.5 天** | 含 `.`/空格/超长的 MCP 工具名能正常上线缆并被正确回查 |
 | **P0-3** | **工具结果统一契约**：`{ok, code, message, hint, data}`，`hint` 必填（失败时教模型怎么修）。 | A3 | **1 天** | 全部 `tools/` 下工具返回统一结构；单测覆盖 hint 生成 |
 | **P0-4** | **终端后端抽象**：`core/terminal/backend/` 新增 `TerminalBackend` 接口 + `TerminalIdentity{User,Su,Shizuku,Ssh}` + `ProotBackend`（包装现有 proot）+ `ShizukuBackend`（改造现有 Shizuku）。 | B1 | **1.5 天** | proot 与 Shizuku 走同一接口，上层无感知切换 |

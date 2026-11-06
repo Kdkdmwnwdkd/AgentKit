@@ -15,7 +15,7 @@
 | Rosemoe/sora-editor | LGPL-2.1 | 弱 Copyleft | ⚠️ **库方式可用**（附义务），本方案已决定不引 | 动态/独立库使用 + 提供源码书面要约即可；我们选自绘，零义务 |
 | proot | GPL-3.0 | 强 Copyleft | ⚠️ **仅二进制随包**，代码零引用 | 独立可执行文件 + 附 LICENSE + 源码书面要约；不静态链接进我们的 .so |
 | AnLinux | Apache-2.0（脚本） | 宽松 | ✅ **采纳思路**（脚本自行编写） | 脚本逻辑不构成衍生 |
-| rikkahub/rikkahub | AGPL-3.0 | 强 Copyleft+网络 | ❌ **只吸收架构思想，净室重写** | 连"参考后重写"都要留档证明独立性 |
+| rikkahub/rikkahub | AGPL-3.0 | 强 Copyleft+网络 | ❌ **只吸收架构思想，独立实现** | 连"参考后重写"都要留档证明独立性 |
 | AAswordman/Operit | LGPL-3.0 | 弱 Copyleft | ❌ **只吸收架构思想** | 代码引用会污染整体 |
 | jieapi/AiCode | GPL-3.0 | 强 Copyleft | ❌ **只吸收架构思想** | 同上 |
 | termux/termux-app | GPL-3.0 | 强 Copyleft | ❌ **只吸收架构思想，VT100 状态机按公开规范重写** | ctlseqs 是公开规范，实现照规范写不侵权 |
@@ -51,7 +51,7 @@
 
 ## 自用阶段的护栏（现在就要做的）
 
-1. **代码来源标注**：任何从外部项目"参考后重写"的文件，在文件头 KDoc 注明「架构参考自 X（许可证），净室重写」。01-07 号文档已列出每处参考对象。
+1. **代码来源标注**：任何从外部项目"参考后重写"的文件，在文件头 KDoc 注明「架构参考自 X（许可证），独立实现」。01-07 号文档已列出每处参考对象。
 2. **禁止直接 copy 的动作**：不 clone GPL/AGPL 项目源码进本仓库；不 `gradle` 依赖 GPL 产物（proot 不走 gradle，走 assets）。
 3. **llama.cpp vendor 策略**：`app/src/main/cpp/` 下的 llama.cpp 源码**保留其 MIT 版权头与 LICENSE 文件**（vendored 是 MIT 允许的标准做法）。
 4. **设计文档不侵权**：`docs/design-preview-v3.html` 等为原创，未使用任何竞品素材。
