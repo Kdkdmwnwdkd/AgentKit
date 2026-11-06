@@ -3,6 +3,13 @@ name: Build Debug APK
 on:
   push:
     branches: ["**"]
+    # 纯文档改动不产出 APK：一次构建要跑 20 分钟，只改 README 或 docs/
+    # 时没必要占一次 runner，也没必要让 latest 多一个内容相同的包。
+    # 提交里只要有一个非文档文件，仍然照常构建。
+    paths-ignore:
+      - "docs/**"
+      - "**.md"
+      - ".github/workflows/pages.yml"
   workflow_dispatch:
     inputs:
       ref:

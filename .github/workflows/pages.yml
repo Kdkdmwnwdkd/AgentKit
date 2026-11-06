@@ -1,0 +1,52 @@
+name: Deploy Docs to Pages
+
+# 为什么单独有这个 workflow
+#
+# 2026-11-06：仓库的 Pages 仍是 legacy 模式（branch=main, path=/docs），
+# 该模式由 GitHub 的服务端 builder 直接构建，出错时只回一句
+# "Page build failed."，没有任何可诊断的信息，连续 4 次部署全部失败且
+# 无法从 API 读到原因。改用 Actions 部署后，构建过程在我们自己的
+# runner 里跑，日志可查、artifact 可下载，失败点一目了然。
+#
+# 触发范围只限 docs/ 与本文件：改文档不再触发 APK 构建。
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "docs/**"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# 文档站点允许后到者覆盖：文档没有「回滚必须按序」的约束，
+# 与 build.yml 的串行策略不同，这里可以放心取消排队中的旧部署。
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload docs as artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5
