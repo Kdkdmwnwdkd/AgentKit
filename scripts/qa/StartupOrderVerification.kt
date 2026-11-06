@@ -127,7 +127,7 @@ fun main() {
     // 所以这条断言同时锁住「manifest 声明」和「回调真的存在」两半——少一半都不成立。
     //
     // 这是静态断言：manifest 没有可在 JVM 里调用的行为入口。真正的行为证据在设备上
-    // （点通知后初始化计数不增长），见 docs/DEVICE-VERIFICATION-PENDING.md。
+    // （点通知后初始化计数不增长），见 docs/ops/DEVICE-VERIFICATION-PENDING.md。
     check(
         "MainActivity 声明 singleTop（否则点通知会重建 ViewModel、杀掉在跑的任务）",
         "android:launchMode=\"singleTop\"" in manifest

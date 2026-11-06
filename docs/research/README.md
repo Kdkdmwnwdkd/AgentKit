@@ -15,6 +15,13 @@
 | Termux | termux/termux-app | 62444 | GPLv3 | 终端组件行业标准（许可证雷区） |
 | MCP Kotlin SDK | modelcontextprotocol/kotlin-sdk | 1467 | MIT | MCP 客户端直接集成 |
 
+### 2026-11 补记
+
+| 对象 | 仓库 | ★ | 许可证 | 角色 |
+|---|---|---|---|---|
+| DeepSeek Super-agent 原型 | deepseek-ai/dsh-superagent-prototype | 20005 | MIT | **架构层与运行层的纪律样板**：单写者表、角色化窄接口、持久副作用队列、并发槽抢占。见 [`superagent-架构层与运行层-2026-11-06.md`](superagent-架构层与运行层-2026-11-06.md) |
+| IRIDIS | WWRJ3321/IRIDIS | 95 | Apache-2.0 | 本地推理调度（按机型定线程/ctx、KV 复用），2026-11-05 参照谱系补入 |
+
 ## 四层架构（自底向上，禁止反向依赖）
 
 ```

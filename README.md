@@ -11,15 +11,18 @@ Android 本地 AI Agent —— Kotlin / Jetpack Compose，原创实现，四层�
 
 ---
 
-## 文档索引（先读这三个）
+## 文档索引
 
-| 文档 | 内容 |
+| 你要找什么 | 看这里 |
 |---|---|
-| **[现状 · 路线图 · 踩坑记录](docs/AgentKit-现状与路线图-2026-10-16.md)** | 项目全景：做了什么 / 正在做什么 / 后面要做什么 / **踩过的坑逐条（现象→根因→修法→防复发）** |
-| [全程报告](docs/AgentKit-全程报告-2026-10-15.md) | 决策沿革：能力建设、真机反馈两轮闭环、架构取舍 |
-| [UX 规范](docs/agentkit-ux-spec-v1.md) / [视觉规范 v3](docs/agentkit-visual-spec-v3.md) | 交互规范与视觉规范（全 App 唯一事实来源） |
+| **第一次用** | [使用说明](docs/使用说明.md) · [网页版](https://kdkdmwnwdkd.github.io/AgentKit/guide.html) |
+| **这个项目现在什么样** | [现状 · 路线图 · 踩坑记录](docs/architecture/AgentKit-现状与路线图-2026-10-16.md)：做了什么 / 在做什么 / **踩过的坑逐条（现象→根因→修法→防复发）** |
+| **架构为什么这么切** | [架构方案 v2](docs/architecture/AgentKit-架构方案-v2-2026-11-06.md)：六条评审线的现状结论、缺陷分级与改造顺序 |
+| **参考了谁、借了什么** | [参照谱系](docs/architecture/AgentKit-参照谱系-2026-11-05.md) · [第三方声明](THIRD_PARTY_NOTICES.md) |
+| **交互 / 视觉规范** | [UX 规范](docs/specs/agentkit-ux-spec-v1.md) · [视觉规范 v3](docs/specs/agentkit-visual-spec-v3.md) |
+| **历史周报与交付记录** | [`docs/archive/`](docs/archive/)：W-46~W-87 周报、各轮模拟器实测与交付报告 |
 
-研究材料见 `docs/research/`（四家参照仓库的能力面扫描，只读思路、净室重写）。
+目录总览见 [`docs/README.md`](docs/README.md)。研究材料见 [`docs/research/`](docs/research/)（参照仓库的能力面扫描，只读思路、独立实现）。
 
 ---
 

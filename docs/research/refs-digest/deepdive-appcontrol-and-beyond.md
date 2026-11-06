@@ -105,7 +105,7 @@
 
 ### 1.5 AgentKit 现状自剖（W-7 断点结论）
 
-**机制层无bug**：`app_launch`（`AppControlTools.kt:313-391`）与 Operit 标准级同构；工具已注册（`ui/ChatViewModel.kt:482`，注入真实 shell 通道给 app_stop）；QUERY_ALL_PACKAGES 已声明（`AndroidManifest.xml:42`）；无障碍 ui_* 全家桶在位。工单描述「需查 Intent 启动/前台应用读取/无障碍联动哪一环断」（`docs/AgentKit-全程报告-2026-10-15.md:151`）——**逐环排查后，断点按概率排序如下**：
+**机制层无bug**：`app_launch`（`AppControlTools.kt:313-391`）与 Operit 标准级同构；工具已注册（`ui/ChatViewModel.kt:482`，注入真实 shell 通道给 app_stop）；QUERY_ALL_PACKAGES 已声明（`AndroidManifest.xml:42`）；无障碍 ui_* 全家桶在位。工单描述「需查 Intent 启动/前台应用读取/无障碍联动哪一环断」（`docs/archive/reports/AgentKit-全程报告-2026-10-15.md:151`）——**逐环排查后，断点按概率排序如下**：
 
 | 排序 | 断点 | 证据 | 性质 |
 |---|---|---|---|

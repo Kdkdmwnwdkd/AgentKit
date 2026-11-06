@@ -11,7 +11,7 @@
 
 # W-46（2026-10-20）：以下 6 个已修复并从清单移除——它们的失败根因是断言陈旧
 # （标识符在 W-30 重构后改名）与 harness 依赖版本选错（coroutines 1.5.0），
-# 不是产品缺陷；现分别 173/173、9/9、37/37 全绿，详见 docs/W46-NOTES.md。
+# 不是产品缺陷；现分别 173/173、9/9、37/37 全绿，详见 docs/archive/notes/W46-NOTES.md。
 # W-47（2026-10-21）：hotfix3 / hotfix / localmodel 三个 harness 已随依赖版本修正与
 # JSON 安全化通过（run-all 报 XPASS），从清单移除。
 # B 批（2026-10-22）：fallback 修好并移出——断言仍按「proot → user 两级」期望，

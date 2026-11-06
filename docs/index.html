@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>AgentKit · 文档入口</title>
+<title>AgentKit · Android 本地 AI Agent</title>
 <style>
   :root{
     --paper:#EDE3DC; --bg:#F8EFE9; --card:#FFFFFF; --sunken:#F4E9E2;
@@ -29,6 +29,9 @@
   a.card .d{font-size:12.5px; color:var(--ink3); margin-top:3px; line-height:1.6}
   a.card .hi{display:inline-block; margin-left:6px; font-size:10.5px; font-weight:700;
     color:#fff; background:var(--teal); border-radius:5px; padding:1px 6px; vertical-align:2px}
+  a.card.primary{background:var(--teal); color:#fff}
+  a.card.primary .d{color:rgba(255,255,255,.74)}
+  a.card.primary .hi{background:rgba(255,255,255,.22)}
   .foot{margin-top:34px; font-size:12px; color:var(--ink3); line-height:1.8;
     border-top:1px solid rgba(46,38,32,.14); padding-top:16px}
 </style>
@@ -36,33 +39,41 @@
 <body>
 <div class="wrap">
   <div class="badge">AgentKit · 文档</div>
-  <h1>界面改造与工程记录</h1>
-  <p class="sub">按「先看效果、再看依据、最后看改动」排。点任意一张卡片进入。</p>
+  <h1>一个跑在手机上的 AI 助手</h1>
+  <p class="sub">本地多轮工具调用 · 屏幕理解与操控 · 终端与容器 · 跨会话记忆。全部在设备上跑，不需要电脑配合。</p>
 
-  <div class="sec">新用户先看</div>
+  <div class="sec">开始使用</div>
+  <a class="card primary" href="https://github.com/Kdkdmwnwdkd/AgentKit/releases/latest">
+    <div class="t">下载最新 APK<span class="hi">arm64</span></div>
+    <div class="d">Android 8.0+ / arm64-v8a。装完在设置里填一个模型 API Key 就能用</div>
+  </a>
   <a class="card" href="guide.html">
     <div class="t">使用说明<span class="hi">新手</span></div>
     <div class="d">配模型、开无障碍、发第一条指令、常见问题</div>
   </a>
 
-  <div class="sec">界面改了什么</div>
+  <div class="sec">了解这个项目</div>
+  <a class="card" href="https://github.com/Kdkdmwnwdkd/AgentKit/blob/main/docs/architecture/AgentKit-%E6%9E%B6%E6%9E%84%E6%96%B9%E6%A1%88-v2-2026-11-06.md">
+    <div class="t">架构方案 v2</div>
+    <div class="d">六条评审线的现状结论、缺陷分级、改造顺序</div>
+  </a>
+  <a class="card" href="https://github.com/Kdkdmwnwdkd/AgentKit/blob/main/docs/architecture/AgentKit-%E7%8E%B0%E7%8A%B6%E4%B8%8E%E8%B7%AF%E7%BA%BF%E5%9B%BE-2026-10-16.md">
+    <div class="t">现状 · 路线图 · 踩坑记录</div>
+    <div class="d">做了什么 / 在做什么 / 后面要做什么 / 踩过的坑逐条</div>
+  </a>
+  <a class="card" href="https://github.com/Kdkdmwnwdkd/AgentKit/blob/main/docs/architecture/AgentKit-%E5%8F%82%E7%85%A7%E8%B0%B1%E7%B3%BB-2026-11-05.md">
+    <div class="t">参照谱系</div>
+    <div class="d">读过哪些同类项目、各自借了什么思路、许可证边界</div>
+  </a>
+
+  <div class="sec">界面与工程记录</div>
   <a class="card" href="ui/v4-report.html">
     <div class="t">UI v4 可视化报告<span class="hi">图文</span></div>
     <div class="d">改前 / 改后界面对比、真实参数、代码 diff、规则依据、未做项</div>
   </a>
-
-  <div class="sec">工程记录</div>
-  <a class="card" href="https://github.com/Kdkdmwnwdkd/AgentKit/blob/main/docs/W47-W48-NOTES.md">
-    <div class="t">W-47 / W-48 · 安全一致性与插件市场</div>
-    <div class="d">备份 PAT、解包限流、JSON 安全化、市场六道边界 + 三轮审查记录</div>
-  </a>
-  <a class="card" href="https://github.com/Kdkdmwnwdkd/AgentKit/blob/main/docs/W46-NOTES.md">
-    <div class="t">W-46 · 多轮对话与网络层</div>
-    <div class="d">历史注入、明文 HTTP 放行、读超时 180s、终端标脏</div>
-  </a>
-  <a class="card" href="https://github.com/Kdkdmwnwdkd/AgentKit/blob/main/docs/真机验收-2026-10-21.md">
-    <div class="t">真机验收记录</div>
-    <div class="d">哪些测过、哪些没测、三个疑点的结论（如实标注）</div>
+  <a class="card" href="https://github.com/Kdkdmwnwdkd/AgentKit/tree/main/docs/archive">
+    <div class="t">历史周报与交付记录</div>
+    <div class="d">W-46 ~ W-87 周报、各轮模拟器实测、交付与验收报告</div>
   </a>
 
   <div class="sec">测试用</div>

@@ -1,6 +1,6 @@
 # W-13 调试通道：阶段一（协议层）已落地
 
-方案见 `docs/w13-adb-channel-plan.md`。本文件记录已写进 App 的代码与验证结果。
+方案见 `docs/archive/fixes/w13-adb-channel-plan.md`。本文件记录已写进 App 的代码与验证结果。
 
 ## 已完成（阶段一，纯 JVM）
 
