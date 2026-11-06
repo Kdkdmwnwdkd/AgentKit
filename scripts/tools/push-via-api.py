@@ -42,6 +42,7 @@ import os
 import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import requests
 
@@ -146,10 +147,13 @@ class Pusher:
             sys.exit(f'❌ {c[:10]} 的父树与远端树不一致，中止')
         local_tree = git('rev-parse', c + '^{tree}').strip()
 
-        entries, uploaded = [], 0
+        entries, uploads = [], []
         for status, path, newpath, mode, oldsha, newsha in self.raw_diff(parent, c):
             if status == 'D':
-                entries.append({'path': path, 'mode': mode, 'type': 'blob', 'sha': None})
+                # 删除条目只认 path + sha:null，但 mode 仍必须合法。
+                # git 在删除行给出的 new_mode 是 000000，原样传上去 GitHub 直接
+                # 422 "Must supply a valid tree.mode"——2026-11-07 就是这么挂的。
+                entries.append({'path': path, 'mode': '100644', 'type': 'blob', 'sha': None})
                 continue
             if status in 'RC':
                 entries.append({'path': path, 'mode': mode, 'type': 'blob', 'sha': None})
@@ -159,17 +163,28 @@ class Pusher:
                                     'type': 'blob', 'sha': newsha})
                     continue
             data = git('show', f'{c}:{path}', binary=True)
+            entries.append({'path': path, 'mode': mode, 'type': 'blob', 'sha': None})
+            uploads.append((len(entries) - 1, path, data))
+
+        # 并发上传。串行时 400 个 blob 要 30 分钟以上（每个 0.25s 间隔 + 请求往返），
+        # 8 路并发压到几分钟。call() 每次新建连接（Connection: close），
+        # 不共享 session，因此线程安全。
+        def _put(item):
+            idx, path, data = item
             payload = {'content': base64.b64encode(data).decode(), 'encoding': 'base64'}
             try:
                 got = self.call('POST', '/git/blobs', json=payload)
             except RuntimeError as e:
-                print(f'   ✘ blob 失败：{path}  {len(data)}B  b64={len(payload["content"])}  {e}')
-                raise
+                raise RuntimeError(f'blob 失败：{path}  {len(data)}B  {e}')
             if got['sha'] != blob_sha(data):
-                sys.exit(f'❌ blob sha 不符：{path}')
-            entries.append({'path': path, 'mode': mode, 'type': 'blob', 'sha': got['sha']})
-            uploaded += 1
-            time.sleep(0.25)
+                raise RuntimeError(f'❌ blob sha 不符：{path}')
+            return idx, got['sha']
+
+        if uploads:
+            with ThreadPoolExecutor(max_workers=8) as ex:
+                for idx, sha in ex.map(_put, uploads):
+                    entries[idx]['sha'] = sha
+        uploaded = len(uploads)
 
         tree = self.call('POST', '/git/trees',
                          json={'base_tree': remote_tree, 'tree': entries})
