@@ -16,11 +16,11 @@ set -uo pipefail
 
 cd "$(dirname "$0")/../.." || exit 1
 
-DIR="app/src/main/java/com/example/agentkit/core/llm/local"
+DIR="app/src/main/java/com/beichen/polaris/core/llm/local"
 PROFILE="$DIR/LocalDeviceProfile.kt"
 CATALOG="$DIR/LocalBackendCatalog.kt"
 PROBE="$DIR/AndroidDeviceProbe.kt"
-JNI="app/src/main/java/com/example/agentkit/core/llm/local/LlamaJni.kt"
+JNI="app/src/main/java/com/beichen/polaris/core/llm/local/LlamaJni.kt"
 CLIENT="$DIR/LocalLlamaClient.kt"
 CMAKELISTS="app/src/main/cpp/CMakeLists.txt"
 CPP="app/src/main/cpp/llama-jni.cpp"
@@ -63,7 +63,7 @@ echo "== 静态：编译期事实一路传到 Kotlin =="
 has "编了才定义宏" "$CMAKELISTS" "AK_HAS_VULKAN=1"
 # 静态库的 PRIVATE 依赖会以 $<LINK_ONLY> 传播，但这类交叉编译里「理论上够」失败过一次。
 has "显式链接 libvulkan" "$CMAKELISTS" "target_link_libraries(agentkit-llama vulkan)"
-has "native 回答是否编入" "$CPP" "Java_com_example_agentkit_core_llm_local_LlamaJni_nativeGpuBackend"
+has "native 回答是否编入" "$CPP" "Java_com_beichen_polaris_core_llm_local_LlamaJni_nativeGpuBackend"
 has "Kotlin 侧读编译期事实" "$JNI" "nativeGpuBackend()"
 # 这里必须是 runCatching：.so 是旧的（没有这个符号）时返回 false，而不是整页崩掉。
 has "读不到就当没编（不崩）" "$JNI" 'runCatching { nativeGpuBackend() }.getOrDefault(false)'
@@ -71,7 +71,7 @@ has "读不到就当没编（不崩）" "$JNI" 'runCatching { nativeGpuBackend()
 echo "== 静态：运行期能证明「到底上没上 GPU」 =="
 
 has "设备枚举走 ggml 注册表" "$CPP" "ggml_backend_dev_count()"
-has "对外暴露设备清单" "$CPP" "Java_com_example_agentkit_core_llm_local_LlamaJni_nativeGpuProbe"
+has "对外暴露设备清单" "$CPP" "Java_com_beichen_polaris_core_llm_local_LlamaJni_nativeGpuProbe"
 # 请求了 GPU 却一个 GPU 设备都没有，必须当场报错——这是「以为在用 GPU」的唯一防线。
 has "请求 GPU 但无 GPU 设备时报警" "$CPP" "但没有任何 GPU 后端可用"
 # Vulkan 版本必须问 loader 自己，不能读 PackageManager 的 FeatureInfo.version：
@@ -195,7 +195,7 @@ if [ -z "$KOTLINC" ]; then
 else
     WORK="$(mktemp -d)"
     cat > "$WORK/VulkanCheck.kt" <<'KOTLIN'
-import com.example.agentkit.core.llm.local.*
+import com.beichen.polaris.core.llm.local.*
 
 private var ok = 0
 private var bad = 0

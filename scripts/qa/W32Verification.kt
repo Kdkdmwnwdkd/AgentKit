@@ -1,5 +1,5 @@
-import com.example.agentkit.core.build.FileChange
-import com.example.agentkit.core.build.GitHubGitLogic
+import com.beichen.polaris.core.build.FileChange
+import com.beichen.polaris.core.build.GitHubGitLogic
 
 /**
  * W-32 harness：GitHub 提交的纯逻辑。

@@ -10,10 +10,10 @@
  * 运行：bash scripts/qa/run-adb-pairing-verification.sh
  */
 
-import com.example.agentkit.automation.adb.PairingCrypto
-import com.example.agentkit.automation.adb.PairingPacket
-import com.example.agentkit.automation.adb.PeerInfo
-import com.example.agentkit.automation.adb.Spake2
+import com.beichen.polaris.automation.adb.PairingCrypto
+import com.beichen.polaris.automation.adb.PairingPacket
+import com.beichen.polaris.automation.adb.PeerInfo
+import com.beichen.polaris.automation.adb.Spake2
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.security.MessageDigest

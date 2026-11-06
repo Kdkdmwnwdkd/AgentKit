@@ -42,7 +42,7 @@ DEPS="$STDLIB:$SERIALIZATION:$SER_CORE"
 [ -n "${COROUTINES:-}" ] && [ -f "${COROUTINES:-}" ] && DEPS="$DEPS:$COROUTINES"
 [ -n "${JB_ANNOTATIONS:-}" ] && [ -f "${JB_ANNOTATIONS:-}" ] && DEPS="$DEPS:$JB_ANNOTATIONS"
 
-SRC="$ROOT/app/src/main/java/com/example/agentkit"
+SRC="$ROOT/app/src/main/java/com/beichen/polaris"
 SRCS=(
   "$SRC/core/io/AtomicJsonFile.kt"
   "$SRC/core/agent/AgentRunStateStore.kt"

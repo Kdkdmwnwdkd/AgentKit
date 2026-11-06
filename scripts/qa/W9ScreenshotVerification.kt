@@ -14,11 +14,11 @@
  * 运行方式见 scripts/qa/run-w9-screenshot-verification.sh（离线）。
  */
 
-import com.example.agentkit.automation.A11Y_SCREENSHOT_MIN_API
-import com.example.agentkit.automation.SCREENSHOT_UNAVAILABLE_GUIDANCE
-import com.example.agentkit.automation.UiScreenshotTool
-import com.example.agentkit.automation.canUseA11yScreenshot
-import com.example.agentkit.core.DEFAULT_SYSTEM_PROMPT
+import com.beichen.polaris.automation.A11Y_SCREENSHOT_MIN_API
+import com.beichen.polaris.automation.SCREENSHOT_UNAVAILABLE_GUIDANCE
+import com.beichen.polaris.automation.UiScreenshotTool
+import com.beichen.polaris.automation.canUseA11yScreenshot
+import com.beichen.polaris.core.DEFAULT_SYSTEM_PROMPT
 import java.io.File
 
 /* ------------------------------ 迷你断言框架 ------------------------------ */
@@ -125,7 +125,7 @@ private fun read(rel: String): String = File(rel).readText()
 private fun testWiringRemoved() {
     println("\n[C] MediaProjection 链路删除反证（源码扫描）")
 
-    val tool = read("app/src/main/java/com/example/agentkit/automation/UiScreenshotTool.kt")
+    val tool = read("app/src/main/java/com/beichen/polaris/automation/UiScreenshotTool.kt")
     val manifest = read("app/src/main/AndroidManifest.xml")
 
     check("UiScreenshotTool 代码不再引用屏幕捕获服务/桥/MediaProjection（注释除外）") {
@@ -149,11 +149,11 @@ private fun testWiringRemoved() {
     check("源码目录中屏幕捕获服务/桥文件已删除") {
         assertTrue(
             "ScreenCaptureService.kt 应已删除",
-            !File("app/src/main/java/com/example/agentkit/automation/ScreenCaptureService.kt").exists()
+            !File("app/src/main/java/com/beichen/polaris/automation/ScreenCaptureService.kt").exists()
         )
         assertTrue(
             "ScreenshotBridge.kt 应已删除",
-            !File("app/src/main/java/com/example/agentkit/automation/ScreenshotBridge.kt").exists()
+            !File("app/src/main/java/com/beichen/polaris/automation/ScreenshotBridge.kt").exists()
         )
     }
 }

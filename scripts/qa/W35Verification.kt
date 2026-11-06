@@ -1,4 +1,4 @@
-import com.example.agentkit.core.build.CloneLogic
+import com.beichen.polaris.core.build.CloneLogic
 
 /**
  * W-35 harness：仓库克隆的条目名安全校验。

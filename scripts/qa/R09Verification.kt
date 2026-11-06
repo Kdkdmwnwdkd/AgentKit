@@ -22,9 +22,9 @@
  * 运行：scripts/qa/run-r09-verification.sh
  */
 
-import com.example.agentkit.core.agent.AttemptOutputTracker
-import com.example.agentkit.core.agent.RETRY_VISIBLE_CHARS
-import com.example.agentkit.core.agent.retryAllowed
+import com.beichen.polaris.core.agent.AttemptOutputTracker
+import com.beichen.polaris.core.agent.RETRY_VISIBLE_CHARS
+import com.beichen.polaris.core.agent.retryAllowed
 
 /* ------------------------------ 迷你断言框架 ------------------------------ */
 

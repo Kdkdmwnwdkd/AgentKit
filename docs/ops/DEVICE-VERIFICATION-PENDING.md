@@ -141,7 +141,7 @@
 | O12 | 遥测流水真的落了盘（P5-1） | 跑两个回合 → 看 `files/logs/` 下有没有 `turns-<stamp>.ndjson`（导出诊断包时它会被改名成 `agentkit-turns-<stamp>.ndjson`） | 流水文件里应有 `turn.start` / `prompt.plan` / `llm.call` / `llm.end` / `turn.end` / `store.write` 成对行。**若目录里只有 `agent-*.log` 没有 `turns-*.ndjson`**，说明 `TraceSink.init` 失败或队列没 flush——这是三项度量继续「未知」的原因。⚠️ 本行原先写的文件名 `agentkit-events-*.ndjson` **是错的**，实现叫 `turns-*.ndjson`，2026-11-04 更正 |
 | O13 | 度量三项符合目标（P5-1） | 把 ndjson 拉回电脑，`python3 scripts/qa/trace-metrics.py <file>` | 期望：确定性错误白等 <1s、每回合会话写入 <1MB、重放 0 次。若白等仍有几十秒，看输出里「N 次还发生了重试」——那说明某类错误没被 `ErrorNormalizer` 判成确定性。⚠️ 「每回合会话写入」若显示 0.0KB **不是达标，是没量到**（2026-11-04 修过一次归属规则，见下节） |
 | O9 | 断电不丢会话（R12） | 非必做：写入过程中强杀进程（`am force-stop`）后重进 | 会话要么是完整的一条，要么回到上一版；**不能**是空文件或半截 JSON。空文件说明 fsync 没生效 |
-| O14 | 启动不再被判 ANR（2026-11-04 修） | 冷启动 App（**首次**装包或 WebView 被系统回收后再进） | 日志不应出现 `Completed ANR of com.example.agentkit` / `Force finishing activity ...MainActivity`。旧实现里后台 WebView 的创建排在首帧之前，冷启动要 20~30 秒占着主线程 → 首帧出不来 → 系统判 ANR（`does not have a focused window`）→ 弹回桌面。修后 WebView 改在首帧之后创建，构造耗时会打进日志（`后台 WebView 已就绪（构造 Nms，总计 Nms）`） |
+| O14 | 启动不再被判 ANR（2026-11-04 修） | 冷启动 App（**首次**装包或 WebView 被系统回收后再进） | 日志不应出现 `Completed ANR of com.beichen.polaris` / `Force finishing activity ...MainActivity`。旧实现里后台 WebView 的创建排在首帧之前，冷启动要 20~30 秒占着主线程 → 首帧出不来 → 系统判 ANR（`does not have a focused window`）→ 弹回桌面。修后 WebView 改在首帧之后创建，构造耗时会打进日志（`后台 WebView 已就绪（构造 Nms，总计 Nms）`） |
 
 ---
 
@@ -198,8 +198,8 @@
 ### 这台机器上发现的三个真问题（都已修）
 
 1. **启动被判 ANR，App 闪退**：日志原文
-   `Completed ANR of com.example.agentkit in 30580ms` + `Force finishing activity
-   com.example.agentkit/.MainActivity`，原因 `does not have a focused window`。
+   `Completed ANR of com.beichen.polaris in 30580ms` + `Force finishing activity
+   com.beichen.polaris/.MainActivity`，原因 `does not have a focused window`。
    根因是后台 WebView 的创建排在首帧之前，冷启动 20~30 秒占着主线程。修法见
    `MainActivity.onCreate`（首帧的 `OnDrawListener` 里再 attach）。
 2. **「每回合会话写入」度量恒为 0**：归属规则要求落盘时间戳落在回合窗口内，而落盘是
@@ -210,7 +210,7 @@
    ```
    java.lang.IllegalStateException: Cannot call removeOnDrawListener inside of onDraw
        at android.view.ViewTreeObserver.removeOnDrawListener(ViewTreeObserver.java:745)
-       at com.example.agentkit.MainActivity$onCreate$2.onDraw(MainActivity.kt:61)
+       at com.beichen.polaris.MainActivity$onCreate$2.onDraw(MainActivity.kt:61)
    ```
 
    `ViewTreeObserver` 正在派发 `onDraw` 时不能摘监听。harness 全绿（它只读源码文本），
@@ -226,14 +226,14 @@
 
   ```bash
   # 1. 往应用私有目录写一条 workflow（run-as 能写；目录要先 mkdir）
-  adb shell 'run-as com.example.agentkit mkdir -p files/workflow'
+  adb shell 'run-as com.beichen.polaris mkdir -p files/workflow'
   adb push wf.json /data/local/tmp/wf.json
-  adb shell 'run-as com.example.agentkit sh -c "cat /data/local/tmp/wf.json > files/workflow/workflows.json"'
+  adb shell 'run-as com.beichen.polaris sh -c "cat /data/local/tmp/wf.json > files/workflow/workflows.json"'
   # 2. 带 workflow_id 启动：MainActivity 的 LaunchedEffect 会自动执行它（prompt 直接当对话输入发出去）
-  adb shell am start -n com.example.agentkit/.MainActivity --es workflow_id w-test
+  adb shell am start -n com.beichen.polaris/.MainActivity --es workflow_id w-test
   # 3. 看结果
-  adb shell 'run-as com.example.agentkit tail -20 files/logs/agent-*.log'
-  adb shell 'run-as com.example.agentkit cat files/logs/turns-*.ndjson' > /tmp/turns.ndjson
+  adb shell 'run-as com.beichen.polaris tail -20 files/logs/agent-*.log'
+  adb shell 'run-as com.beichen.polaris cat files/logs/turns-*.ndjson' > /tmp/turns.ndjson
   ```
 
   判定「回合真的跑了」的标志：`[Workflow] 从通知进入，准备执行 <id>` →
@@ -289,17 +289,17 @@ APK 内实测含两个自编 .so：
 ```bash
 # ① 模型指向 mock LLM：adb reverse 把设备 127.0.0.1:8899 转到宿主机 mock
 adb reverse tcp:8899 tcp:8899
-adb shell "run-as com.example.agentkit sh -c 'cat > shared_prefs/agentkit_model_config.xml'" < cfg.xml
+adb shell "run-as com.beichen.polaris sh -c 'cat > shared_prefs/agentkit_model_config.xml'" < cfg.xml
 # ② 预置工具组：calculator 属于 sys 组，默认不激活，不置的话模型直接调会撞 unknown_tool
-adb shell "run-as com.example.agentkit sh -c 'cat > shared_prefs/tool_activation.xml'" < act.xml
+adb shell "run-as com.beichen.polaris sh -c 'cat > shared_prefs/tool_activation.xml'" < act.xml
 #   → <string name="active_groups">file,sys</string>
 # ③ 工作流（prompt 里带 "write" 会触发 write_file，带 "calc" 触发 calculator）
-adb shell "run-as com.example.agentkit sh -c 'cat > files/workflow/workflows.json'" < wf.json
-adb shell am start -n com.example.agentkit/.MainActivity --es workflow_id w-calc
+adb shell "run-as com.beichen.polaris sh -c 'cat > files/workflow/workflows.json'" < wf.json
+adb shell am start -n com.beichen.polaris/.MainActivity --es workflow_id w-calc
 ```
 
 ⚠️ 装完 App 立刻写 `shared_prefs/` 会失败（**目录还不存在**），
-必须先 `adb shell run-as com.example.agentkit mkdir -p shared_prefs files/workflow`，
+必须先 `adb shell run-as com.beichen.polaris mkdir -p shared_prefs files/workflow`，
 否则配置静默丢失，回合会以 `status=failed` 收场。
 
 工具面因此从 5 个涨到 9 个，`calculator` 真跑起来了：
@@ -426,7 +426,7 @@ LOGS 页依赖它同步返回，只改了**启动路径**的调用方式）。
 
 ```
 00:28:52.966 INFO [BrowserHost] 开始创建后台 WebView
-00:28:52.998 INFO [BrowserHost] 已预建 WebView 缓存目录：/data/user/0/com.example.agentkit/cache/WebView
+00:28:52.998 INFO [BrowserHost] 已预建 WebView 缓存目录：/data/user/0/com.beichen.polaris/cache/WebView
 00:28:57.635 INFO [BrowserHost] 后台 WebView 已就绪（构造 4541ms，总计 4669ms）
 ```
 

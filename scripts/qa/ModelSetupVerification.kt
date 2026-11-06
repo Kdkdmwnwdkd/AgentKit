@@ -1,9 +1,9 @@
-import com.example.agentkit.core.llm.FailureKind
-import com.example.agentkit.core.llm.ProviderCatalog
-import com.example.agentkit.core.llm.ProviderGroup
-import com.example.agentkit.core.llm.RecoveryAction
-import com.example.agentkit.core.llm.diagnoseException
-import com.example.agentkit.core.llm.diagnoseHttpFailure
+import com.beichen.polaris.core.llm.FailureKind
+import com.beichen.polaris.core.llm.ProviderCatalog
+import com.beichen.polaris.core.llm.ProviderGroup
+import com.beichen.polaris.core.llm.RecoveryAction
+import com.beichen.polaris.core.llm.diagnoseException
+import com.beichen.polaris.core.llm.diagnoseHttpFailure
 import java.io.File
 import java.net.ConnectException
 import java.net.SocketTimeoutException
@@ -169,7 +169,7 @@ fun main() {
     }
 
     check("模型页：Key 为空时渲染获取入口，且只在有地址时渲染") {
-        val src = read("app/src/main/java/com/example/agentkit/ui/ModelConfigScreen.kt")
+        val src = read("app/src/main/java/com/beichen/polaris/ui/ModelConfigScreen.kt")
         assertTrue("未按 apiKey 为空判断", src.contains("if (apiKey.isBlank())"))
         assertTrue("未调用 consoleUrlOf", src.contains("ProviderCatalog.consoleUrlOf(providerId)"))
         assertTrue("未在地址为空时不渲染", src.contains("if (consoleUrl.isNotBlank())"))
@@ -177,21 +177,21 @@ fun main() {
     }
 
     check("模型页：失败卡片给出可执行动作（拿 Key / 选模型 / 重试）") {
-        val src = read("app/src/main/java/com/example/agentkit/ui/ModelConfigScreen.kt")
+        val src = read("app/src/main/java/com/beichen/polaris/ui/ModelConfigScreen.kt")
         assertTrue("未处理 GET_KEY", src.contains("RecoveryAction.GET_KEY ->"))
         assertTrue("未处理 PICK_MODEL", src.contains("RecoveryAction.PICK_MODEL ->"))
         assertTrue("未处理 RETRY", src.contains("RecoveryAction.RETRY ->"))
     }
 
     check("没有控制台地址时不渲染「去拿 Key」按钮（不让按钮空转）") {
-        val src = read("app/src/main/java/com/example/agentkit/ui/ModelConfigScreen.kt")
+        val src = read("app/src/main/java/com/beichen/polaris/ui/ModelConfigScreen.kt")
         assertTrue("onGetKey 应为可空回调", src.contains("onGetKey: (() -> Unit)? = null"))
         assertTrue("渲染前未判空", src.contains("if (onGetKey != null)"))
         assertTrue("未按地址是否为空决定回调", src.contains("if (consoleUrl.isNotBlank())"))
     }
 
     check("模型页：测试成功可一键保存并回对话") {
-        val src = read("app/src/main/java/com/example/agentkit/ui/ModelConfigScreen.kt")
+        val src = read("app/src/main/java/com/beichen/polaris/ui/ModelConfigScreen.kt")
         assertTrue("缺少成功收尾按钮", src.contains("保存并回到对话"))
         assertTrue("缺少 onUseAndReturn 回调", src.contains("onUseAndReturn"))
     }

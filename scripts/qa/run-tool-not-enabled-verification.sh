@@ -45,8 +45,8 @@ cd "$(dirname "$0")/../.."
 # ---------------------------------------------------------------------------
 ALLOW_MUTATION="${AK_ALLOW_SOURCE_MUTATION:-0}"
 
-CORE="app/src/main/java/com/example/agentkit/core/agent/ToolExecutor.kt"
-LOOP="app/src/main/java/com/example/agentkit/core/agent/RealAgentLoop.kt"
+CORE="app/src/main/java/com/beichen/polaris/core/agent/ToolExecutor.kt"
+LOOP="app/src/main/java/com/beichen/polaris/core/agent/RealAgentLoop.kt"
 HARNESS="scripts/qa/run-localmodel-verification.sh"
 # 断言**源码**在 .kt 里（runner 只是编译并执行它）——查错文件会误报。
 ASSERT_SRC="scripts/qa/LocalModelVerification.kt"

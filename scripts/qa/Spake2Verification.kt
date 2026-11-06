@@ -1,6 +1,6 @@
 #!/usr/bin/env kotlin
 /**
- * W-51 QA 行为验证 harness：adb 无线配对的 SPAKE2（[com.example.agentkit.automation.adb.Spake2Ed25519]）。
+ * W-51 QA 行为验证 harness：adb 无线配对的 SPAKE2（[com.beichen.polaris.automation.adb.Spake2Ed25519]）。
  *
  * 背景：`automation/adb` 这套协议实现从 W-38 起被停用（零引用）。W-51 要把它接成
  * 「操作手机界面」的第三条候选，第一步必须补上**唯一缺失的那块**——SPAKE2 只有接口没有实现，
@@ -18,8 +18,8 @@
  * 运行方式见 scripts/qa/run-spake2-verification.sh。
  */
 
-import com.example.agentkit.automation.adb.Ed25519
-import com.example.agentkit.automation.adb.Spake2Ed25519
+import com.beichen.polaris.automation.adb.Ed25519
+import com.beichen.polaris.automation.adb.Spake2Ed25519
 import java.math.BigInteger
 
 /* ------------------------------ 迷你断言框架 ------------------------------ */

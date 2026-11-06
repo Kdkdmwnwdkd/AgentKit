@@ -15,9 +15,9 @@
 
 | 文件 | 行数 | 说明 |
 |---|---|---|
-| `app/src/main/java/com/example/agentkit/ui/MarkdownParser.kt` | 422 | **新增**。纯 Kotlin（零 Android/Compose 依赖）。AST + `MarkdownParser.parse / parseInline` |
-| `app/src/main/java/com/example/agentkit/ui/MarkdownText.kt` | 250 | **新增**。Compose 渲染层 `MarkdownText(text, modifier, color)` |
-| `app/src/main/java/com/example/agentkit/ui/ChatScreen.kt` | 1109 | **修改**。`MessageBubble` 里助手分支改用 `MarkdownText`（用户分支不动） |
+| `app/src/main/java/com/beichen/polaris/ui/MarkdownParser.kt` | 422 | **新增**。纯 Kotlin（零 Android/Compose 依赖）。AST + `MarkdownParser.parse / parseInline` |
+| `app/src/main/java/com/beichen/polaris/ui/MarkdownText.kt` | 250 | **新增**。Compose 渲染层 `MarkdownText(text, modifier, color)` |
+| `app/src/main/java/com/beichen/polaris/ui/ChatScreen.kt` | 1109 | **修改**。`MessageBubble` 里助手分支改用 `MarkdownText`（用户分支不动） |
 | `scripts/qa/MarkdownVerification.kt` | 404 | **新增**。45 条纯 JVM 断言 |
 | `scripts/qa/run-markdown-verification.sh` | 29 | **新增**。离线编译+运行（照 `run-verification.sh`） |
 

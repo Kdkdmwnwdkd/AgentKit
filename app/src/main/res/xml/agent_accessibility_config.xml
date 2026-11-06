@@ -8,4 +8,4 @@
     android:canRetrieveWindowContent="true"
     android:canPerformGestures="true"
     android:canTakeScreenshot="true"
-    android:settingsActivity="com.example.agentkit.MainActivity" />
+    android:settingsActivity="com.beichen.polaris.MainActivity" />

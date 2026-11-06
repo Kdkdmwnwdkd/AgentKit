@@ -1,6 +1,6 @@
 #!/usr/bin/env kotlin
 /**
- * W-52 QA 行为验证 harness：无线调试端点发现的合并逻辑（[com.example.agentkit.automation.adb.AdbEndpoint]）。
+ * W-52 QA 行为验证 harness：无线调试端点发现的合并逻辑（[com.beichen.polaris.automation.adb.AdbEndpoint]）。
  *
  * 背景：W-51 的配对要用户手抄「IP + 配对端口 + 6 位码 + 连接端口」，用户反馈
  * 「比装 Shizuku 还麻烦」。W-52 改成用 mDNS 自动发现——但 mDNS 本身只能在真机跑，
@@ -14,8 +14,8 @@
  * 运行方式见 scripts/qa/run-adb-discovery-verification.sh。
  */
 
-import com.example.agentkit.automation.adb.DiscoveredAdbService
-import com.example.agentkit.automation.adb.mergeDiscoveredAdbServices
+import com.beichen.polaris.automation.adb.DiscoveredAdbService
+import com.beichen.polaris.automation.adb.mergeDiscoveredAdbServices
 
 /* ------------------------------ 迷你断言框架 ------------------------------ */
 

@@ -1307,7 +1307,7 @@ extern "C" {
  * @return 实例句柄；0 表示失败（Kotlin 侧读日志定位）
  */
 JNIEXPORT jlong JNICALL
-Java_com_example_agentkit_core_llm_local_LlamaJni_nativeInit(
+Java_com_beichen_polaris_core_llm_local_LlamaJni_nativeInit(
     JNIEnv* env, jobject /*thiz*/, jstring modelPath,
     jint nCtx, jint nThreads, jint nGpuLayers) {
     std::string path = jstringToStd(env, modelPath);
@@ -1602,7 +1602,7 @@ Java_com_example_agentkit_core_llm_local_LlamaJni_nativeInit(
 
 /** 释放实例（幂等）。 */
 JNIEXPORT void JNICALL
-Java_com_example_agentkit_core_llm_local_LlamaJni_nativeFree(
+Java_com_beichen_polaris_core_llm_local_LlamaJni_nativeFree(
     JNIEnv* /*env*/, jobject /*thiz*/, jlong handle) {
     auto* inst = reinterpret_cast<LlamaInstance*>(handle);
     if (!inst) return;
@@ -1614,7 +1614,7 @@ Java_com_example_agentkit_core_llm_local_LlamaJni_nativeFree(
 
 /** 请求停止当前生成（协程取消时由 Kotlin 调用；生成循环每 token 检查）。 */
 JNIEXPORT void JNICALL
-Java_com_example_agentkit_core_llm_local_LlamaJni_nativeStop(
+Java_com_beichen_polaris_core_llm_local_LlamaJni_nativeStop(
     JNIEnv* /*env*/, jobject /*thiz*/, jlong handle) {
     auto* inst = reinterpret_cast<LlamaInstance*>(handle);
     if (inst) inst->stop.store(true);
@@ -1630,7 +1630,7 @@ Java_com_example_agentkit_core_llm_local_LlamaJni_nativeStop(
  * 于是把一次已经修好的重试判成「又炸了」，陷入无限降级。
  */
 extern "C" JNIEXPORT jstring JNICALL
-Java_com_example_agentkit_core_llm_local_LlamaJni_nativeTakeGpuFault(
+Java_com_beichen_polaris_core_llm_local_LlamaJni_nativeTakeGpuFault(
     JNIEnv* env, jobject /*thiz*/, jlong handle) {
     auto* inst = reinterpret_cast<LlamaInstance*>(handle);
     if (!inst) return env->NewStringUTF("");
@@ -1653,7 +1653,7 @@ Java_com_example_agentkit_core_llm_local_LlamaJni_nativeTakeGpuFault(
  * Vulkan 版本（ggml-vulkan 要求 1.2）与 GPU 家族，判定在 LocalDeviceRules 里。
  */
 JNIEXPORT jboolean JNICALL
-Java_com_example_agentkit_core_llm_local_LlamaJni_nativeGpuBackend(
+Java_com_beichen_polaris_core_llm_local_LlamaJni_nativeGpuBackend(
     JNIEnv* /*env*/, jobject /*thiz*/) {
 #ifdef AK_HAS_VULKAN
     return JNI_TRUE;
@@ -1669,7 +1669,7 @@ Java_com_example_agentkit_core_llm_local_LlamaJni_nativeGpuBackend(
  * 返回空串表示注册表初始化失败（连 CPU 都没有，属于不可能发生的情况）。
  */
 JNIEXPORT jstring JNICALL
-Java_com_example_agentkit_core_llm_local_LlamaJni_nativeGpuProbe(
+Java_com_beichen_polaris_core_llm_local_LlamaJni_nativeGpuProbe(
     JNIEnv* env, jobject /*thiz*/) {
     static std::once_flag backendOnce;
     std::call_once(backendOnce, [] { llama_backend_init(); });
@@ -1694,7 +1694,7 @@ Java_com_example_agentkit_core_llm_local_LlamaJni_nativeGpuProbe(
  * 只 dlopen + 调一个返回常量的函数，不建 instance、不碰 device，零崩溃风险。
  */
 JNIEXPORT jint JNICALL
-Java_com_example_agentkit_core_llm_local_LlamaJni_nativeVulkanVersion(
+Java_com_beichen_polaris_core_llm_local_LlamaJni_nativeVulkanVersion(
     JNIEnv* /*env*/, jobject /*thiz*/) {
     void* h = ::dlopen("libvulkan.so", RTLD_NOW | RTLD_LOCAL);
     if (!h) {
@@ -1729,7 +1729,7 @@ Java_com_example_agentkit_core_llm_local_LlamaJni_nativeVulkanVersion(
  * 看不到，而「本地模型不回话」的全部线索都在这层。这个函数只读取快照，不清空。
  */
 JNIEXPORT jstring JNICALL
-Java_com_example_agentkit_core_llm_local_LlamaJni_nativeDiagnostics(
+Java_com_beichen_polaris_core_llm_local_LlamaJni_nativeDiagnostics(
     JNIEnv* env, jobject /*thiz*/) {
     std::string out;
     {
@@ -1757,7 +1757,7 @@ Java_com_example_agentkit_core_llm_local_LlamaJni_nativeDiagnostics(
  * 返回 0 表示缓冲还没写过任何行（首次加载前）。
  */
 JNIEXPORT jlong JNICALL
-Java_com_example_agentkit_core_llm_local_LlamaJni_nativeLogSeq(
+Java_com_beichen_polaris_core_llm_local_LlamaJni_nativeLogSeq(
     JNIEnv* /*env*/, jobject /*thiz*/) {
     return static_cast<jlong>(g_diagSeq.load());
 }
@@ -1767,7 +1767,7 @@ Java_com_example_agentkit_core_llm_local_LlamaJni_nativeLogSeq(
  * 本地模型 prompt 格式各不相同，交给模板而不是 Kotlin 手拼——这是体验不碎片化的关键。
  */
 JNIEXPORT jstring JNICALL
-Java_com_example_agentkit_core_llm_local_LlamaJni_nativeChatTemplate(
+Java_com_beichen_polaris_core_llm_local_LlamaJni_nativeChatTemplate(
     JNIEnv* env, jobject /*thiz*/, jlong handle,
     jobjectArray roles, jobjectArray contents) {
     auto* inst = reinterpret_cast<LlamaInstance*>(handle);
@@ -1820,7 +1820,7 @@ Java_com_example_agentkit_core_llm_local_LlamaJni_nativeChatTemplate(
  * @return 完整生成文本；空字符串且日志有 error 表示失败
  */
 JNIEXPORT jstring JNICALL
-Java_com_example_agentkit_core_llm_local_LlamaJni_nativeGenerate(
+Java_com_beichen_polaris_core_llm_local_LlamaJni_nativeGenerate(
     JNIEnv* env, jobject /*thiz*/, jlong handle, jstring prompt,
     jint maxTokens, jobject listener) {
     auto* inst = reinterpret_cast<LlamaInstance*>(handle);
@@ -2107,7 +2107,7 @@ Java_com_example_agentkit_core_llm_local_LlamaJni_nativeGenerate(
  * 是「配置层」的东西，跟模型路径无关，混在一个签名里只是噪音。
  */
 JNIEXPORT void JNICALL
-Java_com_example_agentkit_core_llm_local_LlamaJni_nativeSetSafeMode(
+Java_com_beichen_polaris_core_llm_local_LlamaJni_nativeSetSafeMode(
     JNIEnv* /*env*/, jobject /*thiz*/, jboolean on) {
     g_safeMode.store(on == JNI_TRUE);
     LOGI("安全模式：%s（n_batch 上限 %d）", on == JNI_TRUE ? "开" : "关",
@@ -2122,7 +2122,7 @@ Java_com_example_agentkit_core_llm_local_LlamaJni_nativeSetSafeMode(
  * 那种情况下必须把 decided 清掉，让新参数有机会被重新衡量。
  */
 JNIEXPORT void JNICALL
-Java_com_example_agentkit_core_llm_local_LlamaJni_nativeResetAffinity(
+Java_com_beichen_polaris_core_llm_local_LlamaJni_nativeResetAffinity(
     JNIEnv* /*env*/, jobject /*thiz*/) {
     g_affinity.decided = false;
     g_affinity.pinned = false;

@@ -20,15 +20,15 @@
  * 另：验证写盘后**重新打开**（模拟杀进程重启）仍能读回同一结构（持久性）。
  */
 
-import com.example.agentkit.core.ConversationBranch
-import com.example.agentkit.core.ConversationRecord
-import com.example.agentkit.core.ConversationStore
-import com.example.agentkit.core.MsgRecord
-import com.example.agentkit.core.ROLE_ASSISTANT
-import com.example.agentkit.core.ROLE_TOOL
-import com.example.agentkit.core.ROLE_USER
-import com.example.agentkit.core.TurnRecord
-import com.example.agentkit.core.toUiItems
+import com.beichen.polaris.core.ConversationBranch
+import com.beichen.polaris.core.ConversationRecord
+import com.beichen.polaris.core.ConversationStore
+import com.beichen.polaris.core.MsgRecord
+import com.beichen.polaris.core.ROLE_ASSISTANT
+import com.beichen.polaris.core.ROLE_TOOL
+import com.beichen.polaris.core.ROLE_USER
+import com.beichen.polaris.core.TurnRecord
+import com.beichen.polaris.core.toUiItems
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -345,7 +345,7 @@ private fun testSelectedVariantWritesHistory() {
     check("ConversationRecord.toUiItems：助手气泡带变体游标元数据（variantIndex/Count/turnIndex）") {
         val rec = sampleRecord()
         val items = rec.toUiItems()
-        val asst = items.filterIsInstance<com.example.agentkit.core.UiItem.Assistant>()
+        val asst = items.filterIsInstance<com.beichen.polaris.core.UiItem.Assistant>()
         assertTrue("has assistant", asst.isNotEmpty())
         val first = asst.first()
         assertEquals("variantIndex", 1, first.variantIndex)

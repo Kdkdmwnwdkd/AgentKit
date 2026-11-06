@@ -9,13 +9,13 @@ set -uo pipefail
 
 cd "$(dirname "$0")/../.." || exit 1
 
-DIR="app/src/main/java/com/example/agentkit/core/llm/local"
+DIR="app/src/main/java/com/beichen/polaris/core/llm/local"
 PROFILE="$DIR/LocalDeviceProfile.kt"
 PROBE="$DIR/AndroidDeviceProbe.kt"
 # LocalBackend 枚举住在后端目录里，画像层只是引用它，编的时候要一起带上。
 CATALOG="$DIR/LocalBackendCatalog.kt"
-APP="app/src/main/java/com/example/agentkit/AgentKitApplication.kt"
-BOOT="app/src/main/java/com/example/agentkit/startup/BootSequence.kt"
+APP="app/src/main/java/com/beichen/polaris/AgentKitApplication.kt"
+BOOT="app/src/main/java/com/beichen/polaris/startup/BootSequence.kt"
 
 PASS=0
 FAIL=0
@@ -96,7 +96,7 @@ if [ -z "$KOTLINC" ]; then
 else
     WORK="$(mktemp -d)"
     cat > "$WORK/ProfileCheck.kt" <<'KOTLIN'
-import com.example.agentkit.core.llm.local.*
+import com.beichen.polaris.core.llm.local.*
 
 private var ok = 0
 private var bad = 0

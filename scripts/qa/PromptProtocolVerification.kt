@@ -28,16 +28,16 @@
  * Android 运行时（无需无障碍服务 / 屏幕捕获服务 / Context），可在 JVM 直接跑。
  */
 
-import com.example.agentkit.automation.SCREENSHOT_UNAVAILABLE_GUIDANCE
-import com.example.agentkit.automation.UiClickTool
-import com.example.agentkit.automation.UiScreenshotTool
-import com.example.agentkit.automation.UiTapTool
-import com.example.agentkit.automation.UiTreeTool
-import com.example.agentkit.core.DEFAULT_SYSTEM_PROMPT
-import com.example.agentkit.core.SYSTEM_PROMPT_MAX_CHARS
-import com.example.agentkit.core.terminal.TerminalSessionPool
-import com.example.agentkit.core.terminal.backend.TerminalBackendSource
-import com.example.agentkit.tools.ShellRunTool
+import com.beichen.polaris.automation.SCREENSHOT_UNAVAILABLE_GUIDANCE
+import com.beichen.polaris.automation.UiClickTool
+import com.beichen.polaris.automation.UiScreenshotTool
+import com.beichen.polaris.automation.UiTapTool
+import com.beichen.polaris.automation.UiTreeTool
+import com.beichen.polaris.core.DEFAULT_SYSTEM_PROMPT
+import com.beichen.polaris.core.SYSTEM_PROMPT_MAX_CHARS
+import com.beichen.polaris.core.terminal.TerminalSessionPool
+import com.beichen.polaris.core.terminal.backend.TerminalBackendSource
+import com.beichen.polaris.tools.ShellRunTool
 import java.io.File
 
 /* ------------------------------ 迷你断言框架 ------------------------------ */

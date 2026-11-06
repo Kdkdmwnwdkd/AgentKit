@@ -19,9 +19,9 @@
  * scripts/qa/HotfixVerification.kt 覆盖。
  */
 
-import com.example.agentkit.core.*
-import com.example.agentkit.core.agent.RealAgentLoop
-import com.example.agentkit.core.llm.ChatStreamEvent
+import com.beichen.polaris.core.*
+import com.beichen.polaris.core.agent.RealAgentLoop
+import com.beichen.polaris.core.llm.ChatStreamEvent
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.CancellationException
@@ -34,7 +34,7 @@ import kotlinx.coroutines.withTimeout
 
 /**
  * 即时退避钩子：把「宣布重试」之后的等待压到 0（本项目真退避见
- * [com.example.agentkit.core.agent.RetryBackoffPolicy]）。Harness 只关心事件序列与
+ * [com.beichen.polaris.core.agent.RetryBackoffPolicy]）。Harness 只关心事件序列与
  * 语义边界，不关心真实等待时长——否则 providerRetry=2 的每个用例都要多等 3 秒。
  */
 private val INSTANT_BACKOFF: suspend (Int) -> Unit = { }

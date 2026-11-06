@@ -29,7 +29,7 @@ if [ -z "${KOTLINC_BIN:-}" ] && [ -z "${KOTLINC_JAR:-}" ]; then
   exit 1
 fi
 
-SRC1="$ROOT/app/src/main/java/com/example/agentkit/tools/LoadSkillLogic.kt"
+SRC1="$ROOT/app/src/main/java/com/beichen/polaris/tools/LoadSkillLogic.kt"
 SRC3="$ROOT/scripts/qa/LoadSkillVerification.kt"
 for s in "$SRC1" "$SRC3"; do
   [ -f "$s" ] || { echo "FATAL: 缺少源文件 $s" >&2; exit 1; }

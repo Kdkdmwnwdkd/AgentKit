@@ -32,12 +32,12 @@
  * D 段用的是**真** `TerminalSessionPool`（不是假池）：假 provider 只负责造进程，
  * 哨兵、串行、复用、冲突判定全走真代码——这正是「身份语义有没有真的生效」的判据。
  */
-import com.example.agentkit.core.terminal.TerminalSessionPool
-import com.example.agentkit.core.terminal.backend.TerminalBackend
-import com.example.agentkit.core.terminal.backend.TerminalBackendFactory
-import com.example.agentkit.core.terminal.backend.TerminalBackendProvider
-import com.example.agentkit.core.terminal.backend.TerminalBackendSource
-import com.example.agentkit.core.terminal.backend.TerminalIdentity
+import com.beichen.polaris.core.terminal.TerminalSessionPool
+import com.beichen.polaris.core.terminal.backend.TerminalBackend
+import com.beichen.polaris.core.terminal.backend.TerminalBackendFactory
+import com.beichen.polaris.core.terminal.backend.TerminalBackendProvider
+import com.beichen.polaris.core.terminal.backend.TerminalBackendSource
+import com.beichen.polaris.core.terminal.backend.TerminalIdentity
 import java.io.File
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -513,7 +513,7 @@ private fun codeOf(src: String): String = src.lineSequence()
 private fun testSourceGuards() {
     println("\n== E 源码守卫：旧形态不能回来 ==")
 
-    val root = System.getProperty("agentkit.src") ?: "app/src/main/java/com/example/agentkit"
+    val root = System.getProperty("agentkit.src") ?: "app/src/main/java/com/beichen/polaris"
     val factorySrc = read("$root/core/terminal/backend/TerminalBackendFactory.kt")
     val poolSrc = read("$root/core/terminal/TerminalSessionPool.kt")
     val identitySrc = read("$root/core/terminal/backend/TerminalIdentity.kt")

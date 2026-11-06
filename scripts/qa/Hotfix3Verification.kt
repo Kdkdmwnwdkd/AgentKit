@@ -10,7 +10,7 @@
  *  断言方式：注入**假等待器**（[FakeNetworkRecovery]）+ 小值退避序列，整套用例保持毫秒级。
  *
  * **B（Bug B）**：`ui_click` 的「匹配 + 选最深 + 上溯可点击祖先 + 生成候选」全部抽成
- * [com.example.agentkit.automation.UiNodeMatcher] 的**纯函数**（输入节点摘要列表 + query），
+ * [com.beichen.polaris.automation.UiNodeMatcher] 的**纯函数**（输入节点摘要列表 + query），
  * 脱离 AccessibilityNodeInfo，故可在纯 JVM 下逐条断言（归一化/包含/前缀/多命中/上溯/候选）。
  *
  * **C（随 W-12 删除屏幕捕捉）**：原 `ScreenshotBridge.lastError` 日志断言已移除。
@@ -19,13 +19,13 @@
  * 运行方式见 scripts/qa/run-hotfix3-verification.sh。
  */
 
-import com.example.agentkit.automation.UiMatchResult
-import com.example.agentkit.automation.UiNodeMatcher
-import com.example.agentkit.automation.UiNodeSummary
-import com.example.agentkit.core.*
-import com.example.agentkit.core.agent.NetworkRecoveryWaiter
-import com.example.agentkit.core.agent.RealAgentLoop
-import com.example.agentkit.core.agent.RetryBackoffPolicy
+import com.beichen.polaris.automation.UiMatchResult
+import com.beichen.polaris.automation.UiNodeMatcher
+import com.beichen.polaris.automation.UiNodeSummary
+import com.beichen.polaris.core.*
+import com.beichen.polaris.core.agent.NetworkRecoveryWaiter
+import com.beichen.polaris.core.agent.RealAgentLoop
+import com.beichen.polaris.core.agent.RetryBackoffPolicy
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers

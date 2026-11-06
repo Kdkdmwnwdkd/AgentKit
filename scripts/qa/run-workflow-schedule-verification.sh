@@ -47,7 +47,7 @@ compile_ctx() {
   local attempt=$1 out
   if [ -n "${KOTLINC_BIN:-}" ]; then
     out=$("$KOTLINC_BIN" -classpath "$DEPS" -d "$OUT" \
-      "$ROOT/app/src/main/java/com/example/agentkit/workflow/Workflow.kt" \
+      "$ROOT/app/src/main/java/com/beichen/polaris/workflow/Workflow.kt" \
       "$ROOT/scripts/qa/WorkflowScheduleVerification.kt" 2>&1) || true
   else
     local kcp="$KOTLINC_JAR:$STDLIB"
@@ -55,7 +55,7 @@ compile_ctx() {
     if [ -n "${JB_ANNOTATIONS:-}" ] && [ -f "${JB_ANNOTATIONS:-}" ]; then kcp=$kcp:$JB_ANNOTATIONS; fi
     out=$(java -cp "$kcp" org.jetbrains.kotlin.cli.jvm.K2JVMCompiler \
       -no-stdlib -no-reflect -classpath "$DEPS" -d "$OUT" \
-      "$ROOT/app/src/main/java/com/example/agentkit/workflow/Workflow.kt" \
+      "$ROOT/app/src/main/java/com/beichen/polaris/workflow/Workflow.kt" \
       "$ROOT/scripts/qa/WorkflowScheduleVerification.kt" 2>&1) || true
   fi
   if echo "$out" | grep -q "error:"; then

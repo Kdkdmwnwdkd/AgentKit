@@ -1,8 +1,8 @@
-import com.example.agentkit.core.BookmarkStore
-import com.example.agentkit.core.text.ChatTime
-import com.example.agentkit.core.text.SpeechLogic
-import com.example.agentkit.core.text.SyntaxHighlighter
-import com.example.agentkit.core.text.TranslateLogic
+import com.beichen.polaris.core.BookmarkStore
+import com.beichen.polaris.core.text.ChatTime
+import com.beichen.polaris.core.text.SpeechLogic
+import com.beichen.polaris.core.text.SyntaxHighlighter
+import com.beichen.polaris.core.text.TranslateLogic
 import java.io.File
 
 /**

@@ -2,19 +2,19 @@
 # R1 真机验收：审批弹窗期间被杀，不该判成「可能已生效」。
 #
 # 用法：
-#   ADB=adb PKG=com.example.agentkit bash r1-approval-window.sh watch
+#   ADB=adb PKG=com.beichen.polaris bash r1-approval-window.sh watch
 #       → 每 0.5 秒打印一次日志行数；在设备上触发一个需要审批的写工具，
 #         **先别点允许**，观察是否出现 DISP。
-#   ADB=adb PKG=com.example.agentkit bash r1-approval-window.sh kill
+#   ADB=adb PKG=com.beichen.polaris bash r1-approval-window.sh kill
 #       → 弹窗还在时直接 force-stop（不点任何按钮）。
-#   ADB=adb PKG=com.example.agentkit bash r1-approval-window.sh verify
+#   ADB=adb PKG=com.beichen.polaris bash r1-approval-window.sh verify
 #       → 重启后检查：应判 NOT_DISPATCHED（「还没开始执行，可以安全重试」）。
 #
 # 判据：审批通过之前不该有 DISP。有 DISP = 记账点放早了，用户犹豫时被杀会被告知
 # 一个从未发生的写操作「可能已经生效」。
 set -u
 ADB=${ADB:-adb}
-PKG=${PKG:-com.example.agentkit}
+PKG=${PKG:-com.beichen.polaris}
 JRN=/data/data/$PKG/files/run-journal
 journal() {
   for f in $($ADB shell run-as "$PKG" ls "$JRN" 2>/dev/null | tr -d '\r'); do

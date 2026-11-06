@@ -12,7 +12,7 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT"
 source "$ROOT/scripts/qa/lib/deps.sh"
 
-SRC=app/src/main/java/com/example/agentkit
+SRC=app/src/main/java/com/beichen/polaris
 HARNESS=scripts/qa/R03Verification.kt
 
 CACHE="$QA_GRADLE_CACHE"
@@ -70,8 +70,8 @@ g_good() { echo "  PASS  $*"; gp=$((gp + 1)); }
 
 echo ""
 echo "[G] 接线与单点"
-VM=app/src/main/java/com/example/agentkit/ui/ChatViewModel.kt
-SCREEN=app/src/main/java/com/example/agentkit/ui/ChatScreen.kt
+VM=app/src/main/java/com/beichen/polaris/ui/ChatViewModel.kt
+SCREEN=app/src/main/java/com/beichen/polaris/ui/ChatScreen.kt
 DEADLINE=$SRC/core/agent/ApprovalDeadline.kt
 
 # G1：VM 必须真的走 awaitApprovalDecision。函数写得再对，没人调用等于没修。

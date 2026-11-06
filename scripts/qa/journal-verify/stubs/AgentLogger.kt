@@ -1,4 +1,4 @@
-package com.example.agentkit.core
+package com.beichen.polaris.core
 
 /** 验证用最小替身：只保留 journal 包用到的方法。 */
 object AgentLogger {

@@ -1,6 +1,6 @@
 #!/usr/bin/env kotlin
 /**
- * 暴露实现层 harness：验证 [com.example.agentkit.core.KernelExposure]。
+ * 暴露实现层 harness：验证 [com.beichen.polaris.core.KernelExposure]。
  *
  * 验**接上真实工具之后的效果**——用仓库里实际存在的工具名，量「发给 LLM 的工具表到底
  * 省了多少」，并确认元工具真的能把裁掉的工具捞回来、粘性激活与滞回淘汰按预期工作。
@@ -15,15 +15,15 @@
  * 避免「拿一句话的工具去比，把差距算小」。
  */
 
-import com.example.agentkit.core.AgentTool
-import com.example.agentkit.core.JsonSchema
-import com.example.agentkit.core.KernelExposure
-import com.example.agentkit.core.PromptAssembler
-import com.example.agentkit.core.Section
-import com.example.agentkit.core.Stability
-import com.example.agentkit.core.ToolResult
-import com.example.agentkit.core.capability.CapabilityManifest
-import com.example.agentkit.core.llm.local.LocalAgentPrompt
+import com.beichen.polaris.core.AgentTool
+import com.beichen.polaris.core.JsonSchema
+import com.beichen.polaris.core.KernelExposure
+import com.beichen.polaris.core.PromptAssembler
+import com.beichen.polaris.core.Section
+import com.beichen.polaris.core.Stability
+import com.beichen.polaris.core.ToolResult
+import com.beichen.polaris.core.capability.CapabilityManifest
+import com.beichen.polaris.core.llm.local.LocalAgentPrompt
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
@@ -496,7 +496,7 @@ fun main() = runBlocking {
     // 扫 `override val name = "xxx"` 而不是按类名走：工具的继承链有四五种写法
     // （`class X(...) : AgentTool`、多行构造参数、object、匿名实现），按类名切会漏，
     // 而漏掉的正好是「清单里名字最长的那些」（WriteFileTool 就是这样漏的）。
-    val implNames: Set<String> = File("app/src/main/java/com/example/agentkit")
+    val implNames: Set<String> = File("app/src/main/java/com/beichen/polaris")
         .walkTopDown()
         .filter { it.extension == "kt" }
         .flatMap { f ->

@@ -6,7 +6,7 @@
 // 杀进程组 / 等待退出。协议细节（环境变量、读循环编排）都在 Kotlin 侧 TerminalSession。
 //
 // 库名与 CMakeLists.txt 的 add_library(agentkit-termux SHARED ...) 一致，
-// Kotlin 侧声明见 com.example.agentkit.terminal.TerminalJni。
+// Kotlin 侧声明见 com.beichen.polaris.terminal.TerminalJni。
 
 #include <jni.h>
 #include <android/log.h>
@@ -120,7 +120,7 @@ extern "C" {
  * @return 会话句柄（jlong）；0 表示失败（Kotlin 侧抛 IOException）
  */
 JNIEXPORT jlong JNICALL
-Java_com_example_agentkit_terminal_TerminalJni_createSubprocess(
+Java_com_beichen_polaris_terminal_TerminalJni_createSubprocess(
     JNIEnv* env, jobject /*thiz*/, jstring cmd, jobjectArray jenv,
     jstring cwd, jint rows, jint cols) {
     const std::string cmdStr = jstringToStd(env, cmd);
@@ -195,7 +195,7 @@ Java_com_example_agentkit_terminal_TerminalJni_createSubprocess(
  * @return 会话句柄；0 = 失败
  */
 JNIEXPORT jlong JNICALL
-Java_com_example_agentkit_terminal_TerminalJni_createSubprocessArgv(
+Java_com_beichen_polaris_terminal_TerminalJni_createSubprocessArgv(
     JNIEnv* env, jobject /*thiz*/, jobjectArray jargv, jobjectArray jenv,
     jstring cwd, jint rows, jint cols) {
     if (!jargv) {
@@ -273,7 +273,7 @@ Java_com_example_agentkit_terminal_TerminalJni_createSubprocessArgv(
  * @return 读到的字节数；0 = EOF（子进程关闭了 slave 一侧）；-1 = 句柄无效 / 已销毁 / 读错误
  */
 JNIEXPORT jint JNICALL
-Java_com_example_agentkit_terminal_TerminalJni_readBytes(
+Java_com_beichen_polaris_terminal_TerminalJni_readBytes(
     JNIEnv* env, jobject /*thiz*/, jlong handle, jbyteArray buf) {
     auto* sp = reinterpret_cast<Subprocess*>(handle);
     if (!sp) return -1;
@@ -304,7 +304,7 @@ Java_com_example_agentkit_terminal_TerminalJni_readBytes(
  * @return 写入字节数；-1 = 句柄无效 / 已销毁 / 写错误
  */
 JNIEXPORT jint JNICALL
-Java_com_example_agentkit_terminal_TerminalJni_writeBytes(
+Java_com_beichen_polaris_terminal_TerminalJni_writeBytes(
     JNIEnv* env, jobject /*thiz*/, jlong handle, jbyteArray data) {
     auto* sp = reinterpret_cast<Subprocess*>(handle);
     if (!sp) return -1;
@@ -331,7 +331,7 @@ Java_com_example_agentkit_terminal_TerminalJni_writeBytes(
 
 /** 修改 pty 窗口大小（ioctl TIOCSWINSZ）：子进程收到 SIGWINCH 后自行重排。无锁（ioctl 非阻塞）。 */
 JNIEXPORT void JNICALL
-Java_com_example_agentkit_terminal_TerminalJni_setPtyWindowSize(
+Java_com_beichen_polaris_terminal_TerminalJni_setPtyWindowSize(
     JNIEnv* /*env*/, jobject /*thiz*/, jlong handle, jint rows, jint cols) {
     auto* sp = reinterpret_cast<Subprocess*>(handle);
     if (!sp) return;
@@ -353,7 +353,7 @@ Java_com_example_agentkit_terminal_TerminalJni_setPtyWindowSize(
  * 回收后才关闭 master fd，保证 waitpid 不会永久挂起。
  */
 JNIEXPORT void JNICALL
-Java_com_example_agentkit_terminal_TerminalJni_killProcessGroup(
+Java_com_beichen_polaris_terminal_TerminalJni_killProcessGroup(
     JNIEnv* /*env*/, jobject /*thiz*/, jlong handle) {
     auto* sp = reinterpret_cast<Subprocess*>(handle);
     if (!sp) return;
@@ -383,7 +383,7 @@ Java_com_example_agentkit_terminal_TerminalJni_killProcessGroup(
  * @return 退出码（信号杀死 = 128 + 信号）；-1 = 仍在运行或无法获取
  */
 JNIEXPORT jint JNICALL
-Java_com_example_agentkit_terminal_TerminalJni_waitFor(
+Java_com_beichen_polaris_terminal_TerminalJni_waitFor(
     JNIEnv* /*env*/, jobject /*thiz*/, jlong handle, jint timeoutMs) {
     auto* sp = reinterpret_cast<Subprocess*>(handle);
     if (!sp || sp->pid <= 0) return -1;

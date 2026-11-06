@@ -20,13 +20,13 @@
  * 运行：bash scripts/qa/run-trace-telemetry-verification.sh
  */
 
-import com.example.agentkit.core.agent.CompositeTurnObserver
-import com.example.agentkit.core.agent.NdjsonTurnObserver
-import com.example.agentkit.core.agent.TurnEvent
-import com.example.agentkit.core.agent.TurnObserver
-import com.example.agentkit.core.agent.nameOf
-import com.example.agentkit.core.agent.toNdjson
-import com.example.agentkit.core.telemetry.TraceSink
+import com.beichen.polaris.core.agent.CompositeTurnObserver
+import com.beichen.polaris.core.agent.NdjsonTurnObserver
+import com.beichen.polaris.core.agent.TurnEvent
+import com.beichen.polaris.core.agent.TurnObserver
+import com.beichen.polaris.core.agent.nameOf
+import com.beichen.polaris.core.agent.toNdjson
+import com.beichen.polaris.core.telemetry.TraceSink
 import java.io.File
 
 private var pass = 0

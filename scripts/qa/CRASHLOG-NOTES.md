@@ -19,12 +19,12 @@
 
 | 文件 | 动作 | 说明 |
 | --- | --- | --- |
-| `app/src/main/java/com/example/agentkit/core/CrashLogger.kt` | **新增** | 全局崩溃捕获 + 同步落盘 + 保留策略 + 纯函数 |
-| `app/src/main/java/com/example/agentkit/AgentKitApplication.kt` | **新增** | Application 入口，只做一件事：最早时机 `CrashLogger.install(this)` |
+| `app/src/main/java/com/beichen/polaris/core/CrashLogger.kt` | **新增** | 全局崩溃捕获 + 同步落盘 + 保留策略 + 纯函数 |
+| `app/src/main/java/com/beichen/polaris/AgentKitApplication.kt` | **新增** | Application 入口，只做一件事：最早时机 `CrashLogger.install(this)` |
 | `app/src/main/AndroidManifest.xml` | 改 1 处 | `<application android:name=".AgentKitApplication" ...>` |
-| `app/src/main/java/com/example/agentkit/automation/ScreenshotBridge.kt` | 改 | 新增纯函数对象 `ScreenCaptureGuard`（尺寸防御 + 清理序列 + `guardValue`/`guard`）；新增 `ScreenshotBridge.clearError()` |
-| `app/src/main/java/com/example/agentkit/automation/ScreenCaptureService.kt` | 改（重写） | 全流程兜底：7 步建立链路每步单独 guard；`failSafe()` 唯一失败出口；`MediaProjection.Callback` |
-| `app/src/main/java/com/example/agentkit/ui/LogsScreen.kt` | 改 | 新增「最近崩溃」区块（列表 + 展开全文 + 复制 + 清空），进页面回放崩溃到 AgentLogger |
+| `app/src/main/java/com/beichen/polaris/automation/ScreenshotBridge.kt` | 改 | 新增纯函数对象 `ScreenCaptureGuard`（尺寸防御 + 清理序列 + `guardValue`/`guard`）；新增 `ScreenshotBridge.clearError()` |
+| `app/src/main/java/com/beichen/polaris/automation/ScreenCaptureService.kt` | 改（重写） | 全流程兜底：7 步建立链路每步单独 guard；`failSafe()` 唯一失败出口；`MediaProjection.Callback` |
+| `app/src/main/java/com/beichen/polaris/ui/LogsScreen.kt` | 改 | 新增「最近崩溃」区块（列表 + 展开全文 + 复制 + 清空），进页面回放崩溃到 AgentLogger |
 | `scripts/qa/CrashLogVerification.kt` | **新增** | QA harness，47 条手写断言（A12 / B7 / C6 / D12 / E10） |
 | `scripts/qa/run-crashlog-verification.sh` | **新增** | 离线 runner（kotlin-compiler-embeddable + `-Xfriend-paths`） |
 | `scripts/qa/CRASHLOG-NOTES.md` | **新增** | 本文件 |
@@ -60,7 +60,7 @@
 崩溃摘要：java.lang.IllegalStateException: 屏幕捕捉炸了
 设备信息：
   厂商：Google / 机型：Pixel 8 / Android SDK：34
-  App 版本名：1.94 / App 版本号：194 / 包名：com.example.agentkit
+  App 版本名：1.94 / App 版本号：194 / 包名：com.beichen.polaris
 ---------- 完整堆栈 ----------
 java.lang.IllegalStateException: 屏幕捕捉炸了
 	at ...（含 Caused by 链）
@@ -194,7 +194,7 @@ PASS=47  FAIL=0   ALL GREEN
 ## 6. 遗留 / 风险
 
 1. **崩溃文件只能靠 App 内日志页或 `adb shell run-as` 读取**：`filesDir` 不对外可读。
-   真机排查时若用户无法导出，需 `adb exec-out run-as com.example.agentkit cat files/crash/xxx.txt`。
+   真机排查时若用户无法导出，需 `adb exec-out run-as com.beichen.polaris cat files/crash/xxx.txt`。
    下一步可考虑加「导出崩溃报告」到 Download（需要存储权限，本轮不做，避免扩权限面）。
 2. **同一秒内多次崩溃的排序**：第二份文件名是 `crash-<ts>-2.txt`，字典序上略早于
    `crash-<ts>.txt`，极端情况下保留策略可能先删后者。**只影响同秒多次崩溃的保留次序**，
@@ -215,7 +215,7 @@ PASS=47  FAIL=0   ALL GREEN
 - `ScreenCaptureGuard`（automation）只依赖同文件的 `ScreenCaptureStartPolicy`（纯 Kotlin）✅
 - `ScreenshotBridge.clearError()` 新增，被 `ScreenCaptureService` 在链路就绪时调用 ✅
 - `CrashRecord` 为 public data class（core 顶层），供 ui 直接渲染 ✅
-- Manifest 新增 `android:name=".AgentKitApplication"`，类路径 `com.example.agentkit.AgentKitApplication` 与包声明一致 ✅
+- Manifest 新增 `android:name=".AgentKitApplication"`，类路径 `com.beichen.polaris.AgentKitApplication` 与包声明一致 ✅
 - 无重复实现：`guard/guardValue` 只有一处（`ScreenCaptureGuard`），`guard` 委托既有
   `ScreenCaptureStartPolicy.guard`，未复制兜底逻辑 ✅
 - 无循环依赖、无未解析引用（编译通过即证）✅

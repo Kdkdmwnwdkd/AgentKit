@@ -16,16 +16,16 @@
  * 运行：scripts/qa/run-t07t08-adversarial.sh
  */
 
-import com.example.agentkit.core.container.ProotRunner
-import com.example.agentkit.core.terminal.TERMINAL_HANDLE_REGEX
-import com.example.agentkit.core.terminal.TerminalSessionPool
-import com.example.agentkit.core.terminal.ToolOutputTruncator
-import com.example.agentkit.core.terminal.backend.LocalUserBackend
-import com.example.agentkit.core.terminal.backend.TerminalBackend
-import com.example.agentkit.core.terminal.backend.TerminalBackendSource
-import com.example.agentkit.core.terminal.backend.TerminalIdentity
-import com.example.agentkit.tools.ShellCloseTool
-import com.example.agentkit.tools.ShellRunTool
+import com.beichen.polaris.core.container.ProotRunner
+import com.beichen.polaris.core.terminal.TERMINAL_HANDLE_REGEX
+import com.beichen.polaris.core.terminal.TerminalSessionPool
+import com.beichen.polaris.core.terminal.ToolOutputTruncator
+import com.beichen.polaris.core.terminal.backend.LocalUserBackend
+import com.beichen.polaris.core.terminal.backend.TerminalBackend
+import com.beichen.polaris.core.terminal.backend.TerminalBackendSource
+import com.beichen.polaris.core.terminal.backend.TerminalIdentity
+import com.beichen.polaris.tools.ShellCloseTool
+import com.beichen.polaris.tools.ShellRunTool
 import kotlinx.coroutines.async
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
@@ -114,7 +114,7 @@ private suspend fun testProotInvocationRegression() {
     val rootfs = File(tmp, "rootfs").apply { mkdirs() }
 
     check("argv[0]==proot 自身；末位==guest shell；env 关键项齐全") {
-        val inv = ProotRunner.buildInvocation(proot, rootfs, ProotRunner.GUEST_HOME, "com.example.agentkit")
+        val inv = ProotRunner.buildInvocation(proot, rootfs, ProotRunner.GUEST_HOME, "com.beichen.polaris")
         assertEquals("argv0", proot.absolutePath, inv.argv.first())
         assertEquals("argv last = guest shell", ProotRunner.GUEST_SHELL, inv.argv.last())
         val env = inv.envMap

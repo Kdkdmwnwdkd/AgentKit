@@ -3,7 +3,7 @@
  * （离线，无 JUnit，纯 main() + 手写断言）。
  *
  * **A（CrashLogger）**：
- *  - 报告格式化 [com.example.agentkit.core.CrashLogger.formatReport] 是**纯函数**，
+ *  - 报告格式化 [com.beichen.polaris.core.CrashLogger.formatReport] 是**纯函数**，
  *    断言其含异常类型 / 消息 / 堆栈首行 / 线程名 / 版本信息；
  *  - 保留策略 [retentionPlan] 断言「超过 N 份保留最新 N 份」；
  *  - 崩溃派发 [dispatch] 断言「写成功/写失败/原 handler 抛异常」三种情况下
@@ -21,7 +21,7 @@
  * 运行方式见 scripts/qa/run-crashlog-verification.sh。
  */
 
-import com.example.agentkit.core.CrashLogger
+import com.beichen.polaris.core.CrashLogger
 import java.io.File
 
 /* ------------------------------ 仓库根定位（源码扫描用） ------------------------------ */
@@ -42,7 +42,7 @@ private val REPO_ROOT: File = run {
 }
 
 /** 业务源码根包目录（`read()` 的相对路径基准）。 */
-private val SRC_ROOT: File = File(REPO_ROOT, "app/src/main/java/com/example/agentkit")
+private val SRC_ROOT: File = File(REPO_ROOT, "app/src/main/java/com/beichen/polaris")
 
 /** AndroidManifest 绝对路径。 */
 private val MANIFEST: File = File(REPO_ROOT, "app/src/main/AndroidManifest.xml")
@@ -143,7 +143,7 @@ private fun deviceInfo() = CrashLogger.DeviceInfo(
     sdkInt = 34,
     versionName = "1.94",
     versionCode = 194L,
-    packageName = "com.example.agentkit"
+    packageName = "com.beichen.polaris"
 )
 
 private fun testReportFormat() {
@@ -175,7 +175,7 @@ private fun testReportFormat() {
     check("A5 含版本信息（versionName/versionCode/包名/SDK/机型）") {
         assertContains("A5", report, "App 版本名：1.94")
         assertContains("A5", report, "App 版本号：194")
-        assertContains("A5", report, "包名：com.example.agentkit")
+        assertContains("A5", report, "包名：com.beichen.polaris")
         assertContains("A5", report, "Android SDK：34")
         assertContains("A5", report, "机型：Pixel 8")
     }

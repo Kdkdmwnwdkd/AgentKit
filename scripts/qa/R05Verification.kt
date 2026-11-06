@@ -15,9 +15,9 @@
  * 运行：scripts/qa/run-r05-verification.sh
  */
 
-import com.example.agentkit.core.ToolCall
-import com.example.agentkit.core.UiItem
-import com.example.agentkit.core.uiKey
+import com.beichen.polaris.core.ToolCall
+import com.beichen.polaris.core.UiItem
+import com.beichen.polaris.core.uiKey
 import kotlinx.serialization.json.JsonObject
 
 /* ------------------------------ 迷你断言框架 ------------------------------ */

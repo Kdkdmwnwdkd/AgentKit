@@ -1,6 +1,6 @@
 # Phase 2 DoD⑤ 交付说明：权限/能力申请一次走完降级链
 
-> 负责人：寇豆码（Kou）· Phase 2 第五项 · 单模块 `:app`，包 `com.example.agentkit`
+> 负责人：寇豆码（Kou）· Phase 2 第五项 · 单模块 `:app`，包 `com.beichen.polaris`
 > 口径：零新增外部依赖 · 不新增 JUnit · 不推送/不碰网络 · 简体中文注释与日志。
 
 ---

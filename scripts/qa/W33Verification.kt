@@ -1,6 +1,6 @@
-import com.example.agentkit.core.job.JobInfo
-import com.example.agentkit.core.job.JobLogic
-import com.example.agentkit.core.job.JobStatus
+import com.beichen.polaris.core.job.JobInfo
+import com.beichen.polaris.core.job.JobLogic
+import com.beichen.polaris.core.job.JobStatus
 
 /**
  * W-33 harness：后台命令的纯逻辑。

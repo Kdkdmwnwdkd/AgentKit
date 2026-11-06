@@ -9,14 +9,14 @@
  * 运行：bash scripts/qa/run-adb-client-verification.sh
  */
 
-import com.example.agentkit.automation.adb.ADB_MAX_PAYLOAD
-import com.example.agentkit.automation.adb.ADB_VERSION
-import com.example.agentkit.automation.adb.AdbAuth
-import com.example.agentkit.automation.adb.AdbAuthException
-import com.example.agentkit.automation.adb.AdbClient
-import com.example.agentkit.automation.adb.AdbCommand
-import com.example.agentkit.automation.adb.AdbCrypto
-import com.example.agentkit.automation.adb.AdbPacket
+import com.beichen.polaris.automation.adb.ADB_MAX_PAYLOAD
+import com.beichen.polaris.automation.adb.ADB_VERSION
+import com.beichen.polaris.automation.adb.AdbAuth
+import com.beichen.polaris.automation.adb.AdbAuthException
+import com.beichen.polaris.automation.adb.AdbClient
+import com.beichen.polaris.automation.adb.AdbCommand
+import com.beichen.polaris.automation.adb.AdbCrypto
+import com.beichen.polaris.automation.adb.AdbPacket
 import java.io.DataInputStream
 import java.io.IOException
 import java.io.InputStream

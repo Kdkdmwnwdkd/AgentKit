@@ -1,4 +1,4 @@
-package com.example.agentkit.core
+package com.beichen.polaris.core
 
 /**
  * 验证用最小替身：journal 包只需要 id 与 name。

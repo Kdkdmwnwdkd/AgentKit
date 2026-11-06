@@ -16,7 +16,7 @@ import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__)))))
-UI = 'app/src/main/java/com/example/agentkit/ui'
+UI = 'app/src/main/java/com/beichen/polaris/ui'
 C = UI + '/contract'
 VM = UI + '/ChatViewModel.kt'
 RUNNER = 'scripts/qa/run-r14-contract-verification.sh'
@@ -111,9 +111,9 @@ MUTS = [
     (
         'M12 契约层反向 import 实现类',
         [(C + '/ContentContracts.kt',
-          'package com.example.agentkit.ui.contract\n\nimport android.net.Uri',
-          'package com.example.agentkit.ui.contract\n\n'
-          'import com.example.agentkit.ui.ChatViewModel\nimport android.net.Uri', 1)],
+          'package com.beichen.polaris.ui.contract\n\nimport android.net.Uri',
+          'package com.beichen.polaris.ui.contract\n\n'
+          'import com.beichen.polaris.ui.ChatViewModel\nimport android.net.Uri', 1)],
         ['D1'],
         ['A1', 'A2', 'B1', 'B2', 'B3', 'B4', 'B5', 'C1', 'C2', 'C3', 'C4'],
     ),

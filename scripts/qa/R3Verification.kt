@@ -26,11 +26,11 @@
  * 运行：scripts/qa/run-r3-verification.sh
  */
 
-import com.example.agentkit.runtime.lease.ContainerLeases
-import com.example.agentkit.runtime.lease.LeaseKind
-import com.example.agentkit.runtime.lease.LeaseRegistry
-import com.example.agentkit.runtime.lease.LeaseHandle
-import com.example.agentkit.runtime.lease.RuntimeLease
+import com.beichen.polaris.runtime.lease.ContainerLeases
+import com.beichen.polaris.runtime.lease.LeaseKind
+import com.beichen.polaris.runtime.lease.LeaseRegistry
+import com.beichen.polaris.runtime.lease.LeaseHandle
+import com.beichen.polaris.runtime.lease.RuntimeLease
 import kotlinx.coroutines.runBlocking
 
 private var passed = 0

@@ -14,7 +14,7 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT"
 source "$ROOT/scripts/qa/lib/deps.sh"
 
-SRC=app/src/main/java/com/example/agentkit
+SRC=app/src/main/java/com/beichen/polaris
 HARNESS=scripts/qa/R08Verification.kt
 
 CACHE="$QA_GRADLE_CACHE"
@@ -90,8 +90,8 @@ g_good() { echo "  PASS  $*"; gp=$((gp + 1)); }
 
 echo ""
 echo "[G] 接线"
-VM=app/src/main/java/com/example/agentkit/ui/ChatViewModel.kt
-SCREEN=app/src/main/java/com/example/agentkit/ui/ChatScreen.kt
+VM=app/src/main/java/com/beichen/polaris/ui/ChatViewModel.kt
+SCREEN=app/src/main/java/com/beichen/polaris/ui/ChatScreen.kt
 
 # G1：授权键必须来自 ApprovalScope（它才知道命令内容）。仍用 groupOf(tool.name) 就是没修。
 if grep -q 'val grant = ApprovalScope.of(tool.name, args)' "$VM"; then

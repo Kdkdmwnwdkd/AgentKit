@@ -11,7 +11,7 @@ plugins {
 val LOCAL_FALLBACK_VERSION_CODE = 14
 
 android {
-    namespace = "com.example.agentkit"
+    namespace = "com.beichen.polaris"
     compileSdk = 34
 
     signingConfigs {
@@ -32,7 +32,7 @@ android {
     val skipNative = (project.findProperty("noNative") as String?)?.toBoolean() == true
 
     defaultConfig {
-        applicationId = "com.example.agentkit"
+        applicationId = "com.beichen.polaris"
         minSdk = 26
         // 28 而不是 34：Android 10+ 对 targetSdk>=29 的应用禁止从**应用数据目录**
         // 调用 execve（W^X）。容器里的所有程序（busybox、之后装的 node/python）

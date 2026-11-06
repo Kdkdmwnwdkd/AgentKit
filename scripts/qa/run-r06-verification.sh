@@ -13,7 +13,7 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT"
 source "$ROOT/scripts/qa/lib/deps.sh"
 
-SRC=app/src/main/java/com/example/agentkit
+SRC=app/src/main/java/com/beichen/polaris
 HARNESS=scripts/qa/R06Verification.kt
 
 CACHE="$QA_GRADLE_CACHE"
@@ -100,9 +100,9 @@ g_good() { echo "  PASS  $*"; gp=$((gp + 1)); }
 
 echo ""
 echo "[G] 接线与文案单点"
-VM=app/src/main/java/com/example/agentkit/ui/ChatViewModel.kt
-SCREEN=app/src/main/java/com/example/agentkit/ui/ChatScreen.kt
-UIITEM=app/src/main/java/com/example/agentkit/core/UiItem.kt
+VM=app/src/main/java/com/beichen/polaris/ui/ChatViewModel.kt
+SCREEN=app/src/main/java/com/beichen/polaris/ui/ChatScreen.kt
+UIITEM=app/src/main/java/com/beichen/polaris/core/UiItem.kt
 
 if grep -q 'onSettling = { owner -> projection.settleInterrupted(owner) },' "$VM"; then
   g_good "G1 收尾时调用 projection.settleInterrupted（owner 传入）"

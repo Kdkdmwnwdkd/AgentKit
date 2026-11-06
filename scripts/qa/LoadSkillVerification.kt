@@ -1,4 +1,4 @@
-import com.example.agentkit.tools.LoadSkillLogic
+import com.beichen.polaris.tools.LoadSkillLogic
 
 /**
  * W-23 harness：load_skill 校验纯函数（不加载 Android，不联网）。

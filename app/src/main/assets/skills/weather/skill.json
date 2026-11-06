@@ -1,5 +1,5 @@
 {
-  "id": "com.example.agentkit.weather",
+  "id": "com.beichen.polaris.weather",
   "name": "天气查询",
   "version": "1.0.0",
   "description": "当用户询问天气时使用 http_request 调用天气 API。",

@@ -30,9 +30,9 @@ fi
 [ -f "$STDLIB" ] || { echo "FATAL: 缺少 $STDLIB" >&2; exit 1; }
 
 SRC="
-$ROOT/app/src/main/java/com/example/agentkit/automation/adb/AdbPacket.kt
-$ROOT/app/src/main/java/com/example/agentkit/automation/adb/AdbCrypto.kt
-$ROOT/app/src/main/java/com/example/agentkit/automation/adb/AdbShellProtocol.kt
+$ROOT/app/src/main/java/com/beichen/polaris/automation/adb/AdbPacket.kt
+$ROOT/app/src/main/java/com/beichen/polaris/automation/adb/AdbCrypto.kt
+$ROOT/app/src/main/java/com/beichen/polaris/automation/adb/AdbShellProtocol.kt
 $ROOT/scripts/qa/AdbProtocolVerification.kt
 "
 

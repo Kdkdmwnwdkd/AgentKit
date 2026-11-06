@@ -17,8 +17,8 @@
  *
  * 全部纯函数，不加载 Android 类、不联网。
  */
-import com.example.agentkit.core.JsonSchema
-import com.example.agentkit.core.ToolSchemaJson
+import com.beichen.polaris.core.JsonSchema
+import com.beichen.polaris.core.ToolSchemaJson
 
 private var passed = 0
 private val failures = mutableListOf<String>()

@@ -1,5 +1,5 @@
-import com.example.agentkit.core.text.DiffLine
-import com.example.agentkit.core.text.LineDiffLogic
+import com.beichen.polaris.core.text.DiffLine
+import com.beichen.polaris.core.text.LineDiffLogic
 
 /**
  * W-34 harness：行级 diff 纯逻辑。

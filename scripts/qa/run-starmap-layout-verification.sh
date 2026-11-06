@@ -34,7 +34,7 @@ if [ -z "${KOTLINC_BIN:-}" ] && [ -z "${KOTLINC_JAR:-}" ]; then
 fi
 if [ ! -f "${STDLIB:-}" ]; then echo "FATAL: 缺少 kotlin-stdlib：${STDLIB:-<empty>}" >&2; exit 1; fi
 
-SRC_LAYOUT="$ROOT/app/src/main/java/com/example/agentkit/memory/MemoryForceLayout.kt"
+SRC_LAYOUT="$ROOT/app/src/main/java/com/beichen/polaris/memory/MemoryForceLayout.kt"
 SRC_TEST="$ROOT/scripts/qa/StarMapLayoutVerification.kt"
 for f in "$SRC_LAYOUT" "$SRC_TEST"; do
   [ -f "$f" ] || { echo "FATAL: 缺少源文件 $f" >&2; exit 1; }

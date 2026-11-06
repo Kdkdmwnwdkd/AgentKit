@@ -1,4 +1,4 @@
-package com.example.agentkit.core
+package com.beichen.polaris.core
 
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers

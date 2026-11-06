@@ -1,6 +1,6 @@
-import com.example.agentkit.tools.EditFileLogic
-import com.example.agentkit.tools.EditPlan
-import com.example.agentkit.tools.WebSearchParsing
+import com.beichen.polaris.tools.EditFileLogic
+import com.beichen.polaris.tools.EditPlan
+import com.beichen.polaris.tools.WebSearchParsing
 
 /**
  * W-20 harness：edit_file 决策纯函数 + web_search 解析纯函数（不加载 Android，不联网）。

@@ -51,7 +51,7 @@ done < <(grep -rn --include=*.kt \
   -e '^import com\.example\.agentkit\.ui\.' \
   -e '^import com\.example\.agentkit\.tools\.' \
   -e '^import com\.example\.agentkit\.MainActivity' \
-  app/src/main/java/com/example/agentkit/core 2>/dev/null)
+  app/src/main/java/com/beichen/polaris/core 2>/dev/null)
 
 if [ "$viol" -eq 0 ]; then
   n=$(printf '%s\n' "$layer_paths" | grep -c . || true)
@@ -111,7 +111,7 @@ say "[C] 单点：工具 schema 序列化只允许一处实现"
 
 # 反模式：在客户端里内联展开 properties（正是 R11 修掉的那三份拷贝）
 inline_hits=$(grep -rn --include=*.kt -B1 -A3 'putJsonObject("parameters") {\|putJsonObject("input_schema") {' \
-  app/src/main/java/com/example/agentkit/core 2>/dev/null \
+  app/src/main/java/com/beichen/polaris/core 2>/dev/null \
   | grep -c 'put("type", "object")' || true)
 
 if [ "${inline_hits:-0}" -gt 0 ]; then
@@ -120,13 +120,13 @@ else
   good "无内联 schema 展开"
 fi
 
-if ! grep -q "ToolSchemaJson.objectSchema" app/src/main/java/com/example/agentkit/core/LLMClient.kt; then
+if ! grep -q "ToolSchemaJson.objectSchema" app/src/main/java/com/beichen/polaris/core/LLMClient.kt; then
   bad "OpenAI 客户端未走 ToolSchemaJson"
 else
   good "三个客户端均走 ToolSchemaJson（OpenAI 已确认）"
 fi
 for f in ClaudeClient GeminiClient; do
-  if ! grep -q "ToolSchemaJson.objectSchema" "app/src/main/java/com/example/agentkit/core/llm/$f.kt"; then
+  if ! grep -q "ToolSchemaJson.objectSchema" "app/src/main/java/com/beichen/polaris/core/llm/$f.kt"; then
     bad "$f 未走 ToolSchemaJson"
   fi
 done

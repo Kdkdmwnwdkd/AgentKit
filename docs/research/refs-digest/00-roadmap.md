@@ -18,7 +18,7 @@
 | `core/AgentExecutor` | digest 多次提及 | **当前仓库未见此文件** | 路线图中相关改造落到 `core/AgentLoop.kt` / `ui/ChatViewModel.kt` |
 | Markdown 渲染 | 待验证 | `ui/ChatScreen.kt` grep `markdown` / `AnnotatedString` **均无命中** | 确认为纯文本渲染，T11 是真实缺口 |
 
-> 所有路径默认前缀：`app/src/main/java/com/example/agentkit/`。
+> 所有路径默认前缀：`app/src/main/java/com/beichen/polaris/`。
 
 ### 0.2 两个维度不要混淆
 

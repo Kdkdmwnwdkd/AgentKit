@@ -47,7 +47,7 @@ private fun assertContains(name: String, haystack: String, needle: String) {
 /* ------------------------------ 源码读取（纯文本扫描） ------------------------------ */
 
 // W-42：路径相对仓库根（run-all 会把 CWD 定在仓库根）。写死 /workspace/AgentKit 只在本机成立。
-private const val APP_SRC = "app/src/main/java/com/example/agentkit"
+private const val APP_SRC = "app/src/main/java/com/beichen/polaris"
 
 private fun readSource(rel: String): String = File(APP_SRC, rel).readText()
 
@@ -521,7 +521,7 @@ private fun testTokenUsage() {
     check("P5 OpenAI 流式：请求带 include_usage + 末片 usage 捕获") {
         assertContains("P5", openai, "putJsonObject(\"stream_options\") { put(\"include_usage\", true) }")
         val fn = openai.substringAfter("override fun streamChat(")
-        assertContains("P5", fn, "var usage: com.example.agentkit.core.TokenUsage? = null")
+        assertContains("P5", fn, "var usage: com.beichen.polaris.core.TokenUsage? = null")
         assertContains("P5", fn, "parseOpenAiUsage(obj)?.let { usage = it }")
         // hotfix26 起 Completed 带第四参 reasoning（P1-9）；usage 仍第三参不变
         assertContains("P5", fn, "accumulator.build(),")
@@ -640,7 +640,7 @@ private fun testConversationExport() {
     check("Q5 VM 只读导出入口（空会话返空串，UI 据此不弹面板）") {
         assertContains("Q5", vm, "fun conversationMarkdown(convId: String): String")
         assertContains("Q5", vm, "if (rec.messages.isEmpty()) return \"\"")
-        assertContains("Q5", vm, "import com.example.agentkit.core.conversationToMarkdown")
+        assertContains("Q5", vm, "import com.beichen.polaris.core.conversationToMarkdown")
     }
     check("Q6 分享机制共用（消息分享与会话导出同一 shareText，不复制粘贴）") {
         assertContains("Q6", share, "internal fun shareText(context: Context, text: String, chooserTitle: String)")
@@ -927,7 +927,7 @@ private fun testReasoningFold() {
         assertContains("U2", parsers, "return part[\"text\"]?.primOrNull()?.contentOrNull")
     }
     check("U3 OpenAI 兼容系：思考增量发 ReasoningDelta，Completed 第四参带 reasoning") {
-        assertContains("U3", client, "import com.example.agentkit.core.llm.parseOpenAiReasoning")
+        assertContains("U3", client, "import com.beichen.polaris.core.llm.parseOpenAiReasoning")
         assertContains("U3", client, "val reasoning = StringBuilder()")
         assertContains("U3", client, "parseOpenAiReasoning(delta)?.let {")
         assertContains("U3", client, "send(ChatStreamEvent.ReasoningDelta(it))")
@@ -1049,7 +1049,7 @@ private fun testAppearanceEnhancements() {
         // 通知正文只放预览（截断 60 字），不发全文
         assertContains("V4", notifier, "preview.take(60)")
         // 渠道与 agent 业务通知渠道刻意分开
-        assertContains("V4", notifier, "与 [com.example.agentkit.tools.BuiltInTools] 的 agent 通知渠道**刻意分开**")
+        assertContains("V4", notifier, "与 [com.beichen.polaris.tools.BuiltInTools] 的 agent 通知渠道**刻意分开**")
     }
     check("V5 ConfigStore：完成提醒开关落盘，默认 false（opt-in）") {
         assertContains("V5", store, "private const val KEY_COMPLETION_NOTIFY = \"completion_notify\"")
@@ -1380,7 +1380,7 @@ private fun testChatBackground() {
     val screen = readSource("ui/ChatScreen.kt")
     // W-67：背景图分区从设置页搬到「壁纸与颜色」子页（ChatBackgroundSection → BackgroundSection）
     val appearance = readSource("ui/AppearanceScreen.kt")
-    val loader = File("app/src/main/java/com/example/agentkit/ui/BackgroundLoader.kt").readText()
+    val loader = File("app/src/main/java/com/beichen/polaris/ui/BackgroundLoader.kt").readText()
 
     check("AA1 ConfigStore：URI + 浓度两键（URI 存轻量字符串，位图不占存储）") {
         assertContains("AA1", config, "private const val KEY_CHAT_BG_URI = \"chat_bg_uri\"")
@@ -1438,7 +1438,7 @@ private fun testChatBackground() {
  */
 private fun testJsonSafeAndGlobalBackground() {
     println("— AB 区：JSON 安全化 + 背景 100%/全局（hotfix33） —")
-    val base = "app/src/main/java/com/example/agentkit/"
+    val base = "app/src/main/java/com/beichen/polaris/"
     val safe = File(base + "core/llm/JsonSafe.kt").readText()
     val llm = readSource("core/LLMClient.kt")
     val loader = readSource("ui/BackgroundLoader.kt")
@@ -1511,7 +1511,7 @@ private fun testJsonSafeAndGlobalBackground() {
  */
 private fun testProviderCatalog() {
     println("— AC 区：供应商全量适配（hotfix34） —")
-    val base = "app/src/main/java/com/example/agentkit/"
+    val base = "app/src/main/java/com/beichen/polaris/"
     val catalog = File(base + "core/llm/ProviderCatalog.kt").readText()
     val llm = readSource("core/LLMClient.kt")
     val modelScreen = readSource("ui/ModelConfigScreen.kt")
@@ -1544,12 +1544,12 @@ private fun testProviderCatalog() {
         assertContains("AC3", catalog, "都会被正确当作 OpenAI 兼容处理")
     }
     check("AC4 ProviderManager：未注册 id 按目录风格兜底造客户端") {
-        assertContains("AC4", llm, "val style = com.example.agentkit.core.llm.ProviderCatalog.styleOf(name)")
-        assertContains("AC4", llm, "?: providers[com.example.agentkit.core.llm.ProviderCatalog.STYLE_OPENAI]")
+        assertContains("AC4", llm, "val style = com.beichen.polaris.core.llm.ProviderCatalog.styleOf(name)")
+        assertContains("AC4", llm, "?: providers[com.beichen.polaris.core.llm.ProviderCatalog.STYLE_OPENAI]")
         assertContains("AC4", llm, "新增供应商 = 加一条目录数据，零代码零发版")
     }
     check("AC5 UI：全量选择器（常用 chip 横滑 + 全部供应商分组弹窗）") {
-        assertContains("AC5", modelScreen, "import com.example.agentkit.core.llm.ProviderCatalog")
+        assertContains("AC5", modelScreen, "import com.beichen.polaris.core.llm.ProviderCatalog")
         assertContains("AC5", modelScreen, "AkChip(text = \"全部供应商…\", selected = false")
         assertContains("AC5", modelScreen, "private fun ProviderAllDialog(")
         assertContains("AC5", modelScreen, "ProviderGroup.entries.forEach { group ->")
@@ -1640,7 +1640,7 @@ private fun testProfileProviderDefault() {
         assertContains("AE1", fn, "providerId = ProviderCatalog.STYLE_OPENAI")
         // 注释即契约：记录真机反馈与决策理由
         assertContains("AE1", fn, "自动变成那个 deepseek 了")
-        assertContains("AE1", vm, "import com.example.agentkit.core.llm.ProviderCatalog")
+        assertContains("AE1", vm, "import com.beichen.polaris.core.llm.ProviderCatalog")
     }
     check("AE2 新建后引导下一步（v4 起改由对话框承载，不再靠 Toast）") {
         // 原实现：addProfile 后弹 Toast「请先选供应商、填 API Key、再点保存」。

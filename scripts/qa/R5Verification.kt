@@ -34,19 +34,19 @@
  * 运行：scripts/qa/run-r5-verification.sh
  */
 
-import com.example.agentkit.core.AgentTool
-import com.example.agentkit.core.AssistantMessage
-import com.example.agentkit.core.ChatMessage
-import com.example.agentkit.core.JsonSchema
-import com.example.agentkit.core.LLMClient
-import com.example.agentkit.core.PingResult
-import com.example.agentkit.core.ToolCall
-import com.example.agentkit.core.ToolRegistry
-import com.example.agentkit.core.ToolResult
-import com.example.agentkit.core.agent.RealAgentLoop
-import com.example.agentkit.core.agent.TurnEvent
-import com.example.agentkit.core.agent.TurnObserver
-import com.example.agentkit.core.llm.ChatStreamEvent
+import com.beichen.polaris.core.AgentTool
+import com.beichen.polaris.core.AssistantMessage
+import com.beichen.polaris.core.ChatMessage
+import com.beichen.polaris.core.JsonSchema
+import com.beichen.polaris.core.LLMClient
+import com.beichen.polaris.core.PingResult
+import com.beichen.polaris.core.ToolCall
+import com.beichen.polaris.core.ToolRegistry
+import com.beichen.polaris.core.ToolResult
+import com.beichen.polaris.core.agent.RealAgentLoop
+import com.beichen.polaris.core.agent.TurnEvent
+import com.beichen.polaris.core.agent.TurnObserver
+import com.beichen.polaris.core.llm.ChatStreamEvent
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.Job

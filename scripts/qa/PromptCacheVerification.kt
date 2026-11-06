@@ -28,17 +28,17 @@
  * 运行：`bash scripts/qa/run-prompt-cache-verification.sh`
  */
 
-import com.example.agentkit.core.AgentTool
-import com.example.agentkit.core.JsonSchema
-import com.example.agentkit.core.LLMConfig
-import com.example.agentkit.core.SystemMessage
-import com.example.agentkit.core.TokenUsage
-import com.example.agentkit.core.ToolResult
-import com.example.agentkit.core.UserMessage
-import com.example.agentkit.core.llm.ClaudeClient
-import com.example.agentkit.core.llm.parseClaudeUsage
-import com.example.agentkit.core.llm.parseGeminiUsage
-import com.example.agentkit.core.llm.parseOpenAiUsage
+import com.beichen.polaris.core.AgentTool
+import com.beichen.polaris.core.JsonSchema
+import com.beichen.polaris.core.LLMConfig
+import com.beichen.polaris.core.SystemMessage
+import com.beichen.polaris.core.TokenUsage
+import com.beichen.polaris.core.ToolResult
+import com.beichen.polaris.core.UserMessage
+import com.beichen.polaris.core.llm.ClaudeClient
+import com.beichen.polaris.core.llm.parseClaudeUsage
+import com.beichen.polaris.core.llm.parseGeminiUsage
+import com.beichen.polaris.core.llm.parseOpenAiUsage
 import com.sun.net.httpserver.HttpServer
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking

@@ -68,7 +68,7 @@ echo ""
 
 # ---------------------------------------------------------------- [B] 行为 harness
 echo "[B] 行为：自编译真跑（临时目录 + 真文件 + 真重启实例）"
-SRC="$ROOT/app/src/main/java/com/example/agentkit"
+SRC="$ROOT/app/src/main/java/com/beichen/polaris"
 OUT=/tmp/qa-r10-shard
 COMPILE_LOG=/tmp/qa-r10-shard-compile.log
 rm -rf "$OUT"; mkdir -p "$OUT"

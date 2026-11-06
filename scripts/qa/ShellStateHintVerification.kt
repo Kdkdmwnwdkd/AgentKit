@@ -1,6 +1,6 @@
 #!/usr/bin/env kotlin
 /**
- * W-54 QA 行为验证：[com.example.agentkit.tools.mutatesShellState]。
+ * W-54 QA 行为验证：[com.beichen.polaris.tools.mutatesShellState]。
  *
  * 背景：`shell_run` 在 Shizuku 就绪时默认走**一次性通道**（一条命令一个远端进程）。
  * 这条通道里 `cd /tmp` 之后下一条命令仍在默认目录——但工具描述一直写着「复用同一
@@ -14,7 +14,7 @@
  * 运行方式见 scripts/qa/run-shell-state-hint-verification.sh。
  */
 
-import com.example.agentkit.tools.mutatesShellState
+import com.beichen.polaris.tools.mutatesShellState
 
 /* ------------------------------ 迷你断言框架 ------------------------------ */
 

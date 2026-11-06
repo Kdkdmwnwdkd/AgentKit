@@ -22,7 +22,7 @@
 ### 第 1 步：确认 proot 已落位且权限正确
 
 ```bash
-adb shell run-as com.example.agentkit ls -l /data/data/com.example.agentkit/bin/proot
+adb shell run-as com.beichen.polaris ls -l /data/data/com.beichen.polaris/bin/proot
 ```
 
 - **期望**：文件存在，权限为 `-rwx------`（0700）。
@@ -31,7 +31,7 @@ adb shell run-as com.example.agentkit ls -l /data/data/com.example.agentkit/bin/
 ### 第 2 步：直接执行 proot 看退出码（**核心判据**）
 
 ```bash
-adb shell run-as com.example.agentkit /data/data/com.example.agentkit/bin/proot --version; echo "exit=$?"
+adb shell run-as com.beichen.polaris /data/data/com.beichen.polaris/bin/proot --version; echo "exit=$?"
 ```
 
 - **通过**：输出 proot 版本号，`exit=0` → `filesDir` 可 `execve`，**无需改造**，清单到此结束。
@@ -41,7 +41,7 @@ adb shell run-as com.example.agentkit /data/data/com.example.agentkit/bin/proot 
 
 ```bash
 adb logcat -c
-adb shell run-as com.example.agentkit /data/data/com.example.agentkit/bin/proot --version
+adb shell run-as com.beichen.polaris /data/data/com.beichen.polaris/bin/proot --version
 adb logcat -d | grep -i "avc: denied"
 ```
 
@@ -49,7 +49,7 @@ adb logcat -d | grep -i "avc: denied"
 - **未命中 avc** 但退出码非 0 → 大概率是二进制与 ABI 不匹配或构建产物损坏，先核对：
   ```bash
   adb shell getprop ro.product.cpu.abi      # 必须是 arm64-v8a
-  adb shell run-as com.example.agentkit /data/data/com.example.agentkit/bin/proot --help 2>&1 | head
+  adb shell run-as com.beichen.polaris /data/data/com.beichen.polaris/bin/proot --help 2>&1 | head
   ```
 
 ### 第 4 步（可选）：确认容器内命令不再卡死（T10 的验收）

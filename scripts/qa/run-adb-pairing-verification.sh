@@ -19,7 +19,7 @@ if [ -z "${KOTLINC_JAR:-}" ] || [ -z "${STDLIB:-}" ]; then
   fi
 fi
 [ -f "$STDLIB" ] || { echo "FATAL: 缺少 kotlin-stdlib" >&2; exit 1; }
-SRC="$ROOT/app/src/main/java/com/example/agentkit/automation/adb/AdbPairingPacket.kt $ROOT/scripts/qa/AdbPairingVerification.kt"
+SRC="$ROOT/app/src/main/java/com/beichen/polaris/automation/adb/AdbPairingPacket.kt $ROOT/scripts/qa/AdbPairingVerification.kt"
 rm -rf "$OUT" && mkdir -p "$OUT"
 compile_pairing() {
   local attempt=$1 out

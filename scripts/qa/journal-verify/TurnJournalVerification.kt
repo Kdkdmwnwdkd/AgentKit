@@ -1,11 +1,11 @@
 package verify
 
-import com.example.agentkit.core.ToolCall
-import com.example.agentkit.core.agent.journal.RunEvent
-import com.example.agentkit.core.agent.journal.RunJournal
-import com.example.agentkit.core.agent.journal.RunJournalRepair
-import com.example.agentkit.core.agent.journal.ToolSettleStatus
-import com.example.agentkit.core.agent.journal.TurnJournal
+import com.beichen.polaris.core.ToolCall
+import com.beichen.polaris.core.agent.journal.RunEvent
+import com.beichen.polaris.core.agent.journal.RunJournal
+import com.beichen.polaris.core.agent.journal.RunJournalRepair
+import com.beichen.polaris.core.agent.journal.ToolSettleStatus
+import com.beichen.polaris.core.agent.journal.TurnJournal
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.joinAll

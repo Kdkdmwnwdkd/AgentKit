@@ -12,8 +12,8 @@ set -uo pipefail
 
 cd "$(dirname "$0")/../.." || exit 1
 
-CATALOG="app/src/main/java/com/example/agentkit/core/llm/local/LocalBackendCatalog.kt"
-PROFILE="app/src/main/java/com/example/agentkit/core/llm/local/LocalDeviceProfile.kt"
+CATALOG="app/src/main/java/com/beichen/polaris/core/llm/local/LocalBackendCatalog.kt"
+PROFILE="app/src/main/java/com/beichen/polaris/core/llm/local/LocalDeviceProfile.kt"
 
 PASS=0
 FAIL=0
@@ -87,7 +87,7 @@ if [ -z "$KOTLINC" ]; then
 else
     WORK="$(mktemp -d)"
     cat > "$WORK/CatalogCheck.kt" <<'KOTLIN'
-import com.example.agentkit.core.llm.local.*
+import com.beichen.polaris.core.llm.local.*
 
 private var ok = 0
 private var bad = 0

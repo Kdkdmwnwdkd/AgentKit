@@ -10,7 +10,7 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT"
 source "$ROOT/scripts/qa/lib/deps.sh"
 
-SRC=app/src/main/java/com/example/agentkit
+SRC=app/src/main/java/com/beichen/polaris
 HARNESS=scripts/qa/R05Verification.kt
 
 CACHE="$QA_GRADLE_CACHE"
@@ -80,7 +80,7 @@ g_good() { echo "  PASS  $*"; gp=$((gp + 1)); }
 
 echo ""
 echo "[G] 接线"
-SCREEN=app/src/main/java/com/example/agentkit/ui/ChatScreen.kt
+SCREEN=app/src/main/java/com/beichen/polaris/ui/ChatScreen.kt
 
 # G1：itemsIndexed 必须真的传 key。函数写对了、调用点没传，等于没修。
 if grep -q 'itemsIndexed(messages, key = { index, item -> item.uiKey(index) })' "$SCREEN"; then

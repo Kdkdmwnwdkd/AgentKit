@@ -18,12 +18,12 @@
  * 而这里没有一处是在看源码。`in` 与 contains 是同一个 operator，判据语义不变。
  * 运行方式见 scripts/qa/run-r10-shard-verification.sh（自编译，零 Android 依赖）。
  */
-import com.example.agentkit.core.lifecycle.AppBackgroundHooks
-import com.example.agentkit.core.ConversationRecord
-import com.example.agentkit.core.ConversationStore
-import com.example.agentkit.core.MsgRecord
-import com.example.agentkit.core.ROLE_USER
-import com.example.agentkit.core.io.AtomicJsonFile
+import com.beichen.polaris.core.lifecycle.AppBackgroundHooks
+import com.beichen.polaris.core.ConversationRecord
+import com.beichen.polaris.core.ConversationStore
+import com.beichen.polaris.core.MsgRecord
+import com.beichen.polaris.core.ROLE_USER
+import com.beichen.polaris.core.io.AtomicJsonFile
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import java.io.File

@@ -26,15 +26,15 @@
  *
  * 全部纯对象构造，不联网、不加载 Android 类。
  */
-import com.example.agentkit.core.AgentTool
-import com.example.agentkit.core.AssistantMessage
-import com.example.agentkit.core.ChatMessage
-import com.example.agentkit.core.LLMClient
-import com.example.agentkit.core.LLMConfig
-import com.example.agentkit.core.PingResult
-import com.example.agentkit.core.ProviderManager
-import com.example.agentkit.core.agent.ContextBudget
-import com.example.agentkit.core.llm.ProviderCatalog
+import com.beichen.polaris.core.AgentTool
+import com.beichen.polaris.core.AssistantMessage
+import com.beichen.polaris.core.ChatMessage
+import com.beichen.polaris.core.LLMClient
+import com.beichen.polaris.core.LLMConfig
+import com.beichen.polaris.core.PingResult
+import com.beichen.polaris.core.ProviderManager
+import com.beichen.polaris.core.agent.ContextBudget
+import com.beichen.polaris.core.llm.ProviderCatalog
 
 private var passed = 0
 private val failures = mutableListOf<String>()

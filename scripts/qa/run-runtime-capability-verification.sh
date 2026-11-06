@@ -20,18 +20,18 @@ set -uo pipefail
 cd "$(dirname "$0")/../.." || exit 1
 ROOT=$(pwd)
 
-RT="$ROOT/app/src/main/java/com/example/agentkit/runtime"
+RT="$ROOT/app/src/main/java/com/beichen/polaris/runtime"
 LEASE="$RT/lease"
 CAP="$RT/AgentCapability.kt"
 LLM="$RT/LocalLlmRuntime.kt"
 REG="$LEASE/LeaseRegistry.kt"
 LEASE_IF="$LEASE/RuntimeLease.kt"
 LOCAL_LEASE="$LEASE/LocalLlmLease.kt"
-BUDGET="$ROOT/app/src/main/java/com/example/agentkit/core/agent/ToolBudget.kt"
-CONTRACT="$ROOT/app/src/main/java/com/example/agentkit/core/AgentContract.kt"
-EXECUTOR="$ROOT/app/src/main/java/com/example/agentkit/core/agent/ToolExecutor.kt"
-APP="$ROOT/app/src/main/java/com/example/agentkit/AgentKitApplication.kt"
-BOOT="$ROOT/app/src/main/java/com/example/agentkit/startup/BootSequence.kt"
+BUDGET="$ROOT/app/src/main/java/com/beichen/polaris/core/agent/ToolBudget.kt"
+CONTRACT="$ROOT/app/src/main/java/com/beichen/polaris/core/AgentContract.kt"
+EXECUTOR="$ROOT/app/src/main/java/com/beichen/polaris/core/agent/ToolExecutor.kt"
+APP="$ROOT/app/src/main/java/com/beichen/polaris/AgentKitApplication.kt"
+BOOT="$ROOT/app/src/main/java/com/beichen/polaris/startup/BootSequence.kt"
 
 pass=0
 fail=0

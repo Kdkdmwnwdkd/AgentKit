@@ -2,7 +2,7 @@
 /**
  * Phase 2 · T11「聊天消息 Markdown 渲染」QA 行为验证 harness。
  *
- * 目标：对**纯 JVM 的** [com.example.agentkit.ui.MarkdownParser] 做逐条断言——不依赖 Android、
+ * 目标：对**纯 JVM 的** [com.beichen.polaris.ui.MarkdownParser] 做逐条断言——不依赖 Android、
  * 不依赖 JUnit（本机离线 Gradle 缓存无 JUnit jar）。运行方式见 scripts/qa/run-markdown-verification.sh。
  *
  * 覆盖：
@@ -14,11 +14,11 @@
  *   F 流式：半截标记逐前缀解析全程不崩
  */
 
-import com.example.agentkit.ui.MdAlign
-import com.example.agentkit.ui.MdBlock
-import com.example.agentkit.ui.MdListItem
-import com.example.agentkit.ui.MdSpan
-import com.example.agentkit.ui.MarkdownParser
+import com.beichen.polaris.ui.MdAlign
+import com.beichen.polaris.ui.MdBlock
+import com.beichen.polaris.ui.MdListItem
+import com.beichen.polaris.ui.MdSpan
+import com.beichen.polaris.ui.MarkdownParser
 
 /* ------------------------------ 迷你断言框架 ------------------------------ */
 

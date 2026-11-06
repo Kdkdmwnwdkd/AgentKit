@@ -8,11 +8,11 @@
  *  - 洞 2：只认 HTTP 状态码 → 三层归一化（状态码 / 结构化字段 / 关键词）；
  *  - 洞 3：全局 24k 预算 → 按模型窗口收敛。
  */
-import com.example.agentkit.core.agent.ContextBudget
-import com.example.agentkit.core.llm.ErrorNormalizer
-import com.example.agentkit.core.llm.ErrorNormalizer.FailureClass
-import com.example.agentkit.core.llm.ProviderCatalog
-import com.example.agentkit.core.llm.RetryProfile
+import com.beichen.polaris.core.agent.ContextBudget
+import com.beichen.polaris.core.llm.ErrorNormalizer
+import com.beichen.polaris.core.llm.ErrorNormalizer.FailureClass
+import com.beichen.polaris.core.llm.ProviderCatalog
+import com.beichen.polaris.core.llm.RetryProfile
 
 private var passed = 0
 private val failures = mutableListOf<String>()

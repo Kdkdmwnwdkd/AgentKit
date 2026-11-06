@@ -36,16 +36,16 @@ private fun read(path: String): String {
 fun main() {
     println("== W-46 harness：历史注入 / 明文端点 / 超时 / 并发 / 终端会话 ==")
 
-    val chatVm = read("app/src/main/java/com/example/agentkit/ui/ChatViewModel.kt")
-    val loop = read("app/src/main/java/com/example/agentkit/core/agent/RealAgentLoop.kt")
+    val chatVm = read("app/src/main/java/com/beichen/polaris/ui/ChatViewModel.kt")
+    val loop = read("app/src/main/java/com/beichen/polaris/core/agent/RealAgentLoop.kt")
     val manifest = read("app/src/main/AndroidManifest.xml")
     val nsc = read("app/src/main/res/xml/network_security_config.xml")
-    val llmHttp = read("app/src/main/java/com/example/agentkit/core/llm/LlmHttp.kt")
-    val oa = read("app/src/main/java/com/example/agentkit/core/LLMClient.kt")
-    val claude = read("app/src/main/java/com/example/agentkit/core/llm/ClaudeClient.kt")
-    val gemini = read("app/src/main/java/com/example/agentkit/core/llm/GeminiClient.kt")
-    val pool = read("app/src/main/java/com/example/agentkit/core/terminal/TerminalSessionPool.kt")
-    val builtIn = read("app/src/main/java/com/example/agentkit/tools/BuiltInTools.kt")
+    val llmHttp = read("app/src/main/java/com/beichen/polaris/core/llm/LlmHttp.kt")
+    val oa = read("app/src/main/java/com/beichen/polaris/core/LLMClient.kt")
+    val claude = read("app/src/main/java/com/beichen/polaris/core/llm/ClaudeClient.kt")
+    val gemini = read("app/src/main/java/com/beichen/polaris/core/llm/GeminiClient.kt")
+    val pool = read("app/src/main/java/com/beichen/polaris/core/terminal/TerminalSessionPool.kt")
+    val builtIn = read("app/src/main/java/com/beichen/polaris/tools/BuiltInTools.kt")
 
     check("H1 历史被摊平并随请求下发（send 路径）") {
         assertTrue("缺 buildPriorMessages 定义", "private fun buildPriorMessages(" in chatVm)
@@ -88,13 +88,13 @@ fun main() {
 
     check("H5 契约与生产实现直连（适配层已移除）") {
         assertTrue("接口未扩参", "priorMessages: List<ChatMessage> = emptyList()" in
-            read("app/src/main/java/com/example/agentkit/core/agent/AgentLoop.kt"))
+            read("app/src/main/java/com/beichen/polaris/core/agent/AgentLoop.kt"))
         // 生产链路必须直接构造 RealAgentLoop：曾经的薄适配层 `core.AgentLoop` 把 20 个参数
         // 原样转发，却因「两处默认值必须一致」靠人记，先后导致 maxSteps=16 截断任务、
         // providerRetry=2 让 429 第三档退避永不触发。删掉层比维护同步更可靠。
         assertTrue("ChatViewModel 未直连 RealAgentLoop", "private val loop = RealAgentLoop(" in chatVm)
         assertTrue("适配层又回来了", "class AgentLoop(" !in
-            read("app/src/main/java/com/example/agentkit/core/AgentLoop.kt"))
+            read("app/src/main/java/com/beichen/polaris/core/AgentLoop.kt"))
     }
 
     check("C1 明文端点：Manifest 引用了 networkSecurityConfig") {
@@ -131,7 +131,7 @@ fun main() {
             "providerRetry 默认不是 -1（应跟随档位）",
             "private val providerRetry: Int = -1" in loop
         )
-        val retry = read("app/src/main/java/com/example/agentkit/core/llm/RetryProfile.kt")
+        val retry = read("app/src/main/java/com/beichen/polaris/core/llm/RetryProfile.kt")
         assertTrue("官方档 maxRetries 不是 3", "maxRetries = 3" in retry)
         assertTrue("循环没有跟随档位", "else profile.maxRetries" in loop)
     }
@@ -139,7 +139,7 @@ fun main() {
     check("V1 owner 会话 id 跨线程可见") {
         // P4-4：运行态搬进 GenerationRunController，@Volatile 也必须跟着搬——
         // 它守的是「写点在主线程、读点在 IO 线程」这件事，与文件位置无关。
-        val generation = read("app/src/main/java/com/example/agentkit/ui/GenerationRunController.kt")
+        val generation = read("app/src/main/java/com/beichen/polaris/ui/GenerationRunController.kt")
         assertTrue(
             "owner 缺 @Volatile",
             "@Volatile\n    var owner: String? = null" in generation

@@ -1,12 +1,12 @@
-import com.example.agentkit.core.BackupArchive
-import com.example.agentkit.core.BackupManifest
-import com.example.agentkit.core.llm.arrOrNull
-import com.example.agentkit.core.llm.objOrNull
-import com.example.agentkit.core.llm.primOrNull
-import com.example.agentkit.skill.market.MarketIndex
-import com.example.agentkit.skill.market.MarketInstallState
-import com.example.agentkit.skill.market.MarketPlugin
-import com.example.agentkit.skill.market.MarketRules
+import com.beichen.polaris.core.BackupArchive
+import com.beichen.polaris.core.BackupManifest
+import com.beichen.polaris.core.llm.arrOrNull
+import com.beichen.polaris.core.llm.objOrNull
+import com.beichen.polaris.core.llm.primOrNull
+import com.beichen.polaris.skill.market.MarketIndex
+import com.beichen.polaris.skill.market.MarketInstallState
+import com.beichen.polaris.skill.market.MarketPlugin
+import com.beichen.polaris.skill.market.MarketRules
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
@@ -139,7 +139,7 @@ fun main() {
 
     check("M7 客户端与规则的包体上限一致（防止两处常量漂移）") {
         // 不引入 OkHttp 依赖，直接读源码确认常量值；规则侧用实际属性值断言
-        val client = read("app/src/main/java/com/example/agentkit/skill/market/MarketClient.kt")
+        val client = read("app/src/main/java/com/beichen/polaris/skill/market/MarketClient.kt")
         assertTrue("客户端未声明 8MB 上限", "const val MAX_PACKAGE_BYTES = 8 * 1024 * 1024" in client)
         assertEquals("规则侧上限被改小/改大", 8L * 1024 * 1024, MarketRules.MAX_PACKAGE_BYTES)
     }
@@ -197,14 +197,14 @@ fun main() {
 
     /* ----------------------------- 源码结构 ----------------------------- */
 
-    val vm = read("app/src/main/java/com/example/agentkit/ui/ChatViewModel.kt")
-    val backup = read("app/src/main/java/com/example/agentkit/core/BackupArchive.kt")
-    val configStore = read("app/src/main/java/com/example/agentkit/core/ConfigStore.kt")
-    val scaffold = read("app/src/main/java/com/example/agentkit/ui/AppScaffold.kt")
+    val vm = read("app/src/main/java/com/beichen/polaris/ui/ChatViewModel.kt")
+    val backup = read("app/src/main/java/com/beichen/polaris/core/BackupArchive.kt")
+    val configStore = read("app/src/main/java/com/beichen/polaris/core/ConfigStore.kt")
+    val scaffold = read("app/src/main/java/com/beichen/polaris/ui/AppScaffold.kt")
 
     check("S1 备份不再导出 PAT；恢复时沿用本机 PAT") {
         // P4-3：导出流程在 BackupUseCase（VM 只转发），断言跟着所有权走
-        val backupUseCase = read("app/src/main/java/com/example/agentkit/ui/BackupUseCase.kt")
+        val backupUseCase = read("app/src/main/java/com/beichen/polaris/ui/BackupUseCase.kt")
         assertTrue("仍在导出 PAT", "githubPat = null" in backupUseCase)
         assertTrue("恢复未兜底本机 PAT", "loadGithubConfig()?.pat" in configStore)
     }
@@ -222,7 +222,7 @@ fun main() {
         // 注释里的示例不算（先剥注释行），其它任何裸写都视为回归。
         // P4-2：读改写本体在 ConversationProjection（唯一入口），VM 只转发；
         // 两边都要看：投影里必须恰好一处裸拼接且被 synchronized(lock) 包住，VM 里必须一处都没有。
-        val proj = read("app/src/main/java/com/example/agentkit/ui/ConversationProjection.kt")
+        val proj = read("app/src/main/java/com/beichen/polaris/ui/ConversationProjection.kt")
         val bareLines = proj.lines().filter { line ->
             val t = line.trim()
             !t.startsWith("//") && !t.startsWith("*") && !t.startsWith("/*") &&
@@ -237,12 +237,12 @@ fun main() {
 
     check("S4 全仓无 JSON 硬转换（JsonSafe 之外）") {
         val roots = listOf(
-            "app/src/main/java/com/example/agentkit/core",
-            "app/src/main/java/com/example/agentkit/tools",
-            "app/src/main/java/com/example/agentkit/automation",
-            "app/src/main/java/com/example/agentkit/skill",
-            "app/src/main/java/com/example/agentkit/memory",
-            "app/src/main/java/com/example/agentkit/ui"
+            "app/src/main/java/com/beichen/polaris/core",
+            "app/src/main/java/com/beichen/polaris/tools",
+            "app/src/main/java/com/beichen/polaris/automation",
+            "app/src/main/java/com/beichen/polaris/skill",
+            "app/src/main/java/com/beichen/polaris/memory",
+            "app/src/main/java/com/beichen/polaris/ui"
         )
         val offenders = ArrayList<String>()
         roots.forEach { root ->
@@ -263,20 +263,20 @@ fun main() {
     check("S5 插件市场已接入路由") {
         assertTrue("缺 MARKET 路由", "MARKET(\"market\"" in scaffold)
         assertTrue("缺市场页渲染", "AppDest.MARKET -> SkillMarketScreen(vm)" in scaffold)
-        assertTrue("技能页缺入口", "onOpenMarket" in read("app/src/main/java/com/example/agentkit/ui/SkillsScreen.kt"))
+        assertTrue("技能页缺入口", "onOpenMarket" in read("app/src/main/java/com/beichen/polaris/ui/SkillsScreen.kt"))
     }
 
     /* --------------------- A 批：信任层（能力表 / 白名单 / 审批） --------------------- */
 
-    val security = read("app/src/main/java/com/example/agentkit/skill/SkillSecurity.kt")
-    val executor = read("app/src/main/java/com/example/agentkit/skill/SkillExecutor.kt")
+    val security = read("app/src/main/java/com/beichen/polaris/skill/SkillSecurity.kt")
+    val executor = read("app/src/main/java/com/beichen/polaris/skill/SkillExecutor.kt")
 
     // R-13：能力分级表从 `CapabilityRegistry` 搬到了 `core/tool/ToolCatalog.kt`
     // （组/能力/审批三张表合并成一张，见那边的 KDoc）。本用例的**判据不变**——
     // 仍是「默认 fail-closed」+「每个工具都有分级」——只是真源换了文件。
     // 读到的是数据文件而不是实现文件，这不是放宽：`capabilityOf` 的默认值就在
     // 同一个文件里，扫描它比扫描一个已经只剩委托的 `cap()` 更接近事实。
-    val catalog = read("app/src/main/java/com/example/agentkit/core/tool/ToolCatalog.kt")
+    val catalog = read("app/src/main/java/com/beichen/polaris/core/tool/ToolCatalog.kt")
 
     check("S6 能力分级 fail-closed：默认 DANGEROUS，且全仓工具 100% 登记") {
         // 旧实现是 `?: Capability.SAFE`，新工具忘登记就自动放行。
@@ -314,10 +314,10 @@ fun main() {
 
     check("S8 高危工具必须挂人工审批（shell / 写文件 / 推仓库）") {
         val approvalSources = listOf(
-            "app/src/main/java/com/example/agentkit/tools/ShellTool.kt",
-            "app/src/main/java/com/example/agentkit/tools/ShellJobTools.kt",
-            "app/src/main/java/com/example/agentkit/tools/BuiltInTools.kt",
-            "app/src/main/java/com/example/agentkit/tools/GitHubGitTools.kt"
+            "app/src/main/java/com/beichen/polaris/tools/ShellTool.kt",
+            "app/src/main/java/com/beichen/polaris/tools/ShellJobTools.kt",
+            "app/src/main/java/com/beichen/polaris/tools/BuiltInTools.kt",
+            "app/src/main/java/com/beichen/polaris/tools/GitHubGitTools.kt"
         )
         approvalSources.forEach { path ->
             assertTrue("$path 缺 needsApproval = true", "needsApproval = true" in read(path))

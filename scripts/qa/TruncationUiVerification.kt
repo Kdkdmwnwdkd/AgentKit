@@ -3,7 +3,7 @@
  * 「输出被截断」从**可查**走到**可见**的验证 harness。
  *
  * 上一轮（`FinishReasonVerification.kt`）只验证了三家响应字段能归一化成
- * [com.example.agentkit.core.llm.FinishReason.LENGTH]——那是「取到了」。
+ * [com.beichen.polaris.core.llm.FinishReason.LENGTH]——那是「取到了」。
  * 取到但没有消费者，用户界面上依然看不见，截断这件事对用户仍是隐形的。
  *
  * 本轮补的是后半程：`RealAgentLoop` 在拿到 `finishReason=length` 的那一轮抛出
@@ -21,19 +21,19 @@
  * 运行：bash scripts/qa/run-truncation-ui-verification.sh
  */
 
-import com.example.agentkit.core.AgentEvent
-import com.example.agentkit.core.AgentTool
-import com.example.agentkit.core.AssistantMessage
-import com.example.agentkit.core.ChatMessage
-import com.example.agentkit.core.JsonSchema
-import com.example.agentkit.core.LLMClient
-import com.example.agentkit.core.LlmHttpException
-import com.example.agentkit.core.PingResult
-import com.example.agentkit.core.ToolCall
-import com.example.agentkit.core.ToolRegistry
-import com.example.agentkit.core.ToolResult
-import com.example.agentkit.core.agent.RealAgentLoop
-import com.example.agentkit.core.llm.FinishReason
+import com.beichen.polaris.core.AgentEvent
+import com.beichen.polaris.core.AgentTool
+import com.beichen.polaris.core.AssistantMessage
+import com.beichen.polaris.core.ChatMessage
+import com.beichen.polaris.core.JsonSchema
+import com.beichen.polaris.core.LLMClient
+import com.beichen.polaris.core.LlmHttpException
+import com.beichen.polaris.core.PingResult
+import com.beichen.polaris.core.ToolCall
+import com.beichen.polaris.core.ToolRegistry
+import com.beichen.polaris.core.ToolResult
+import com.beichen.polaris.core.agent.RealAgentLoop
+import com.beichen.polaris.core.llm.FinishReason
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put

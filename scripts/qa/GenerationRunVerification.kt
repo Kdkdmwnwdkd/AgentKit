@@ -1,6 +1,6 @@
 #!/usr/bin/env kotlin
 /**
- * 生成运行态 harness：验证 [com.example.agentkit.ui.GenerationRunController]。
+ * 生成运行态 harness：验证 [com.beichen.polaris.ui.GenerationRunController]。
  *
  * ## 为什么这段逻辑终于能被单独验了
  *
@@ -15,8 +15,8 @@
  * 运行：bash scripts/qa/run-generation-run-verification.sh
  */
 
-import com.example.agentkit.ui.GenerationRunController
-import com.example.agentkit.ui.GenerationRunHooks
+import com.beichen.polaris.ui.GenerationRunController
+import com.beichen.polaris.ui.GenerationRunHooks
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope

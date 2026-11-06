@@ -29,21 +29,21 @@
  * 运行：scripts/qa/run-r6-verification.sh
  */
 
-import com.example.agentkit.core.AgentLogger
-import com.example.agentkit.core.AgentTool
-import com.example.agentkit.core.FailureGuard
-import com.example.agentkit.core.JsonSchema
-import com.example.agentkit.core.ToolCall
-import com.example.agentkit.core.ToolRegistry
-import com.example.agentkit.core.ToolResult
-import com.example.agentkit.core.agent.RegistryToolExecutor
-import com.example.agentkit.core.agent.ToolBudget
-import com.example.agentkit.core.agent.ToolCallOutcome
-import com.example.agentkit.core.agent.ToolDescriptor
-import com.example.agentkit.runtime.lease.DISABLED_IDLE_TIMEOUT_MS
-import com.example.agentkit.runtime.lease.LeaseHandle
-import com.example.agentkit.runtime.lease.LeaseRegistry
-import com.example.agentkit.runtime.lease.RuntimeLease
+import com.beichen.polaris.core.AgentLogger
+import com.beichen.polaris.core.AgentTool
+import com.beichen.polaris.core.FailureGuard
+import com.beichen.polaris.core.JsonSchema
+import com.beichen.polaris.core.ToolCall
+import com.beichen.polaris.core.ToolRegistry
+import com.beichen.polaris.core.ToolResult
+import com.beichen.polaris.core.agent.RegistryToolExecutor
+import com.beichen.polaris.core.agent.ToolBudget
+import com.beichen.polaris.core.agent.ToolCallOutcome
+import com.beichen.polaris.core.agent.ToolDescriptor
+import com.beichen.polaris.runtime.lease.DISABLED_IDLE_TIMEOUT_MS
+import com.beichen.polaris.runtime.lease.LeaseHandle
+import com.beichen.polaris.runtime.lease.LeaseRegistry
+import com.beichen.polaris.runtime.lease.RuntimeLease
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonObject

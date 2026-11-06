@@ -12,7 +12,7 @@
 set -uo pipefail
 
 cd "$(dirname "$0")/../.."
-SRC=app/src/main/java/com/example/agentkit
+SRC=app/src/main/java/com/beichen/polaris
 APP="$SRC/AgentKitApplication.kt"
 BOOT="$SRC/startup/BootSequence.kt"
 

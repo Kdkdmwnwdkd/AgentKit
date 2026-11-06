@@ -21,7 +21,7 @@ set -uo pipefail
 cd "$(dirname "$0")/../.." 2>/dev/null || true
 
 ADB=${ADB:-adb}
-PKG=com.example.agentkit
+PKG=com.beichen.polaris
 SVC="$PKG/.core.agent.AgentRunService"
 WAIT=${1:-120}
 pass=0

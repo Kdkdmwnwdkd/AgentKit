@@ -13,7 +13,7 @@ java.lang.SecurityException: Media projections require a foreground service of t
 ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
     at android.media.projection.MediaProjection.<init>(MediaProjection.java:93)
     at android.media.projection.MediaProjectionManager.getMediaProjection(MediaProjectionManager.java:284)
-    at com.example.agentkit.automation.ScreenshotBridge$obtainProjection$failure$1.invoke(...)
+    at com.beichen.polaris.automation.ScreenshotBridge$obtainProjection$failure$1.invoke(...)
 ```
 
 ## 1. 根因：hotfix6 的「红线 A」假设是错的

@@ -19,7 +19,7 @@
  * - **Application 的 Activity 计数**：拖 Android，编不动。
  */
 
-import com.example.agentkit.core.lifecycle.AppBackgroundHooks
+import com.beichen.polaris.core.lifecycle.AppBackgroundHooks
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.atomic.AtomicInteger
 

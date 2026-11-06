@@ -1,11 +1,11 @@
-import com.example.agentkit.core.capability.GuideItem
-import com.example.agentkit.core.capability.GuideKey
-import com.example.agentkit.core.capability.GuideSnapshot
-import com.example.agentkit.core.capability.ShizukuStage
-import com.example.agentkit.core.capability.buildGuideItems
-import com.example.agentkit.core.capability.capabilitySummary
-import com.example.agentkit.core.capability.hasBlockingGap
-import com.example.agentkit.core.capability.readyCount
+import com.beichen.polaris.core.capability.GuideItem
+import com.beichen.polaris.core.capability.GuideKey
+import com.beichen.polaris.core.capability.GuideSnapshot
+import com.beichen.polaris.core.capability.ShizukuStage
+import com.beichen.polaris.core.capability.buildGuideItems
+import com.beichen.polaris.core.capability.capabilitySummary
+import com.beichen.polaris.core.capability.hasBlockingGap
+import com.beichen.polaris.core.capability.readyCount
 import java.io.File
 
 /**
@@ -162,7 +162,7 @@ fun main() {
     // —— 源码级耦合断言 ——
 
     check("pendingGrantCount 只算三项：电池/Shizuku 不进抽屉红点") {
-        val src = read("app/src/main/java/com/example/agentkit/ui/AppScaffold.kt")
+        val src = read("app/src/main/java/com/beichen/polaris/ui/AppScaffold.kt")
         val sig = Regex(
             "internal fun pendingGrantCount\\(([\\s\\S]{0,200}?)\\): Int"
         ).find(src)?.groupValues?.get(1)
@@ -176,13 +176,13 @@ fun main() {
     }
 
     check("引导页挂在 ON_RESUME 上自动复检") {
-        val src = read("app/src/main/java/com/example/agentkit/ui/PermissionGuideScreen.kt")
+        val src = read("app/src/main/java/com/beichen/polaris/ui/PermissionGuideScreen.kt")
         assertTrue("缺少 ON_RESUME 复检", src.contains("Lifecycle.Event.ON_RESUME"))
         assertTrue("ON_RESUME 时未调用 refreshGrants", src.contains("vm.refreshGrants()"))
     }
 
     check("引导页与权限中心共用同一批探测源（不另算一套）") {
-        val src = read("app/src/main/java/com/example/agentkit/ui/PermissionGuideScreen.kt")
+        val src = read("app/src/main/java/com/beichen/polaris/ui/PermissionGuideScreen.kt")
         listOf(
             "vm.serviceConnected",
             "vm.notificationGranted",
@@ -195,7 +195,7 @@ fun main() {
     }
 
     check("电池白名单探测走 PowerManager.isIgnoringBatteryOptimizations") {
-        val src = read("app/src/main/java/com/example/agentkit/ui/ChatViewModel.kt")
+        val src = read("app/src/main/java/com/beichen/polaris/ui/ChatViewModel.kt")
         assertTrue(
             "未使用 isIgnoringBatteryOptimizations",
             src.contains("isIgnoringBatteryOptimizations")
@@ -209,7 +209,7 @@ fun main() {
     // —— P2：聚光灯引导（2026-10-21）——
 
     check("聚光灯三步：锚点顺序 = 输入框 → 发送 → 抽屉") {
-        val src = read("app/src/main/java/com/example/agentkit/ui/SpotlightGuide.kt")
+        val src = read("app/src/main/java/com/beichen/polaris/ui/SpotlightGuide.kt")
         val order = listOf(
             "anchor = GuideAnchor.INPUT_BAR",
             "anchor = GuideAnchor.SEND_BUTTON",
@@ -220,15 +220,15 @@ fun main() {
     }
 
     check("三个锚点都真的挂到了组件上（不是只在枚举里声明）") {
-        val components = read("app/src/main/java/com/example/agentkit/ui/Components.kt")
-        val chat = read("app/src/main/java/com/example/agentkit/ui/ChatScreen.kt")
+        val components = read("app/src/main/java/com/beichen/polaris/ui/Components.kt")
+        val chat = read("app/src/main/java/com/beichen/polaris/ui/ChatScreen.kt")
         assertTrue("顶栏汉堡未挂 DRAWER 锚点", components.contains("guideAnchor(GuideAnchor.DRAWER)"))
         assertTrue("输入栏未挂 INPUT_BAR 锚点", chat.contains("guideAnchor(GuideAnchor.INPUT_BAR)"))
         assertTrue("发送键未挂 SEND_BUTTON 锚点", chat.contains("guideAnchor(GuideAnchor.SEND_BUTTON)"))
     }
 
     check("聚光灯触发条件：模型就绪 + 权限引导已走过 + 自己没被跳过") {
-        val src = read("app/src/main/java/com/example/agentkit/ui/AppScaffold.kt")
+        val src = read("app/src/main/java/com/beichen/polaris/ui/AppScaffold.kt")
         assertTrue("缺少 guideSeen 条件", src.contains("guideSeen(ctx) && !spotlightSeen(ctx)"))
         // W-70：就绪判定收敛到 ChatViewModel.modelReady 单一口径（本地模式三要素本就为空，
         // 内联判定会把本地用户永远挡在引导外）。这里断言「走了那个口径」，不锁内联写法。
@@ -240,27 +240,27 @@ fun main() {
     }
 
     check("聚光灯结束落盘 + 设置页可重看（跳过 ≠ 永远错过）") {
-        val app = read("app/src/main/java/com/example/agentkit/ui/AppScaffold.kt")
-        val settings = read("app/src/main/java/com/example/agentkit/ui/SettingsScreen.kt")
+        val app = read("app/src/main/java/com/beichen/polaris/ui/AppScaffold.kt")
+        val settings = read("app/src/main/java/com/beichen/polaris/ui/SettingsScreen.kt")
         assertTrue("结束时未落盘", app.contains("markSpotlightSeen(ctx)"))
         assertTrue("设置页缺少重看入口", settings.contains("重看上手引导"))
         assertTrue("设置页未重置标记", settings.contains("resetSpotlight(ctx)"))
     }
 
     check("洞的坐标换算到覆盖层本地坐标系（否则整体偏移一个状态栏高度）") {
-        val src = read("app/src/main/java/com/example/agentkit/ui/SpotlightGuide.kt")
+        val src = read("app/src/main/java/com/beichen/polaris/ui/SpotlightGuide.kt")
         assertTrue("未记录覆盖层原点", src.contains("positionInRoot()"))
         assertTrue("未从 root 坐标减去原点", src.contains("rect.left - dx"))
     }
 
     check("锚点离开组合即注销（否则切页后留着旧矩形，洞开在空白处）") {
-        val src = read("app/src/main/java/com/example/agentkit/ui/SpotlightGuide.kt")
+        val src = read("app/src/main/java/com/beichen/polaris/ui/SpotlightGuide.kt")
         assertTrue("未实现 forget", src.contains("fun forget(anchor: GuideAnchor)"))
         assertTrue("未在 onDispose 注销", src.contains("onDispose { registry.forget(anchor) }"))
     }
 
     check("首启引导点「去开启」不落「已看过」（回来还要继续讲配模型）") {
-        val src = read("app/src/main/java/com/example/agentkit/ui/ChatScreen.kt")
+        val src = read("app/src/main/java/com/beichen/polaris/ui/ChatScreen.kt")
         val start = src.indexOf("onOpenGuide = {")
         assertTrue("找不到 onOpenGuide 调用点", start > 0)
         val block = src.substring(start, minOf(start + 260, src.length))
@@ -277,13 +277,13 @@ fun main() {
             "ui/AppearanceScreen.kt",
             "ui/ModelConfigScreen.kt"
         ).forEach { rel ->
-            val src = read("app/src/main/java/com/example/agentkit/$rel")
+            val src = read("app/src/main/java/com/beichen/polaris/$rel")
             assertTrue("$rel 缺少 navigationBarsPadding", src.contains("navigationBarsPadding()"))
         }
     }
 
     check("首启弹窗小屏可滚动且按钮固定底部（720x1280 实测「先自己看看」被裁掉）") {
-        val src = read("app/src/main/java/com/example/agentkit/ui/ChatScreen.kt")
+        val src = read("app/src/main/java/com/beichen/polaris/ui/ChatScreen.kt")
         // 2026-10-31 在云端 720x1280 模拟器上复测：上一版写死 heightIn(max = 520.dp)，
         // 卡片居中后底部两个按钮落到屏幕外——「先自己看看」的 bounds 是 [0,0][0,0]，
         // 第一次打开的人只能按返回键关。上限必须由 BoxWithConstraints 的 maxHeight 推出来，
@@ -295,13 +295,13 @@ fun main() {
     }
 
     check("模型页三个 Tab 都在（下划线按文字宽度画，不能用 fillMaxWidth）") {
-        val src = read("app/src/main/java/com/example/agentkit/ui/ModelConfigScreen.kt")
+        val src = read("app/src/main/java/com/beichen/polaris/ui/ModelConfigScreen.kt")
         assertTrue("未按文字宽度画下划线", src.contains("drawWithContent"))
         assertTrue("下拉线仍用 fillMaxWidth 会挤掉后两个 Tab", !src.contains("Box(\n                    Modifier\n                        .fillMaxWidth()\n                        .height(2.dp)"))
     }
 
     check("自动进权限引导的 effect 以 route 为 key（否则保存后回对话页不触发）") {
-        val src = read("app/src/main/java/com/example/agentkit/ui/AppScaffold.kt")
+        val src = read("app/src/main/java/com/beichen/polaris/ui/AppScaffold.kt")
         // 断言「某个 LaunchedEffect 的 key 里含 route」，不锁同行的其它 key——
         // W-70 把 config 三要素换成了 modelReady，写死整行就会误报。
         assertTrue(
@@ -311,7 +311,7 @@ fun main() {
     }
 
     check("遮罩用 EvenOdd 开洞（目标必须透亮，不能被压暗）") {
-        val src = read("app/src/main/java/com/example/agentkit/ui/SpotlightGuide.kt")
+        val src = read("app/src/main/java/com/beichen/polaris/ui/SpotlightGuide.kt")
         assertTrue("未使用 PathFillType.EvenOdd", src.contains("PathFillType.EvenOdd"))
         assertTrue("未画高亮描边", src.contains("drawRoundRect("))
     }

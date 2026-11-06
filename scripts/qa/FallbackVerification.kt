@@ -14,20 +14,20 @@
  * scripts/qa/LocalModelVerification.kt）。运行方式见 scripts/qa/run-fallback-verification.sh。
  */
 
-import com.example.agentkit.core.capability.BackendAvailability
-import com.example.agentkit.core.capability.CAPABILITY_FALLBACK_HINT
-import com.example.agentkit.core.capability.Capability
-import com.example.agentkit.core.capability.CapabilityRequest
-import com.example.agentkit.core.capability.CapabilityResolution
-import com.example.agentkit.core.capability.controlScreenSnapshot
-import com.example.agentkit.core.capability.logTrace
-import com.example.agentkit.core.capability.resolveCapability
-import com.example.agentkit.core.capability.shellBackendAvailability
-import com.example.agentkit.core.capability.shellCapabilitySnapshot
-import com.example.agentkit.core.terminal.backend.TerminalBackend
-import com.example.agentkit.core.terminal.backend.TerminalBackendFactory
-import com.example.agentkit.core.terminal.backend.TerminalBackendProvider
-import com.example.agentkit.core.terminal.backend.TerminalIdentity
+import com.beichen.polaris.core.capability.BackendAvailability
+import com.beichen.polaris.core.capability.CAPABILITY_FALLBACK_HINT
+import com.beichen.polaris.core.capability.Capability
+import com.beichen.polaris.core.capability.CapabilityRequest
+import com.beichen.polaris.core.capability.CapabilityResolution
+import com.beichen.polaris.core.capability.controlScreenSnapshot
+import com.beichen.polaris.core.capability.logTrace
+import com.beichen.polaris.core.capability.resolveCapability
+import com.beichen.polaris.core.capability.shellBackendAvailability
+import com.beichen.polaris.core.capability.shellCapabilitySnapshot
+import com.beichen.polaris.core.terminal.backend.TerminalBackend
+import com.beichen.polaris.core.terminal.backend.TerminalBackendFactory
+import com.beichen.polaris.core.terminal.backend.TerminalBackendProvider
+import com.beichen.polaris.core.terminal.backend.TerminalIdentity
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flowOf
 

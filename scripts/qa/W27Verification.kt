@@ -1,5 +1,5 @@
-import com.example.agentkit.core.text.SyntaxHighlighter
-import com.example.agentkit.core.workspace.WorkspacePaths
+import com.beichen.polaris.core.text.SyntaxHighlighter
+import com.beichen.polaris.core.workspace.WorkspacePaths
 
 /**
  * W-27 harness：工作区路径规则 + 语法高亮词法器（纯 JVM，不加载 Android）。

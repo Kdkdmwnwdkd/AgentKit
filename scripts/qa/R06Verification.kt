@@ -19,18 +19,18 @@
  * 运行：scripts/qa/run-r06-verification.sh（kotlinc 编译源码 + java 运行）
  */
 
-import com.example.agentkit.core.ConversationRecord
-import com.example.agentkit.core.ConversationStore
-import com.example.agentkit.core.MsgRecord
-import com.example.agentkit.core.ROLE_ASSISTANT
-import com.example.agentkit.core.ROLE_TOOL
-import com.example.agentkit.core.ROLE_USER
-import com.example.agentkit.core.TOOL_INTERRUPTED_NOTE
-import com.example.agentkit.core.ToolCall
-import com.example.agentkit.core.UiItem
-import com.example.agentkit.core.toMsgRecord
-import com.example.agentkit.ui.ConversationProjection
-import com.example.agentkit.ui.GenerationRunController
+import com.beichen.polaris.core.ConversationRecord
+import com.beichen.polaris.core.ConversationStore
+import com.beichen.polaris.core.MsgRecord
+import com.beichen.polaris.core.ROLE_ASSISTANT
+import com.beichen.polaris.core.ROLE_TOOL
+import com.beichen.polaris.core.ROLE_USER
+import com.beichen.polaris.core.TOOL_INTERRUPTED_NOTE
+import com.beichen.polaris.core.ToolCall
+import com.beichen.polaris.core.UiItem
+import com.beichen.polaris.core.toMsgRecord
+import com.beichen.polaris.ui.ConversationProjection
+import com.beichen.polaris.ui.GenerationRunController
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -94,7 +94,7 @@ private fun awaitToolRecord(
     convId: String,
     callId: String,
     timeoutMs: Long
-): com.example.agentkit.core.MsgRecord? {
+): com.beichen.polaris.core.MsgRecord? {
     val deadline = System.currentTimeMillis() + timeoutMs
     while (System.currentTimeMillis() < deadline) {
         val rec = runCatching { ConversationStore(file).load(convId)?.toolRecord(callId) }.getOrNull()

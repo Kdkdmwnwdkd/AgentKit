@@ -1,4 +1,4 @@
-import com.example.agentkit.tools.AppManageLogic
+import com.beichen.polaris.tools.AppManageLogic
 
 /**
  * W-24 harness：软件安装/卸载的校验与结果判定纯函数（不加载 Android）。

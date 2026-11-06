@@ -1,4 +1,4 @@
-import com.example.agentkit.automation.shizuku.ShizukuResultLogic
+import com.beichen.polaris.automation.shizuku.ShizukuResultLogic
 
 /**
  * W-37 harness：Shizuku UserService 退出码语义映射。

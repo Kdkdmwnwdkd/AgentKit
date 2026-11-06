@@ -7,7 +7,7 @@ import shutil
 import subprocess
 import sys
 
-SRC = "app/src/main/java/com/example/agentkit"
+SRC = "app/src/main/java/com/beichen/polaris"
 ID = f"{SRC}/core/terminal/backend/TerminalIdentity.kt"
 FAC = f"{SRC}/core/terminal/backend/TerminalBackendFactory.kt"
 POOL = f"{SRC}/core/terminal/TerminalSessionPool.kt"

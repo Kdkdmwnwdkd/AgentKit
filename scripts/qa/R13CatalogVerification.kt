@@ -1,7 +1,7 @@
-import com.example.agentkit.core.agent.ApprovalGrouping
-import com.example.agentkit.core.tool.Capability
-import com.example.agentkit.core.tool.ToolCatalog
-import com.example.agentkit.skill.CapabilityRegistry
+import com.beichen.polaris.core.agent.ApprovalGrouping
+import com.beichen.polaris.core.tool.Capability
+import com.beichen.polaris.core.tool.ToolCatalog
+import com.beichen.polaris.skill.CapabilityRegistry
 
 /**
  * R-13 行为段：真跑 [ToolCatalog] 及其三个派生视图。

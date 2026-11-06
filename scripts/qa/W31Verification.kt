@@ -1,5 +1,5 @@
-import com.example.agentkit.core.agent.SubAgentLogic
-import com.example.agentkit.core.agent.SubAgentOutcome
+import com.beichen.polaris.core.agent.SubAgentLogic
+import com.beichen.polaris.core.agent.SubAgentOutcome
 
 /**
  * W-31 harness：并行子代理的纯逻辑。

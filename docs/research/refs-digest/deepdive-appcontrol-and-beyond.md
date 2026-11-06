@@ -4,7 +4,7 @@
 > 输入：主理人已核实源码笔记（含路径:行号）+ 本轮亲自抽验（下文所有引用均经 Read/grep 复核）
 > 第一优先级：回答「参照项目到底怎么启动应用/跨应用操控」（对应 W-7）
 > 第二优先级：四家对 AgentKit 路线图（`00-roadmap.md`）有高价值的新发现
-> 路径口径：四家源码根为 `/root/.codebuddy/artifact/repos/{operit,coomi,rikkahub,aicode}`；AgentKit 路径默认前缀 `app/src/main/java/com/example/agentkit/`
+> 路径口径：四家源码根为 `/root/.codebuddy/artifact/repos/{operit,coomi,rikkahub,aicode}`；AgentKit 路径默认前缀 `app/src/main/java/com/beichen/polaris/`
 > **路径勘误**：笔记中 AiCode/RikkaHub 的相对路径与实际仓库布局不符，本报告一律使用实测路径（AiCode 实际根为 `app/src/main/java/com/aicode/`，RikkaHub 为 `app/src/main/java/me/rerere/rikkahub/`），关键行号已逐条复核属实。
 
 ---

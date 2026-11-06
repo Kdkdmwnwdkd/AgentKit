@@ -28,7 +28,7 @@ cd "$HERE/../.." 2>/dev/null || true
 
 ADB=${ADB:-adb}
 export ADB
-PKG=com.example.agentkit
+PKG=com.beichen.polaris
 OUT=${SMOKE_OUT:-/tmp/agentkit-smoke}
 UI="python3 $HERE/ui.py"
 APK=${1:-}

@@ -28,19 +28,19 @@ CPP=app/src/main/cpp/native-crash.cpp
 HDR=app/src/main/cpp/native-crash.h
 JNI=app/src/main/cpp/llama-jni.cpp
 CMAKE=app/src/main/cpp/CMakeLists.txt
-APP=app/src/main/java/com/example/agentkit/AgentKitApplication.kt
-BOOT=app/src/main/java/com/example/agentkit/startup/BootSequence.kt
-JNIKT=app/src/main/java/com/example/agentkit/core/llm/local/LlamaJni.kt
-PARSER=app/src/main/java/com/example/agentkit/core/llm/local/NativeCrashRecord.kt
-MEMORY=app/src/main/java/com/example/agentkit/core/llm/local/NativeCrashMemory.kt
-PROFILE=app/src/main/java/com/example/agentkit/core/llm/local/LocalDeviceProfile.kt
-CATALOG=app/src/main/java/com/example/agentkit/core/llm/local/LocalBackendCatalog.kt
-CLIENT=app/src/main/java/com/example/agentkit/core/llm/local/LocalLlamaClient.kt
-ENGINE=app/src/main/java/com/example/agentkit/core/llm/local/LocalLlamaEngine.kt
-SCREEN=app/src/main/java/com/example/agentkit/ui/ModelConfigScreen.kt
-LOGGER=app/src/main/java/com/example/agentkit/core/AgentLogger.kt
-EXPORTER=app/src/main/java/com/example/agentkit/core/DiagnosticsExporter.kt
-VM=app/src/main/java/com/example/agentkit/ui/ChatViewModel.kt
+APP=app/src/main/java/com/beichen/polaris/AgentKitApplication.kt
+BOOT=app/src/main/java/com/beichen/polaris/startup/BootSequence.kt
+JNIKT=app/src/main/java/com/beichen/polaris/core/llm/local/LlamaJni.kt
+PARSER=app/src/main/java/com/beichen/polaris/core/llm/local/NativeCrashRecord.kt
+MEMORY=app/src/main/java/com/beichen/polaris/core/llm/local/NativeCrashMemory.kt
+PROFILE=app/src/main/java/com/beichen/polaris/core/llm/local/LocalDeviceProfile.kt
+CATALOG=app/src/main/java/com/beichen/polaris/core/llm/local/LocalBackendCatalog.kt
+CLIENT=app/src/main/java/com/beichen/polaris/core/llm/local/LocalLlamaClient.kt
+ENGINE=app/src/main/java/com/beichen/polaris/core/llm/local/LocalLlamaEngine.kt
+SCREEN=app/src/main/java/com/beichen/polaris/ui/ModelConfigScreen.kt
+LOGGER=app/src/main/java/com/beichen/polaris/core/AgentLogger.kt
+EXPORTER=app/src/main/java/com/beichen/polaris/core/DiagnosticsExporter.kt
+VM=app/src/main/java/com/beichen/polaris/ui/ChatViewModel.kt
 
 PASS=0
 FAIL=0
@@ -359,7 +359,7 @@ if [ -z "$KOTLINC" ] || [ -z "$STDLIB" ]; then
 else
     W2="$(mktemp -d)"
     cat > "$W2/C.kt" <<'KT'
-import com.example.agentkit.core.llm.local.NativeCrashParser
+import com.beichen.polaris.core.llm.local.NativeCrashParser
 
 fun main() {
     // native 真实输出（与 native-crash.cpp 的格式逐字对齐）
@@ -444,7 +444,7 @@ echo "== 行为：上下文上限（纯函数，真跑） =="
 if [ -n "$KOTLINC" ] && [ -n "$STDLIB" ]; then
     W3="$(mktemp -d)"
     cat > "$W3/K.kt" <<'KT'
-import com.example.agentkit.core.llm.local.LocalDeviceRules
+import com.beichen.polaris.core.llm.local.LocalDeviceRules
 
 fun main() {
     var ok = 0

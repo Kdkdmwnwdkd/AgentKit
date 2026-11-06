@@ -2,16 +2,16 @@
 # R1 真机验收：工具执行中被杀，重进不重放。
 #
 # 用法：
-#   ADB=adb PKG=com.example.agentkit bash r1-interrupt.sh prepare   # 造 FIFO、清日志
+#   ADB=adb PKG=com.beichen.polaris bash r1-interrupt.sh prepare   # 造 FIFO、清日志
 #   ... 在设备上触发一次 write_file，等日志出现 DISP ...
-#   ADB=adb PKG=com.example.agentkit bash r1-interrupt.sh kill
-#   ADB=adb PKG=com.example.agentkit bash r1-interrupt.sh verify
+#   ADB=adb PKG=com.beichen.polaris bash r1-interrupt.sh kill
+#   ADB=adb PKG=com.beichen.polaris bash r1-interrupt.sh verify
 #
 # 为什么用 FIFO：write_file 往 FIFO 写会阻塞，于是「已越过执行边界、尚未产出结果」
 # 这个窗口可以被稳定制造——否则该窗口只有几毫秒，抓不到。
 set -u
 ADB=${ADB:-adb}
-PKG=${PKG:-com.example.agentkit}
+PKG=${PKG:-com.beichen.polaris}
 JRN=/data/data/$PKG/files/run-journal
 WS=/data/data/$PKG/files/agent_workspace
 

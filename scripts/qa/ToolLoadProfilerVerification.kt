@@ -1,6 +1,6 @@
 #!/usr/bin/env kotlin
 /**
- * 工具装配计时器 harness：验证 [com.example.agentkit.core.ToolLoadProfiler]。
+ * 工具装配计时器 harness：验证 [com.beichen.polaris.core.ToolLoadProfiler]。
  *
  * ## 为什么要有它
  *
@@ -21,7 +21,7 @@
  * 运行：bash scripts/qa/run-tool-load-profiler-verification.sh
  */
 
-import com.example.agentkit.core.ToolLoadProfiler
+import com.beichen.polaris.core.ToolLoadProfiler
 
 private var pass = 0
 private val fails = mutableListOf<String>()

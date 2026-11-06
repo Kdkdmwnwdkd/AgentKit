@@ -4,9 +4,9 @@ import java.io.File
  * 启动顺序 harness：**首帧必须先于重活**。
  *
  * 真机事故（模拟器 x86_64 + 首次 WebView 冷启动，日志原文）：
- *   E ActivityManager: Completed ANR of com.example.agentkit in 30580ms
- *   W ActivityTaskManager: Force finishing activity com.example.agentkit/.MainActivity
- *   I ActivityManager: Killing 11969:com.example.agentkit (adj 0): user request after error
+ *   E ActivityManager: Completed ANR of com.beichen.polaris in 30580ms
+ *   W ActivityTaskManager: Force finishing activity com.beichen.polaris/.MainActivity
+ *   I ActivityManager: Killing 11969:com.beichen.polaris (adj 0): user request after error
  *
  * 根因：后台 WebView 的 `attach` 被排在 `setContent` **之前**，而它内部用 `main.post`
  * 把「创建 WebView」排进主线程队列 —— 正好排在 Compose 首帧之前。WebView 构造必须在
@@ -30,8 +30,8 @@ private fun check(name: String, cond: Boolean, detail: String = "") {
 }
 
 fun main() {
-    val main = File("app/src/main/java/com/example/agentkit/MainActivity.kt").readText()
-    val host = File("app/src/main/java/com/example/agentkit/browser/BrowserHost.kt").readText()
+    val main = File("app/src/main/java/com/beichen/polaris/MainActivity.kt").readText()
+    val host = File("app/src/main/java/com/beichen/polaris/browser/BrowserHost.kt").readText()
     val manifest = File("app/src/main/AndroidManifest.xml").readText()
 
     // 1. attach 必须排在 setContent 之后
@@ -53,7 +53,7 @@ fun main() {
     // 真机崩溃栈（本轮在验证机上抓到的）：
     //   java.lang.IllegalStateException: Cannot call removeOnDrawListener inside of onDraw
     //       at android.view.ViewTreeObserver.removeOnDrawListener(ViewTreeObserver.java:745)
-    //       at com.example.agentkit.MainActivity$onCreate$2.onDraw(MainActivity.kt:61)
+    //       at com.beichen.polaris.MainActivity$onCreate$2.onDraw(MainActivity.kt:61)
     // 也就是：ViewTreeObserver 正在派发 onDraw 时直接 remove 会抛异常，首帧一画就崩。
     // 这条断言锁的是「remove 之前先 post」——写错了它会红，但它是文本断言，
     // 真正的护栏是真机：装包冷启动，看有没有 FATAL。
@@ -151,9 +151,9 @@ fun main() {
     // 为什么这里是文本断言：ChatViewModel 需要 Android `Application`，在纯 JVM harness 里
     // 无法实例化。所以本 harness 只验「接线是否存在」，计时器**数得对不对**由
     // ToolLoadProfilerVerification 用假时钟做行为断言。两者分工明确，不是拿文本断言凑数。
-    val vm = File("app/src/main/java/com/example/agentkit/ui/ChatViewModel.kt").readText()
-    val registrySrc = File("app/src/main/java/com/example/agentkit/core/ToolRegistry.kt").readText()
-    val markSrc = File("app/src/main/java/com/example/agentkit/core/StartupMark.kt").readText()
+    val vm = File("app/src/main/java/com/beichen/polaris/ui/ChatViewModel.kt").readText()
+    val registrySrc = File("app/src/main/java/com/beichen/polaris/core/ToolRegistry.kt").readText()
+    val markSrc = File("app/src/main/java/com/beichen/polaris/core/StartupMark.kt").readText()
 
     val fieldsAt = vm.indexOf("startup.mark(\"fields\")")
     val skillsAt = vm.indexOf("startup.mark(\"skills\")")

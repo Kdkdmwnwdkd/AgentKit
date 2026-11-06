@@ -15,15 +15,15 @@
 # 三个 Service/Notifier 用 MainActivity 只是为了「点通知回主界面」这一个动作。
 # 正解是抽 `launchIntent(): Intent` 到 app 层注入，但那是 P4 的结构工作；
 # 现在冻结，防止第四个文件也这么写。
-layer app/src/main/java/com/example/agentkit/core/agent/AgentRunService.kt
-layer app/src/main/java/com/example/agentkit/core/agent/SurvivalCheckService.kt
-layer app/src/main/java/com/example/agentkit/core/job/JobNotifier.kt
+layer app/src/main/java/com/beichen/polaris/core/agent/AgentRunService.kt
+layer app/src/main/java/com/beichen/polaris/core/agent/SurvivalCheckService.kt
+layer app/src/main/java/com/beichen/polaris/core/job/JobNotifier.kt
 
 # ── 行数冻结 ─────────────────────────────────────────────────────────────
 # 超标原因各不相同，共同点是「拆分需要一天以上、且拆分本身没有行为收益」。
 # 上限是冻结时的实际行数，只准往下调：改小了就同步改小这里的数字。
-lines app/src/main/java/com/example/agentkit/ui/ChatViewModel.kt 3869
-lines app/src/main/java/com/example/agentkit/ui/ChatScreen.kt 3157
-lines app/src/main/java/com/example/agentkit/ui/ModelConfigScreen.kt 2309
-lines app/src/main/java/com/example/agentkit/core/agent/RealAgentLoop.kt 1504
-lines app/src/main/java/com/example/agentkit/ui/AppScaffold.kt 1516
+lines app/src/main/java/com/beichen/polaris/ui/ChatViewModel.kt 3869
+lines app/src/main/java/com/beichen/polaris/ui/ChatScreen.kt 3157
+lines app/src/main/java/com/beichen/polaris/ui/ModelConfigScreen.kt 2309
+lines app/src/main/java/com/beichen/polaris/core/agent/RealAgentLoop.kt 1504
+lines app/src/main/java/com/beichen/polaris/ui/AppScaffold.kt 1516

@@ -24,8 +24,8 @@
  * 由 runner 的 [G] 段做静态接线断言——这一点不含糊，别把静态检查当成行为证据。
  */
 
-import com.example.agentkit.core.terminal.backend.TerminalIdentity
-import com.example.agentkit.core.terminal.backend.shouldUsePrivilegedShell
+import com.beichen.polaris.core.terminal.backend.TerminalIdentity
+import com.beichen.polaris.core.terminal.backend.shouldUsePrivilegedShell
 
 private var gPass = 0
 private var gFail = 0

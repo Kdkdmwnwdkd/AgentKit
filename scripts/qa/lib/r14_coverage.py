@@ -17,7 +17,7 @@ import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 sys.path.insert(0, os.path.join(ROOT, 'scripts/qa/lib'))
-UI = os.path.join(ROOT, 'app/src/main/java/com/example/agentkit/ui')
+UI = os.path.join(ROOT, 'app/src/main/java/com/beichen/polaris/ui')
 CONTRACTS = os.path.join(UI, 'contract')
 
 

@@ -23,18 +23,18 @@
  * 运行方式见 scripts/qa/run-t07t08-verification.sh。
  */
 
-import com.example.agentkit.core.terminal.TERMINAL_HANDLE_REGEX
-import com.example.agentkit.core.terminal.TerminalSessionPool
-import com.example.agentkit.core.terminal.ToolOutputTruncator
-import com.example.agentkit.core.terminal.backend.LocalUserBackend
-import com.example.agentkit.core.terminal.backend.TerminalBackend
-import com.example.agentkit.core.terminal.backend.TerminalBackendFactory
-import com.example.agentkit.core.terminal.backend.TerminalBackendProvider
-import com.example.agentkit.core.terminal.backend.TerminalBackendSource
-import com.example.agentkit.core.terminal.backend.TerminalIdentity
-import com.example.agentkit.tools.ShellCloseTool
-import com.example.agentkit.tools.ShellRunTool
-import com.example.agentkit.tools.terminalShellCommandRunner
+import com.beichen.polaris.core.terminal.TERMINAL_HANDLE_REGEX
+import com.beichen.polaris.core.terminal.TerminalSessionPool
+import com.beichen.polaris.core.terminal.ToolOutputTruncator
+import com.beichen.polaris.core.terminal.backend.LocalUserBackend
+import com.beichen.polaris.core.terminal.backend.TerminalBackend
+import com.beichen.polaris.core.terminal.backend.TerminalBackendFactory
+import com.beichen.polaris.core.terminal.backend.TerminalBackendProvider
+import com.beichen.polaris.core.terminal.backend.TerminalBackendSource
+import com.beichen.polaris.core.terminal.backend.TerminalIdentity
+import com.beichen.polaris.tools.ShellCloseTool
+import com.beichen.polaris.tools.ShellRunTool
+import com.beichen.polaris.tools.terminalShellCommandRunner
 import kotlinx.coroutines.async
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope

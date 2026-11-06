@@ -9,7 +9,7 @@
 //   2. ChatViewModel 真的接了这个兜底（源码结构断言——ViewModel 起不来，测不了行为）
 //   3. 兜底既上屏又落库（只上屏的话，切会话/重启就没了，等于没提示）
 
-import com.example.agentkit.ui.emptyReplyHint
+import com.beichen.polaris.ui.emptyReplyHint
 import java.io.File
 
 private var pass = 0
@@ -51,7 +51,7 @@ private val REPO_ROOT: File = run {
     d ?: File("").absoluteFile
 }
 
-private val SRC_ROOT: File = File(REPO_ROOT, "app/src/main/java/com/example/agentkit")
+private val SRC_ROOT: File = File(REPO_ROOT, "app/src/main/java/com/beichen/polaris")
 
 private fun read(rel: String): String {
     val f = File(SRC_ROOT, rel)

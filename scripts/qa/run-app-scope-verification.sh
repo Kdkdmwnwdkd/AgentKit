@@ -15,7 +15,7 @@
 set -uo pipefail
 
 cd "$(dirname "$0")/../.."
-SRC=app/src/main/java/com/example/agentkit
+SRC=app/src/main/java/com/beichen/polaris
 HUB="$SRC/core/AppScope.kt"
 
 fail=0

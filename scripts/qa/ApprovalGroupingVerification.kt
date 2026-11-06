@@ -1,4 +1,4 @@
-import com.example.agentkit.core.agent.ApprovalGrouping
+import com.beichen.polaris.core.agent.ApprovalGrouping
 import java.io.File
 
 /**
@@ -76,7 +76,7 @@ fun main() {
     // 扫的是源码不是运行期：工具注册表要 Application 才能构造，harness 是纯 JVM。
     // 按 `class` 切块（一个文件里常有好几个工具类，GitHubGitTools.kt 就是 3 个），
     // 只认块内同时出现 needsApproval=true 与 name 的那些。
-    val toolsDir = File("app/src/main/java/com/example/agentkit/tools")
+    val toolsDir = File("app/src/main/java/com/beichen/polaris/tools")
     check("能读到 tools 目录（否则第 7 条会空转通过）", toolsDir.isDirectory)
     val needsApproval = toolsDir.walkTopDown()
         .filter { it.extension == "kt" }

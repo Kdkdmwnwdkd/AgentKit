@@ -11,7 +11,7 @@
 set -uo pipefail
 
 cd "$(dirname "$0")/../.."
-VM=app/src/main/java/com/example/agentkit/ui/ChatViewModel.kt
+VM=app/src/main/java/com/beichen/polaris/ui/ChatViewModel.kt
 
 fail=0
 npass=0

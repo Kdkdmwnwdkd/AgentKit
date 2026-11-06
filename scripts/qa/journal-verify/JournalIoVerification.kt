@@ -1,7 +1,7 @@
-import com.example.agentkit.core.agent.journal.RunEvent
-import com.example.agentkit.core.agent.journal.RunJournal
-import com.example.agentkit.core.agent.journal.ToolCallRef
-import com.example.agentkit.core.agent.journal.ToolSettleStatus
+import com.beichen.polaris.core.agent.journal.RunEvent
+import com.beichen.polaris.core.agent.journal.RunJournal
+import com.beichen.polaris.core.agent.journal.ToolCallRef
+import com.beichen.polaris.core.agent.journal.ToolSettleStatus
 import java.io.File
 
 private var p = 0

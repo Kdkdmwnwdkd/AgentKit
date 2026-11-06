@@ -7,7 +7,7 @@
 
 | 文件 | 说明 |
 |---|---|
-| `app/src/main/java/com/example/agentkit/tools/AppControlTools.kt` | 三个工具 + 纯函数解析层 + 注册入口 |
+| `app/src/main/java/com/beichen/polaris/tools/AppControlTools.kt` | 三个工具 + 纯函数解析层 + 注册入口 |
 | `scripts/qa/AppControlVerification.kt` | 纯函数 harness（手写断言，离线跑） |
 | `scripts/qa/run-appcontrol-verification.sh` | harness 编译 + 运行脚本（离线，friend-paths） |
 | `scripts/qa/APPCONTROL-NOTES.md` | 本说明 |
@@ -53,7 +53,7 @@
 
 前一批 T07/T08 可能正在构建，编译前确认无并发 `assembleDebug` 且 T07/T08 产物就位：
 ```
-ls app/src/main/java/com/example/agentkit/core/terminal/TerminalSessionPool.kt scripts/qa/T07T08Verification.kt
+ls app/src/main/java/com/beichen/polaris/core/terminal/TerminalSessionPool.kt scripts/qa/T07T08Verification.kt
 pgrep -f assembleDebug    # 应无输出
 ```
 不满足则继续代码走读，间隔 2 分钟重查，最多等 40 分钟。
@@ -75,11 +75,11 @@ pgrep -f assembleDebug    # 应无输出
 
 | 文件 | 改动 |
 |---|---|
-| `app/src/main/java/com/example/agentkit/tools/AppNameDictionary.kt` | **新增**：~75 条「名称/别名→包名」静态字典 + `looksLikePackageName` + `resolveAppTargetWithDict` 三级解析链（纯 Kotlin，零 Android 依赖） |
-| `app/src/main/java/com/example/agentkit/tools/AppControlTools.kt` | app_launch / app_stop 两处调用点改接 `resolveAppTargetWithDict` |
-| `app/src/main/java/com/example/agentkit/automation/DeviceForegroundAppTool.kt` | **重写**：UsageEvents 事件配对主路径（60s 窗口）+ 未授权自动跳 `ACTION_USAGE_ACCESS_SETTINGS` + launcher 包判定「在桌面」+ 桶法降级 |
-| `app/src/main/java/com/example/agentkit/automation/AgentAccessibilityService.kt` | 新增 `lastWindowSwitchAt` 跟踪 + `getFreshUiTreeSnapshot()` 轮询防护 + 纯函数 `shouldRetryForFreshWindow` |
-| `app/src/main/java/com/example/agentkit/automation/UiAutomationTools.kt` | ui_tree 改调 `getFreshUiTreeSnapshot()`；kept=0 时文案补「界面可能正在切换」自纠指引（并修复 filtered>0 时消息括号闭合缺失） |
+| `app/src/main/java/com/beichen/polaris/tools/AppNameDictionary.kt` | **新增**：~75 条「名称/别名→包名」静态字典 + `looksLikePackageName` + `resolveAppTargetWithDict` 三级解析链（纯 Kotlin，零 Android 依赖） |
+| `app/src/main/java/com/beichen/polaris/tools/AppControlTools.kt` | app_launch / app_stop 两处调用点改接 `resolveAppTargetWithDict` |
+| `app/src/main/java/com/beichen/polaris/automation/DeviceForegroundAppTool.kt` | **重写**：UsageEvents 事件配对主路径（60s 窗口）+ 未授权自动跳 `ACTION_USAGE_ACCESS_SETTINGS` + launcher 包判定「在桌面」+ 桶法降级 |
+| `app/src/main/java/com/beichen/polaris/automation/AgentAccessibilityService.kt` | 新增 `lastWindowSwitchAt` 跟踪 + `getFreshUiTreeSnapshot()` 轮询防护 + 纯函数 `shouldRetryForFreshWindow` |
+| `app/src/main/java/com/beichen/polaris/automation/UiAutomationTools.kt` | ui_tree 改调 `getFreshUiTreeSnapshot()`；kept=0 时文案补「界面可能正在切换」自纠指引（并修复 filtered>0 时消息括号闭合缺失） |
 | `scripts/qa/AppControlVerification.kt` | 追加 27 条断言（字典 12 / 事件配对 8 / 窗口防护 7） |
 
 ### 设计要点

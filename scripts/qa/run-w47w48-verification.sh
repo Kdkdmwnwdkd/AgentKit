@@ -40,7 +40,7 @@ done
 DEPS="$STDLIB:$SERIALIZATION:$SER_CORE"
 [ -n "${JB_ANNOTATIONS:-}" ] && [ -f "${JB_ANNOTATIONS:-}" ] && DEPS="$DEPS:$JB_ANNOTATIONS"
 
-SRC="$ROOT/app/src/main/java/com/example/agentkit"
+SRC="$ROOT/app/src/main/java/com/beichen/polaris"
 SRCS=(
   "$SRC/core/AgentContract.kt"
   "$SRC/core/UiItem.kt"

@@ -14,7 +14,7 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT"
 source "$ROOT/scripts/qa/lib/deps.sh"
 
-SRC=app/src/main/java/com/example/agentkit
+SRC=app/src/main/java/com/beichen/polaris
 HARNESS=scripts/qa/R07Verification.kt
 
 CACHE="$QA_GRADLE_CACHE"
@@ -95,9 +95,9 @@ g_good() { echo "  PASS  $*"; gp=$((gp + 1)); }
 
 echo ""
 echo "[G] 接线"
-SCREEN=app/src/main/java/com/example/agentkit/ui/McpScreen.kt
-VM=app/src/main/java/com/example/agentkit/ui/ChatViewModel.kt
-SCAFFOLD=app/src/main/java/com/example/agentkit/ui/AppScaffold.kt
+SCREEN=app/src/main/java/com/beichen/polaris/ui/McpScreen.kt
+VM=app/src/main/java/com/beichen/polaris/ui/ChatViewModel.kt
+SCAFFOLD=app/src/main/java/com/beichen/polaris/ui/AppScaffold.kt
 
 # G1：改配置的三条路径（保存 / 启停 / 删除）都必须回调。
 # 只补一条等于只修了「用户点删除」这一种情况。

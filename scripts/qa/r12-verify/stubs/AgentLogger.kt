@@ -1,4 +1,4 @@
-package com.example.agentkit.core
+package com.beichen.polaris.core
 
 /**
  * `AgentLogger` 的 JVM 桩（只给 R-12 harness 用）。

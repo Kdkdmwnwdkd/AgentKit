@@ -1,5 +1,5 @@
-import com.example.agentkit.core.llm.BalanceParsing
-import com.example.agentkit.core.text.HeaderParsing
+import com.beichen.polaris.core.llm.BalanceParsing
+import com.beichen.polaris.core.text.HeaderParsing
 
 /**
  * W-29 harness：自定义请求头/请求体解析 + 余额查询解析（纯 JVM）。

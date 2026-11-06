@@ -15,7 +15,7 @@ set -uo pipefail
 cd "$(dirname "$0")/../.."
 ROOT=$(pwd)
 
-CHAT="$ROOT/app/src/main/java/com/example/agentkit/ui/ChatScreen.kt"
+CHAT="$ROOT/app/src/main/java/com/beichen/polaris/ui/ChatScreen.kt"
 
 pass=0
 fail=0

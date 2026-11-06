@@ -1,7 +1,7 @@
-import com.example.agentkit.workflow.Workflow
-import com.example.agentkit.workflow.WorkflowTrigger
-import com.example.agentkit.workflow.describeTrigger
-import com.example.agentkit.workflow.isWorkflowDue
+import com.beichen.polaris.workflow.Workflow
+import com.beichen.polaris.workflow.WorkflowTrigger
+import com.beichen.polaris.workflow.describeTrigger
+import com.beichen.polaris.workflow.isWorkflowDue
 import java.util.Calendar
 import java.util.TimeZone
 

@@ -12,14 +12,14 @@
  * 运行：bash scripts/qa/run-adb-protocol-verification.sh
  */
 
-import com.example.agentkit.automation.adb.ADB_VERSION
-import com.example.agentkit.automation.adb.AdbAuth
-import com.example.agentkit.automation.adb.AdbCommand
-import com.example.agentkit.automation.adb.AdbCrypto
-import com.example.agentkit.automation.adb.AdbPacket
-import com.example.agentkit.automation.adb.ShellEvent
-import com.example.agentkit.automation.adb.ShellV2Parser
-import com.example.agentkit.automation.adb.shellOpenPayload
+import com.beichen.polaris.automation.adb.ADB_VERSION
+import com.beichen.polaris.automation.adb.AdbAuth
+import com.beichen.polaris.automation.adb.AdbCommand
+import com.beichen.polaris.automation.adb.AdbCrypto
+import com.beichen.polaris.automation.adb.AdbPacket
+import com.beichen.polaris.automation.adb.ShellEvent
+import com.beichen.polaris.automation.adb.ShellV2Parser
+import com.beichen.polaris.automation.adb.shellOpenPayload
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.Base64

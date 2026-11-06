@@ -19,15 +19,15 @@
  * 运行方式见 scripts/qa/run-hotfix-verification.sh。
  */
 
-import com.example.agentkit.core.AgentEvent
-import com.example.agentkit.core.AssistantMessage
-import com.example.agentkit.core.ChatMessage
-import com.example.agentkit.core.LlmHttpException
-import com.example.agentkit.core.LLMClient
-import com.example.agentkit.core.PingResult
-import com.example.agentkit.core.ToolRegistry
-import com.example.agentkit.core.agent.RealAgentLoop
-import com.example.agentkit.core.agent.RetryBackoffPolicy
+import com.beichen.polaris.core.AgentEvent
+import com.beichen.polaris.core.AssistantMessage
+import com.beichen.polaris.core.ChatMessage
+import com.beichen.polaris.core.LlmHttpException
+import com.beichen.polaris.core.LLMClient
+import com.beichen.polaris.core.PingResult
+import com.beichen.polaris.core.ToolRegistry
+import com.beichen.polaris.core.agent.RealAgentLoop
+import com.beichen.polaris.core.agent.RetryBackoffPolicy
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.coroutineScope
@@ -84,7 +84,7 @@ private class FaultLlm(
     var calls: Int = 0
         private set
 
-    override suspend fun chat(messages: List<ChatMessage>, tools: List<com.example.agentkit.core.AgentTool>): AssistantMessage {
+    override suspend fun chat(messages: List<ChatMessage>, tools: List<com.beichen.polaris.core.AgentTool>): AssistantMessage {
         val index = calls
         calls++
         val behavior = behaviors.getOrElse(index) { behaviors.last() }

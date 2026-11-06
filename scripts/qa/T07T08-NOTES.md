@@ -1,6 +1,6 @@
 # T07 / T08 交付说明（终端后端抽象 + 终端会话池）
 
-> 负责人：寇豆码（Kou）· Phase 1 · 单模块 `:app`，包 `com.example.agentkit`
+> 负责人：寇豆码（Kou）· Phase 1 · 单模块 `:app`，包 `com.beichen.polaris`
 > 口径：零新增外部依赖 · 不新增 JUnit · 改 minSdk/targetSdk/abiFilters 的诉求一律拒绝。
 
 ---

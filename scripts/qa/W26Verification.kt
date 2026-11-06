@@ -1,6 +1,6 @@
-import com.example.agentkit.core.BackupArchive
-import com.example.agentkit.core.BackupManifest
-import com.example.agentkit.core.agent.TitleLogic
+import com.beichen.polaris.core.BackupArchive
+import com.beichen.polaris.core.BackupManifest
+import com.beichen.polaris.core.agent.TitleLogic
 
 /**
  * W-26 harness：AI 标题清洗（TitleLogic）+ 备份含备用 Key 池（BackupArchive）。

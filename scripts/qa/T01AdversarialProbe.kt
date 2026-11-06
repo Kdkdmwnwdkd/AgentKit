@@ -18,22 +18,22 @@
  * 运行方式见 scripts/qa/run-t01-probe.sh（kotlin-compiler-embeddable 离线编译 + java 运行）。
  */
 
-import com.example.agentkit.core.AgentTool
-import com.example.agentkit.core.AssistantMessage
-import com.example.agentkit.core.ChatMessage
-import com.example.agentkit.core.LLMClient
-import com.example.agentkit.core.OpenAiToolCallAccumulator
-import com.example.agentkit.core.PingResult
-import com.example.agentkit.core.SystemMessage
-import com.example.agentkit.core.ToolCall
-import com.example.agentkit.core.ToolMessage
-import com.example.agentkit.core.ToolRegistry
+import com.beichen.polaris.core.AgentTool
+import com.beichen.polaris.core.AssistantMessage
+import com.beichen.polaris.core.ChatMessage
+import com.beichen.polaris.core.LLMClient
+import com.beichen.polaris.core.OpenAiToolCallAccumulator
+import com.beichen.polaris.core.PingResult
+import com.beichen.polaris.core.SystemMessage
+import com.beichen.polaris.core.ToolCall
+import com.beichen.polaris.core.ToolMessage
+import com.beichen.polaris.core.ToolRegistry
 import java.util.concurrent.atomic.AtomicBoolean
-import com.example.agentkit.core.ToolResult
-import com.example.agentkit.core.UserMessage
-import com.example.agentkit.core.agent.Hooks
-import com.example.agentkit.core.agent.RealAgentLoop
-import com.example.agentkit.core.llm.ChatStreamEvent
+import com.beichen.polaris.core.ToolResult
+import com.beichen.polaris.core.UserMessage
+import com.beichen.polaris.core.agent.Hooks
+import com.beichen.polaris.core.agent.RealAgentLoop
+import com.beichen.polaris.core.llm.ChatStreamEvent
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Job
@@ -127,7 +127,7 @@ private class FakeTool(
     private val onExecute: (suspend () -> Unit)? = null
 ) : AgentTool {
     override val description: String = "fake $name"
-    override val parameters = com.example.agentkit.core.JsonSchema.objectSchema()
+    override val parameters = com.beichen.polaris.core.JsonSchema.objectSchema()
     var executions = 0
 
     override suspend fun execute(args: JsonObject): ToolResult {

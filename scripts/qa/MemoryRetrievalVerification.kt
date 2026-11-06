@@ -1,5 +1,5 @@
-import com.example.agentkit.memory.MemoryAutoCapture
-import com.example.agentkit.memory.MemoryStore
+import com.beichen.polaris.memory.MemoryAutoCapture
+import com.beichen.polaris.memory.MemoryStore
 import java.io.File
 
 /**

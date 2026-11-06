@@ -19,9 +19,9 @@
  * 运行：scripts/qa/run-r08-verification.sh
  */
 
-import com.example.agentkit.core.agent.ApprovalGrouping
-import com.example.agentkit.core.agent.ApprovalScope
-import com.example.agentkit.core.agent.ShellCommandRules
+import com.beichen.polaris.core.agent.ApprovalGrouping
+import com.beichen.polaris.core.agent.ApprovalScope
+import com.beichen.polaris.core.agent.ShellCommandRules
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject

@@ -11,7 +11,7 @@ set -uo pipefail
 
 cd "$(dirname "$0")/../.."
 ROOT=$(pwd)
-SRC=app/src/main/java/com/example/agentkit
+SRC=app/src/main/java/com/beichen/polaris
 HUB="$SRC/core/llm/LlmHttp.kt"
 
 fail=0

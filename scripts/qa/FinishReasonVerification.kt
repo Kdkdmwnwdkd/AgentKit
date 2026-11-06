@@ -11,8 +11,8 @@
  *  - 语义组：三家各自的截断值都要归到同一个 `length`；
  *  - 鲁棒组：缺字段 / null / 空串 / 空数组 / 大小写混排，一律不崩且不误判。
  */
-import com.example.agentkit.core.AssistantMessage
-import com.example.agentkit.core.llm.FinishReason
+import com.beichen.polaris.core.AssistantMessage
+import com.beichen.polaris.core.llm.FinishReason
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 

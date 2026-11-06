@@ -1,6 +1,6 @@
 #!/usr/bin/env kotlin
 /**
- * W-57 QA 行为验证：[com.example.agentkit.core.terminal.backend.shouldUsePrivilegedShell] 的真值表。
+ * W-57 QA 行为验证：[com.beichen.polaris.core.terminal.backend.shouldUsePrivilegedShell] 的真值表。
  *
  * 背景：`shell_run` 原先在 identity 未给时**自动走一次性提权通道**，理由是「uid 2000 能干的活最多」。
  * 但那条通道一条命令一个进程，`cd` / `export` 不跨调用保持——W-54 只是把它写进文案告知模型，
@@ -16,9 +16,9 @@
  * 运行方式见 scripts/qa/run-shell-route-verification.sh。
  */
 
-import com.example.agentkit.core.terminal.backend.TerminalBackend
-import com.example.agentkit.tools.permissionDeniedHint
-import com.example.agentkit.core.terminal.backend.shouldUsePrivilegedShell
+import com.beichen.polaris.core.terminal.backend.TerminalBackend
+import com.beichen.polaris.tools.permissionDeniedHint
+import com.beichen.polaris.core.terminal.backend.shouldUsePrivilegedShell
 
 private var passed = 0
 private val failures = mutableListOf<String>()

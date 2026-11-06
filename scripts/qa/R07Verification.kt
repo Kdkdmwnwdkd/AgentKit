@@ -16,16 +16,16 @@
  * 运行：scripts/qa/run-r07-verification.sh
  */
 
-import com.example.agentkit.core.AgentTool
-import com.example.agentkit.core.JsonSchema
-import com.example.agentkit.core.ToolRegistry
-import com.example.agentkit.core.ToolResult
-import com.example.agentkit.core.mcp.McpServerConfig
-import com.example.agentkit.core.mcp.McpSyncPlan
-import com.example.agentkit.core.mcp.McpToolBinder
-import com.example.agentkit.core.mcp.McpToolLoader
-import com.example.agentkit.core.mcp.mcpOwnerKey
-import com.example.agentkit.core.mcp.planMcpSync
+import com.beichen.polaris.core.AgentTool
+import com.beichen.polaris.core.JsonSchema
+import com.beichen.polaris.core.ToolRegistry
+import com.beichen.polaris.core.ToolResult
+import com.beichen.polaris.core.mcp.McpServerConfig
+import com.beichen.polaris.core.mcp.McpSyncPlan
+import com.beichen.polaris.core.mcp.McpToolBinder
+import com.beichen.polaris.core.mcp.McpToolLoader
+import com.beichen.polaris.core.mcp.mcpOwnerKey
+import com.beichen.polaris.core.mcp.planMcpSync
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonObject
 

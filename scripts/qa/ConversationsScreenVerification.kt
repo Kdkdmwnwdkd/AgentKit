@@ -1,4 +1,4 @@
-import com.example.agentkit.core.text.ConversationFilter
+import com.beichen.polaris.core.text.ConversationFilter
 import java.io.File
 
 /**
@@ -38,7 +38,7 @@ private fun assertContains(haystack: String, needle: String) {
 }
 
 // W-42：路径相对仓库根（run-all 会把 CWD 定在仓库根）。写死绝对路径只在本机成立。
-private const val APP_SRC = "app/src/main/java/com/example/agentkit"
+private const val APP_SRC = "app/src/main/java/com/beichen/polaris"
 
 private fun readSource(rel: String): String = File(APP_SRC, rel).readText()
 

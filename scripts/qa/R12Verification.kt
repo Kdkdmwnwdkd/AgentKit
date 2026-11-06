@@ -11,7 +11,7 @@
  *  3. 失败分支把 tmp 留在磁盘上；
  *  4. 五份拷贝细节不一致（有的备份、有的不备份、有的删主文件）。
  */
-import com.example.agentkit.core.io.AtomicJsonFile
+import com.beichen.polaris.core.io.AtomicJsonFile
 import java.io.File
 import java.nio.file.Files
 import java.util.concurrent.CountDownLatch

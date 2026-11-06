@@ -50,7 +50,7 @@ app/src/main/cpp/termux-jni/   // 仅 openpty/forkpty 的薄封装，自写 200 
 
 **自写而非引用的决策**：Termux 的 Emulator 虽好但是 GPLv3，而 VT100 状态机是**有充分公开规范（xterm ctlseqs）可照做的确定性工程**——我们按规范重写，测试向量同样公开，不存在"写不出来"的风险。渲染层直接用 Compose `Text` 逐行画（终端行数 24-50，性能足够），不做自定义 View。
 
-**验收点**：App 内打开终端 Tab，`ls /data/data/com.example.agentkit` 有输出，`echo hi` 回显，Ctrl+C 能中断，上下滑看历史，长按复制。
+**验收点**：App 内打开终端 Tab，`ls /data/data/com.beichen.polaris` 有输出，`echo hi` 回显，Ctrl+C 能中断，上下滑看历史，长按复制。
 
 **pty 封装自写 C 代码注意**：
 - Android 9+ 对 `execve` 有 seccomp 限制，pty 本身可用（Termux 证明）

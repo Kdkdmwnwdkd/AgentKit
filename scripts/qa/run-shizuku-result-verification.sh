@@ -9,6 +9,6 @@ KOTLINC_BIN="$KC_HOME/bin/kotlinc"
 [ -x "$KOTLINC_BIN" ] || { echo "FATAL: 找不到 kotlinc（$KOTLINC_BIN）" >&2; exit 1; }
 rm -rf "$OUT" && mkdir -p "$OUT"
 "$KOTLINC_BIN" -d "$OUT" \
-  "$ROOT/app/src/main/java/com/example/agentkit/automation/shizuku/ShizukuResultLogic.kt" \
+  "$ROOT/app/src/main/java/com/beichen/polaris/automation/shizuku/ShizukuResultLogic.kt" \
   "$ROOT/scripts/qa/ShizukuResultVerification.kt"
 java -cp "$OUT:$KC_HOME/lib/kotlin-stdlib.jar" ShizukuResultVerificationKt

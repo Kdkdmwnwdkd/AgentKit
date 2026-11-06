@@ -24,9 +24,9 @@
  * 运行：`bash scripts/qa/run-localmodel-verification.sh`
  */
 
-import com.example.agentkit.core.*
-import com.example.agentkit.core.agent.RealAgentLoop
-import com.example.agentkit.core.capability.CapabilityManifest
+import com.beichen.polaris.core.*
+import com.beichen.polaris.core.agent.RealAgentLoop
+import com.beichen.polaris.core.capability.CapabilityManifest
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject

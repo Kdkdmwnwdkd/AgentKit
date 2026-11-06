@@ -1,4 +1,4 @@
-import com.example.agentkit.tools.PlanLogic
+import com.beichen.polaris.tools.PlanLogic
 
 /**
  * W-25 harness：plan_propose 的解析与校验纯函数（不加载 Android）。

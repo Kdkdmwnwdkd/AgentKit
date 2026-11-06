@@ -37,30 +37,30 @@
  * 运行：scripts/qa/run-r7-verification.sh
  */
 
-import com.example.agentkit.core.AgentTool
-import com.example.agentkit.core.AssistantMessage
-import com.example.agentkit.core.ChatMessage
-import com.example.agentkit.core.FailureGuard
-import com.example.agentkit.core.JsonSchema
-import com.example.agentkit.core.LLMClient
-import com.example.agentkit.core.ToolCall
-import com.example.agentkit.core.ToolRegistry
-import com.example.agentkit.core.ToolResult
-import com.example.agentkit.core.agent.AgentScope
-import com.example.agentkit.core.agent.AgentScopeContext
-import com.example.agentkit.core.agent.NoopHooks
-import com.example.agentkit.core.agent.RegistryToolExecutor
-import com.example.agentkit.core.agent.SubAgentRunner
-import com.example.agentkit.core.agent.SubTask
-import com.example.agentkit.core.agent.ToolDescriptor
-import com.example.agentkit.core.agent.ToolExecutor
-import com.example.agentkit.core.agent.currentAgentScope
-import com.example.agentkit.core.agent.journal.RunEvent
-import com.example.agentkit.core.agent.journal.RunScope
-import com.example.agentkit.core.agent.journal.TurnJournal
-import com.example.agentkit.skill.SkillManifest
-import com.example.agentkit.skill.SkillExecutor
-import com.example.agentkit.skill.SkillRuntimeBridge
+import com.beichen.polaris.core.AgentTool
+import com.beichen.polaris.core.AssistantMessage
+import com.beichen.polaris.core.ChatMessage
+import com.beichen.polaris.core.FailureGuard
+import com.beichen.polaris.core.JsonSchema
+import com.beichen.polaris.core.LLMClient
+import com.beichen.polaris.core.ToolCall
+import com.beichen.polaris.core.ToolRegistry
+import com.beichen.polaris.core.ToolResult
+import com.beichen.polaris.core.agent.AgentScope
+import com.beichen.polaris.core.agent.AgentScopeContext
+import com.beichen.polaris.core.agent.NoopHooks
+import com.beichen.polaris.core.agent.RegistryToolExecutor
+import com.beichen.polaris.core.agent.SubAgentRunner
+import com.beichen.polaris.core.agent.SubTask
+import com.beichen.polaris.core.agent.ToolDescriptor
+import com.beichen.polaris.core.agent.ToolExecutor
+import com.beichen.polaris.core.agent.currentAgentScope
+import com.beichen.polaris.core.agent.journal.RunEvent
+import com.beichen.polaris.core.agent.journal.RunScope
+import com.beichen.polaris.core.agent.journal.TurnJournal
+import com.beichen.polaris.skill.SkillManifest
+import com.beichen.polaris.skill.SkillExecutor
+import com.beichen.polaris.skill.SkillRuntimeBridge
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
@@ -111,7 +111,7 @@ private class FakeTool(
 /**
  * 模拟 `read_file`：`message` 是「已读取 …（本次 N 字符）」，`data` 才是正文。
  *
- * 真实工具就是这么返回的（[com.example.agentkit.tools.ReadFileTool]），
+ * 真实工具就是这么返回的（[com.beichen.polaris.tools.ReadFileTool]），
  * 而脚本需要的是 `data`。
  */
 private class RawReadFile : AgentTool {
@@ -139,13 +139,13 @@ private class FakeClient(private val responses: List<AssistantMessage>) : LLMCli
         return r
     }
 
-    override suspend fun testPing(): com.example.agentkit.core.PingResult =
-        com.example.agentkit.core.PingResult(200, "ok")
+    override suspend fun testPing(): com.beichen.polaris.core.PingResult =
+        com.beichen.polaris.core.PingResult(200, "ok")
 }
 
 /** 建一个带日志的回合，供作用域相关用例共用。 */
 private suspend fun newTurn(dir: java.io.File): Pair<TurnJournal, TurnJournal.Turn> {
-    val journal = TurnJournal(com.example.agentkit.core.agent.journal.RunJournal(dir))
+    val journal = TurnJournal(com.beichen.polaris.core.agent.journal.RunJournal(dir))
     val turn = journal.begin("r7-turn-1")
     return journal to turn
 }
@@ -159,18 +159,18 @@ fun main() = runBlocking {
 
     check("R7-1 派生句柄写同一文件、序号连续") {
         val dir = java.io.File(base, "scope")
-        val journal = TurnJournal(com.example.agentkit.core.agent.journal.RunJournal(dir))
+        val journal = TurnJournal(com.beichen.polaris.core.agent.journal.RunJournal(dir))
         val main = journal.begin("turn-A")
         val skill = main.scoped(RunScope.skill("demo"))
 
         // begin() 内部已写一条 OPEN
         skill.toolDispatched(1, "call-1")
-        skill.toolSettled(1, "call-1", com.example.agentkit.core.agent.journal.ToolSettleStatus.SUCCEEDED)
+        skill.toolSettled(1, "call-1", com.beichen.polaris.core.agent.journal.ToolSettleStatus.SUCCEEDED)
         main.toolDispatched(1, "call-2")
-        main.toolSettled(1, "call-2", com.example.agentkit.core.agent.journal.ToolSettleStatus.SUCCEEDED)
+        main.toolSettled(1, "call-2", com.beichen.polaris.core.agent.journal.ToolSettleStatus.SUCCEEDED)
         main.turnClosed("completed")
 
-        val events = com.example.agentkit.core.agent.journal.RunJournal(dir).load("turn-A")
+        val events = com.beichen.polaris.core.agent.journal.RunJournal(dir).load("turn-A")
         assertEquals("R7-1 事件数", 6, events.size)
         val seqs = events.map { it.seq }
         assertEquals("R7-1 序号连续且唯一", seqs.sorted(), seqs)
@@ -183,12 +183,12 @@ fun main() = runBlocking {
 
     check("R7-1 scope 落盘后读回一致") {
         val dir = java.io.File(base, "scope2")
-        val journal = TurnJournal(com.example.agentkit.core.agent.journal.RunJournal(dir))
+        val journal = TurnJournal(com.beichen.polaris.core.agent.journal.RunJournal(dir))
         val turn = journal.begin("turn-B")
         turn.scoped(RunScope.subagent("查资料")).toolDispatched(0, "c1")
         turn.turnClosed("completed")
 
-        val events = com.example.agentkit.core.agent.journal.RunJournal(dir).load("turn-B")
+        val events = com.beichen.polaris.core.agent.journal.RunJournal(dir).load("turn-B")
         val scoped = events.first { it is RunEvent.ToolDispatched } as RunEvent.ToolDispatched
         assertEquals("R7-1 scope 值", RunScope.subagent("查资料"), scoped.scope)
         assertEquals("R7-1 类别可判", RunScope.KIND_SUBAGENT, RunScope.kindOf(scoped.scope))
@@ -206,7 +206,7 @@ fun main() = runBlocking {
                 "v1\t3\t120\tturn-Legacy\tSETTLE\t1\tcall-x\tSUCCEEDED\t\n" +
                 "v1\t4\t130\tturn-Legacy\tCLOSE\tcompleted\n"
         )
-        val events = com.example.agentkit.core.agent.journal.RunJournal(dir).load("turn-Legacy")
+        val events = com.beichen.polaris.core.agent.journal.RunJournal(dir).load("turn-Legacy")
         assertEquals("R7-2 读到 4 条", 4, events.size)
         assertTrue("R7-2 全部 scope=main", events.all { it.scope == RunScope.MAIN })
         val disp = events[1] as RunEvent.ToolDispatched
@@ -283,7 +283,7 @@ fun main() = runBlocking {
 
     check("R7-4 技能工具调用有 DISP/SETTLE 且 scope 正确") {
         val dir = java.io.File(base, "skill-log")
-        val journal = TurnJournal(com.example.agentkit.core.agent.journal.RunJournal(dir))
+        val journal = TurnJournal(com.beichen.polaris.core.agent.journal.RunJournal(dir))
         val turn = journal.begin("turn-S")
         val registry = ToolRegistry().apply { register(FakeTool("fake_read")) }
         val bridge = buildSkillBridge(registry, turn)
@@ -291,7 +291,7 @@ fun main() = runBlocking {
         val out = bridge.tool("fake_read", mapOf("x" to 1))
         assertTrue("R7-4 返回内容", out.contains("done"))
 
-        val events = com.example.agentkit.core.agent.journal.RunJournal(dir).load("turn-S")
+        val events = com.beichen.polaris.core.agent.journal.RunJournal(dir).load("turn-S")
         val disp = events.filterIsInstance<RunEvent.ToolDispatched>()
         val settle = events.filterIsInstance<RunEvent.ToolSettled>()
         assertEquals("R7-4 一条 DISP", 1, disp.size)
@@ -302,14 +302,14 @@ fun main() = runBlocking {
         assertEquals("R7-4 id 配对", disp[0].callId, settle[0].callId)
         assertEquals(
             "R7-4 终态成功",
-            com.example.agentkit.core.agent.journal.ToolSettleStatus.SUCCEEDED,
+            com.beichen.polaris.core.agent.journal.ToolSettleStatus.SUCCEEDED,
             settle[0].status
         )
     }
 
     check("R7-5 技能 callId 唯一（两次调用不撞 id）") {
         val dir = java.io.File(base, "skill-ids")
-        val journal = TurnJournal(com.example.agentkit.core.agent.journal.RunJournal(dir))
+        val journal = TurnJournal(com.beichen.polaris.core.agent.journal.RunJournal(dir))
         val turn = journal.begin("turn-I")
         val registry = ToolRegistry().apply { register(FakeTool("fake_read")) }
         val bridge = buildSkillBridge(registry, turn)
@@ -317,7 +317,7 @@ fun main() = runBlocking {
         bridge.tool("fake_read", mapOf("x" to 1))
         bridge.tool("fake_read", mapOf("x" to 2))
 
-        val events = com.example.agentkit.core.agent.journal.RunJournal(dir).load("turn-I")
+        val events = com.beichen.polaris.core.agent.journal.RunJournal(dir).load("turn-I")
         val disp = events.filterIsInstance<RunEvent.ToolDispatched>()
         assertEquals("R7-5 两条 DISP", 2, disp.size)
         assertTrue("R7-5 callId 不同", disp[0].callId != disp[1].callId)
@@ -332,7 +332,7 @@ fun main() = runBlocking {
 
     check("R7-6 技能路径受超时预算约束") {
         val dir = java.io.File(base, "skill-budget")
-        val journal = TurnJournal(com.example.agentkit.core.agent.journal.RunJournal(dir))
+        val journal = TurnJournal(com.beichen.polaris.core.agent.journal.RunJournal(dir))
         val turn = journal.begin("turn-BUD")
         val registry = ToolRegistry().apply {
             register(FakeTool("fake_slow", readOnly = true, sleepMs = 3_000L))
@@ -346,19 +346,19 @@ fun main() = runBlocking {
         assertTrue("R7-6 未被掐断则超时（实际 ${cost}ms）", cost < 2_000L)
         assertTrue("R7-6 返回超时文案", out.contains("超时"))
 
-        val events = com.example.agentkit.core.agent.journal.RunJournal(dir).load("turn-BUD")
+        val events = com.beichen.polaris.core.agent.journal.RunJournal(dir).load("turn-BUD")
         val settle = events.filterIsInstance<RunEvent.ToolSettled>()
         assertEquals("R7-6 有结算事件", 1, settle.size)
         assertEquals(
             "R7-6 终态为失败",
-            com.example.agentkit.core.agent.journal.ToolSettleStatus.FAILED,
+            com.beichen.polaris.core.agent.journal.ToolSettleStatus.FAILED,
             settle[0].status
         )
     }
 
     check("R7-7 技能路径有熔断（同一失败工具反复调会被拦）") {
         val dir = java.io.File(base, "skill-guard")
-        val journal = TurnJournal(com.example.agentkit.core.agent.journal.RunJournal(dir))
+        val journal = TurnJournal(com.beichen.polaris.core.agent.journal.RunJournal(dir))
         val turn = journal.begin("turn-G")
         val registry = ToolRegistry().apply {
             register(FakeTool("fake_fail", readOnly = true, failCode = "boom"))
@@ -367,7 +367,7 @@ fun main() = runBlocking {
 
         repeat(5) { bridge.tool("fake_fail", mapOf("x" to 1)) }
 
-        val events = com.example.agentkit.core.agent.journal.RunJournal(dir).load("turn-G")
+        val events = com.beichen.polaris.core.agent.journal.RunJournal(dir).load("turn-G")
         val disp = events.filterIsInstance<RunEvent.ToolDispatched>()
         // 熔断在派发前拦截 → 派发次数应少于调用次数
         assertTrue("R7-7 熔断拦住了重复调用（派发 ${disp.size} 次 < 5 次）", disp.size < 5)
@@ -377,7 +377,7 @@ fun main() = runBlocking {
 
     check("R7-8 子代理的工具调用进主回合日志，scope=sub:<标题>") {
         val dir = java.io.File(base, "sub-log")
-        val journal = TurnJournal(com.example.agentkit.core.agent.journal.RunJournal(dir))
+        val journal = TurnJournal(com.beichen.polaris.core.agent.journal.RunJournal(dir))
         val mainTurn = journal.begin("turn-SUB")
 
         // 子代理只保留 NO_SIDE_EFFECT_TOOLS 白名单里的工具，名字必须对上，
@@ -405,7 +405,7 @@ fun main() = runBlocking {
             runner.run(listOf(SubTask("查资料", "读一下文件")))
         }
 
-        val events = com.example.agentkit.core.agent.journal.RunJournal(dir).load("turn-SUB")
+        val events = com.beichen.polaris.core.agent.journal.RunJournal(dir).load("turn-SUB")
         val subDisp = events.filterIsInstance<RunEvent.ToolDispatched>()
             .filter { it.scope == RunScope.subagent("查资料") }
         assertTrue("R7-8 子代理调用进主回合日志（${subDisp.size} 条）", subDisp.isNotEmpty())
@@ -428,15 +428,15 @@ fun main() = runBlocking {
 
     check("R7-9 主代理路径 scope 仍是 main") {
         val dir = java.io.File(base, "main-path")
-        val journal = TurnJournal(com.example.agentkit.core.agent.journal.RunJournal(dir))
+        val journal = TurnJournal(com.beichen.polaris.core.agent.journal.RunJournal(dir))
         val turn = journal.begin("turn-M")
         turn.assistantCommitted(0, listOf(ToolCall("c1", "read_file", JsonObject(emptyMap()))))
         turn.toolDispatched(0, "c1")
-        turn.toolSettled(0, "c1", com.example.agentkit.core.agent.journal.ToolSettleStatus.SUCCEEDED)
+        turn.toolSettled(0, "c1", com.beichen.polaris.core.agent.journal.ToolSettleStatus.SUCCEEDED)
         turn.stepClosed(0)
         turn.turnClosed("completed")
 
-        val events = com.example.agentkit.core.agent.journal.RunJournal(dir).load("turn-M")
+        val events = com.beichen.polaris.core.agent.journal.RunJournal(dir).load("turn-M")
         assertEquals("R7-9 事件数不变", 6, events.size)
         assertTrue("R7-9 全部 scope=main", events.all { it.scope == RunScope.MAIN })
     }
@@ -445,7 +445,7 @@ fun main() = runBlocking {
 
     check("R7-11 派生句柄不写回合级/步级事件") {
         val dir = java.io.File(base, "owner")
-        val journal = TurnJournal(com.example.agentkit.core.agent.journal.RunJournal(dir))
+        val journal = TurnJournal(com.beichen.polaris.core.agent.journal.RunJournal(dir))
         val turn = journal.begin("turn-O")
         val sub = turn.scoped(RunScope.subagent("x"))
 
@@ -457,10 +457,10 @@ fun main() = runBlocking {
 
         // 拥有者正常写
         turn.toolDispatched(0, "main-1")
-        turn.toolSettled(0, "main-1", com.example.agentkit.core.agent.journal.ToolSettleStatus.SUCCEEDED)
+        turn.toolSettled(0, "main-1", com.beichen.polaris.core.agent.journal.ToolSettleStatus.SUCCEEDED)
         turn.turnClosed("completed")
 
-        val events = com.example.agentkit.core.agent.journal.RunJournal(dir).load("turn-O")
+        val events = com.beichen.polaris.core.agent.journal.RunJournal(dir).load("turn-O")
         // 只有 begin 的 OPEN + 主句柄的 DISP/SETTLE/CLOSE = 4 条
         assertEquals("R7-11 派生句柄的回合级事件未落盘", 4, events.size)
         assertTrue("R7-11 没有 STEP 事件", events.none { it is RunEvent.StepClosed })
@@ -470,7 +470,7 @@ fun main() = runBlocking {
 
     check("R7-12 技能的失败熔断不跨执行累积") {
         val dir = java.io.File(base, "skill-guard2")
-        val journal = TurnJournal(com.example.agentkit.core.agent.journal.RunJournal(dir))
+        val journal = TurnJournal(com.beichen.polaris.core.agent.journal.RunJournal(dir))
         val registry = ToolRegistry().apply {
             register(FakeTool("fake_fail", readOnly = true, failCode = "boom"))
         }
@@ -479,7 +479,7 @@ fun main() = runBlocking {
         val turn1 = journal.begin("turn-G1")
         val b1 = buildSkillBridge(registry, turn1)
         repeat(3) { b1.tool("fake_fail", mapOf("x" to 1)) }
-        val d1 = com.example.agentkit.core.agent.journal.RunJournal(dir).load("turn-G1")
+        val d1 = com.beichen.polaris.core.agent.journal.RunJournal(dir).load("turn-G1")
             .filterIsInstance<RunEvent.ToolDispatched>()
         assertEquals("R7-12 第一次执行熔断生效（2 次派发）", 2, d1.size)
 
@@ -489,7 +489,7 @@ fun main() = runBlocking {
         val turn2 = journal.begin("turn-G2")
         val b2 = buildSkillBridge(registry, turn2)
         b2.tool("fake_fail", mapOf("x" to 1))
-        val d2 = com.example.agentkit.core.agent.journal.RunJournal(dir).load("turn-G2")
+        val d2 = com.beichen.polaris.core.agent.journal.RunJournal(dir).load("turn-G2")
             .filterIsInstance<RunEvent.ToolDispatched>()
         assertEquals("R7-12 第二次执行未被上次的熔断挡住", 1, d2.size)
     }
@@ -498,15 +498,15 @@ fun main() = runBlocking {
 
     check("R7-10 NDJSON 一行一对象、字段自解释") {
         val dir = java.io.File(base, "ndjson")
-        val journal = TurnJournal(com.example.agentkit.core.agent.journal.RunJournal(dir))
+        val journal = TurnJournal(com.beichen.polaris.core.agent.journal.RunJournal(dir))
         val turn = journal.begin("turn-J")
         turn.assistantCommitted(0, listOf(ToolCall("c1", "read_file", JsonObject(emptyMap()))))
         turn.toolDispatched(0, "c1")
-        turn.toolSettled(0, "c1", com.example.agentkit.core.agent.journal.ToolSettleStatus.SUCCEEDED)
+        turn.toolSettled(0, "c1", com.beichen.polaris.core.agent.journal.ToolSettleStatus.SUCCEEDED)
         turn.stepClosed(0)
         turn.turnClosed("completed")
 
-        val ndjson = com.example.agentkit.core.agent.journal.RunJournal(dir).exportNdjson("turn-J")
+        val ndjson = com.beichen.polaris.core.agent.journal.RunJournal(dir).exportNdjson("turn-J")
         val lines = ndjson.trim().lines()
         assertEquals("R7-10 行数=事件数", 6, lines.size)
         assertTrue("R7-10 每行是对象", lines.all { it.startsWith("{") && it.endsWith("}") })
@@ -518,12 +518,12 @@ fun main() = runBlocking {
 
     check("R7-10 NDJSON 转义：引号被转义、每行仍是完整对象") {
         val dir = java.io.File(base, "ndjson-esc")
-        val journal = TurnJournal(com.example.agentkit.core.agent.journal.RunJournal(dir))
+        val journal = TurnJournal(com.beichen.polaris.core.agent.journal.RunJournal(dir))
         val turn = journal.begin("turn-E")
         // 结束原因里塞进引号——TSV 侧只净化分隔符，引号原样保留，JSON 侧必须再转义一次
         turn.turnClosed("he said \"hi\" then left")
 
-        val ndjson = com.example.agentkit.core.agent.journal.RunJournal(dir).exportNdjson("turn-E")
+        val ndjson = com.beichen.polaris.core.agent.journal.RunJournal(dir).exportNdjson("turn-E")
         val lines = ndjson.trim().lines()
         assertEquals("R7-10 单回合两行", 2, lines.size)
         assertTrue("R7-10 含转义引号", ndjson.contains("\\\""))
@@ -533,14 +533,14 @@ fun main() = runBlocking {
 
     check("R7-10 JSON 导出与 TSV 存储信息一致（不增不减）") {
         val dir = java.io.File(base, "ndjson-parity")
-        val journal = TurnJournal(com.example.agentkit.core.agent.journal.RunJournal(dir))
+        val journal = TurnJournal(com.beichen.polaris.core.agent.journal.RunJournal(dir))
         val turn = journal.begin("turn-P")
         turn.assistantCommitted(0, listOf(ToolCall("c1", "read_file", JsonObject(emptyMap()))))
         turn.toolDispatched(0, "c1")
-        turn.toolSettled(0, "c1", com.example.agentkit.core.agent.journal.ToolSettleStatus.FAILED, "boom")
+        turn.toolSettled(0, "c1", com.beichen.polaris.core.agent.journal.ToolSettleStatus.FAILED, "boom")
         turn.turnClosed("completed")
 
-        val store = com.example.agentkit.core.agent.journal.RunJournal(dir)
+        val store = com.beichen.polaris.core.agent.journal.RunJournal(dir)
         val events = store.load("turn-P")
         val ndjson = store.exportNdjson("turn-P")
         assertEquals("R7-10 行数=事件数", events.size, ndjson.trim().lines().size)
@@ -552,14 +552,14 @@ fun main() = runBlocking {
 
     check("R7-10 导出全部回合按时间从旧到新") {
         val dir = java.io.File(base, "ndjson-all")
-        val journal = TurnJournal(com.example.agentkit.core.agent.journal.RunJournal(dir))
+        val journal = TurnJournal(com.beichen.polaris.core.agent.journal.RunJournal(dir))
         val t1 = journal.begin("turn-A1")
         t1.turnClosed("completed")
         Thread.sleep(5)
         val t2 = journal.begin("turn-A2")
         t2.turnClosed("completed")
 
-        val all = com.example.agentkit.core.agent.journal.RunJournal(dir).exportAllNdjson()
+        val all = com.beichen.polaris.core.agent.journal.RunJournal(dir).exportAllNdjson()
         val lines = all.trim().lines()
         assertTrue("R7-10 导出非空", lines.isNotEmpty())
         assertTrue(
@@ -576,17 +576,17 @@ fun main() = runBlocking {
         assertEquals(
             "R7-13 内置技能取 assetDir",
             "wordcount",
-            com.example.agentkit.skill.skillResourceDir("wordcount", "com.you.wordcount")
+            com.beichen.polaris.skill.skillResourceDir("wordcount", "com.you.wordcount")
         )
         assertEquals(
             "R7-13 导入技能回退到 id（其目录就是 id）",
             "my.skill",
-            com.example.agentkit.skill.skillResourceDir("", "my.skill")
+            com.beichen.polaris.skill.skillResourceDir("", "my.skill")
         )
         assertEquals(
             "R7-13 缺省 assetDir 也回退 id",
             "my.skill",
-            com.example.agentkit.skill.skillResourceDir(null, "my.skill")
+            com.beichen.polaris.skill.skillResourceDir(null, "my.skill")
         )
     }
 
@@ -595,9 +595,9 @@ fun main() = runBlocking {
         // "已读取 notes.txt（本次 74 字符…）" 拼在正文前面。脚本拿 content 去统计，
         // 22 词 / 6 行——实际文件只有 13 词 / 3 行。
         val registry = ToolRegistry().apply { register(RawReadFile()) }
-        val bridge = com.example.agentkit.skill.SkillRuntimeBridge(
+        val bridge = com.beichen.polaris.skill.SkillRuntimeBridge(
             registry = registry,
-            skill = com.example.agentkit.skill.SkillManifest(
+            skill = com.beichen.polaris.skill.SkillManifest(
                 id = "com.you.wordcount", name = "单词统计", version = "1.0.0",
                 tools = listOf("read_file"), trust = "packaged",
             ),
@@ -615,7 +615,7 @@ fun main() = runBlocking {
     // 只测「返回 null」是测不出泄漏的——旧实现同样返回 null，但 worker 会永久空转。
     // 所以断言分两段：结果必须为 null，且中断之后引擎还能继续求值。
     check("R8-1 死循环脚本被指令看门狗中断，且线程可回收") {
-        val engine = com.example.agentkit.skill.RhinoJsEngine()
+        val engine = com.beichen.polaris.skill.RhinoJsEngine()
         val t0 = System.currentTimeMillis()
         val result = engine.eval("(function(){ while(true){} })", emptyMap())
         val elapsed = System.currentTimeMillis() - t0

@@ -11,8 +11,8 @@
  * 直接数「写了几次」——这是去抖是否真的生效的唯一硬证据，
  * 只断言「内容最终正确」的话，每条都写也能通过，等于没验。
  */
-import com.example.agentkit.core.ConversationStore
-import com.example.agentkit.core.MsgRecord
+import com.beichen.polaris.core.ConversationStore
+import com.beichen.polaris.core.MsgRecord
 import java.io.File
 import java.nio.file.Files
 

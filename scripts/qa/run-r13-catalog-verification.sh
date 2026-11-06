@@ -15,7 +15,7 @@ set -uo pipefail
 
 cd "$(dirname "$0")/../.."
 ROOT=$(pwd)
-SRC="$ROOT/app/src/main/java/com/example/agentkit"
+SRC="$ROOT/app/src/main/java/com/beichen/polaris"
 CATALOG="$SRC/core/tool/ToolCatalog.kt"
 
 p=0; f=0

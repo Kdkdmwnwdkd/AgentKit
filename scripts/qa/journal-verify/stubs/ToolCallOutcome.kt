@@ -1,4 +1,4 @@
-package com.example.agentkit.core.agent
+package com.beichen.polaris.core.agent
 
 /**
  * 验证用替身：与生产定义同名同包，字段简化为 String。

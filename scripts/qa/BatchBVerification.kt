@@ -1,16 +1,16 @@
-import com.example.agentkit.core.agent.AgentRunState
-import com.example.agentkit.core.agent.AgentRunStateStore
-import com.example.agentkit.core.agent.ApprovalGrouping
-import com.example.agentkit.core.capability.CapabilityManifest
-import com.example.agentkit.core.container.ToolchainInstaller
-import com.example.agentkit.core.workspace.FileBackupStore
-import com.example.agentkit.core.workspace.TextDiff
-import com.example.agentkit.skill.Capability
-import com.example.agentkit.skill.CapabilityRegistry
-import com.example.agentkit.skill.checkCapabilityGate
-import com.example.agentkit.skill.isToolAllowedByWhitelist
-import com.example.agentkit.skill.policyFor
-import com.example.agentkit.skill.trustLabel
+import com.beichen.polaris.core.agent.AgentRunState
+import com.beichen.polaris.core.agent.AgentRunStateStore
+import com.beichen.polaris.core.agent.ApprovalGrouping
+import com.beichen.polaris.core.capability.CapabilityManifest
+import com.beichen.polaris.core.container.ToolchainInstaller
+import com.beichen.polaris.core.workspace.FileBackupStore
+import com.beichen.polaris.core.workspace.TextDiff
+import com.beichen.polaris.skill.Capability
+import com.beichen.polaris.skill.CapabilityRegistry
+import com.beichen.polaris.skill.checkCapabilityGate
+import com.beichen.polaris.skill.isToolAllowedByWhitelist
+import com.beichen.polaris.skill.policyFor
+import com.beichen.polaris.skill.trustLabel
 import java.io.File
 
 /**
@@ -121,7 +121,7 @@ fun main() {
     }
 
     check("B1-7 SkillManifest 默认 trust 不再是 packaged") {
-        val src = read("app/src/main/java/com/example/agentkit/skill/SkillProtocol.kt")
+        val src = read("app/src/main/java/com/beichen/polaris/skill/SkillProtocol.kt")
         assertTrue(
             "manifest 默认 trust 应为空（未知）而非 packaged",
             "val trust: String = \"\"" in src
@@ -129,7 +129,7 @@ fun main() {
     }
 
     check("B1-8 assets 内置技能由 SkillLoader 显式标为 packaged") {
-        val src = read("app/src/main/java/com/example/agentkit/skill/SkillProtocol.kt")
+        val src = read("app/src/main/java/com/beichen/polaris/skill/SkillProtocol.kt")
         // R7：同时要带上资源目录名——内置技能的 id 是包名式，目录名才是短名，
         // 用 id 拼 assets 路径会让 entry 读不到（脚本形态静默退化成提示词形态）。
         assertTrue(
@@ -212,14 +212,14 @@ fun main() {
     }
 
     check("B2-6 写工具确实调用了备份钩子") {
-        val src = read("app/src/main/java/com/example/agentkit/tools/BuiltInTools.kt")
+        val src = read("app/src/main/java/com/beichen/polaris/tools/BuiltInTools.kt")
         assertTrue("write_file 应调用 backupBeforeWrite", "backupHook?.backupBeforeWrite(path)" in src)
         assertTrue("edit_file 应调用 backupBeforeWrite", src.contains("backupHook?.backupBeforeWrite(path)"))
         assertTrue("应存在 WriteBackupHook 接口", "fun interface WriteBackupHook" in src)
     }
 
     check("B2-7 ChatViewModel 注入备份仓") {
-        val src = read("app/src/main/java/com/example/agentkit/ui/ChatViewModel.kt")
+        val src = read("app/src/main/java/com/beichen/polaris/ui/ChatViewModel.kt")
         assertTrue("应注入 FileBackupStore", "FileBackupStoreFactory.default(app)" in src)
         assertTrue("WriteFileTool 应传入备份钩子", "WriteFileTool(workspace, WriteBackupHook" in src)
         assertTrue("EditFileTool 应传入备份钩子", "EditFileTool(workspace, WriteBackupHook" in src)
@@ -281,7 +281,7 @@ fun main() {
     }
 
     check("B3-6 send() 启保活、finally 停保活并写运行态") {
-        val src = read("app/src/main/java/com/example/agentkit/ui/ChatViewModel.kt")
+        val src = read("app/src/main/java/com/beichen/polaris/ui/ChatViewModel.kt")
         assertTrue("应启动前台服务", "AgentRunService.start(app" in src)
         assertTrue("应停止前台服务", "AgentRunService.stop(app)" in src)
         assertTrue("应写入 running 运行态", "AgentRunState.STATUS_RUNNING" in src)
@@ -289,8 +289,8 @@ fun main() {
     }
 
     check("B3-7 中断提示在 UI 可见且可关闭") {
-        val vm = read("app/src/main/java/com/example/agentkit/ui/ChatViewModel.kt")
-        val screen = read("app/src/main/java/com/example/agentkit/ui/ChatScreen.kt")
+        val vm = read("app/src/main/java/com/beichen/polaris/ui/ChatViewModel.kt")
+        val screen = read("app/src/main/java/com/beichen/polaris/ui/ChatScreen.kt")
         assertTrue("VM 应暴露 interruptedNotice", "interruptedNotice" in vm)
         assertTrue("应有 dismiss 方法", "dismissInterruptedNotice" in vm)
         assertTrue("聊天页应渲染横幅", "InterruptedBanner" in screen)
@@ -391,7 +391,7 @@ fun main() {
     }
 
     check("B4-9 新工具挂人工审批并归入 shell 组") {
-        val tool = read("app/src/main/java/com/example/agentkit/tools/ContainerToolchainTool.kt")
+        val tool = read("app/src/main/java/com/beichen/polaris/tools/ContainerToolchainTool.kt")
         assertTrue("应挂 needsApproval", "override val needsApproval = true" in tool)
         assertEquals(
             "应归入 shell 审批组",
@@ -401,15 +401,15 @@ fun main() {
     }
 
     check("B4-10 容器工具已注册进 registry") {
-        val vm = read("app/src/main/java/com/example/agentkit/ui/ChatViewModel.kt")
+        val vm = read("app/src/main/java/com/beichen/polaris/ui/ChatViewModel.kt")
         assertTrue("应注册 ContainerToolchainTool", "register(ContainerToolchainTool(app))" in vm)
     }
 
     check("B4-11 一次性命令执行器存在且走独立进程通道") {
-        val runner = read("app/src/main/java/com/example/agentkit/core/container/ContainerCommandRunner.kt")
+        val runner = read("app/src/main/java/com/beichen/polaris/core/container/ContainerCommandRunner.kt")
         assertTrue("应使用 ProcessBuilder（取退出码）", "ProcessBuilder" in runner)
         assertTrue("应等待退出", "waitFor" in runner)
-        val screen = read("app/src/main/java/com/example/agentkit/ui/ContainerScreen.kt")
+        val screen = read("app/src/main/java/com/beichen/polaris/ui/ContainerScreen.kt")
         assertTrue("容器页应有运行时安装入口", "ToolchainInstaller" in screen)
         assertTrue("容器页应调用执行器", "ContainerCommandRunner" in screen)
     }
@@ -449,7 +449,7 @@ fun main() {
     }
 
     check("B4-13 执行器串行化：同一时刻只允许一个包管理器在跑") {
-        val runner = read("app/src/main/java/com/example/agentkit/core/container/ContainerCommandRunner.kt")
+        val runner = read("app/src/main/java/com/beichen/polaris/core/container/ContainerCommandRunner.kt")
         assertTrue("应有进程级公平锁", "ReentrantLock(true)" in runner)
         assertTrue("执行必须持锁", "execLock.withLock" in runner)
         assertTrue("重复命令应有专用退出码", "EXIT_BUSY" in runner)
@@ -458,7 +458,7 @@ fun main() {
     }
 
     check("B4-14 容器页安装按钮有运行态防重入（不能只靠底层串行）") {
-        val screen = read("app/src/main/java/com/example/agentkit/ui/ContainerScreen.kt")
+        val screen = read("app/src/main/java/com/beichen/polaris/ui/ContainerScreen.kt")
         // W-62：运行态不能再是页面 remember 的局部变量。真机 13:55 的教训——
         // 用户切页后组合销毁、`installing` 归 null，但 ContainerCommandRunner 的阻塞
         // 调用不吃取消，proot 仍在跑；按钮"复活"成可点，点了被 EXIT_BUSY 拒，
@@ -478,7 +478,7 @@ fun main() {
     }
 
     check("B4-15 执行器必须并发抽干输出（否则管道写满，父子互等到超时）") {
-        val runner = read("app/src/main/java/com/example/agentkit/core/container/ContainerCommandRunner.kt")
+        val runner = read("app/src/main/java/com/beichen/polaris/core/container/ContainerCommandRunner.kt")
         assertTrue("应有独立读线程", "Thread({ sink.drain" in runner)
         val drainAt = runner.indexOf("sink.drain")
         val waitAt = runner.indexOf("process.waitFor")
@@ -492,7 +492,7 @@ fun main() {
     }
 
     check("B4-17 proot 必须 fake root，且退出时杀掉 tracee") {
-        val proot = read("app/src/main/java/com/example/agentkit/core/container/ProotRunner.kt")
+        val proot = read("app/src/main/java/com/beichen/polaris/core/container/ProotRunner.kt")
         // 提示符是 "$" 而不是 "#" → 容器里不是 root → trigger 里的 chown 失败 → apk exit 1
         assertTrue("应有 --root-id（fake root）", "\"--root-id\"" in proot)
         // 超时后 destroyForcibly 只杀 proot，残留的 apk 会占着 /lib/apk/db/lock
@@ -613,7 +613,7 @@ fun main() {
     }
 
     check("C1-6 编辑器界面提供分组展示与批量回滚入口") {
-        val screen = read("app/src/main/java/com/example/agentkit/ui/EditorScreen.kt")
+        val screen = read("app/src/main/java/com/beichen/polaris/ui/EditorScreen.kt")
         assertTrue("应使用 grouped() 分组展示", "grouped()" in screen)
         assertTrue("应提供 restoreFile 批量回滚", "restoreFile(" in screen)
         assertTrue("应提供 restoreAll 全量回滚", "restoreAll(" in screen)
@@ -735,7 +735,7 @@ fun main() {
     }
 
     check("D1-9 编辑器提供「看改动」入口与差异弹层") {
-        val screen = read("app/src/main/java/com/example/agentkit/ui/EditorScreen.kt")
+        val screen = read("app/src/main/java/com/beichen/polaris/ui/EditorScreen.kt")
         assertTrue("应有看改动按钮", "\"看改动\"" in screen)
         assertTrue("应有差异弹层", "BackupDiffDialog" in screen)
         assertTrue("应调用 diffToCurrent", "diffToCurrent(" in screen)
@@ -795,7 +795,7 @@ fun main() {
     }
 
     check("D3-5 工具暴露 versions 动作并声明「以实际为准」") {
-        val tool = read("app/src/main/java/com/example/agentkit/tools/ContainerToolchainTool.kt")
+        val tool = read("app/src/main/java/com/beichen/polaris/tools/ContainerToolchainTool.kt")
         assertTrue("应有 versions 分支", "\"versions\" ->" in tool)
         assertTrue("应给出候选列表方法", "knownVersions(" in tool)
         assertTrue("应说明不是实时查仓库", "不是实时查仓库" in tool)
@@ -915,7 +915,7 @@ fun main() {
     }
 
     check("C2-7 ChatViewModel 接入续跑：识别意图 + 拼上下文 + 保留上次进度") {
-        val vm = read("app/src/main/java/com/example/agentkit/ui/ChatViewModel.kt")
+        val vm = read("app/src/main/java/com/beichen/polaris/ui/ChatViewModel.kt")
         assertTrue("应识别续跑意图", "isResumeIntent" in vm)
         assertTrue("应生成续跑上下文", "buildResumeContext" in vm)
         assertTrue("应在工具完成时推进运行态", "advanceRunState" in vm)
@@ -978,7 +978,7 @@ fun main() {
     }
 
     check("C3-7 工具暴露 version 参数且非法版本明确报错") {
-        val tool = read("app/src/main/java/com/example/agentkit/tools/ContainerToolchainTool.kt")
+        val tool = read("app/src/main/java/com/beichen/polaris/tools/ContainerToolchainTool.kt")
         assertTrue("参数表应含 version", "\"version\"" in tool)
         assertTrue("应调用 resolveVersion", "resolveVersion" in tool)
         assertTrue("非法版本应有专门错误码", "bad_version" in tool)
@@ -1044,7 +1044,7 @@ fun main() {
     }
 
     check("E-8 工具在装不到时返回 version_unavailable，而不是硬装") {
-        val tool = read("app/src/main/java/com/example/agentkit/tools/ContainerToolchainTool.kt")
+        val tool = read("app/src/main/java/com/beichen/polaris/tools/ContainerToolchainTool.kt")
         assertTrue("应有 version_unavailable", "version_unavailable" in tool)
         assertTrue(
             "应把发行版传给 resolveVersion",
@@ -1073,7 +1073,7 @@ fun main() {
     }
 
     check("E-10 安装失败能识别「容器没网」并说人话") {
-        val tool = read("app/src/main/java/com/example/agentkit/tools/ContainerToolchainTool.kt")
+        val tool = read("app/src/main/java/com/beichen/polaris/tools/ContainerToolchainTool.kt")
         assertTrue("应有病因诊断函数", "diagnoseInstallFailure" in tool)
         assertTrue("应识别域名解析失败", "temporary failure resolving" in tool)
         assertTrue("应指出容器需要能访问软件源", "容器内没有可用网络" in tool)
@@ -1081,7 +1081,7 @@ fun main() {
     }
 
     check("E-11 抽屉菜单与设置必须同处一个滚动区（拆开会把菜单挤成 0 高）") {
-        val s = read("app/src/main/java/com/example/agentkit/ui/AppScaffold.kt")
+        val s = read("app/src/main/java/com/beichen/polaris/ui/AppScaffold.kt")
         val fn = s.indexOf("private fun DrawerContent(")
         // W-66：滚动状态从 rememberScrollState() 换成 rememberSaveable 版，
         // 断言只锁「抽屉里有垂直滚动、且底部设置在滚动区内」，不锁具体构造。

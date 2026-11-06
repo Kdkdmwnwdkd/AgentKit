@@ -17,7 +17,7 @@
  * 运行：scripts/qa/run-r03-verification.sh
  */
 
-import com.example.agentkit.core.agent.awaitApprovalDecision
+import com.beichen.polaris.core.agent.awaitApprovalDecision
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope

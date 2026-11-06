@@ -1,6 +1,6 @@
 #!/usr/bin/env kotlin
 /**
- * 终端仿真器 harness：[com.example.agentkit.terminal.TerminalEmulator]。
+ * 终端仿真器 harness：[com.beichen.polaris.terminal.TerminalEmulator]。
  *
  * ## 为什么这个文件值得先补
  *
@@ -15,11 +15,11 @@
  * 运行：bash scripts/qa/run-terminal-emulator-verification.sh
  */
 
-import com.example.agentkit.terminal.ANSI_16
-import com.example.agentkit.terminal.COLOR_DEFAULT_BG
-import com.example.agentkit.terminal.COLOR_DEFAULT_FG
-import com.example.agentkit.terminal.TerminalEmulator
-import com.example.agentkit.terminal.XTERM_256
+import com.beichen.polaris.terminal.ANSI_16
+import com.beichen.polaris.terminal.COLOR_DEFAULT_BG
+import com.beichen.polaris.terminal.COLOR_DEFAULT_FG
+import com.beichen.polaris.terminal.TerminalEmulator
+import com.beichen.polaris.terminal.XTERM_256
 
 private var pass = 0
 private val fails = mutableListOf<String>()

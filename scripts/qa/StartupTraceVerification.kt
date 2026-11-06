@@ -1,6 +1,6 @@
 #!/usr/bin/env kotlin
 /**
- * 启动分段计时器 harness：验证 [com.example.agentkit.core.StartupTrace]。
+ * 启动分段计时器 harness：验证 [com.beichen.polaris.core.StartupTrace]。
  *
  * 验的是**计时器本身**能不能可信地报数——因为整个「启动慢在哪」的排查都建立在
  * 「这个数字是真的」之上。计时器自己写错了，那所有启动埋点都是自欺欺人。
@@ -12,7 +12,7 @@
  * 未必复现的场景。
  */
 
-import com.example.agentkit.core.StartupTrace
+import com.beichen.polaris.core.StartupTrace
 
 private var pass = 0
 private val fails = mutableListOf<String>()
@@ -39,7 +39,7 @@ private class FakeClock(private var now: Long = 0L, private val step: Long = 0L)
 }
 
 /**
- * 把 [com.example.agentkit.core.StartupTrace.summary] 的输出解析成「段名 → 毫秒」映射。
+ * 把 [com.beichen.polaris.core.StartupTrace.summary] 的输出解析成「段名 → 毫秒」映射。
  *
  * ## 为什么解析而不是子串匹配
  *

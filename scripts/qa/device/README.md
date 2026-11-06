@@ -5,7 +5,7 @@
 前置条件：
 
 - 一台能 `adb` 连上的设备或模拟器（脚本用 `ADB` 环境变量指定，默认 `adb`）
-- 已安装被测包，`applicationId` 与 `PKG` 一致（默认 `com.example.agentkit`）
+- 已安装被测包，`applicationId` 与 `PKG` 一致（默认 `com.beichen.polaris`）
 - **debug 包**：脚本用 `run-as` 读 `files/run-journal/`，非 debuggable 包读不到
 - 模型端点可控：`scripts/../../` 之外的 mock 端点即可，只要能让模型下发一次
   `write_file`，并且这个 `write_file` 会**阻塞**（见下）
@@ -25,7 +25,7 @@
    下一轮请求里带上了「可能已经生效，先核对」的说明；**没有第二次执行同一个写操作**。
 
 ```bash
-ADB=/path/to/adb PKG=com.example.agentkit bash r1-interrupt.sh prepare   # 造 FIFO 并清日志
+ADB=/path/to/adb PKG=com.beichen.polaris bash r1-interrupt.sh prepare   # 造 FIFO 并清日志
 # …在设备上手动触发 write_file，等 DISP 出现…
 ADB=… bash r1-interrupt.sh kill       # 打印日志并 force-stop
 ADB=… bash r1-interrupt.sh verify     # 重启后检查修复结果

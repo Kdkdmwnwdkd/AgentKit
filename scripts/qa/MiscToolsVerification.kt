@@ -1,4 +1,4 @@
-import com.example.agentkit.tools.Calculator
+import com.beichen.polaris.tools.Calculator
 
 /**
  * W-18 小工具 harness：计算器求值（纯函数，无 Android 依赖）。

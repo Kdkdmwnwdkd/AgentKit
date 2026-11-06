@@ -1,9 +1,9 @@
-import com.example.agentkit.core.agent.journal.RunEvent
-import com.example.agentkit.core.agent.journal.RunEventCodec
-import com.example.agentkit.core.agent.journal.RunJournalRepair
-import com.example.agentkit.core.agent.journal.RunScope
-import com.example.agentkit.core.agent.journal.ToolCallRef
-import com.example.agentkit.core.agent.journal.ToolSettleStatus
+import com.beichen.polaris.core.agent.journal.RunEvent
+import com.beichen.polaris.core.agent.journal.RunEventCodec
+import com.beichen.polaris.core.agent.journal.RunJournalRepair
+import com.beichen.polaris.core.agent.journal.RunScope
+import com.beichen.polaris.core.agent.journal.ToolCallRef
+import com.beichen.polaris.core.agent.journal.ToolSettleStatus
 
 private var pass = 0
 private var fail = 0

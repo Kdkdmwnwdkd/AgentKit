@@ -45,7 +45,7 @@ rm -rf "$OUT" && mkdir -p "$OUT"
 # 启动失败的会话会让 activeCount 卡在 1，空闲回收永远等不到归零，
 # 表现为「容器页从未打开过，却一直显示有容器会话在运行」。
 # 用源码顺序把不变式钉住，改 UI 时不必靠人记得上一次为什么这么排。
-python3 - "$ROOT/app/src/main/java/com/example/agentkit/ui/ContainerScreen.kt" <<'PY'
+python3 - "$ROOT/app/src/main/java/com/beichen/polaris/ui/ContainerScreen.kt" <<'PY'
 import sys
 path = sys.argv[1]
 src = open(path, encoding='utf-8').read()

@@ -40,14 +40,14 @@
  * 运行方式见 scripts/qa/run-appcontrol-verification.sh（kotlin-compiler-embeddable 编译 + java 运行）。
  */
 
-import com.example.agentkit.automation.DeviceContextStore
-import com.example.agentkit.automation.EVENT_ACTIVITY_RESUMED
-import com.example.agentkit.automation.UsageEventRecord
-import com.example.agentkit.automation.deviceContextEverUpdated
-import com.example.agentkit.automation.pickForegroundPackageFromEvents
-import com.example.agentkit.automation.shouldRetryForFreshWindow
-import com.example.agentkit.core.ToolResult
-import com.example.agentkit.tools.*
+import com.beichen.polaris.automation.DeviceContextStore
+import com.beichen.polaris.automation.EVENT_ACTIVITY_RESUMED
+import com.beichen.polaris.automation.UsageEventRecord
+import com.beichen.polaris.automation.deviceContextEverUpdated
+import com.beichen.polaris.automation.pickForegroundPackageFromEvents
+import com.beichen.polaris.automation.shouldRetryForFreshWindow
+import com.beichen.polaris.core.ToolResult
+import com.beichen.polaris.tools.*
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -836,7 +836,7 @@ private fun testForegroundEventPairing() {
 private fun testFreshWindowGuard() {
     println("\n== W-7 P1-1 ui_tree 陈旧窗口防护（shouldRetryForFreshWindow 判据）==")
 
-    val self = "com.example.agentkit"
+    val self = "com.beichen.polaris"
     val other = "com.smile.gifmaker"
 
     check("刚切换（elapsed<maxWait）且 root 为 null → 值得再等（窗口没建起来）") {

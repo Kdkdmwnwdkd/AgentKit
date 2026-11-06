@@ -335,7 +335,7 @@ extern "C" {
  * @param crashDir `filesDir/crash` 的绝对路径（Kotlin 侧算好传进来，native 不做路径拼接）
  */
 JNIEXPORT void JNICALL
-Java_com_example_agentkit_core_llm_local_LlamaJni_nativeInstallCrashHandler(
+Java_com_beichen_polaris_core_llm_local_LlamaJni_nativeInstallCrashHandler(
     JNIEnv* env, jobject /*thiz*/, jstring crashDir) {
     if (!crashDir) return;
     const char* dir = env->GetStringUTFChars(crashDir, nullptr);

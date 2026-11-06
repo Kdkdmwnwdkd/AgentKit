@@ -22,7 +22,7 @@
 AgentKit 的代码**全部为独立编写**。外部项目只用于「理解机制」，没有任何一行代码、
 任何一种命名体系、任何一段注释被复制进来。可核对的事实：
 
-- 全部业务代码在 `app/src/main/java/com/example/agentkit/`，包名与任何参照项目不同；
+- 全部业务代码在 `app/src/main/java/com/beichen/polaris/`，包名与任何参照项目不同；
 - 57 个工具、17 个分组的命名是自研前缀体系（`read_file` / `ui_click` / `shell_run` / `workflow_*`），
   与参照项目均不对应；
 - 参照仓库不在构建链路里——`app/build.gradle.kts` 的 `implementation` 列表**没有任何一项**
@@ -152,8 +152,8 @@ grep -n "IRIDIS\|rikkahub\|Operit\|AiCode\|Coomi" app/build.gradle.kts settings.
 grep -rnE "来源[:：].*(#[0-9]|[A-Za-z]+\.kt:)" app/src/main/java --include=*.kt
 
 # 非功能性表达：工具名清单（与参照项目逐个对应即为风险信号）
-grep -c 'CatalogTool(' app/src/main/java/com/example/agentkit/core/tool/ToolCatalog.kt
-grep -c 'CatalogGroup(' app/src/main/java/com/example/agentkit/core/tool/ToolCatalog.kt
+grep -c 'CatalogTool(' app/src/main/java/com/beichen/polaris/core/tool/ToolCatalog.kt
+grep -c 'CatalogGroup(' app/src/main/java/com/beichen/polaris/core/tool/ToolCatalog.kt
 ```
 
 **实测基线（2026-11-06 清理后）**，下次核对与这组数对比：

@@ -1,4 +1,4 @@
-import com.example.agentkit.core.text.MentionLogic
+import com.beichen.polaris.core.text.MentionLogic
 
 /**
  * W-28 harness：@提及文件解析与匹配（纯 JVM）。

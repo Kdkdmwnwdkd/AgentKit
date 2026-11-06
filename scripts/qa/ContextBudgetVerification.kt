@@ -1,6 +1,6 @@
 #!/usr/bin/env kotlin
 /**
- * W-10 QA 行为验证 harness：上下文预算治理（[com.example.agentkit.core.agent.ContextBudget]）。
+ * W-10 QA 行为验证 harness：上下文预算治理（[com.beichen.polaris.core.agent.ContextBudget]）。
  *
  * 背景：W-9 之前上下文只按「消息条数」（40 条）滑动，而单条工具结果上限 24k 字符——
  * 条数对体积没有解释力；且截图 base64 每轮全量重发（768px JPEG 约 6~12 万字符）。
@@ -15,13 +15,13 @@
  * 运行方式见 scripts/qa/run-context-budget-verification.sh（离线，仅用 Gradle 缓存内构件）。
  */
 
-import com.example.agentkit.core.AssistantMessage
-import com.example.agentkit.core.ChatMessage
-import com.example.agentkit.core.SystemMessage
-import com.example.agentkit.core.ToolCall
-import com.example.agentkit.core.ToolMessage
-import com.example.agentkit.core.UserMessage
-import com.example.agentkit.core.agent.ContextBudget
+import com.beichen.polaris.core.AssistantMessage
+import com.beichen.polaris.core.ChatMessage
+import com.beichen.polaris.core.SystemMessage
+import com.beichen.polaris.core.ToolCall
+import com.beichen.polaris.core.ToolMessage
+import com.beichen.polaris.core.UserMessage
+import com.beichen.polaris.core.agent.ContextBudget
 import kotlinx.serialization.json.JsonObject
 
 /* ------------------------------ 迷你断言框架 ------------------------------ */

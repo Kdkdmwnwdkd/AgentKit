@@ -19,7 +19,7 @@ set -uo pipefail
 cd "$(dirname "$0")/../.."
 ROOT=$(pwd)
 
-SRC=app/src/main/java/com/example/agentkit
+SRC=app/src/main/java/com/beichen/polaris
 CATALOG="$SRC/core/llm/ProviderCatalog.kt"
 CLIENT="$SRC/core/LLMClient.kt"
 

@@ -13,8 +13,8 @@
  * 跨回合永久挡死」的根因（真机日志 23:58：服务已就绪，ui_tree 仍被熔断拦截）。
  */
 
-import com.example.agentkit.core.*
-import com.example.agentkit.core.agent.RealAgentLoop
+import com.beichen.polaris.core.*
+import com.beichen.polaris.core.agent.RealAgentLoop
 import kotlinx.coroutines.*
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
