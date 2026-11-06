@@ -46,7 +46,7 @@ DEPS=$STDLIB:$COROUTINES:$SER_JSON:$SER_CORE
 [ -n "${JB_ANNOTATIONS:-}" ] && [ -f "${JB_ANNOTATIONS:-}" ] && DEPS=$DEPS:$JB_ANNOTATIONS
 
 SOURCES="$CORE/AgentContract.kt $CORE/ToolResult.kt $CORE/ExposureTypes.kt \
-$CORE/capability/CapabilityManifest.kt $CORE/KernelExposure.kt \
+$CORE/capability/CapabilityManifest.kt $CORE/KernelExposure.kt $CORE/tool/ToolCatalog.kt \
 $ROOT/scripts/qa/CapabilityManifestVerification.kt"
 
 rm -rf "$OUT" && mkdir -p "$OUT"
