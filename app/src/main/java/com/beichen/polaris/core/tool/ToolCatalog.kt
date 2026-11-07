@@ -153,21 +153,26 @@ object ToolCatalog {
         CatalogTool("device_foreground_app", "device", Capability.DANGEROUS),
         // ── media：图片识别与语音播报
         CatalogTool("ocr_image", "media", Capability.PRIVILEGED),
-        CatalogTool("speak", "media", Capability.PRIVILEGED, Approval.DEVICE_OUTPUT),
+        // 不带 approval：朗读是用户明说「念给我听」才发生的动作，不是 Agent 自作主张的
+        // 危险操作；每次弹窗只会训练用户闭眼点允许。归组键只服务于弹窗文案，
+        // 不弹窗的工具填了就是死元数据（见 ApprovalGroupingVerification 的 C13）。
+        CatalogTool("speak", "media", Capability.PRIVILEGED),
         // ── agent：计划、待办、子代理
         CatalogTool("plan_propose", "agent", Capability.SAFE),
         CatalogTool("spawn_agents", "agent", Capability.PRIVILEGED),
         CatalogTool("todo_write", "agent", Capability.PRIVILEGED),
         CatalogTool("todo_read", "agent", Capability.SAFE),
         // ── github：GitHub 仓库操作（克隆、提交、日志）
-        CatalogTool("github_status", "github", Capability.SAFE, Approval.GIT_READ),
+        // 只读查询（列仓库/分支），无副作用，同 read_file 不审。
+        CatalogTool("github_status", "github", Capability.SAFE),
         CatalogTool("github_commit", "github", Capability.DANGEROUS, Approval.GIT_WRITE),
         CatalogTool("github_log", "github", Capability.SAFE),
         CatalogTool("github_diff", "github", Capability.SAFE),
         CatalogTool("github_clone", "github", Capability.PRIVILEGED),
         // ── sys：剪贴板、容器、通知等系统能力
         CatalogTool("clipboard", "sys", Capability.PRIVILEGED),
-        CatalogTool("send_notification", "sys", Capability.PRIVILEGED, Approval.DEVICE_OUTPUT),
+        // 通知本身是用户可见、可撤销的提示，弹审批比通知本身更打扰。
+        CatalogTool("send_notification", "sys", Capability.PRIVILEGED),
         CatalogTool("calculator", "sys", Capability.SAFE),
         CatalogTool("container_toolchain", "sys", Capability.DANGEROUS, Approval.SHELL),
     )

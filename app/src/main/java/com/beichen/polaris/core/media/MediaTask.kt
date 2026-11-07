@@ -6,6 +6,7 @@ import com.beichen.polaris.core.AgentLogger
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.SerializationException
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 import okhttp3.OkHttpClient
@@ -61,15 +62,55 @@ object MediaTaskStore {
 
     /** 全部任务（新的在前）。 */
     fun list(context: Context): List<MediaTask> = synchronized(lock) {
+        readAll(context).sortedByDescending { it.createdAt }
+    }
+
+    /**
+     * 读全量任务。解析失败时**先把坏文件隔离**，再按空处理。
+     *
+     * 修前这里只 `runCatching { ... }.getOrElse { emptyList() }`：日志里留一句，
+     * 返回空列表，然后任何一个 `upsert` 都会拿这份空列表去覆盖 `tasks.json`——
+     * 一次解析失败 = 整个任务史被抹掉，且用户在界面上只会看到「任务都没了」。
+     *
+     * 现在把坏文件改名成 `tasks.corrupt-<时间戳>.json` 留在同目录：新写入不会碰它，
+     * 用户/开发者仍能捞回原文。文件本身没删，只是不再被当作当前库。
+     */
+    private fun readAll(context: Context): List<MediaTask> {
         val f = file(context)
         if (!f.exists()) return emptyList()
-        runCatching {
+        return runCatching {
             json.decodeFromString<List<MediaTask>>(f.readText())
         }.getOrElse { e ->
-            AgentLogger.e("MediaTaskStore", "tasks.json 解析失败，按空处理：${e.message}")
+            // 只有「内容确实解析不了」才隔离。IO 失败（存储满、瞬时 EIO、文件被占用）
+            // 说明文件本身很可能是好的，改名等于把好文件藏起来——用户看到的仍然是
+            // 「任务全没了」，而下次启动也读不回来。那种情况保持原文件不动，下次再试。
+            val corrupt = e is SerializationException
+            val kept = if (corrupt) quarantine(f) else null
+            val where = when {
+                kept != null -> "已隔离为 ${kept.name}"
+                corrupt -> "改名失败，保持原文件不动"
+                else -> "疑似读取失败（非解析错误），保持原文件不动"
+            }
+            AgentLogger.e(
+                "MediaTaskStore",
+                "tasks.json 读取失败（${e.javaClass.simpleName}: ${e.message}），$where；本次按空库启动"
+            )
             emptyList()
-        }.sortedByDescending { it.createdAt }
+        }
     }
+
+    /** 把损坏文件改名隔离，返回隔离后的文件；改名失败返回 null（调用方据此保持原文件不动）。 */
+    private fun quarantine(f: File): File? = runCatching {
+        val stamp = java.text.SimpleDateFormat("yyyyMMdd-HHmmss", java.util.Locale.US)
+            .format(java.util.Date())
+        var target = File(f.parentFile, "tasks.corrupt-$stamp.json")
+        var seq = 2
+        while (target.exists() && seq < 100) {
+            target = File(f.parentFile, "tasks.corrupt-$stamp-$seq.json")
+            seq++
+        }
+        if (f.renameTo(target)) target else null
+    }.getOrNull()
 
     /** 插入或更新（按 id）。 */
     fun upsert(context: Context, task: MediaTask) = synchronized(lock) {
@@ -86,11 +127,36 @@ object MediaTaskStore {
     /** 新建任务的 id（调用方填好其余字段后 upsert）。 */
     fun newId(): String = UUID.randomUUID().toString()
 
+    /**
+     * 全量落盘：**先写临时文件再改名**，不做原地覆盖。
+     *
+     * 原地 `writeText` 写到一半被杀（长任务常伴随后台被杀/断电），留下的是半截 JSON，
+     * 下次启动就走进 [readAll] 的解析失败分支——那条分支再干净也只能保住历史，
+     * 保不住「这次写的内容」。先写 `tasks.json.tmp` 再 rename，同目录内 rename 是原子的：
+     * 要么旧文件完整，要么新文件完整，不存在中间态。
+     */
     private fun writeAll(context: Context, tasks: List<MediaTask>) {
         val f = file(context)
         f.parentFile?.mkdirs()
-        runCatching { f.writeText(json.encodeToString(ListSerializer(MediaTask.serializer()), tasks)) }
-            .onFailure { AgentLogger.e("MediaTaskStore", "写 tasks.json 失败：${it.message}") }
+        val text = runCatching {
+            json.encodeToString(ListSerializer(MediaTask.serializer()), tasks)
+        }.getOrElse { e ->
+            AgentLogger.e("MediaTaskStore", "序列化 tasks 失败，本次不写：${e.message}")
+            return
+        }
+        val tmp = File(f.parentFile, "tasks.json.tmp")
+        runCatching {
+            tmp.writeText(text)
+            if (!tmp.renameTo(f)) {
+                // 部分文件系统上目标已存在时 renameTo 会失败：删掉再改，仍比原地覆写安全。
+                if (!(f.delete() && tmp.renameTo(f))) {
+                    throw IOException("rename 失败：${tmp.name} -> ${f.name}")
+                }
+            }
+        }.onFailure {
+            AgentLogger.e("MediaTaskStore", "写 tasks.json 失败：${it.message}")
+            runCatching { tmp.delete() }
+        }
     }
 
     /** 任务输出目录：filesDir/media/outputs/<taskId>/。 */

@@ -132,6 +132,18 @@ class UiTreeTool : AgentTool {
     /** 只读：仅读取界面结构，无副作用。 */
     override val readOnly = true
 
+    /**
+     * 读屏 = 读隐私，必须经用户授权。
+     *
+     * 返回的 JSON 里是整屏文本（标题栏、聊天内容、输入框里的手机号、验证码），
+     * 会原样进入模型上下文并随请求发往云端供应商。这跟 `ui_screenshot` 是同一件事，
+     * 只是表现形式不同（结构 vs 像素）——目录里两者同归 `UI_SCREENSHOT` 组。
+     *
+     * 高频调用不会反复打扰：`ChatViewModel.requestApproval` 对本组有「本回合已批准」缓存，
+     * 同一用户回合内第二次读屏直接放行；跨回合重置，新任务首次读屏仍问一次。
+     */
+    override val needsApproval = true
+
     override suspend fun execute(args: JsonObject): ToolResult {
         val svc = AutomationBridge.service
         if (!AutomationBridge.isReady() || svc == null) {

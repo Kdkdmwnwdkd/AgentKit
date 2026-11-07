@@ -443,8 +443,14 @@ class SkillRuntimeBridge(
         return raw("http_request", args)
     }
 
-    /** 发送通知。脚本中：agent.notify('标题', '内容') */
-    fun notify(title: String, text: String): String = tool("send_notification", mapOf("title" to title, "text" to text))
+    /**
+     * 发送通知。脚本中：agent.notify('标题', '内容')
+     *
+     * 键名必须是 `body`：`NotificationTool` 读的是 `body`，这里曾经传 `text`，
+     * 于是脚本发的通知**标题有、正文恒为空**——脚本侧看不出问题（调用成功返回），
+     * 用户只看到一条空白通知。两处字段名不同步不会编译失败，只会静默丢内容。
+     */
+    fun notify(title: String, text: String): String = tool("send_notification", mapOf("title" to title, "body" to text))
 
     /** 记录脚本运行日志（会随结果一并返回给模型，便于调试）。 */
     fun log(msg: Any?) { logs.appendLine(msg?.toString() ?: "null") }

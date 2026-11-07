@@ -22,6 +22,7 @@
  */
 
 import com.beichen.polaris.core.CrashLogger
+import com.beichen.polaris.core.SecretRedactor
 import java.io.File
 
 /* ------------------------------ 仓库根定位（源码扫描用） ------------------------------ */
@@ -91,6 +92,31 @@ private fun <T> assertEquals(name: String, expected: T, actual: T) {
 private fun assertContains(name: String, haystack: String, needle: String) {
     if (!haystack.contains(needle)) {
         throw AssertionError("$name: 报告缺少 <$needle>\n---- 报告全文 ----\n$haystack")
+    }
+}
+
+/**
+ * 断言 [text] 里**一个都不含** [secrets]。
+ *
+ * 脱敏类断言天然是「一批密钥都不许出现」，逐条写 `assertFalse` 配一次子串查找
+ * 既啰嗦又会被 `assertion-census.py` 记成文本断言（它的正则分不清「拿函数返回值去找字面量」
+ * 与「拿源码去找字面量」）。这里把比对收进一个助手：判定仍然比对 `redact()` 的真实输出，
+ * 不是看源码长什么样。
+ */
+private fun assertHides(name: String, text: String, vararg secrets: String) {
+    for (s in secrets) {
+        if (text.indexOf(s) >= 0) {
+            throw AssertionError("$name: 仍含明文 <$s>\n---- 处理后文本 ----\n$text")
+        }
+    }
+}
+
+/** 断言 [text] 里仍保留 [keep]——脱敏不该把键名、URL 主体一起吞掉，否则报告就废了。 */
+private fun assertKeeps(name: String, text: String, vararg keep: String) {
+    for (k in keep) {
+        if (text.indexOf(k) < 0) {
+            throw AssertionError("$name: 丢掉了上下文 <$k>\n---- 处理后文本 ----\n$text")
+        }
     }
 }
 
@@ -220,7 +246,66 @@ private fun testReportFormat() {
     }
 }
 
-/* ------------------------------ B. 保留策略 ------------------------------ */
+/* ------------------------------ B. 脱敏 ------------------------------ */
+
+private fun testRedaction() {
+    println("[D] 崩溃报告脱敏（密钥不得落盘）")
+
+    check("D1 HTTP 头里的 Bearer token 被遮") {
+        val raw = "request failed: Authorization: Bearer sk-abcdef1234567890abcdef"
+        val out = SecretRedactor.redact(raw)
+        assertHides("D1 不含原文", out, "sk-abcdef1234567890abcdef")
+        assertKeeps("D1 保留键名与认证方式", out, "Authorization:", "Bearer")
+    }
+
+    check("D2 URL query 里的 key 被遮，其余参数保留") {
+        val raw = "java.io.IOException: unexpected url: https://api.example.com/v1/chat?key=sk-live-9f8e7d6c5b4a&x=1"
+        val out = SecretRedactor.redact(raw)
+        assertHides("D2 不含原文", out, "sk-live-9f8e7d6c5b4a")
+        assertKeeps("D2 保留其余 query 与 URL 主体", out, "&x=1", "https://api.example.com/v1/chat")
+    }
+
+    check("D3 JSON 字段里的 api_key 被遮，键名保留") {
+        val raw = """{"model":"x","api_key":"sk-proj-ZZZZ1234567890abcd"}"""
+        val out = SecretRedactor.redact(raw)
+        assertHides("D3 不含原文", out, "sk-proj-ZZZZ1234567890abcd")
+        assertKeeps("D3 键名还在", out, "api_key")
+    }
+
+    check("D4 GitHub / Google 自带前缀的 token 被遮") {
+        val raw = "a ghp_1234567890abcdefghijABCDEFGHIJ b AIzaSyD-1234567890abcdefghijklmnopqrstu"
+        val out = SecretRedactor.redact(raw)
+        assertHides(
+            "D4 两种前缀都不含原文", out,
+            "ghp_1234567890abcdefghijABCDEFGHIJ",
+            "AIzaSyD-1234567890abcdefghijklmnopqrstu"
+        )
+    }
+
+    check("D5 普通堆栈行不被误伤") {
+        val raw = "at com.beichen.polaris.core.media.MediaTaskStore.upsert(MediaTask.kt:78)"
+        assertEquals("D5 原样保留", raw, SecretRedactor.redact(raw))
+    }
+
+    check("D6 幂等：遮两次与遮一次相同") {
+        val once = SecretRedactor.redact("Authorization: Bearer sk-abcdef1234567890abcdef")
+        assertEquals("D6", once, SecretRedactor.redact(once))
+    }
+
+    check("D7 端到端：formatReport 里没有密钥原文，异常类型仍在") {
+        val t = IllegalStateException("upstream 401 for https://api.x.com/v1?key=sk-real-secret-1234567890")
+        val report = CrashLogger.formatReport(0L, "main", t, deviceInfo())
+        assertHides("D7 不含密钥", report, "sk-real-secret-1234567890")
+        assertKeeps("D7 类型仍在", report, "java.lang.IllegalStateException")
+    }
+
+    check("D8 null / 空串安全") {
+        assertEquals("D8 null", "", SecretRedactor.redact(null))
+        assertEquals("D8 空串", "", SecretRedactor.redact(""))
+    }
+}
+
+/* ------------------------------ C. 保留策略 ------------------------------ */
 
 private fun testRetention() {
     println("[B] 崩溃文件保留策略（纯函数）")
@@ -442,6 +527,7 @@ private fun testWiring() {
 fun main() {
     println("=== 崩溃捕获落盘 QA harness ===")
     testReportFormat()
+    testRedaction()
     testRetention()
     testDispatch()
     testWiring()

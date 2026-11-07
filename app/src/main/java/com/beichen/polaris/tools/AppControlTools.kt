@@ -641,6 +641,15 @@ class AppStopTool(
     /** 写操作：停止应用、真实改变设备状态，必须串行执行。 */
     override val readOnly = false
 
+    /**
+     * 强制停止必须经用户确认。
+     *
+     * `am force-stop` 是不可撤销的：目标应用正在编辑的草稿、未提交的表单、后台同步的
+     * 中间状态都会丢，且应用侧没有「恢复」入口。目录里它归 `APP_MANAGE` 组，
+     * 与 `app_install` / `app_uninstall` 同级——那两个一直会弹窗，只有这里漏了声明。
+     */
+    override val needsApproval = true
+
     override suspend fun execute(args: JsonObject): ToolResult = withContext(Dispatchers.IO) {
         val target = args["target"]?.primOrNull()?.contentOrNull
             ?: return@withContext ToolResult.fail(

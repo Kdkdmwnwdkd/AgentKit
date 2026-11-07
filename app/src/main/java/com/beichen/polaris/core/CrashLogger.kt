@@ -300,10 +300,16 @@ object CrashLogger {
         info: DeviceInfo
     ): String {
         val type = throwable.javaClass.name
-        val message = runCatching { throwable.message }.getOrDefault(null)?.trim().orEmpty()
-        val stack = stackTraceOf(throwable)
+        // 脱敏在**进入报告之前**做，不是写盘时做：报告在内存里就只有遮过的文本，
+        // 任何后续路径（预览、分享、复制）都不需要再记得处理一次。
+        val message = SecretRedactor.redact(
+            runCatching { throwable.message }.getOrDefault(null)?.trim().orEmpty()
+        )
+        // 堆栈也要遮：`Caused by: java.io.IOException: unexpected url: ...?key=sk-...` 这类
+        // 内层异常的消息会原样出现在堆栈文本里，只遮顶层 message 等于没遮。
+        val stack = SecretRedactor.redact(stackTraceOf(throwable))
         val sb = StringBuilder()
-        sb.appendLine("========== AgentKit 崩溃报告 ==========")
+        sb.appendLine("========== 北辰 崩溃报告 ==========")
         sb.appendLine("发生时间：${formatReadable(timeMs)}")
         sb.appendLine("时间戳(ms)：$timeMs")
         sb.appendLine("线程名：$threadName")
