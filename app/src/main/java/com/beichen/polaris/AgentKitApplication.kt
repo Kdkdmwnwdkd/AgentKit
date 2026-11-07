@@ -3,6 +3,7 @@ package com.beichen.polaris
 import android.app.Activity
 import android.app.Application
 import android.os.Bundle
+import com.beichen.polaris.core.CompletionNotifier
 import com.beichen.polaris.core.lifecycle.AppBackgroundHooks
 import com.beichen.polaris.startup.BootSequence
 import java.util.concurrent.atomic.AtomicInteger
@@ -24,6 +25,9 @@ class AgentKitApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         BootSequence.run(this)
+        // 3.2：把「App 是否在前台」装进 core 的完成提醒。方向是 app → core，
+        // core 不再 import 本类（原来那处是 core 唯一离不开 app 壳的硬依赖）。
+        CompletionNotifier.foregroundProbe = { isAppInForeground() }
         // 功能五（P1-10）：前台 Activity 计数——「回答完成提醒」只在 App 退到后台时
         // 发通知（用户正盯着聊天界面时提醒是噪音）。用 ActivityLifecycleCallbacks
         // 而不是 ProcessLifecycleOwner：不引 lifecycle-process 新依赖，计数语义也够用。

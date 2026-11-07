@@ -4,10 +4,9 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
-import android.content.Intent
 import android.os.Build
 import androidx.core.app.NotificationCompat
-import com.beichen.polaris.MainActivity
+import com.beichen.polaris.core.lifecycle.launchAppIntentForNotification
 
 /**
  * 后台任务完成通知（W-33）。
@@ -26,9 +25,7 @@ object JobNotifier {
         } else {
             "命令失败（exit ${job.exitCode ?: "?"}）"
         }
-        val intent = Intent(context, MainActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
-        }
+        val intent = launchAppIntentForNotification(context)
         val pending = PendingIntent.getActivity(
             context,
             job.id.hashCode(),

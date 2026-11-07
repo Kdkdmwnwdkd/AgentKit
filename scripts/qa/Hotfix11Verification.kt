@@ -1044,7 +1044,8 @@ private fun testAppearanceEnhancements() {
     }
     check("V4 CompletionNotifier：后台才发 + 通知总开关检查 + 静默降级") {
         assertContains("V4", notifier, "private const val CHANNEL_ID = \"answer_complete\"")
-        assertContains("V4", notifier, "if (AgentKitApplication.isAppInForeground()) return")
+        // 3.2：前台判定改为 app 层注入的探针，notifier 不再 import 宿主 Application
+        assertContains("V4", notifier, "if (foregroundProbe()) return")
         assertContains("V4", notifier, "if (!nm.areNotificationsEnabled()) return")
         assertContains("V4", notifier, "runCatching {")
         // 通知正文只放预览（截断 60 字），不发全文

@@ -7,7 +7,6 @@ import android.content.Context
 import android.os.Build
 import androidx.core.app.NotificationCompat
 import androidx.core.content.getSystemService
-import com.beichen.polaris.AgentKitApplication
 
 /**
  * 功能五（P1-10）：「回答完成提醒」系统通知（净室实现）。
@@ -24,6 +23,19 @@ object CompletionNotifier {
 
     private const val CHANNEL_ID = "answer_complete"
     private const val NOTIFICATION_ID = 42001
+
+    /**
+     * 「App 是否在前台」探针（3.2）。
+     *
+     * 原来这里直接 import `AgentKitApplication` 读静态计数——连同三处 MainActivity，
+     * 是 core 离不开 app 壳的最后几处硬依赖。改由 app 层在 `onCreate` 里装配
+     * （见 `AgentKitApplication`），顺带让「前台判定」在测试里可替换。
+     *
+     * 默认 `false`（当作后台）：宁可多发一条提醒，也不要漏——漏了用户会以为任务没跑完。
+     * 装配发生在 Application.onCreate，早于任何一次生成，不会真的误发。
+     */
+    @Volatile
+    var foregroundProbe: () -> Boolean = { false }
 
     /** 建渠道（幂等；API 26 以下无渠道概念，空实现）。 */
     fun ensureChannel(context: Context) {
@@ -53,7 +65,7 @@ object CompletionNotifier {
      */
     fun notifyAnswerComplete(context: Context, preview: String) {
         runCatching {
-            if (AgentKitApplication.isAppInForeground()) return
+            if (foregroundProbe()) return
             val nm = context.getSystemService<NotificationManager>() ?: return
             if (!nm.areNotificationsEnabled()) return
             ensureChannel(context)

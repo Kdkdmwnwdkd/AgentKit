@@ -14,7 +14,7 @@ import android.os.IBinder
 import android.os.Looper
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
-import com.beichen.polaris.MainActivity
+import com.beichen.polaris.core.lifecycle.launchAppIntentForNotification
 import com.beichen.polaris.core.AgentLogger
 
 /**
@@ -135,9 +135,7 @@ class SurvivalCheckService : Service() {
     }
 
     private fun buildNotification(seconds: Int, done: Boolean): Notification {
-        val open = Intent(this, MainActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
-        }
+        val open = launchAppIntentForNotification(this)
         val pending = PendingIntent.getActivity(
             this, 0, open,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE

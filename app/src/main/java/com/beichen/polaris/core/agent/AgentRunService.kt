@@ -12,7 +12,7 @@ import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
 import androidx.core.app.NotificationCompat
-import com.beichen.polaris.MainActivity
+import com.beichen.polaris.core.lifecycle.launchAppIntentForNotification
 import com.beichen.polaris.core.AgentLogger
 
 /**
@@ -110,9 +110,7 @@ class AgentRunService : Service() {
     }
 
     private fun buildNotification(title: String, step: Int): Notification {
-        val intent = Intent(this, MainActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
-        }
+        val intent = launchAppIntentForNotification(this)
         val pending = PendingIntent.getActivity(
             this,
             0,

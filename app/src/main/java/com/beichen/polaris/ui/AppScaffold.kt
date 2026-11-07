@@ -238,12 +238,12 @@ fun AppScaffold(
     val dest = AppDest.fromRoute(route)
 
     // 功能一：导航返回栈（录屏反馈「按返回直接退出」）。
-    // 注意实现选择：rememberSaveable 不能保存 SnapshotStateList——字节码级实证
-    // （DisposableSaveableStateRegistry.canBeSavedToBundle 的 AcceptableClasses 只认
-    // Serializable / Parcelable / String 等，mutableStateListOf 两者都不是，仅对
-    // SnapshotMutableState 特解包），故用 MutableState<List<AppDest>>：AppDest 是 enum
-    // （Serializable），空表与恢复后的 ArrayList 均可保存，配置变更/进程死亡后栈不丢。
-    var backStack by rememberSaveable { mutableStateOf(listOf<AppDest>()) }
+    // rememberSaveable 存不了 SnapshotStateList（AcceptableClasses 只认 Serializable /
+    // Parcelable / String），所以是 MutableState<List<AppDest>> + 显式 Saver；
+    // 为什么存 route 而不是 enum，见 AppBackStackSaver 的说明（删枚举值会白屏）。
+    var backStack by rememberSaveable(stateSaver = BackStackSaver) {
+        mutableStateOf(listOf<AppDest>())
+    }
     // 功能一：根页「再按一次返回退出」的上一次按压时刻（0 = 从未按过）
     var backPressedAt by rememberSaveable { mutableStateOf(0L) }
 
