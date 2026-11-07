@@ -968,18 +968,17 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app),
     )
 
     init {
-        // L8：日志目录就绪后才能记录后续任何一行。R3 起日志初始化已挪到
-        // `AgentKitApplication.onCreate`（运行层比 ViewModel 更早跑），此处保留是**幂等兜底**。
+        // L8：日志目录就绪后才能记录后续任何一行；R3 起已挪到 Application.onCreate，此处幂等兜底。
         runCatching { AgentLogger.init(logDir) }
-        // W-33：上次进程被杀时残留的 running 任务标为「结果未知」，不假装还在跑
-        runCatching { jobStore.reconcile(System.currentTimeMillis()) }
-        // B 批：Agent 长任务运行态对账——残留 running 说明上次进程被系统回收了，标为 interrupted
-        runCatching {
-            agentRunStateStore.reconcile()?.let { _interruptedNotice.value = it.note }
+        // 【1.595】启动对账下沉到 IO：三件事都是磁盘扫描（残留任务 / 运行态 / 回合日志），
+        // 结果只用于一条中断提示。原来同步跑在构造线程上，冷启动首帧要等这几份 JSON 读完。
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { jobStore.reconcile(System.currentTimeMillis()) }
+            runCatching {
+                agentRunStateStore.reconcile()?.let { _interruptedNotice.value = it.note }
+            }
+            runCatching { recoverInterruptedJournal() }
         }
-        // R1：回合日志对账——比上面那条更细一层：它能说清「哪个写操作可能已经生效」
-        runCatching { recoverInterruptedJournal() }
-        startup.mark("reconcile")
         if (skillsSnapshot.isNotEmpty()) {
             // use_skill 工具的 systemPrompt 会被 AgentLoop 自动拼进系统提示（利用工具自带提示特性）
             // 用 skillsProvider 动态感知导入/卸载/授权的技能变化
@@ -1003,12 +1002,12 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app),
             _serviceConnected.value = connected
             refreshCapabilityPlans() // 无障碍连接变化 → 能力就绪度随之刷新
         }
-        // W-17：注册周期巡检（幂等）并载入列表
-        WorkflowScheduler.ensureScheduled(app)
-        refreshWorkflows()
-        startup.mark("workflows")
-        // P3-1：能力清单自检——把注册表与 CapabilityManifest 对一遍（只在有偏差时打一条 warn）。
-        // 放在 MCP 注册**之前**：MCP 工具是运行时动态来的，名字不受清单约束，参与审计只会制造噪声。
+        // W-17：注册周期巡检 + 载入列表，两者都读磁盘，跟着对账一起下沉（列表晚一帧到无妨）。
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { WorkflowScheduler.ensureScheduled(app) }
+            refreshWorkflows()
+        }
+        // P3-1：能力清单自检（只在有偏差时 warn）。必须排在 MCP 注册之前——MCP 工具名是运行时来的，参与审计只会制造噪声。
         CapabilityAuditReporter.report(registry.list())
         // W-14/R-07：异步同步 MCP 工具（失败只记日志，不影响启动；停用的会在这里被撤销）
         refreshMcpTools()

@@ -6,6 +6,7 @@ import android.graphics.BitmapFactory
 import com.beichen.polaris.core.AgentTool
 import com.beichen.polaris.core.JsonSchema
 import com.beichen.polaris.core.ToolResult
+import com.beichen.polaris.core.workspace.PathGuard
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.chinese.ChineseTextRecognizerOptions
@@ -129,11 +130,8 @@ class OcrTool(
         )
     }
 
-    /** 工作区路径解析（防目录穿越）。 */
-    private fun resolveWorkspaceFile(rel: String): File? = runCatching {
-        val f = File(workspace, rel)
-        if (f.canonicalPath.startsWith(workspace.canonicalPath)) f else null
-    }.getOrNull()
+    /** 工作区路径解析（防目录穿越）。判据统一在 [PathGuard]，别再手写前缀比较。 */
+    private fun resolveWorkspaceFile(rel: String): File? = PathGuard.resolveInside(workspace, rel)
 
     /**
      * ML Kit 识别（中文识别器同时支持英文/数字混排）。

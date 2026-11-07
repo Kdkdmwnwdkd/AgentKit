@@ -105,7 +105,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -225,63 +224,10 @@ fun ChatScreen(
             .edit().putBoolean(ONBOARDING_KEY, true).apply()
     }
 
-    // 新消息入场后贴底滚动（无 spring 无位移，只做位置归位）；
-    // 流式草稿出现/消失也算一次「新项」，一并归位到尾部。
-    //
-    // 【W-36 修复】原实现无条件贴底：用户上滑看「思考过程」时，下一条工具结果一到就被拽回
-    // 底部，且 animateScrollToItem 与手势互相打架（表现为「滑不动 / 滑下去又弹回顶部」）。
-    // 现在改为「只要用户上过手，就不再自动跟随；滑回底部才恢复」。
-    var followTail by remember { mutableStateOf(true) }
-    LaunchedEffect(listState) {
-        // 用户往「上」翻（可见起点前移）= 他在看历史，立刻停止自动贴底。
-        // 只用公开 API（firstVisibleItemIndex/Offset）——LazyListState 的 interactionSource
-        // 是 internal，拿不到拖拽事件。
-        var lastIdx = listState.firstVisibleItemIndex
-        var lastOff = listState.firstVisibleItemScrollOffset
-        // 视口高度：软键盘弹出/收起、横竖屏切换都会改它。
-        //
-        // 【真机第三轮修复】只比 idx/offset 会把「键盘弹出导致 LazyColumn 微调」误判成
-        // 用户上翻：视口一矮，内容为保持可见项会往回让，offset 变小 → movedBack 成立 →
-        // followTail 被永久置 false → 之后发消息界面完全不动。而每次发消息前都要点输入框，
-        // 键盘必然弹一次，所以这个误判是**必然发生**的，不是偶发（实测 8/8 复现）。
-        // 视口尺寸变化时只同步基准值、不判方向，把「布局变化」和「用户手势」分开。
-        var lastViewportH = listState.layoutInfo.viewportSize.height
-        snapshotFlow {
-            Triple(
-                listState.firstVisibleItemIndex,
-                listState.firstVisibleItemScrollOffset,
-                listState.layoutInfo.viewportSize.height
-            )
-        }.collect { (idx, off, vpH) ->
-            if (vpH != lastViewportH) {
-                // 视口变了：这一跳是布局重排造成的，不当作手势，只更新基准
-                lastViewportH = vpH
-                lastIdx = idx
-                lastOff = off
-                return@collect
-            }
-            val movedBack = idx < lastIdx || (idx == lastIdx && off < lastOff)
-            if (movedBack) followTail = false
-            lastIdx = idx
-            lastOff = off
-        }
-    }
-    LaunchedEffect(listState) {
-        // 回到底部（content 末尾可见）才恢复自动跟随
-        snapshotFlow { listState.canScrollForward }.collect { canForward ->
-            if (!canForward) followTail = true
-        }
-    }
-    // 【W-43 修复】只按「条目数」跟随，且必须落到内容**底部**。
-    // 原实现 `scrollToItem(count - 1)` 只传 index，等于把该条消息的**顶部**对齐到视口顶端：
-    // 思考过程一条就有几百行，看起来就是「被拽回最开始思考的地方」。加上 reasoningDraft
-    // 做 key，每来一个 token 就重跑一次 → 用户根本滑不动。
-    // 现在：① 不再用 reasoningDraft 做 key（同一条消息内增长不算新条目）；
-    //       ② scrollOffset 传大值，滚到内容末尾（LazyList 会自动钳制）。
-    LaunchedEffect(messages.size, streamDraft != null) {
-        val count = messages.size + if (streamDraft != null) 1 else 0
-        if (count > 0 && followTail) listState.scrollToItem(count - 1, Int.MAX_VALUE)
-    }
+    // 贴底跟随的规则（上翻即停、回底恢复、流式长高也跟）全在 ChatAutoScroll.kt；
+    // W-36 / W-43 / 键盘误判三轮修复的都那一段，放在这里会把主屏再撑长几十行。
+    val followTail = remember { FollowTail() }
+    FollowTailEffect(listState, messages.size, streamDraft, followTail)
 
     // 「从中间轮重新发问」待编辑的用户气泡（长按/点击「重新发问」入口置位，确认后截断+重问）
     var reaskTarget by remember { mutableStateOf<UiItem.User?>(null) }
@@ -609,7 +555,7 @@ fun ChatScreen(
                             .clip(CircleShape)
                             .background(MaterialTheme.colorScheme.surfaceVariant)
                             .clickable {
-                                followTail = true // 明确要求回底部 → 恢复自动跟随
+                                followTail.forceFollow() // 明确要求回底部 → 恢复自动跟随
                                 inputScope.launch {
                                     if (messages.isNotEmpty()) {
                                         // 传 Int.MAX_VALUE 才是「滚到内容末尾」；
@@ -684,10 +630,10 @@ fun ChatScreen(
                 if (modelReady) {
                     // 用户主动发了一条消息 → 他必然想看到结果，强制恢复贴底跟随。
                     // 不加这句的话，点输入框时软键盘弹出会把视口压小、LazyColumn 为保持
-                    // 可见项微调滚动位置，那个位移会被下面的 movedBack 判成「用户上翻」，
-                    // 于是 followTail 被置 false —— 消息发出去之后界面一动不动，
-                    // 用户以为卡死了（真机实测 8 次发送 8 次复现）。
-                    followTail = true
+                    // 可见项微调滚动位置，那个位移会被上翻判据当成「用户在翻历史」，
+                    // 跟随被关掉 —— 消息发出去之后界面一动不动，用户以为卡死了
+                    // （真机实测 8 次发送 8 次复现）。
+                    followTail.forceFollow()
                     vm.send()
                 } else {
                     Toast.makeText(ctx, "先配一个模型才能对话", Toast.LENGTH_SHORT).show()

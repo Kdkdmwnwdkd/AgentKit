@@ -122,4 +122,13 @@
 #   文本匹配」升级为分片读回行为断言。校验：
 #   `ls scripts/qa/run-*.sh | grep -v run-all.sh | wc -l` 应等于本数字。
 #
-112
+# 2026-11-07：112 → 113（新增 run-path-guard-verification.sh）。
+#   验「工作区越界」：字符串前缀不等于目录前缀。`canonicalPath.startsWith(root)`
+#   少一个 File.separator，`/w/polaris-evil/x` 就被认成 `/w/polaris` 的子路径。
+#   同类判据原本散在 FileBackupStore / SkillImportRepository / BuiltInTools（写对了）
+#   和 AppManageTools / OcrTool（漏了分隔符），现收进 core/workspace/PathGuard。
+#   10 条行为断言（真建临时目录），覆盖根内放行、.. 回退、绝对路径、同前缀兄弟目录、
+#   符号链接逃逸、空/点路径、isInside 边界。
+#   反向变异：换回旧的字符串前缀实现 → 4 条红；其中「同前缀兄弟目录」正是本次修的那条。
+#
+113

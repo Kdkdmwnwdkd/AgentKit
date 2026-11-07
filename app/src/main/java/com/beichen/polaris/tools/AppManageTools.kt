@@ -8,6 +8,7 @@ import androidx.core.content.FileProvider
 import com.beichen.polaris.core.AgentTool
 import com.beichen.polaris.core.JsonSchema
 import com.beichen.polaris.core.ToolResult
+import com.beichen.polaris.core.workspace.PathGuard
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonObject
@@ -51,14 +52,11 @@ class AppInstallTool(
                 hint = "给出工作区内 .apk 文件的相对路径；先把 APK 下载到工作区再安装。"
             )
         }
-        val file = runCatching {
-            File(workspace, path.trim()).let { f ->
-                if (f.canonicalPath.startsWith(workspace.canonicalPath)) f else null
-            }
-        }.getOrNull() ?: return@withContext ToolResult.fail(
-            code = "bad_path", message = "非法路径：$path",
-            hint = "只能安装工作区内的文件（不允许 .. 穿越）。"
-        )
+        val file = PathGuard.resolveInside(workspace, path)
+            ?: return@withContext ToolResult.fail(
+                code = "bad_path", message = "非法路径：$path",
+                hint = "只能安装工作区内的文件（不允许 .. 穿越）。"
+            )
         if (!file.isFile) {
             return@withContext ToolResult.fail(
                 code = "not_found", message = "APK 不存在：$path",
