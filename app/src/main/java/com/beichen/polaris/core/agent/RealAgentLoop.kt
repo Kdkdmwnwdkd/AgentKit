@@ -987,46 +987,6 @@ class RealAgentLoop(
     }
 
     /**
-     * 中断态（Interrupted/Unknown）→ 回喂的错误 ToolMessage（树尾闭合 / 防御填充共用）。
-     * Interrupted（只读，确定未完成、无副作用）→ code=cancelled；
-     * Unknown（写操作被 kill，可能已有副作用）→ code=cancelled_unknown，文案要求
-     * 模型先向用户确认再决定是否重试，不要原样重复调用。
-     */
-    private fun interruptToolMessage(call: ToolCall, verdict: ToolCallOutcome): ToolMessage =
-        when (verdict) {
-            is ToolCallOutcome.Interrupted -> toolMessageOf(
-                call,
-                ToolResult.fail(
-                    code = "cancelled",
-                    message = "该调用已被用户停止，未取得真实结果。",
-                    hint = "如仍需此操作，请在下一轮重新调用 ${call.name}（可调整参数）。"
-                )
-            )
-
-            is ToolCallOutcome.Unknown -> toolMessageOf(
-                call,
-                ToolResult.fail(
-                    code = "cancelled_unknown",
-                    message = "该调用已被用户停止，执行状态未知（写操作可能已产生部分副作用）。",
-                    hint = "请先向用户确认 ${call.name} 是否已实际生效，再决定是否重试；不要原样重复调用。"
-                )
-            )
-
-            // 未越过执行边界：无论工具是否有副作用，都不可能产生效果，可直接重试。
-            // 与 Interrupted 分开是必要的——把这种情况也说成"先确认"，会让模型白问一轮。
-            is ToolCallOutcome.NotDispatched -> toolMessageOf(
-                call,
-                ToolResult.fail(
-                    code = "not_dispatched",
-                    message = "该调用尚未开始执行就被中断，没有产生任何效果。",
-                    hint = "可以安全地重新调用 ${call.name}。"
-                )
-            )
-
-            is ToolCallOutcome.Completed -> verdict.message
-        }
-
-    /**
      * 单次 LLM 调用（T01 流式通道）：收集 [LLMClient.streamChat]——
      * TextDelta 转 [onTextDelta] 回调（UI 打字机，不进历史），Completed 整条
      * commit（进历史的唯一形态）。未覆盖流式的客户端走默认实现（chat() +

@@ -529,3 +529,47 @@ internal fun toolMessageOf(
     isError = result.isError,
     images = images
 )
+
+/**
+ * 中断态（Interrupted / Unknown / NotDispatched）→ 回喂的错误 ToolMessage。
+ *
+ * 与 [toolMessageOf] 放一起：两者都是「执行结局 → 回喂文本」的构造点，
+ * 分开会让同一套文案散在两个文件里。树尾闭合与防御填充共用本函数。
+ *
+ * - Interrupted（只读，确定未完成、无副作用）→ `cancelled`；
+ * - Unknown（写操作被 kill，可能已有副作用）→ `cancelled_unknown`，要求模型先确认再重试；
+ * - NotDispatched（未越过执行边界）→ `not_dispatched`，可直接重试。
+ */
+internal fun interruptToolMessage(call: ToolCall, verdict: ToolCallOutcome): ToolMessage =
+    when (verdict) {
+        is ToolCallOutcome.Interrupted -> toolMessageOf(
+            call,
+            ToolResult.fail(
+                code = "cancelled",
+                message = "该调用已被用户停止，未取得真实结果。",
+                hint = "如仍需此操作，请在下一轮重新调用 ${call.name}（可调整参数）。"
+            )
+        )
+
+        is ToolCallOutcome.Unknown -> toolMessageOf(
+            call,
+            ToolResult.fail(
+                code = "cancelled_unknown",
+                message = "该调用已被用户停止，执行状态未知（写操作可能已产生部分副作用）。",
+                hint = "请先向用户确认 ${call.name} 是否已实际生效，再决定是否重试；不要原样重复调用。"
+            )
+        )
+
+        // 未越过执行边界：无论工具是否有副作用，都不可能产生效果，可直接重试。
+        // 与 Interrupted 分开是必要的——把这种情况也说成"先确认"，会让模型白问一轮。
+        is ToolCallOutcome.NotDispatched -> toolMessageOf(
+            call,
+            ToolResult.fail(
+                code = "not_dispatched",
+                message = "该调用尚未开始执行就被中断，没有产生任何效果。",
+                hint = "可以安全地重新调用 ${call.name}。"
+            )
+        )
+
+        is ToolCallOutcome.Completed -> verdict.message
+    }
