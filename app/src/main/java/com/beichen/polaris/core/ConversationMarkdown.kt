@@ -64,7 +64,7 @@ fun conversationToMarkdown(record: ConversationRecord): String = buildString {
     appendLine()
     appendLine("---")
     appendLine()
-    appendLine("*由 AgentKit 导出*")
+    appendLine("*由北辰导出*")
 }
 
 /** 单条消息 → Markdown 片段（私有：只服务本文件的组装，不构成公开 API）。 */

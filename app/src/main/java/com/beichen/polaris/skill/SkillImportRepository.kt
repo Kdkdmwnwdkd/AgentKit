@@ -300,7 +300,7 @@ class ImportedSkillRepository(private val context: Context) {
                 zos.write(prettyJson.encodeToString(JsonObject.serializer(), skillJson).toByteArray(Charsets.UTF_8))
                 zos.closeEntry()
                 zos.putNextEntry(ZipEntry("SKILL.md"))
-                zos.write("这是一个示例技能，用于演示 AgentKit 的「导入技能」功能。".toByteArray(Charsets.UTF_8))
+                zos.write("这是一个示例技能，用于演示北辰的「导入技能」功能。".toByteArray(Charsets.UTF_8))
                 zos.closeEntry()
             }
             return baos.toByteArray()

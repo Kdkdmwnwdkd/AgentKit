@@ -60,8 +60,8 @@
 // 校验脚本要在 .so 里用 `strings` 找它，而 strings 只认 ASCII 可打印串，
 // 中文（UTF-8）一个字节都取不出来——上一版就是拿中文串去 grep，把「兜底明明编进去了」
 // 误判成「没编进去」，白红一次。
-#define AK_VK_LOGE(...) __android_log_print(ANDROID_LOG_ERROR, "AgentKitVk", __VA_ARGS__)
-#define AK_VK_LOGI(...) __android_log_print(ANDROID_LOG_INFO, "AgentKitVk", __VA_ARGS__)
+#define AK_VK_LOGE(...) __android_log_print(ANDROID_LOG_ERROR, "PolarisVk", __VA_ARGS__)
+#define AK_VK_LOGI(...) __android_log_print(ANDROID_LOG_INFO, "PolarisVk", __VA_ARGS__)
 #else
 // 让这个文件在本机（Linux 主机）也能编，好跑行为断言。
 #define AK_VK_LOGE(...) ((void) 0)

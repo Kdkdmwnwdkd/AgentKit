@@ -3839,7 +3839,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app),
             val client = LlmHttp.short
             val request = Request.Builder()
                 .url(url)
-                .header("User-Agent", "AgentKit")
+                .header("User-Agent", "Polaris")
                 .get()
                 .build()
             client.newCall(request).execute().use { resp ->

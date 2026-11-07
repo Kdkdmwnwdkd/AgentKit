@@ -74,7 +74,7 @@ object DiagnosticsExporter {
 
         val tail = safeLog.lineSequence().toList().takeLast(MAX_LOG_LINES).joinToString("\n")
         val text = buildString {
-            appendLine("AgentKit 诊断包")
+            appendLine("北辰诊断包")
             appendLine("时间：${SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date())}")
             appendLine("版本：$version")
             appendLine("设备：$device")
@@ -99,14 +99,14 @@ object DiagnosticsExporter {
 
         val dir = File(context.cacheDir, "exports").apply { mkdirs() }
         val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.getDefault()).format(Date())
-        val file = File(dir, "agentkit-diagnostics-$stamp.txt")
+        val file = File(dir, "polaris-diagnostics-$stamp.txt")
         file.writeText(text)
         AgentLogger.i("Diagnostics", "诊断包已生成：${file.name}（${file.length()} 字节）")
         file
     }.getOrNull()
 
     /**
-     * 回合事件的结构化导出（R10）：`<cache>/exports/agentkit-turns-<stamp>.ndjson`。
+     * 回合事件的结构化导出（R10）：`<cache>/exports/polaris-turns-<stamp>.ndjson`。
      *
      * 为什么单独成文件而不是塞进诊断文本：回合事件是**给工具读的**——
      * `jq -c 'select(.type=="settle")'` 能一句话捞出所有失败的调用，
@@ -123,11 +123,11 @@ object DiagnosticsExporter {
         if (body.isBlank()) return null
         val dir = File(context.cacheDir, "exports").apply { mkdirs() }
         val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.getDefault()).format(Date())
-        File(dir, "agentkit-turns-$stamp.ndjson").apply { writeText(body) }
+        File(dir, "polaris-turns-$stamp.ndjson").apply { writeText(body) }
     }.getOrNull()
 
     /**
-     * 遥测流水的导出（P5-1）：`<cache>/exports/agentkit-events-<stamp>.ndjson`。
+     * 遥测流水的导出（P5-1）：`<cache>/exports/polaris-events-<stamp>.ndjson`。
      *
      * 与 [ndjsonOf] 的区别（名字不像，内容完全不同，别混）：
      * - [ndjsonOf]：`RunEvent`——崩溃恢复日志，回答「哪些调用可能已生效」；
@@ -147,7 +147,7 @@ object DiagnosticsExporter {
             ?: return null
         val out = File(context.cacheDir, "exports").apply { mkdirs() }
         val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.getDefault()).format(Date())
-        File(out, "agentkit-events-$stamp.ndjson").apply { src.copyTo(this, overwrite = true) }
+        File(out, "polaris-events-$stamp.ndjson").apply { src.copyTo(this, overwrite = true) }
     }.getOrNull()
 
     /**
@@ -226,7 +226,7 @@ object DiagnosticsExporter {
                 putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris)
             }
         }
-        send.putExtra(Intent.EXTRA_SUBJECT, "AgentKit 诊断包")
+        send.putExtra(Intent.EXTRA_SUBJECT, "北辰诊断包")
         send.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         val chooser = Intent.createChooser(send, "分享诊断包").apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)

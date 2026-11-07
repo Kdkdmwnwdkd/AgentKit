@@ -129,7 +129,7 @@ class AppUninstallTool(
         if (target == selfPackage) {
             return@withContext ToolResult.fail(
                 code = "self_uninstall_refused",
-                message = "不能卸载 AgentKit 自己",
+                message = "不能卸载北辰自己",
                 hint = "如果要移除本应用，请在系统设置 → 应用里手动卸载。"
             )
         }

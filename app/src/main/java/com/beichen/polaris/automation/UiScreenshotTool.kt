@@ -51,7 +51,7 @@ class UiScreenshotTool(private val workspace: File) : AgentTool {
             return@withContext ToolResult.fail(
                 code = "a11y_screenshot_unavailable",
                 message = SCREENSHOT_UNAVAILABLE_GUIDANCE,
-                hint = "到「设置 → 无障碍 → AgentKit」开启服务后重试；" +
+                hint = "到「设置 → 无障碍 → 北辰 · 自动化」开启服务后重试；" +
                     "也可改用 ui_tree 读取界面结构（不要用 shell 绕过）。"
             )
         }

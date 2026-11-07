@@ -68,7 +68,7 @@ internal fun initializeParams(): JsonObject = buildJsonObject {
     put("protocolVersion", "2024-11-05")
     put("capabilities", buildJsonObject { })
     put("clientInfo", buildJsonObject {
-        put("name", "AgentKit")
+        put("name", "Polaris")
         put("version", "1.0")
     })
 }

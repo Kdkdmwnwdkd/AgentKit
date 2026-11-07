@@ -73,7 +73,7 @@ class GitHubBuildService(
     }
 
     /**
-     * ① 把工作区文件推成 commit（路径 `agentkit-workspace/<文件名>`）。
+     * ① 把工作区文件推成 commit（路径 `polaris-workspace/<文件名>`）。
      *
      * 走 Git Data API 而非 JGit——零依赖，且与 CI 推送脚本同一套协议
      * （本仓库 L4-L8 的推送全部由此路径完成，久经实战）。工作区为空时
@@ -100,7 +100,7 @@ class GitHubBuildService(
                     put("encoding", "base64")
                 })
                 buildJsonObject {
-                    put("path", "agentkit-workspace/${entry.path}")
+                    put("path", "polaris-workspace/${entry.path}")
                     put("mode", "100644")
                     put("type", "blob")
                     put("sha", blob["sha"]?.primOrNull()?.contentOrNull ?: error("blob 缺 sha"))
@@ -114,7 +114,7 @@ class GitHubBuildService(
             })
             val treeSha = tree["sha"]?.primOrNull()?.contentOrNull ?: error("tree 缺 sha")
             val commit = post("/repos/${cfg.fullName}/git/commits", buildJsonObject {
-                put("message", "AgentKit 构建：工作区 ${files.size} 个文件")
+                put("message", "北辰构建：工作区 ${files.size} 个文件")
                 put("tree", treeSha)
                 put("parents", kotlinx.serialization.json.buildJsonArray {
                     add(kotlinx.serialization.json.JsonPrimitive(head))

@@ -131,8 +131,8 @@ fun accessibilityBackendAvailability(
         if (!masterEnabled) add("自动化总开关未开启")
     }.joinToString("，且")
     val actions = buildList {
-        if (!serviceConnected) add("到系统「设置 → 无障碍」开启 AgentKit 的无障碍服务")
-        if (!masterEnabled) add("到 AgentKit「设置 → 自动化」打开总开关")
+        if (!serviceConnected) add("到系统「设置 → 无障碍」开启「北辰 · 自动化」服务")
+        if (!masterEnabled) add("到「北辰」的「设置 → 自动化」打开总开关")
     }.joinToString("，再")
     return BackendAvailability(
         backendId = BACKEND_ACCESSIBILITY,

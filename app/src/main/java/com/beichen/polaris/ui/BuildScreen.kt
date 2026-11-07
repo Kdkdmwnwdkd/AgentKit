@@ -133,7 +133,7 @@ fun BuildScreen() {
             ) {
                 BuildField(label = "Owner", value = owner, onValueChange = { owner = it }, placeholder = "Kdkdmwnwdkd")
                 Spacer(Modifier.height(AgentSpacing.space2))
-                BuildField(label = "仓库", value = repo, onValueChange = { repo = it }, placeholder = "AgentKit")
+                BuildField(label = "仓库", value = repo, onValueChange = { repo = it }, placeholder = "Polaris")
                 Spacer(Modifier.height(AgentSpacing.space2))
                 BuildField(label = "PAT", value = pat, onValueChange = { pat = it }, placeholder = "github_pat_…")
                 Spacer(Modifier.height(AgentSpacing.space2))
@@ -177,7 +177,7 @@ fun BuildScreen() {
             AkSectionCard(
                 title = "构建",
                 icon = Icons.Outlined.Build,
-                description = "工作区 $workspaceCount 个文件将随本次构建提交到 agentkit-workspace/，CI 编译后自动拉回 APK。"
+                description = "工作区 $workspaceCount 个文件将随本次构建提交到 polaris-workspace/，CI 编译后自动拉回 APK。"
             ) {
                 AkPrimaryButton(
                     text = when {

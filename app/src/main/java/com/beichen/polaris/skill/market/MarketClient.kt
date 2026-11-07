@@ -127,7 +127,7 @@ class MarketClient(
         /** 单包上限 8MB（与 [MarketRules.MAX_PACKAGE_BYTES] 一致）。 */
         const val MAX_PACKAGE_BYTES = 8 * 1024 * 1024
 
-        private const val USER_AGENT = "AgentKit-Market/1.0"
+        private const val USER_AGENT = "Polaris-Market/1.0"
 
         /**
          * 市场专用客户端：20s 读超时、60s 整通上限。

@@ -25,7 +25,7 @@ import kotlinx.serialization.json.jsonPrimitive
 private val browser = WebViewBrowser()
 
 private fun notReadyHint(): String =
-    "后台浏览器未就绪：先回到 AgentKit 主界面（App 在前台时 WebView 才可用），再重试。"
+    "后台浏览器未就绪：先回到北辰主界面（App 在前台时 WebView 才可用），再重试。"
 
 class WebOpenTool : AgentTool {
     override val name = "web_open"

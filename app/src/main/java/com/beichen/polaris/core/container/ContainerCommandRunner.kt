@@ -278,7 +278,7 @@ object ContainerCommandRunner {
                     )
                     return Result(
                         result.exitCode,
-                        result.output + "\n[AgentKit] 包管理器数据库被占用，重试 ${attempt} 次仍失败；" +
+                        result.output + "\n[北辰] 包管理器数据库被占用，重试 ${attempt} 次仍失败；" +
                             "可能有上一次安装的进程没退出，稍等一会儿再点一次。"
                     )
                 }
@@ -342,9 +342,9 @@ object ContainerCommandRunner {
                         append("命令超时（${timeoutMinutes} 分钟）已终止。")
                         if (tail.isBlank()) {
                             // 零输出是重要信号：说明不是「下载慢」，而是进程根本没跑起来
-                            append("\n[AgentKit] 这段时间内没有任何输出——更像是卡在启动阶段（proot/rootfs），不是网速慢。")
+                            append("\n[北辰] 这段时间内没有任何输出——更像是卡在启动阶段（proot/rootfs），不是网速慢。")
                         } else {
-                            append("\n[AgentKit] 最后输出：\n").append(tail)
+                            append("\n[北辰] 最后输出：\n").append(tail)
                         }
                     }
                 )

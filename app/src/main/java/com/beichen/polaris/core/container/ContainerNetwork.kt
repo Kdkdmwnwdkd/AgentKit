@@ -51,7 +51,7 @@ object ContainerNetwork {
             return
         }
         val text = buildString {
-            appendLine("# 由 AgentKit 写入：宿主当前网络的 DNS")
+            appendLine("# 由北辰写入：宿主当前网络的 DNS")
             servers.forEach { appendLine("nameserver $it") }
         }
         val target = File(etc, "resolv.conf")

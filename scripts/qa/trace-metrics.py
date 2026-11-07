@@ -23,7 +23,7 @@ App 在 `filesDir/logs/turns-<yyyyMMdd>.ndjson` 落流水，一行一个 JSON：
 - `store.write`：会话落盘计量
 - `store.repair`：崩溃恢复补回的事件数
 
-取法：App 里「导出诊断包」会把它拷成 `agentkit-events-<stamp>.ndjson`，
+取法：App 里「导出诊断包」会把它拷成 `polaris-events-<stamp>.ndjson`，
 或者 `adb pull /data/data/<pkg>/files/logs/`。
 
 ## 用法

@@ -154,7 +154,9 @@ class UiTreeTool : AgentTool {
                 ?: return ToolResult.fail(
                     code = "service_not_ready",
                     message = "读取界面失败：无障碍服务未启用，调试通道（Shizuku / 无线调试）也不可用。",
-                    hint = "任选其一：① 到系统「设置 → 无障碍」开启 AgentKit 的无障碍服务；" +
+                    // 服务在系统列表里叫「北辰 · 自动化」（AndroidManifest 的 service label）。
+                    // 这里必须写这个确切名字：早前写的是内部代号，用户到设置里根本找不到。
+                    hint = "任选其一：① 到系统「设置 → 无障碍」开启「北辰 · 自动化」服务；" +
                         "② 到「权限中心 → 调试通道」完成一次 Shizuku 授权（需已装 Shizuku）；" +
                         "③ 到「设置 → 调试通道」用配对码连一次无线调试（不需要装任何 App）。"
                 )

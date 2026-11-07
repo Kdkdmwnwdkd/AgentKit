@@ -120,7 +120,7 @@ object BuildEngine {
 
         // ⑤ 下载 APK：release/latest 优先，artifact 回退
         advance(BuildStage.DOWNLOADING)
-        val apkFile = File(BuildStore.apkDir(context), "agentkit-run-${run.number}.apk")
+        val apkFile = File(BuildStore.apkDir(context), "polaris-run-${run.number}.apk")
         val downloaded = runCatching {
             service.downloadLatestApk(
                 minUpdatedAt = task.createdAt,

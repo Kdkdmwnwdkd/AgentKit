@@ -58,7 +58,7 @@ class AgentRunService : Service() {
         super.onCreate()
         wakeLock = runCatching {
             val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
-            pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "AgentKit:run").apply {
+            pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Polaris:run").apply {
                 setReferenceCounted(false)
                 acquire(15 * 60 * 1000L)
             }

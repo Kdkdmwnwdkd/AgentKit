@@ -813,7 +813,7 @@ private fun ModelTab(
                     value = headersText,
                     onValueChange = onHeadersText,
                     label = "自定义请求头（每行一条 Key: Value，# 开头为注释）",
-                    placeholder = "HTTP-Referer: https://example.com\nX-Title: AgentKit",
+                    placeholder = "HTTP-Referer: https://example.com\nX-Title: Polaris",
                     singleLine = false,
                     maxLines = 5,
                     machine = true
