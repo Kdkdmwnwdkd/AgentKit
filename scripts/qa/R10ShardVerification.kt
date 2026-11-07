@@ -245,6 +245,10 @@ fun main() {
         val s = ConversationStore(f)
         val id = s.create()
         Thread.sleep(120)
+        // create() 走 urgent 写、同样在调度器上异步执行；先等它落完再取基准，
+        // 否则基准可能少算一次，后面的判据会连带跑偏。
+        waitUntil(1000) { s.persistCount >= 1 }
+        val base = s.persistCount
         s.appendMessage(id, MsgRecord(id = "last", role = ROLE_USER, content = "窗口内的最后一条"))
         s.flush()
         assertTrue(
@@ -255,6 +259,11 @@ fun main() {
                 }.getOrDefault(false)
             }
         )
+        // flush() 只是把写任务排进调度器，persist() 返回之后才 ++persistCount：
+        // 「分片已经能读回」的那一瞬间，计数可能还没加上。此刻直接取 before，
+        // 这 1 次写就会被让给后面的空 flush，260ms 后判成「空 flush 也写」。
+        // run 593 的红就是这么来的（本机 PASS，runner IO 慢一档就翻脸）。
+        assertTrue("这次 flush 的写计数已归位", waitUntil(500) { s.persistCount > base })
         val before = s.persistCount
         repeat(10) { s.flush() }
         Thread.sleep(260)
