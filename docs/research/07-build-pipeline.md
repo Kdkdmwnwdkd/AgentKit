@@ -74,7 +74,15 @@ build/
 ### 版本与签名
 
 - 版本号继续吃 `GITHUB_RUN_NUMBER`（现有 CI 已实现）——App 内显示「构建 #N」与 CI run number 一一对应，**出问题能精确定位是哪次提交**
-- 签名：现阶段 debug keystore 由 CI 自动生成，同机覆盖安装没问题；**将来上 release 签名**：keystore 存 GitHub Secrets，App 只回传 APK——**私钥永远不进手机**（这是架构上的正确边界，写进设计文档防后人"图方便"）
+- 签名：**已按下面这套落地（2026-11-07）**——私钥存 GitHub Actions Secrets
+  （`POLARIS_KEYSTORE_B64` / `POLARIS_STORE_PASSWORD` / `POLARIS_KEY_ALIAS` / `POLARIS_KEY_PASSWORD`），
+  workflow 在构建前解到 `$RUNNER_TEMP`（不在工作树内），`POLARIS_REQUIRE_RELEASE_KEY=1`
+  让 Gradle 在 secret 缺失时直接失败，避免静默回退 debug 证书、发出一个以后升不了级的包。
+  仓库里**不再有任何** `.jks` / `.keystore`（`.gitignore` 已封），App 只回传 APK——
+  **私钥永远不进手机，也不进仓库**（架构上的正确边界，写进设计文档防止后人"图方便"）。
+  旧版曾把 `app/debug.keystore`（口令 `android`）当发布签名提交在公开仓库里：那不是"debug
+  证书算不算秘密"的问题，而是它被当作**发布身份**使用——任何拿到仓库的人都能签出包名与证书
+  一致、被系统当作正常升级的 APK，且覆盖安装会继承已授予的无障碍与通知监听权限。
 
 ### UI：构建页（v3.1 暖纸规范）
 

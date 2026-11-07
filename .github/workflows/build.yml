@@ -167,6 +167,38 @@ jobs:
             echo "AK_REQUIRE_VULKAN=1"
           } >> "$GITHUB_ENV"
 
+      # 签名：私钥只存在 Actions Secrets 里，构建时才解到 runner 的临时目录。
+      # 解出来的文件放在 $RUNNER_TEMP（不在工作树内），即使后续步骤把工作树打包上传
+      # 也带不走私钥。POLARIS_REQUIRE_RELEASE_KEY=1 让 Gradle 在 secret 缺失时直接失败——
+      # 否则会静默回退 debug 证书，产出一个「以后永远升不了级」的包。
+      - name: Decode signing key (私钥不进仓库)
+        env:
+          KEYSTORE_B64: ${{ secrets.POLARIS_KEYSTORE_B64 }}
+          STORE_PASSWORD: ${{ secrets.POLARIS_STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.POLARIS_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.POLARIS_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "${KEYSTORE_B64:-}" ]; then
+            echo "::error::缺少 secret POLARIS_KEYSTORE_B64，拒绝构建可发布包"
+            exit 1
+          fi
+          KS="$RUNNER_TEMP/polaris-release.jks"
+          printf '%s' "$KEYSTORE_B64" | base64 -d > "$KS"
+          # 解出来的必须是一把能打开的钥匙：口令错/文件截断在这里就暴露，
+          # 而不是等到 assembleDebug 末尾报一句 "Failed to read key"
+          keytool -list -keystore "$KS" -storepass "$STORE_PASSWORD" -alias "$KEY_ALIAS" > /dev/null
+          {
+            echo "POLARIS_KEYSTORE=$KS"
+            echo "POLARIS_STORE_PASSWORD=$STORE_PASSWORD"
+            echo "POLARIS_KEY_ALIAS=$KEY_ALIAS"
+            echo "POLARIS_KEY_PASSWORD=$KEY_PASSWORD"
+            echo "POLARIS_REQUIRE_RELEASE_KEY=1"
+          } >> "$GITHUB_ENV"
+          # 指纹写进日志：以后核对「某个包是不是这台机器签的」不用再翻本机 keystore
+          keytool -list -v -keystore "$KS" -storepass "$STORE_PASSWORD" -alias "$KEY_ALIAS" \
+            | grep -E "SHA256:|Valid from" || true
+
       - name: Build debug APK
         run: ./gradlew assembleDebug --no-daemon --stacktrace
 

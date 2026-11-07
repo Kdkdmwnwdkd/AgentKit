@@ -10,19 +10,53 @@ plugins {
  */
 val LOCAL_FALLBACK_VERSION_CODE = 14
 
+/*
+ * ── 签名：私钥不在仓库里 ────────────────────────────────────────────────
+ *
+ * 修前这里是 `storeFile = file("debug.keystore")` + `storePassword = "android"`，
+ * 而那个 keystore 是 git 跟踪的、仓库公开的。要害不是「debug 证书算不算秘密」
+ * ——它本来就人人可生成、口令是安卓界公开约定——而是它被当**发布身份**在用：
+ * CI 产出的每个包都由它签，于是任何拿到仓库的人都能签出「包名与证书都一致、
+ * 被系统当作正常升级」的 APK，且覆盖安装会继承已授予的无障碍与通知监听权限。
+ *
+ * 现在私钥只存在两处：GitHub Actions Secrets（CI 构建时解到 runner 临时目录）
+ * 和用户离线备份。仓库里只留「怎么用 secret 签名」的代码。
+ *
+ * 本地没有 secret 时回退标准 debug 证书（每台机器各生成一份，互不相同，无所谓
+ * ——本地包不发布）。CI 上则要求必须有真签名：宁可红，也不要悄悄发一个
+ * 「以后永远升不了级」的包（签名换了而用户不知道，是最难查的一类问题）。
+ */
+val ksPath: String? = System.getenv("POLARIS_KEYSTORE")
+val ksStorePass: String? = System.getenv("POLARIS_STORE_PASSWORD")
+val ksAlias: String? = System.getenv("POLARIS_KEY_ALIAS")
+val ksKeyPass: String? = System.getenv("POLARIS_KEY_PASSWORD") ?: ksStorePass
+val releaseKeyFile = ksPath?.let { file(it) }
+val hasReleaseKey = releaseKeyFile?.isFile == true &&
+    !ksStorePass.isNullOrBlank() && !ksAlias.isNullOrBlank()
+
+if (!hasReleaseKey && System.getenv("POLARIS_REQUIRE_RELEASE_KEY") == "1") {
+    throw GradleException(
+        "未找到发布签名：POLARIS_KEYSTORE=${ksPath ?: "（未设置）"}，" +
+            "storePassword=${if (ksStorePass.isNullOrBlank()) "空" else "已设置"}，" +
+            "alias=${ksAlias ?: "（未设置）"}。" +
+            "CI 上出现这个错误代表 Actions Secrets 丢了（POLARIS_KEYSTORE_B64 / " +
+            "POLARIS_STORE_PASSWORD / POLARIS_KEY_ALIAS / POLARIS_KEY_PASSWORD）；" +
+            "本地构建不要设置 POLARIS_REQUIRE_RELEASE_KEY。"
+    )
+}
+
 android {
     namespace = "com.beichen.polaris"
     compileSdk = 34
 
     signingConfigs {
-        // 仓库内共享的固定 debug 签名：本地与 CI 用同一把钥匙，
-        // 保证不同机器/不同次构建产出的 APK 签名一致，可互相覆盖安装。
-        // 注意：这是 Android 官方标准 debug 证书（密码公开为 android），仅用于调试，不是发布签名。
-        getByName("debug") {
-            storeFile = file("debug.keystore")
-            storePassword = "android"
-            keyAlias = "androiddebugkey"
-            keyPassword = "android"
+        if (hasReleaseKey) {
+            create("polaris") {
+                storeFile = releaseKeyFile
+                storePassword = ksStorePass
+                keyAlias = ksAlias
+                keyPassword = ksKeyPass
+            }
         }
     }
 
@@ -57,7 +91,15 @@ android {
 
     buildTypes {
         getByName("debug") {
-            signingConfig = signingConfigs.getByName("debug")
+            // 本项目只产出 debug 变体，所以「发布签名」就挂在它上面：
+            // 同一签名是覆盖升级的唯一前提，变体名与是否发布无关。
+            signingConfig = if (hasReleaseKey) {
+                signingConfigs.getByName("polaris")
+            } else {
+                // 回退 AGP 默认的 debug 签名（~/.android/debug.keystore，自动生成）。
+                // 不要写死到仓库里的某个文件——那正是这次要摆脱的东西。
+                signingConfigs.getByName("debug")
+            }
         }
         // 不要动 release（本项目不产出 release 包）
     }

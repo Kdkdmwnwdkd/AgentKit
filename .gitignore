@@ -36,3 +36,8 @@ core.[0-9]*
 # Python 字节码（QA 脚本的 __pycache__，2026-11-07 曾误入库）
 __pycache__/
 *.pyc
+
+# 签名私钥：任何情况下都不进仓库（历史上有名的坑：debug.keystore 被当发布签名用了）
+# CI 从 Actions Secrets 解出，本地放仓库外，口令写 local.properties（同样被忽略）。
+*.jks
+*.keystore
