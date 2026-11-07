@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- 北辰 图标底色：夜空蓝。与图标前景的金星构成一套。 -->
-    <color name="ic_launcher_background">#16233A</color>
+    <!-- 北辰 图标底色：插画本身是暖白底，底色跟着取同一个值，
+         这样安全区外的延展部分和画面无缝（深蓝底会在圆边上咬出一圈冷边）。 -->
+    <color name="ic_launcher_background">#F8F8F6</color>
 </resources>

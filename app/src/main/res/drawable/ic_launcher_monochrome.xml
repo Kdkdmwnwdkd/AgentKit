@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 北辰 主题图标（monochrome）：Android 13+ 的「主题化图标」会把这一层当成
+     alpha 掩码，颜色由系统按壁纸取色决定，所以这里只用纯白单色填。
+     形状仍是四角星（北辰 = 北极星），落在 108dp 画布的安全区里。
+     注意：常规图标前景已换成位图（mipmap-*/ic_launcher_foreground.png），
+     因为原图是插画，矢量重绘在 48dp 上会丢细节；这一层是唯一保留的矢量。 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M54.00,24.00 L60.36,47.64 L84.00,54.00 L60.36,60.36 L54.00,84.00 L47.64,60.36 L24.00,54.00 L47.64,47.64 Z" />
+</vector>
