@@ -25,9 +25,12 @@ data class UpdateInfo(
  * 引入 AppUpdater 之类的库要加几百 KB 和一堆权限，不值。
  *
  * ## 版本号的来源
- * CI 用 `GITHUB_RUN_NUMBER` 同时写 `versionCode` 和 Release 标题 `AgentKit latest (run N)`。
+ * CI 用 `GITHUB_RUN_NUMBER` 同时写 `versionCode` 和 Release 标题 `北辰 latest (run N)`。
  * 所以只要从标题里把 N 抠出来，就能和本机 `versionCode` 直接比——
  * 不需要额外的版本清单文件，也不会出现「清单忘了更新」的错位。
+ *
+ * 标题里的中文不影响解析：匹配的是 `(run N)` 这个后缀，不是标题全称。
+ * 改标题文案时只要保住这个后缀，自动更新就不会断。
  *
  * ## 网络失败怎么处理
  * `api.github.com` 在国内不一定通。失败时不重试、不弹窗，由 UI 显示一句
@@ -57,7 +60,7 @@ object UpdateChecker {
                 connectTimeout = 8_000
                 readTimeout = 8_000
                 setRequestProperty("Accept", "application/vnd.github+json")
-                setRequestProperty("User-Agent", "AgentKit")
+                setRequestProperty("User-Agent", "Polaris")
             }
             try {
                 val code = conn.responseCode

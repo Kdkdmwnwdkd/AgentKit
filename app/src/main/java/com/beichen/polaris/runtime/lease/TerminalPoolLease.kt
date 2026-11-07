@@ -2,6 +2,7 @@ package com.beichen.polaris.runtime.lease
 
 import com.beichen.polaris.core.AppScope
 import com.beichen.polaris.core.AgentLogger
+import com.beichen.polaris.core.terminal.SessionSnapshot
 import com.beichen.polaris.core.terminal.TerminalSessionPool
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -47,9 +48,9 @@ class TerminalPoolLease(
         const val TAG = "TerminalPoolLease"
     }
 
-    /** 该后端当前存活会话数（用于判断「有没有东西可回收」）。 */
-    private fun liveSessions(): Int =
-        pool.list().count { snapshot -> snapshot.backendKey == backendKey && snapshot.alive }
+    /** 该后端当前存活会话（回收的**对象**；空 = 无东西可回收，跳过）。 */
+    private fun liveSessions(): List<SessionSnapshot> =
+        pool.list().filter { snapshot -> snapshot.backendKey == backendKey && snapshot.alive }
 
     override val activeCount: Int
         get() = active.get()
@@ -57,13 +58,19 @@ class TerminalPoolLease(
     private val active = AtomicInteger(0)
 
     /**
-     * 释放安全性：**没有活跃引用**且**没有存活会话**。
+     * 释放安全性：**只看引用数**，不看会话是否存活——与 [ContainerLease] 同一条判据。
      *
-     * 注意第二项：会话是池管的资源，有人显式持有会话句柄时把它关掉，
-     * 用户的下一次命令就会失败。有活跃引用时同理。
+     * 存活会话恰恰是**要释放的对象**，不是否决条件。曾经写成
+     * `active == 0 && liveSessions() == 0`，等于要求「先没有东西可回收，才允许回收」：
+     * 池里的会话不会自己消失（没有别的回收者），所以 `liveSessions()` 一旦 > 0
+     * 就再也不会归零，30 分钟空闲回收从未触发过一次——一个文档写着会回收、
+     * 实际永不回收的回收器。
+     *
+     * 「有人在用」由引用数表达：[ShellTool] 在命令执行期间 acquire、结束即 close。
+     * 没人跑命令时留着后端进程只会白占内存与电。
      */
     override val isSafeToRelease: Boolean
-        get() = active.get() == 0 && liveSessions() == 0
+        get() = active.get() == 0
 
     override suspend fun acquire(): LeaseHandle {
         active.incrementAndGet()
@@ -76,19 +83,27 @@ class TerminalPoolLease(
     }
 
     /**
-     * 空闲释放：关闭该后端上的全部会话。
+     * 空闲释放：关闭**本后端**上的全部会话。
      *
-     * 池的 [TerminalSessionPool.closeAll] 是挂起函数（要 await 每个后端关闭），
+     * 池的 [TerminalSessionPool.close] 是挂起函数（要 await 后端关闭），
      * 而回收器的释放动作是非挂起回调（[LeaseRegistry.registerIdleReleaser]）。
      * 这里用独立协程跑：回收是尽力而为，失败只记日志。
+     *
+     * 曾经这里调 `pool.closeAll()`——它关的是**全部后端**，于是回收 `terminal:user`
+     * 会顺手把有人正在用的 `terminal:proot` 一起杀掉，而 proot 租约本身并不同意释放。
+     * 租约的粒度是「一个后端」，回收动作必须同样按后端切分。
      */
     fun releaseIdle(reason: String) {
-        val count = liveSessions()
-        if (count == 0) return
-        AgentLogger.i(TAG, "空闲回收终端会话：后端=$backendKey 会话数=$count（$reason）")
+        val alive = liveSessions()
+        if (alive.isEmpty()) return
+        AgentLogger.i(TAG, "空闲回收终端会话：后端=$backendKey 会话数=${alive.size}（$reason）")
         AppScope.app.launch {
-            runCatching { pool.closeAll() }
-                .onFailure { AgentLogger.w(TAG, "终端会话回收失败（$reason）", it) }
+            alive.forEach { snapshot ->
+                runCatching { pool.close(snapshot.handle) }
+                    .onFailure {
+                        AgentLogger.w(TAG, "终端会话回收失败 handle=${snapshot.handle}（$reason）", it)
+                    }
+            }
         }
     }
 }

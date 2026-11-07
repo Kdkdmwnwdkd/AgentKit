@@ -110,7 +110,7 @@ jobs:
           fi
           # 给下游反验一个明确信号：没拉到 ≠ 代码有问题
           if [ ! -s app/src/main/assets/shizuku.apk ]; then
-            echo "AGENTKIT_SHIZUKU_ASSET=absent" >> "$GITHUB_ENV"
+            echo "POLARIS_SHIZUKU_ASSET=absent" >> "$GITHUB_ENV"
           fi
 
       - name: Make gradlew executable
@@ -235,7 +235,7 @@ jobs:
       - name: QA harness (report only)
         if: ${{ vars.QA_HARNESS != 'off' }}
         continue-on-error: true
-        # 注意：不要在这里显式写 env.AGENTKIT_SHIZUKU_ASSET。
+        # 注意：不要在这里显式写 env.POLARIS_SHIZUKU_ASSET。
         # 写入 $GITHUB_ENV 的变量会自动进入后续步骤的环境；用表达式覆盖反而可能在
         # 求值阶段取到空串，把运行时值抹掉，SKIP 逻辑就失效了。
         run: |
@@ -295,7 +295,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="latest"
-          TITLE="AgentKit latest (run ${{ github.run_number }})"
+          TITLE="北辰 latest (run ${{ github.run_number }})"
           NOTES="commit ${{ github.sha }}"
           # 先保证 release 存在（tag 已存在时 create 会失败，忽略即可）。
           gh release create "$TAG" app/build/outputs/apk/debug/*.apk \

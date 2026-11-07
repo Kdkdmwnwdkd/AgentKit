@@ -148,6 +148,28 @@ private class ScriptedClient(
     override suspend fun testPing(): PingResult = PingResult(200, "ok")
 }
 
+/**
+ * 一次发多个工具调用的假客户端——用来测「同批里有的成功、有的被取消」。
+ */
+private class BatchScriptedClient(private val batch: List<ToolCall>) : LLMClient {
+    override val id: String = "batch-fake"
+    private var round = 0
+
+    override suspend fun chat(messages: List<ChatMessage>, tools: List<AgentTool>): AssistantMessage =
+        AssistantMessage("chat-not-used")
+
+    override fun streamChat(messages: List<ChatMessage>, tools: List<AgentTool>): Flow<ChatStreamEvent> = flow {
+        round++
+        if (round == 1) {
+            emit(ChatStreamEvent.Completed(AssistantMessage(content = "", toolCalls = batch)))
+        } else {
+            emit(ChatStreamEvent.Completed(AssistantMessage("done")))
+        }
+    }
+
+    override suspend fun testPing(): PingResult = PingResult(200, "ok")
+}
+
 /** 回声工具。 */
 private class EchoTool(override val name: String = "echo") : AgentTool {
     override val description: String = "测试用回声工具"
@@ -373,6 +395,48 @@ private suspend fun testEventSequence() = runBlocking {
         assertTrue("取消后应补 tool.end（实际 ${ends2.size} 条）", ends2.isNotEmpty())
         val end2 = ends2.first() as TurnEvent.ToolCallEnded
         assertTrue("只读工具取消的 code 应为 cancelled，实际 ${end2.code}", end2.code == "cancelled")
+    }
+
+    check("R5-6c 批次被取消时，已完成的调用不被改判为 cancelled_unknown") {
+        // 同批两个调用：echo 立即成功，hang_w 卡住后被取消。
+        // 修复前：executeBatch 的返回值在取消时整体丢失（addAll 在 try 之后），
+        // 闭合逻辑只看 messages 有没有配对 ToolResult，于是把已成功的 echo 送进
+        // onInterrupt 重判 -> 多出一条 cancelled_unknown 的 tool.end，回喂给模型的
+        // 也是「状态未知，请先确认副作用」，而它其实已经干净地成功了。
+        val observer = RecordingObserver()
+        val registry = ToolRegistry().apply {
+            register(EchoTool())
+            register(HangingTool("hang_w"))
+        }
+        val batch = listOf(
+            ToolCall("call_ok", "echo", buildJsonObject { put("text", "hi") }),
+            ToolCall("call_hang", "hang_w", buildJsonObject { put("text", "wait") })
+        )
+        val loop = loopWith(BatchScriptedClient(batch), registry, observer)
+        val job = GlobalScope.launch(Dispatchers.Default) { loop.send("跑两个") }
+        var waited = 0
+        while (observer.ofType("tool.start")
+                .none { (it as TurnEvent.ToolCallStarted).tool == "hang_w" } &&
+            waited < 10_000
+        ) {
+            delay(20); waited += 20
+        }
+        job.cancel()
+        job.join()
+        delay(100)
+
+        val ends = observer.ofType("tool.end").map { it as TurnEvent.ToolCallEnded }
+        val echoEnds = ends.filter { it.tool == "echo" }
+        // 成功路径自己发过一条 tool.end；若闭合逻辑重判，会再补一条。
+        assertTrue("echo 应恰有 1 条 tool.end（实际 ${echoEnds.size} 条；2 条 = 被重判）", echoEnds.size == 1)
+        assertTrue(
+            "echo 的 code 不应是 cancelled_unknown（实际 ${echoEnds.firstOrNull()?.code}）",
+            echoEnds.firstOrNull()?.code != "cancelled_unknown"
+        )
+        assertTrue(
+            "hang_w 应被记为 cancelled_unknown",
+            ends.any { it.tool == "hang_w" && it.code == "cancelled_unknown" }
+        )
     }
 
     check("R5-7 回合结束状态正确") {

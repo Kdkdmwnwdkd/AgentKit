@@ -29,6 +29,7 @@ import com.beichen.polaris.core.Prompt
 import com.beichen.polaris.core.PromptAssembler
 import com.beichen.polaris.core.Section
 import com.beichen.polaris.core.Stability
+import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.async
@@ -667,14 +668,23 @@ class RealAgentLoop(
 
             // T01 三段式之执行 + commit：本批工具执行（T03 并发判据在 executor/loop 协作下生效）
             val stepImages = mutableListOf<String>()
+            // 已定案的调用结果暂存。批次被取消时 executeBatch 的**整个返回值丢失**
+            // （addAll 在 try 之后），但已经跑完的调用有确定结局、没有疑问。
+            // 若不带出来，闭合逻辑只看 messages 里有没有配对 ToolResult，就会把这些
+            // 成功的调用当成「未执行」送进 onInterrupt 重判 -> cancelled_unknown，
+            // 于是模型被告知「写操作可能已生效，先向用户确认」——对一次成功的读取，
+            // 这是纯噪音；对一次成功的写入，则会让用户去核对一件已经完成的事。
+            val settled = ConcurrentHashMap<String, ToolMessage>()
             val results = try {
-                executeBatch(resp.toolCalls, stepImages, turnRegistry, turn, step, clock)
+                executeBatch(resp.toolCalls, stepImages, turnRegistry, turn, step, clock, settled)
             } catch (cancel: CancellationException) {
                 // T05 树尾闭合：不信任取消时 execute() 的返回值——工具被 kill 后可能返回假成功。
                 // 在 NonCancellable 内给本 Assistant 里所有**未配对**的 ToolCall 补错误 ToolResult，
                 // 保证「已 commit 的 ToolCall 必有配对 ToolResult」，再重抛取消。
                 withContext(NonCancellable) {
-                    closePendingToolResults(resp.toolCalls, messages, turnRegistry, turn, step, clock)
+                    closePendingToolResults(
+                        resp.toolCalls, messages, turnRegistry, turn, step, clock, settled
+                    )
                 }
                 throw cancel
             }
@@ -760,7 +770,9 @@ class RealAgentLoop(
         turnRegistry: ToolRegistry,
         turn: TurnJournal.Turn?,
         step: Int,
-        clock: TurnClock
+        clock: TurnClock,
+        // 每有一个调用产出终态 message 就登记，供取消路径取回（见 send() 中的说明）。
+        settled: MutableMap<String, ToolMessage>
     ): List<ToolMessage> {
         val seenFingerprints = HashSet<String>()
         val duplicateFlags = calls.map { call ->
@@ -792,7 +804,7 @@ class RealAgentLoop(
             // 便于日志审计与用户预期
             calls.mapIndexed { i, call ->
                 executeOne(
-                    executor, call, descriptors[i], duplicateFlags[i], images, turn, step, clock
+                    executor, call, descriptors[i], duplicateFlags[i], images, turn, step, clock, settled
                 ).message
             }
         } else {
@@ -811,7 +823,7 @@ class RealAgentLoop(
                                 val localImages = mutableListOf<String>()
                                 executeOne(
                                     executor, call, descriptors[i], duplicateFlags[i], localImages,
-                                    turn, step, clock
+                                    turn, step, clock, settled
                                 ) to localImages
                             }
                         }.awaitAll()
@@ -842,7 +854,8 @@ class RealAgentLoop(
         images: MutableList<String>,
         turn: TurnJournal.Turn?,
         step: Int,
-        clock: TurnClock
+        clock: TurnClock,
+        settled: MutableMap<String, ToolMessage>
     ): ToolCallOutcome.Completed {
         onEvent?.invoke(AgentEvent.ToolStarted(call))
         // R5：tool.start —— 排在**执行之前**。
@@ -883,6 +896,9 @@ class RealAgentLoop(
                 call.id,
                 if (outcome.message.isError) ToolSettleStatus.FAILED else ToolSettleStatus.SUCCEEDED
             )
+            // 登记「已定案」：同批后续调用若被取消，send() 里能把这条成功结果原样取回，
+            // 不必让闭合逻辑重新判定它（重判只会得到 cancelled_unknown）。
+            settled[call.id] = outcome.message
             return outcome
         }
         // 防御：execute() 契约规定只返回 Completed（业务失败也在内）。若实现违规
@@ -898,7 +914,10 @@ class RealAgentLoop(
             if (outcome is ToolCallOutcome.Unknown) "cancelled_unknown" else "cancelled",
             true, System.currentTimeMillis() - toolStart, call.id
         )
-        return ToolCallOutcome.Completed(filled, filled.images)
+        // 防御路径同样有确定的终态 message，一并登记——它已经不会再变了。
+        val closed = ToolCallOutcome.Completed(filled, filled.images)
+        settled[call.id] = filled
+        return closed
     }
 
     /**
@@ -920,13 +939,25 @@ class RealAgentLoop(
         turnRegistry: ToolRegistry,
         turn: TurnJournal.Turn?,
         step: Int,
-        clock: TurnClock
+        clock: TurnClock,
+        // 已产出终态的调用（id -> 结果）。非空即「跑完了，只是没来得及入 messages」。
+        settled: Map<String, ToolMessage> = emptyMap()
     ) {
         val paired = messages.filterIsInstance<ToolMessage>().mapTo(HashSet()) { it.id }
         val executor = toolExecutor(turnRegistry)
         var filled = 0
+        var recovered = 0
         for (call in calls) {
             if (call.id in paired) continue
+            // 先看是否已经跑完。批次被取消时 addAll(results) 没有执行，这些结果
+            // 只存在于 settled 里。它们的 tool.end 与终态落盘在 executeOne 中已经做过，
+            // 这里只需把 message 补进历史，不能重判——重判会把成功改写为 cancelled_unknown。
+            val done = settled[call.id]
+            if (done != null) {
+                messages.add(done)
+                recovered++
+                continue
+            }
             val descriptor = turnRegistry.descriptorOf(call.name) ?: ToolDescriptor(call.name, call.name, "{}")
             val verdict = executor.onInterrupt(call, descriptor)
             val msg = interruptToolMessage(call, verdict)
@@ -946,9 +977,12 @@ class RealAgentLoop(
             turn?.toolSettled(step, call.id, ToolSettleStatus.fromOutcome(verdict))
             filled++
         }
-        if (filled > 0) {
+        if (filled > 0 || recovered > 0) {
             checkpoint?.invoke(messages)
-            AgentLogger.w("AgentLoop", "取消闭合：补填 $filled 个待决 ToolResult")
+            AgentLogger.w(
+                "AgentLoop",
+                "取消闭合：补填 $filled 个待决 ToolResult，回收 $recovered 个已完成结果"
+            )
         }
     }
 
