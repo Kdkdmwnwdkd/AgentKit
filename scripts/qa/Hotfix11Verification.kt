@@ -1036,8 +1036,9 @@ private fun testAppearanceEnhancements() {
         assertContains("V3", activity, "registerActivityLifecycleCallbacks")
         assertContains("V3", activity, "override fun onActivityStarted(activity: Activity) {")
         assertContains("V3", activity, "override fun onActivityStopped(activity: Activity) {")
-        assertContains("V3", activity, "@Volatile")
-        assertContains("V3", activity, "fun isAppInForeground(): Boolean = foregroundActivities > 0")
+        // 计数必须原子读改写：@Volatile 只保证可见性，`x = x - 1` 仍会丢计数
+        assertContains("V3", activity, "private val foregroundActivities = AtomicInteger(0)")
+        assertContains("V3", activity, "fun isAppInForeground(): Boolean = foregroundActivities.get() > 0")
         // started/stopped 计数而非 resumed/paused：半透明权限对话框不误判为后台
         assertContains("V3", activity, "已 started 未 stopped 的 Activity 数")
     }

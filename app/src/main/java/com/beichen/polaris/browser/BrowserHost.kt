@@ -10,6 +10,7 @@ import android.webkit.WebViewClient
 import com.beichen.polaris.core.AgentLogger
 import java.io.File
 import java.lang.ref.WeakReference
+import java.util.concurrent.CopyOnWriteArrayList
 
 /**
  * 后台 WebView 宿主（W-15）。
@@ -38,8 +39,23 @@ object BrowserHost {
     @Volatile
     private var destroyed = true
 
-    /** 页面加载完成的等待句柄（由 [WebViewBrowser] 设置/消费）。 */
-    internal var onPageFinished: (() -> Unit)? = null
+    /**
+     * 页面加载完成的等待句柄。
+     *
+     * 用集合而不是单值：原来只有一个槽位，后设置的会覆盖先设置的，于是两个 web_open
+     * 并发时先发起的那次永远收不到回调，只能干等到超时。改成多播后每次 open 各等各的，
+     * 谁也不会把别人的等待摘掉。CopyOnWrite：写入少（每次导航一加一减）、读取在主线程回调里，
+     * 读多写少的场景正好。
+     */
+    private val pageFinishedListeners = CopyOnWriteArrayList<() -> Unit>()
+
+    internal fun addPageFinishedListener(listener: () -> Unit) {
+        pageFinishedListeners.add(listener)
+    }
+
+    internal fun removePageFinishedListener(listener: () -> Unit) {
+        pageFinishedListeners.remove(listener)
+    }
 
     /** 在主线程创建（或复用）WebView。重复调用是幂等的。 */
     fun attach(activity: Activity) {
@@ -66,7 +82,8 @@ object BrowserHost {
                 wv.webViewClient = object : WebViewClient() {
                     override fun onPageFinished(view: WebView?, url: String?) {
                         AgentLogger.d(TAG, "页面加载完成：${url?.take(120)}")
-                        onPageFinished?.invoke()
+                        // 每个等待者自己决定收不收（有人可能已被超时取消，deferred 已完成）
+                        pageFinishedListeners.forEach { runCatching { it() } }
                     }
                 }
                 webRef = WeakReference(wv)
@@ -130,7 +147,7 @@ object BrowserHost {
             }
             webRef = null
             destroyed = true
-            onPageFinished = null
+            pageFinishedListeners.clear()
             AgentLogger.i(TAG, "后台 WebView 已释放")
         }
     }

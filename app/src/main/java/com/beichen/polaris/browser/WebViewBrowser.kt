@@ -8,6 +8,8 @@ import android.webkit.WebView
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.JsonPrimitive
@@ -28,14 +30,22 @@ class WebViewBrowser {
     /** 打开 URL 并等待加载完成（或超时）。返回最终 URL。 */
     suspend fun open(url: String, timeoutMs: Long = 20_000): Result<String> {
         val wv = BrowserHost.webView() ?: return Result.failure(IllegalStateException(NOT_READY))
-        val deferred = CompletableDeferred<Unit>()
-        BrowserHost.onPageFinished = { if (!deferred.isCompleted) deferred.complete(Unit) }
-        return withContext(Dispatchers.Main) {
-            runCatching {
-                wv.loadUrl(url)
-                withTimeoutOrNull(timeoutMs) { deferred.await() }
-                wv.url ?: url
-            }.onFailure { BrowserHost.onPageFinished = null }
+        return navigation.withLock {
+            val deferred = CompletableDeferred<Unit>()
+            val listener: () -> Unit = { if (!deferred.isCompleted) deferred.complete(Unit) }
+            BrowserHost.addPageFinishedListener(listener)
+            try {
+                withContext(Dispatchers.Main) {
+                    runCatching {
+                        wv.loadUrl(url)
+                        withTimeoutOrNull(timeoutMs) { deferred.await() }
+                        wv.url ?: url
+                    }
+                }
+            } finally {
+                // 只摘自己这一个。原来失败时把全局回调置空，会顺手废掉别人的等待。
+                BrowserHost.removePageFinishedListener(listener)
+            }
         }
     }
 
@@ -45,19 +55,33 @@ class WebViewBrowser {
         if (wv.canGoBack()) { wv.goBack(); true } else false
     }
 
-    /** 执行 JS，返回字符串结果（null → 空串）。 */
-    suspend fun eval(script: String): Result<String> {
+    /**
+     * 执行 JS，返回字符串结果（null → 空串）。
+     *
+     * 超时不是「多加一层保险」，是必需：`evaluateJavascript` 的回调**不保证**会来——
+     * renderer 卡死、页面正被销毁、脚本自己死循环时都不到。原实现没有超时，web_eval
+     * 会一直挂起，用户看到的是「生成中」不动，只能等 ToolExecutor 外层预算兜底
+     * （那可能已经是几十秒之后）。超时返回明确失败，模型能据此换策略。
+     *
+     * 取消语义：超时由 withTimeoutOrNull 反转成正常返回，协程本身不被取消；
+     * 调用方取消时 suspendCancellableCoroutine 自动 cancel，迟到的回调靠 isActive 丢弃。
+     */
+    suspend fun eval(script: String, timeoutMs: Long = 10_000): Result<String> {
         val wv = BrowserHost.webView() ?: return Result.failure(IllegalStateException(NOT_READY))
         return withContext(Dispatchers.Main) {
-            suspendCancellableCoroutine { cont ->
-                runCatching {
-                    wv.evaluateJavascript(script) { raw ->
-                        if (cont.isActive) cont.resume(decodeJsResult(raw))
+            withTimeoutOrNull(timeoutMs) {
+                suspendCancellableCoroutine<Result<String>> { cont ->
+                    runCatching {
+                        wv.evaluateJavascript(script) { raw ->
+                            if (cont.isActive) cont.resume(decodeJsResult(raw))
+                        }
+                    }.onFailure {
+                        if (cont.isActive) cont.resume(Result.failure<String>(it))
                     }
-                }.onFailure {
-                    if (cont.isActive) cont.resume(Result.failure<String>(it))
                 }
-            }
+            } ?: Result.failure(
+                IllegalStateException("JS 执行超时（${timeoutMs}ms）：WebView 未回调，页面可能已卡死")
+            )
         }
     }
 
@@ -90,6 +114,14 @@ class WebViewBrowser {
 
     companion object {
         const val NOT_READY = "后台浏览器不可用（App 需先打开一次，且不要被系统回收）"
+
+        /**
+         * 导航串行化。整个 App 只有一个 WebView（[BrowserHost] 全局单例），`loadUrl` 会打
+         * 断上一次还没加载完的页面；两个 open 并发时，先发起的那次既等不到自己的
+         * onPageFinished，返回的 url 还可能是后一次的目标页。放在 companion 而不是实例上：
+         * 串行化要跟着 WebView 走，不是跟着某个 WebViewBrowser 对象走。
+         */
+        private val navigation = Mutex()
 
         private val main = Handler(Looper.getMainLooper())
 

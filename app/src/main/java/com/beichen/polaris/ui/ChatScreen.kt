@@ -210,22 +210,22 @@ fun ChatScreen(
     val localModelName by vm.localActive.collectAsStateWithLifecycle()
     val modelReady by vm.modelReady.collectAsStateWithLifecycle()
 
-    // v6：引导首次启动只弹一次（关掉即落盘）；modelReady 为真时也不再弹，无需额外「已完成」标记。
+    // v6：引导首次启动只弹一次（关掉即落盘）；modelReady 为真时也不再弹。
     val onboardingCtx = LocalContext.current
+    // 首次 getSharedPreferences 要同步解析 XML，LaunchedEffect 跑在主线程上，会顶掉一帧。
+    fun onboardingPrefs() = onboardingCtx.getSharedPreferences(ONBOARDING_PREFS, Context.MODE_PRIVATE)
     var showOnboarding by remember { mutableStateOf(false) }
     LaunchedEffect(modelReady) {
         if (modelReady) return@LaunchedEffect
-        val sp = onboardingCtx.getSharedPreferences(ONBOARDING_PREFS, Context.MODE_PRIVATE)
-        if (!sp.getBoolean(ONBOARDING_KEY, false)) showOnboarding = true
+        val dismissed = withContext(Dispatchers.IO) { onboardingPrefs().getBoolean(ONBOARDING_KEY, false) }
+        if (!dismissed) showOnboarding = true
     }
     val dismissOnboarding: () -> Unit = {
         showOnboarding = false
-        onboardingCtx.getSharedPreferences(ONBOARDING_PREFS, Context.MODE_PRIVATE)
-            .edit().putBoolean(ONBOARDING_KEY, true).apply()
+        onboardingPrefs().edit().putBoolean(ONBOARDING_KEY, true).apply()
     }
 
-    // 贴底跟随的规则（上翻即停、回底恢复、流式长高也跟）全在 ChatAutoScroll.kt；
-    // W-36 / W-43 / 键盘误判三轮修复的都那一段，放在这里会把主屏再撑长几十行。
+    // 贴底跟随规则（上翻即停、回底恢复、流式长高也跟）都在 ChatAutoScroll.kt，那段修过三轮。
     val followTail = remember { FollowTail() }
     FollowTailEffect(listState, messages.size, streamDraft, followTail)
 

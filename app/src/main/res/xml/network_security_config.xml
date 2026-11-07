@@ -2,7 +2,9 @@
 <!--
   网络明文策略（W-46 修复）
 
-  背景：targetSdk=34 时系统默认 cleartextTrafficPermitted=false，而本 App 的模型端点
+  背景：targetSdk=28（见 app/build.gradle.kts；compileSdk 是 34，但「是否默认禁止明文」
+  只由 targetSdk 决定，别按 compileSdk 推）。API 28 起系统默认
+  cleartextTrafficPermitted=false，而本 App 的模型端点
   由用户自己填——Ollama / LM Studio / vLLM / one-api 中转 / 局域网 MCP 服务绝大多数是
   `http://192.168.x.x:port` 或 `http://10.x.x.x`。此前没有任何 networkSecurityConfig，
   这些地址全部被系统在 socket 层拒绝（CLEARTEXT communication not permitted），

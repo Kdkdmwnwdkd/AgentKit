@@ -267,10 +267,20 @@ fun BuildScreen() {
                                     else MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
-                            if (task.stage == BuildStage.SUCCEEDED && task.apkPath != null &&
-                                File(task.apkPath).exists()
-                            ) {
-                                AkTextButton(text = "安装", onClick = { installApk(context, task.apkPath) })
+                            // 组合期不直接 stat：remember 按 (apkPath, stage) 缓存，
+                            // 同一任务重组时不再每帧一次系统调用。文件真被删了也不怕——
+                            // installApk 自己会检查并提示，这里只决定按钮显不显示。
+                            val apkReady = remember(task.apkPath, task.stage) {
+                                task.stage == BuildStage.SUCCEEDED && task.apkPath != null &&
+                                    File(task.apkPath).exists()
+                            }
+                            if (apkReady) {
+                                // apkPath 在 apkReady 里已判非空，但那个判断跨了 lambda，
+                                // 智能转换不再成立，这里用 ?.let 显式收窄
+                                AkTextButton(
+                                    text = "安装",
+                                    onClick = { task.apkPath?.let { installApk(context, it) } }
+                                )
                             }
                         }
                     }

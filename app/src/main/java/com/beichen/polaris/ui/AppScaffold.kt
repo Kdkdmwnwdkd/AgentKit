@@ -99,10 +99,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.beichen.polaris.core.ConversationSummary
-import java.text.SimpleDateFormat
 import java.util.Calendar
-import java.util.Date
-import java.util.Locale
 
 /**
  * 一级目的地全量路由表（UX v1 §1.7）：15 个值全部保留，页面都还能到。
@@ -1263,29 +1260,32 @@ internal fun RenameConversationDialog(
 }
 
 /**
- * 功能三：相对时间（抽屉「最近对话」用）——按日历日比较（QA P3：原 48h 窗口会把前天
- * 误标「昨天」）：同日 HH:mm / 昨天「昨天 HH:mm」/ 更早 MM-dd。
- * ts 晚于 now（时钟偏差等异常值）按「刚刚」处理，不出现「昨天」在未来的情况。
+ * 功能三：抽屉「最近对话」的相对时间——按日历日比较（P3：原 48h 窗口会把前天标成
+ * 「昨天」）：同日 HH:mm / 昨天 HH:mm / 今年 MM-dd / 跨年 yyyy-MM-dd（去年 11-07 与
+ * 今年 11-07 否则长得一样）。ts 晚于 now 按「刚刚」处理。直接读 Calendar 字段而非
+ * new 三个 SimpleDateFormat：每项每次重组都会调一次，且 SDF 非线程安全。
  */
 private fun relativeTime(ts: Long): String {
     val now = System.currentTimeMillis()
     if (ts > now) return "刚刚"
-    val dayFmt = SimpleDateFormat("yyyyMMdd", Locale.getDefault())
-    val tsKey = dayFmt.format(Date(ts))
-    val nowKey = dayFmt.format(Date(now))
-    val time = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(ts))
+    val c = Calendar.getInstance().apply { timeInMillis = ts }
+    val n = Calendar.getInstance().apply { timeInMillis = now }
+    val time = "${pad2(c.get(Calendar.HOUR_OF_DAY))}:${pad2(c.get(Calendar.MINUTE))}"
+    val yesterday = (n.clone() as Calendar).apply { add(Calendar.DAY_OF_YEAR, -1) }
+    val md = "${pad2(c.get(Calendar.MONTH) + 1)}-${pad2(c.get(Calendar.DAY_OF_MONTH))}"
     return when {
-        tsKey == nowKey -> time
-        tsKey == yesterdayKey() -> "昨天 $time"
-        else -> SimpleDateFormat("MM-dd", Locale.getDefault()).format(Date(ts))
+        dayKey(c) == dayKey(n) -> time
+        dayKey(c) == dayKey(yesterday) -> "昨天 $time"
+        c.get(Calendar.YEAR) != n.get(Calendar.YEAR) -> "${c.get(Calendar.YEAR)}-$md"
+        else -> md
     }
 }
 
-/** 今天的昨天的 yyyyMMdd（Calendar 回退一天后格式化，跨月 / 跨年都正确）。 */
-private fun yesterdayKey(): String {
-    val cal = Calendar.getInstance().apply { add(Calendar.DAY_OF_YEAR, -1) }
-    return SimpleDateFormat("yyyyMMdd", Locale.getDefault()).format(cal.time)
-}
+/** 日历日主键：年 + 年内第几天，同年内唯一。 */
+private fun dayKey(c: Calendar): Int = c.get(Calendar.YEAR) * 1000 + c.get(Calendar.DAY_OF_YEAR)
+
+/** 两位补零（不引 String.format：那要传 Locale，否则阿拉伯语区会给出本地数字）。 */
+private fun pad2(v: Int): String = if (v < 10) "0$v" else v.toString()
 
 /** 抽屉头部：40dp 圆角应用标记 +「AgentKit」+ 就绪文字三态（§6.5.2）。 */
 @Composable
