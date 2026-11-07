@@ -1380,16 +1380,16 @@ private fun DrawerItem(
             .padding(horizontal = AgentSpacing.space2)
             .heightIn(min = AgentDimens.drawerItemHeight)
     ) {
-        // 选中三件套之③：左缘 3dp primary 圆角竖条
+        // 选中三件套之③：左缘 3dp primary 圆角竖条。必须包一层 matchParentSize——
+        // 否则 fillMaxHeight 会向父要最大高度，在抽屉底栏把整项顶成全屏、盖住滚动区。
         if (isSelected) {
-            Box(
-                Modifier
-                    .align(Alignment.CenterStart)
-                    .width(3.dp)
-                    .fillMaxHeight()
-                    .clip(RoundedCornerShape(topEnd = 2.dp, bottomEnd = 2.dp))
-                    .background(MaterialTheme.colorScheme.primary)
-            )
+            Box(Modifier.matchParentSize()) {
+                Box(
+                    Modifier.align(Alignment.CenterStart).width(3.dp).fillMaxHeight()
+                        .clip(RoundedCornerShape(topEnd = 2.dp, bottomEnd = 2.dp))
+                        .background(MaterialTheme.colorScheme.primary)
+                )
+            }
         }
         val interaction = remember { MutableInteractionSource() }
         val pressed by interaction.collectIsPressedAsState()
